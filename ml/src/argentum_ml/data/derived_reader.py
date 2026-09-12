@@ -761,10 +761,20 @@ def _validate_cost_payment(candidate: dict[str, Any], value: Any, *, allow_tappe
         raise DerivedArtifactError("sacrificed permanent is outside the source domain")
     minimum = _expect_int(candidate.get("sacrificeMinCount"), "sacrifice minimum", nonnegative=True)
     maximum = _expect_int(candidate.get("sacrificeMaxCount"), "sacrifice maximum", nonnegative=True)
+    if maximum > len(valid_sacrifices):
+        raise DerivedArtifactError("source sacrifice maximum exceeds published sacrifice targets")
     if len(sacrificed) < minimum or len(sacrificed) > maximum:
         raise DerivedArtifactError("sacrificed permanent count is outside the source domain")
-    if minimum == maximum and _expect_int(candidate.get("sacrificeCount"), "sacrifice count", nonnegative=True) != len(sacrificed):
+    sacrifice_count = _expect_int(candidate.get("sacrificeCount"), "sacrifice count", nonnegative=True)
+    if minimum == maximum and sacrifice_count != len(sacrificed):
         raise DerivedArtifactError("sacrificed permanent count does not match the fixed source cost")
+    fixed_sacrifice_count = _count_fixed_sacrifice_nodes(
+        _ability_cost_tree(candidate.get("actionSemantics")),
+    )
+    if fixed_sacrifice_count > 0 and (
+        sacrifice_count != fixed_sacrifice_count or len(sacrificed) != fixed_sacrifice_count
+    ):
+        raise DerivedArtifactError("sacrificed permanent count does not match the fixed source cost tree")
     _validate_source_bound_taps(candidate, payment["tappedPermanents"], allow_tapped)
 
 
@@ -797,6 +807,38 @@ def _count_source_bound_tap_nodes(value: Any) -> int:
         return 1
     if value.get("type") == "CostComposite":
         return sum(_count_source_bound_tap_nodes(child) for child in value.get("costs", []))
+    return 0
+
+
+def _ability_cost_tree(action_semantics: Any) -> Any:
+    if not isinstance(action_semantics, dict):
+        return None
+    ability_key = action_semantics.get("abilityKey")
+    if not isinstance(ability_key, dict):
+        return None
+    ability = ability_key.get("ability")
+    if not isinstance(ability, dict):
+        return None
+    return ability.get("cost")
+
+
+def _count_fixed_sacrifice_nodes(value: Any) -> int:
+    if not isinstance(value, dict):
+        return 0
+    cost_type = value.get("type")
+    if cost_type == "CostSacrificeSelf":
+        return 1
+    if cost_type == "CostAtomWrapper":
+        atom = value.get("atom")
+        if isinstance(atom, dict) and atom.get("type") == "AtomSacrifice":
+            count = atom.get("count")
+            return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else 0
+        return 0
+    if cost_type == "CostComposite":
+        costs = value.get("costs", [])
+        if not isinstance(costs, list):
+            raise DerivedArtifactError("malformed fixed cost composite")
+        return sum(_count_fixed_sacrifice_nodes(child) for child in costs)
     return 0
 
 

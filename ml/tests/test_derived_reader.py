@@ -458,6 +458,85 @@ class DerivedReaderTests(unittest.TestCase):
             with self.assertRaises(DerivedArtifactError):
                 DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
 
+    def test_rejects_sacrifice_maximum_above_published_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _sample()
+            sample["binding"]["entityAliasBindings"].append(
+                {"alias": "entity-2", "sourceEntityId": "sacrifice-raw"},
+            )
+            candidate = sample["binding"]["completeLegalDomain"]["candidates"][0]
+            candidate["validSacrificeTargets"] = ["sacrifice-raw"]
+            candidate["sacrificeMinCount"] = 0
+            candidate["sacrificeMaxCount"] = 2
+            candidate["sacrificeCount"] = 0
+            candidate["requiredPayloadFields"] = ["additionalCostPayment"]
+            empty_payment = {
+                "sacrificedPermanents": [], "discardedCards": [], "lifePaid": 0,
+                "exiledCards": [], "variableCostPermanents": [], "beheldCards": [],
+                "tappedPermanents": [], "bouncedPermanents": [], "blightTargets": [],
+                "blightAmount": 0, "payXLifeAmount": 0, "distributedCounterRemovals": [],
+            }
+            sample["target"]["chosenSemanticAction"]["choicePayload"] = {
+                "additionalCostPayment": empty_payment,
+            }
+            sample["input"]["domain"]["candidates"][0].update({
+                "requiredPayloadFields": ["additionalCostPayment"],
+                "sacrificeMinCount": 0,
+                "sacrificeMaxCount": 2,
+                "sacrificeCount": 0,
+                "validSacrificeTargetsAliases": ["entity-2"],
+            })
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_rejects_fixed_sacrifice_cost_tree_count_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _sample()
+            sample["binding"]["entityAliasBindings"].extend([
+                {"alias": "entity-2", "sourceEntityId": "sacrifice-one"},
+                {"alias": "entity-3", "sourceEntityId": "sacrifice-two"},
+            ])
+            candidate = sample["binding"]["completeLegalDomain"]["candidates"][0]
+            candidate["actionSemantics"] = {
+                "type": "ActivateAbility",
+                "abilityKey": {
+                    "origin": "printed",
+                    "ordinal": 0,
+                    "ability": {
+                        "type": "Ability",
+                        "cost": {
+                            "type": "CostAtomWrapper",
+                            "atom": {"type": "AtomSacrifice", "count": 2},
+                        },
+                    },
+                },
+            }
+            candidate["validSacrificeTargets"] = ["sacrifice-one", "sacrifice-two"]
+            candidate["sacrificeMinCount"] = 0
+            candidate["sacrificeMaxCount"] = 2
+            candidate["sacrificeCount"] = 0
+            candidate["requiredPayloadFields"] = ["additionalCostPayment"]
+            empty_payment = {
+                "sacrificedPermanents": [], "discardedCards": [], "lifePaid": 0,
+                "exiledCards": [], "variableCostPermanents": [], "beheldCards": [],
+                "tappedPermanents": [], "bouncedPermanents": [], "blightTargets": [],
+                "blightAmount": 0, "payXLifeAmount": 0, "distributedCounterRemovals": [],
+            }
+            sample["target"]["chosenSemanticAction"]["choicePayload"] = {
+                "additionalCostPayment": empty_payment,
+            }
+            model_candidate = sample["input"]["domain"]["candidates"][0]
+            model_candidate.update({
+                "actionSemantics": {"abilityKey": {"ordinalRelation": "ability-0", "origin": "printed"}, "type": "ActivateAbility"},
+                "requiredPayloadFields": ["additionalCostPayment"],
+                "sacrificeMinCount": 0,
+                "sacrificeMaxCount": 2,
+                "sacrificeCount": 0,
+                "validSacrificeTargetsAliases": ["entity-2", "entity-3"],
+            })
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
     def test_rejects_structured_target_cardinality_outside_domain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sample = _structured_sample()
