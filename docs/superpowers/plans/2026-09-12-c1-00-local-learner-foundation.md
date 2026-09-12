@@ -99,7 +99,7 @@ Expected: `origin/main=ce9f779bd3bd8375b6b83b9c5668b1b94ced924a`, merge-base che
 - Test `gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1DatasetSplitV1Test.kt`.
 - Test `gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1DerivedManifestV1Test.kt`.
 
-- [ ] **Step 1: Write independent split KATs.** Add these assertions before production code:
+- [x] **Step 1: Write independent split KATs.** Add these assertions before production code:
 
 ```kotlin
 C1DatasetSplitV1.bucket("0".repeat(64)) shouldBe 75
@@ -112,9 +112,9 @@ C1DatasetSplitV1.assign("1c".repeat(32)) shouldBe C1DatasetPartition.TEST
 
 Also test lowercase 64-hex validation and prove that trajectory ID, collection job ID, decision count, source order, and filesystem order are not inputs.
 
-- [ ] **Step 2: Run `just test-class C1DatasetSplitV1Test` and confirm RED.** The expected failure is missing `C1DatasetSplitV1`/`C1DatasetPartition`, not a fixture typo. If the Windows wrapper fails before Gradle, record that separately and use `gradlew.bat` only as native fallback evidence.
+- [x] **Step 2: Run `just test-class C1DatasetSplitV1Test` and confirm RED.** The expected failure is missing `C1DatasetSplitV1`/`C1DatasetPartition`, not a fixture typo. If the Windows wrapper fails before Gradle, record that separately and use `gradlew.bat` only as native fallback evidence.
 
-- [ ] **Step 3: Add exact identities and immutable DTOs.** Define:
+- [x] **Step 3: Add exact identities and immutable DTOs.** Define:
 
 ```kotlin
 const val C1_DERIVED_VIEW_SCHEMA_IDENTITY = "argentum-ml-derived-learner-view@v1"
@@ -124,7 +124,7 @@ const val C1_SPLIT_CONTRACT_IDENTITY = "argentum-ml-dataset-split@v1"
 
 Create `enum class C1DatasetPartition { TRAIN, VALIDATION, TEST }`, `C1PartitionCounts`, `C1MaterializerImplementationIdentity`, `C1DerivedSourceReference`, `C1DerivedTargetChannel`, `C1DerivedBindingChannel`, and `C1DerivedSampleV1`. Physical samples have only a format version; they do not add a second model-facing wire identity. The manifest carries the single physical `C1_DERIVED_VIEW_SCHEMA_IDENTITY` plus its format version. `modelFacingContractIdentity` remains a binding field, not a new physical sample schema. `C1DerivedBindingChannel` carries the complete domain, exact selected source binding, source-binding ordinals, and the optional map of source-produced semantic tie discriminators. `C1DerivedTargetChannel` must enforce exactly one of `chosenSemanticAction` and `chosenSemanticResponse`. `C1DerivedManifestV1` must contain source identity, derived identity, materializer identity/config digest, fixed `samples.ndjson` reference, sample digest/bytes/count, episode count, sample count, both partition-count objects, and manifest content digest.
 
-- [ ] **Step 4: Implement `C1DatasetSplitV1.bucket` and `.assign`.** Use exactly:
+- [x] **Step 4: Implement `C1DatasetSplitV1.bucket` and `.assign`.** Use exactly:
 
 ```text
 UTF8("argentum-ml-dataset-split@v1\n" + lowercase semanticEpisodeId)
@@ -136,11 +136,11 @@ modulo 100
 
 Reject uppercase/non-hex/non-64-character IDs. Never accept an alternate split key or signed remainder.
 
-- [ ] **Step 5: Add manifest RED tests.** Reject negative counts, partition-total mismatches, invalid `samples.ndjson` references, unknown version/identity, malformed digests, and missing artifact identity. Allow accepted episodes with zero samples while preserving episode counts.
+- [x] **Step 5: Add manifest RED tests.** Reject negative counts, partition-total mismatches, invalid `samples.ndjson` references, unknown version/identity, malformed digests, and missing artifact identity. Allow accepted episodes with zero samples while preserving episode counts.
 
-- [ ] **Step 6: Run `just test-class C1DatasetSplitV1Test` and `just test-class C1DerivedManifestV1Test`; confirm GREEN.**
+- [x] **Step 6: Run `just test-class C1DatasetSplitV1Test` and `just test-class C1DerivedManifestV1Test`; confirm GREEN.**
 
-- [ ] **Step 7: Commit:**
+- [x] **Step 7: Commit:**
 
 ```powershell
 git add gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/learner/C1LearnerContractsV1.kt gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/learner/C1DatasetSplitV1.kt gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1DatasetSplitV1Test.kt gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1DerivedManifestV1Test.kt
