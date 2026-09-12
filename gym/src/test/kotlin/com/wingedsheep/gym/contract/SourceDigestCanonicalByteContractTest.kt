@@ -8,6 +8,7 @@ import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import kotlinx.serialization.json.Json
@@ -48,6 +49,37 @@ class SourceDigestCanonicalByteContractTest : FunSpec({
 
     test("locks the legacy source digest oracle for a real perspective-safe observation") {
         val observation = realObservation()
+        StateDigest.compute(observation) shouldBe legacySourceDigest(observation)
+    }
+
+    test("direct source writer preserves synthetic bytes, digests, and malformed UTF-8") {
+        sourceDigestCanonicalFixtures().forEach { (_, element, _) ->
+            val currentBytes = ObservationCanonicalizer.canonicalJson(element)
+                .toByteArray(StandardCharsets.UTF_8)
+            val candidateBytes = directCanonicalBytes(element)
+            candidateBytes.contentEquals(currentBytes) shouldBe true
+            sha256Hex(candidateBytes) shouldBe sha256Hex(currentBytes)
+            SourceSemanticDigestWriter.digest(element) shouldBe sha256Hex(currentBytes)
+        }
+        malformedSurrogateFixtures().forEach { fixture ->
+            val element = buildJsonObject { put("value", fixture.raw) }
+            directCanonicalBytes(element).contentEquals(
+                ObservationCanonicalizer.canonicalJson(element).toByteArray(StandardCharsets.UTF_8),
+            ) shouldBe true
+            SourceSemanticDigestWriter.digest(element) shouldBe
+                sha256Hex(ObservationCanonicalizer.canonicalJson(element).toByteArray(StandardCharsets.UTF_8))
+        }
+    }
+
+    test("direct source writer and StateDigest share the legacy real-observation authority") {
+        val observation = realObservation()
+        val currentBytes = ObservationCanonicalizer.semanticJson(observation)
+            .toByteArray(StandardCharsets.UTF_8)
+        val candidateBytes = directCanonicalBytes(ObservationCanonicalizer.sourceSemanticRoot(observation))
+
+        candidateBytes.contentEquals(currentBytes) shouldBe true
+        SourceSemanticDigestWriter.digest(ObservationCanonicalizer.sourceSemanticRoot(observation)) shouldBe
+            legacySourceDigest(observation)
         StateDigest.compute(observation) shouldBe legacySourceDigest(observation)
     }
 })
@@ -220,3 +252,18 @@ private fun realObservation(): TrainingObservation {
 private fun sha256Hex(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
     .digest(bytes)
     .joinToString("") { "%02x".format(it) }
+
+private fun directCanonicalBytes(element: JsonElement): ByteArray = ByteArrayOutputStream().also { output ->
+    SourceSemanticDigestWriter.writeCanonical(
+        element,
+        object : SourceSemanticDigestWriter.CanonicalUtf8Sink {
+            override fun appendAscii(value: String) {
+                output.write(value.toByteArray(StandardCharsets.UTF_8))
+            }
+
+            override fun appendJsonText(value: String) {
+                output.write(value.toByteArray(StandardCharsets.UTF_8))
+            }
+        },
+    )
+}.toByteArray()
