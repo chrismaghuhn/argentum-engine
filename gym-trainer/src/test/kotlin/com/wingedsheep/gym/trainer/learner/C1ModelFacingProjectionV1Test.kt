@@ -27,6 +27,7 @@ import com.wingedsheep.gym.contract.DistributionDomain
 import com.wingedsheep.gym.contract.EntityFeatures
 import com.wingedsheep.gym.contract.ManaPoolView
 import com.wingedsheep.gym.contract.ModeSelectionDomain
+import com.wingedsheep.gym.contract.ModeOptionDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
 import com.wingedsheep.gym.contract.OrderingDomain
 import com.wingedsheep.gym.contract.PaymentActivationSupportKindV1
@@ -248,7 +249,78 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         val input = A3SemanticJson.canonicalJson(sample.input)
         input shouldContain "\"entityAlias\":\"$alias\""
         input shouldContain "\"targetEntityAliases\":[\"$alias\"]"
+        val opponentAlias = sample.binding.entityAliasBindings
+            .single { it.sourceEntityId == opponent.value }
+            .alias
+        input shouldContain "\"entityAlias\":\"$opponentAlias\""
+        input shouldContain "\"targetAliases\":[\"$opponentAlias\"]"
         input shouldNotContain "visible-card"
+    }
+
+    test("accepts current ActivateAbility and folded semantic producer fields") {
+        val activate = fixture(
+            chosenCandidateIndex = 0,
+            candidateList = listOf(
+                candidate(
+                    kind = "ActivateAbility",
+                    sourceEntityId = "ability-source",
+                    actionSemantics = buildJsonObject {
+                        put("type", "ActivateAbility")
+                        put("playerId", "self")
+                        put("sourceId", "ability-source")
+                        put("abilityKey", buildJsonObject {
+                            put("origin", "printed")
+                            put("ordinal", 0)
+                            put("cardDefinitionId", "CARD_DEF")
+                            put("ability", buildJsonObject { put("type", "binding-only") })
+                        })
+                    },
+                ),
+            ),
+        )
+        val activateSample = C1ModelFacingProjectionV1.project(
+            activate.trajectory,
+            activate.record,
+            C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+            C1DatasetPartition.TRAIN,
+        )
+        val activateInput = A3SemanticJson.canonicalJson(activateSample.input)
+        activateInput shouldContain "abilityKey"
+        activateInput shouldContain "ordinalRelation"
+        activateInput shouldContain "cardDefinitionId"
+        activateInput shouldNotContain "binding-only"
+        activateInput shouldNotContain "ability-source"
+
+        val folded = fixture(
+            chosenCandidateIndex = 0,
+            candidateList = listOf(
+                candidate(
+                    kind = "DECISION",
+                    sourceEntityId = "folded-source",
+                    actionSemantics = buildJsonObject {
+                        put("type", "OptionChosenResponse")
+                        put("optionIndex", 1)
+                        put("optionMetadata", buildJsonObject {
+                            put("id", "metadata-id")
+                            put("description", "presentation")
+                            put("iconKey", "icon")
+                            put("triggeringPlayerId", "opponent")
+                        })
+                    },
+                ),
+            ),
+        )
+        val foldedSample = C1ModelFacingProjectionV1.project(
+            folded.trajectory,
+            folded.record,
+            C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+            C1DatasetPartition.TRAIN,
+        )
+        val foldedInput = A3SemanticJson.canonicalJson(foldedSample.input)
+        foldedInput shouldContain "optionIndex"
+        foldedInput shouldContain "triggeringPlayerRole"
+        foldedInput shouldNotContain "metadata-id"
+        foldedInput shouldNotContain "presentation"
     }
 
     test("rejects unknown and non-inert action-semantic fields") {
@@ -401,7 +473,11 @@ class C1ModelFacingProjectionV1Test : FunSpec({
                 maxTotalPower = null,
                 conditionalMinimums = emptyList(),
             ),
-            ModeSelectionDomain(modes = emptyList(), minModes = 0, maxModes = 0),
+            ModeSelectionDomain(
+                modes = listOf(ModeOptionDomain(index = 0, text = "presentation", available = true)),
+                minModes = 1,
+                maxModes = 1,
+            ),
             DistributionDomain(
                 totalAmount = 0,
                 targets = emptyList(),
@@ -473,7 +549,10 @@ class C1ModelFacingProjectionV1Test : FunSpec({
             when (expectedType) {
                 "targets" -> representation["requirements"] shouldNotBe null
                 "card-selection" -> representation["optionsAliases"] shouldNotBe null
-                "mode-selection" -> representation["modes"] shouldNotBe null
+                "mode-selection" -> {
+                    representation["modes"] shouldNotBe null
+                    representation.toString() shouldNotContain "presentation"
+                }
                 "distribution" -> representation["targetsAliases"] shouldNotBe null
                 "ordering" -> representation["objectsAliases"] shouldNotBe null
                 "split-piles" -> representation["cardsAliases"] shouldNotBe null
@@ -600,6 +679,7 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         representations[1]["conditionalMinimums"].toString() shouldContain "matchingOptionsAliases"
         representations[2]["targetsAliases"] shouldNotBe null
         representations[3]["objectsAliases"].toString() shouldContain "entity-0"
+        representations[3]["objectLabels"] shouldNotBe null
         representations[4]["optionsAliases"] shouldNotBe null
         representations[5]["cardsAliases"].toString() shouldContain "entity-0"
     }
@@ -666,6 +746,7 @@ class C1ModelFacingProjectionV1Test : FunSpec({
                 ),
                 coChooserId = chooser,
             ),
+            C1SampleRelationTable.standalonePlayers(chooser, defender),
         )
         val mana = C1ModelFacingProjectionV1.projectStructuredDomainRepresentation(
             ManaSourcesDomain(
@@ -722,6 +803,11 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         combat["blockers"] shouldNotBe null
         combat["defenders"] shouldNotBe null
         combat["edges"] shouldNotBe null
+        combat.toString() shouldContain "editableByRole"
+        combat.toString() shouldContain "coChooserRole"
+        combat.toString() shouldNotContain "\"name\":\"Attacker\""
+        combat.toString() shouldNotContain "\"name\":\"Blocker\""
+        combat.toString() shouldNotContain "\"name\":\"Defender\""
         mana["paymentDomain"] shouldNotBe null
         mana["paymentDomain"].toString() shouldContain "sourceActivationOptions"
         mana["paymentDomain"].toString() shouldContain "initialPoolBuckets"

@@ -65,6 +65,21 @@ internal class C1SampleRelationTable private constructor(
             opponentPlayerId = null,
             aliasesBySourceId = linkedMapOf(),
         )
+
+        fun standalonePlayers(
+            perspective: EntityId,
+            opponent: EntityId,
+        ): C1SampleRelationTable {
+            require(perspective != opponent) { "Standalone players must be distinct" }
+            return C1SampleRelationTable(
+                perspectivePlayerId = perspective,
+                opponentPlayerId = opponent,
+                aliasesBySourceId = linkedMapOf(
+                    perspective.value to "entity-0",
+                    opponent.value to "entity-1",
+                ),
+            )
+        }
     }
 
     fun alias(id: EntityId): String = alias(id.value)
@@ -261,6 +276,7 @@ object C1ModelFacingProjectionV1 {
         put("players", buildJsonArray {
             observation.players.forEach { player ->
                 add(buildJsonObject {
+                    put("entityAlias", relations.alias(player.id))
                     put("role", relations.roleOf(player.id))
                     put("lifeTotal", player.lifeTotal)
                     put("handSize", player.handSize)
@@ -505,10 +521,124 @@ object C1ModelFacingProjectionV1 {
         val projected = requireNotNull(
             projectFeatureElement(encoded, FeatureProjectionMode.MODEL, relations),
         ).jsonObject
-        return buildJsonObject {
+        val base = buildJsonObject {
             put("type", type)
             projected.forEach { (key, value) -> put(key, value) }
         }
+        return projectStructuredPresentationAndPlayerRelations(domain, base, relations)
+    }
+
+    private fun projectStructuredPresentationAndPlayerRelations(
+        domain: com.wingedsheep.gym.contract.StructuredDecisionDomain,
+        projected: JsonObject,
+        relations: C1SampleRelationTable,
+    ): JsonObject = when (domain) {
+        is com.wingedsheep.gym.contract.ModeSelectionDomain -> buildJsonObject {
+            projected.forEach { (key, value) ->
+                if (key != "modes") put(key, value)
+            }
+            projected["modes"]?.jsonArray?.let { modes ->
+                put("modes", buildJsonArray {
+                    modes.forEach { mode ->
+                        add(JsonObject(mode.jsonObject.filterKeys { it != "text" }))
+                    }
+                })
+            }
+        }
+
+        is com.wingedsheep.gym.contract.OrderingDomain -> buildJsonObject {
+            projected.forEach { (key, value) -> put(key, value) }
+            domain.objectLabels?.let { labels ->
+                put("objectLabels", buildJsonObject {
+                    labels.forEach { (objectId, label) ->
+                        put(relations.alias(objectId), label)
+                    }
+                })
+            }
+        }
+
+        is com.wingedsheep.gym.contract.CombatResolutionDomain ->
+            projectCombatPlayerRelations(projected, domain, relations)
+
+        else -> projected
+    }
+
+    private fun projectCombatPlayerRelations(
+        projected: JsonObject,
+        domain: com.wingedsheep.gym.contract.CombatResolutionDomain,
+        relations: C1SampleRelationTable,
+    ): JsonObject = buildJsonObject {
+        projected.forEach { (key, value) ->
+            when (key) {
+                "attackers" -> put("attackers", buildJsonArray {
+                    value.jsonArray.forEachIndexed { index, entry ->
+                        val source = domain.attackers[index]
+                        add(buildJsonObject {
+                            entry.jsonObject.forEach { (entryKey, entryValue) ->
+                                if (entryKey != "name" && entryKey != "attackedDefenderAlias") {
+                                    put(entryKey, entryValue)
+                                }
+                            }
+                            put("attackerAlias", relations.alias(source.id))
+                            val defender = domain.defenders.firstOrNull {
+                                it.id == source.attackedDefenderId
+                            }
+                            if (defender?.kind == com.wingedsheep.gym.contract.CombatTargetKind.PLAYER) {
+                                put("attackedDefenderRole", relations.roleOf(source.attackedDefenderId))
+                            } else {
+                                put("attackedDefenderAlias", relations.alias(source.attackedDefenderId))
+                            }
+                        })
+                    }
+                })
+
+                "blockers" -> put("blockers", buildJsonArray {
+                    value.jsonArray.forEachIndexed { index, entry ->
+                        val source = domain.blockers[index]
+                        add(buildJsonObject {
+                            entry.jsonObject.forEach { (entryKey, entryValue) ->
+                                if (entryKey != "name") put(entryKey, entryValue)
+                            }
+                            put("blockerAlias", relations.alias(source.id))
+                        })
+                    }
+                })
+
+                "defenders" -> put("defenders", buildJsonArray {
+                    value.jsonArray.forEachIndexed { index, entry ->
+                        val source = domain.defenders[index]
+                        add(buildJsonObject {
+                            entry.jsonObject.forEach { (entryKey, entryValue) ->
+                                if (entryKey != "name") put(entryKey, entryValue)
+                            }
+                            if (source.kind == com.wingedsheep.gym.contract.CombatTargetKind.PLAYER) {
+                                put("defenderRole", relations.roleOf(source.id))
+                            } else {
+                                put("defenderAlias", relations.alias(source.id))
+                            }
+                        })
+                    }
+                })
+
+                "edges" -> put("edges", buildJsonArray {
+                    value.jsonArray.forEachIndexed { index, entry ->
+                        val source = domain.edges[index]
+                        add(buildJsonObject {
+                            entry.jsonObject.forEach { (entryKey, entryValue) ->
+                                if (entryKey != "editableByAlias" && entryKey != "editableByAliases") {
+                                    put(entryKey, entryValue)
+                                }
+                            }
+                            put("editableByRole", relations.roleOf(source.editableBy))
+                        })
+                    }
+                })
+
+                "coChooserAlias" -> Unit
+                else -> put(key, value)
+            }
+        }
+        domain.coChooserId?.let { put("coChooserRole", relations.roleOf(it)) }
     }
 
     private fun projectCandidate(
@@ -687,6 +817,7 @@ object C1ModelFacingProjectionV1 {
         "matchingOptions",
         "eligibleCoBlockers",
         "targets",
+        "selectedCards",
         "objects",
         "cards",
         "attackerOrder",
@@ -745,6 +876,7 @@ object C1ModelFacingProjectionV1 {
 
     private val actionSemanticFeatureKeys = setOf(
         "type",
+        "abilityKey",
         "playerId",
         "cardId",
         "sourceId",
@@ -754,10 +886,18 @@ object C1ModelFacingProjectionV1 {
         "castFaceDown",
         "declaredCostSlot",
         "wasWaterbendPaid",
+        "useAlternativeCost",
+        "useWithoutPayingManaCost",
+        "alternativeCostType",
+        "color",
+        "repeatCount",
+    )
+
+    private val actionSemanticIgnoredKeys = setOf(
+        "abilityId",
         "giftRecipient",
         "splicedCardIds",
         "damageDistribution",
-        "useAlternativeCost",
         "chosenModes",
         "modeTargetsOrdered",
         "modeDamageDistribution",
@@ -765,14 +905,11 @@ object C1ModelFacingProjectionV1 {
         "conspiredCreatures",
         "casualtyCreature",
         "faceIndex",
-        "useWithoutPayingManaCost",
-        "alternativeCostType",
         "attackers",
         "bands",
         "blockers",
         "attackerId",
         "orderedBlockers",
-        "color",
         "cardIds",
         "vehicleId",
         "crewCreatures",
@@ -782,11 +919,6 @@ object C1ModelFacingProjectionV1 {
         "roomId",
         "faceId",
         "procedureIndex",
-        "repeatCount",
-    )
-
-    private val actionSemanticIgnoredKeys = setOf(
-        "abilityId",
         "paymentStrategy",
         "alternativePayment",
         "additionalCostPayment",
@@ -806,7 +938,29 @@ object C1ModelFacingProjectionV1 {
         "opponentTargetsChosen",
     )
 
+    private val foldedResponseTypes = setOf(
+        "YesNoResponse",
+        "ModesChosenResponse",
+        "ColorChosenResponse",
+        "NumberChosenResponse",
+        "OptionChosenResponse",
+        "CardsSelectedResponse",
+    )
+
     private fun projectActionSemantics(
+        value: JsonObject,
+        mode: FeatureProjectionMode,
+        relations: C1SampleRelationTable?,
+    ): JsonObject {
+        val type = (value["type"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        return if (type in foldedResponseTypes) {
+            projectFoldedResponseSemantics(value, mode, relations)
+        } else {
+            projectGameActionSemantics(value, mode, relations)
+        }
+    }
+
+    private fun projectGameActionSemantics(
         value: JsonObject,
         mode: FeatureProjectionMode,
         relations: C1SampleRelationTable?,
@@ -840,6 +994,10 @@ object C1ModelFacingProjectionV1 {
                     }
                 }
 
+                key == "abilityKey" -> {
+                    put("abilityKey", projectAbilityKey(child, mode))
+                }
+
                 mode == FeatureProjectionMode.TIE &&
                     (isRawIdentityKey(key) || isRawIdentityListField(key)) -> Unit
 
@@ -850,6 +1008,98 @@ object C1ModelFacingProjectionV1 {
                         key
                     }
                     put(outputKey, it)
+                }
+            }
+        }
+    }
+
+    private fun projectAbilityKey(
+        value: JsonElement,
+        mode: FeatureProjectionMode,
+    ): JsonObject {
+        val objectValue = value as? JsonObject
+            ?: throw IllegalArgumentException("Malformed ActivateAbility abilityKey")
+        val allowed = setOf("origin", "ordinal", "cardDefinitionId", "ability")
+        require(objectValue.keys.all { it in allowed }) {
+            "Unknown ActivateAbility abilityKey field"
+        }
+        require(objectValue["origin"] is JsonPrimitive) {
+            "ActivateAbility abilityKey has no origin"
+        }
+        require(objectValue["ordinal"] is JsonPrimitive) {
+            "ActivateAbility abilityKey has no ordinal"
+        }
+        return buildJsonObject {
+            put("origin", objectValue.getValue("origin"))
+            objectValue["cardDefinitionId"]?.let { cardDefinitionId ->
+                require(cardDefinitionId is JsonPrimitive && cardDefinitionId.isString) {
+                    "ActivateAbility abilityKey has malformed cardDefinitionId"
+                }
+                put(
+                    if (mode == FeatureProjectionMode.TIE) "cardDefinition" else "cardDefinitionId",
+                    cardDefinitionId,
+                )
+            }
+            if (mode == FeatureProjectionMode.MODEL) {
+                val ordinal = objectValue.getValue("ordinal") as JsonPrimitive
+                require(!ordinal.isString) { "ActivateAbility abilityKey ordinal must be numeric" }
+                put("ordinalRelation", "ability-${ordinal.content}")
+            }
+        }
+    }
+
+    private fun projectFoldedResponseSemantics(
+        value: JsonObject,
+        mode: FeatureProjectionMode,
+        relations: C1SampleRelationTable?,
+    ): JsonObject = buildJsonObject {
+        val type = (value["type"] as? JsonPrimitive)?.content
+            ?: throw IllegalArgumentException("Folded response has no type")
+        val allowed = when (type) {
+            "YesNoResponse" -> setOf("type", "choice")
+            "ModesChosenResponse" -> setOf("type", "selectedModes")
+            "ColorChosenResponse" -> setOf("type", "color")
+            "NumberChosenResponse" -> setOf("type", "number")
+            "OptionChosenResponse" -> setOf("type", "optionIndex", "optionMetadata")
+            "CardsSelectedResponse" -> setOf("type", "selectedCards")
+            else -> throw IllegalArgumentException("Unsupported folded response type: $type")
+        }
+        value.forEach { (key, child) ->
+            require(key in allowed) { "Unsupported folded response field: $key" }
+            when (key) {
+                "optionMetadata" -> put(
+                    key,
+                    projectOptionMetadata(child, mode, relations),
+                )
+
+                else -> projectFeatureElement(child, mode, relations, key)?.let { put(key, it) }
+            }
+        }
+    }
+
+    private fun projectOptionMetadata(
+        value: JsonElement,
+        mode: FeatureProjectionMode,
+        relations: C1SampleRelationTable?,
+    ): JsonObject {
+        val objectValue = value as? JsonObject
+            ?: throw IllegalArgumentException("Malformed folded optionMetadata")
+        val allowed = setOf("id", "description", "iconKey", "triggeringPlayerId")
+        require(objectValue.keys.all { it in allowed }) {
+            "Unknown folded optionMetadata field"
+        }
+        return buildJsonObject {
+            if (mode == FeatureProjectionMode.MODEL) {
+                objectValue["triggeringPlayerId"]?.let { triggeringPlayerId ->
+                    if (triggeringPlayerId !is JsonNull) {
+                        val player = EntityId(
+                            requireEntityIdString(
+                                triggeringPlayerId,
+                                "folded optionMetadata triggeringPlayerId",
+                            ),
+                        )
+                        put("triggeringPlayerRole", requireNotNull(relations).roleOf(player))
+                    }
                 }
             }
         }
