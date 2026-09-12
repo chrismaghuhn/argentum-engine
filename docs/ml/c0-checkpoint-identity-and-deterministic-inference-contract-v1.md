@@ -36,7 +36,7 @@ RECURRENT_SEQUENCE_CONTRACT_ID=argentum-ml-recurrent-sequence@v1
 SPLIT_CONTRACT_ID=argentum-ml-dataset-split@v1
 ```
 
-The audit base is the verified merge commit of C0-03 / PR #177:
+Historical accepted C0_03 predecessor was:
 
 ```text
 C0_03_BASE=bf425d40c7a22710d0b3d9a52330661b68275bd4
@@ -402,9 +402,9 @@ checkpointIdentityPayload = {
   "weightArtifactIdentity": { "container": ..., "artifact": ... },
   "weightContentDigest": ...,
   "inferenceContractIdentity": "argentum-ml-inference@v1",
-  "selectionContractIdentity": "argentum-ml-policy-selection@v2",
+  "selectionContractIdentity": "argentum-ml-policy-selection@v1" | "argentum-ml-policy-selection@v2",
   "requiredNumericProfileClass": ...,
-  "policyRngContractIdentity": "argentum-ml-policy-tie-rng@v1" | "NONE_FOR_DETERMINISTIC_MODE",
+  "policyRngContractIdentity": "NONE_FOR_DETERMINISTIC_MODE" | "argentum-ml-policy-tie-rng@v1",
   "trainingRecipeIdentity": ... | null,
   "trainingRunIdentity": ... | null,
   "parentCheckpointIdentity": ... | null,
@@ -422,6 +422,14 @@ may resolve to this ID but cannot replace it. The `...` markers above stand for 
 field values supplied by a future concrete manifest; they do not mean that fields may be omitted or
 left unspecified. Optional non-applicable values are explicit `null`, while feed-forward and
 deterministic-RNG cases use the declared sentinel strings.
+
+The selection and policy-RNG fields are a constrained compatibility pair, not independent choices:
+
+    (argentum-ml-policy-selection@v1, NONE_FOR_DETERMINISTIC_MODE)
+    (argentum-ml-policy-selection@v2, argentum-ml-policy-tie-rng@v1)
+
+Any other combination, including Selection V2 with NONE_FOR_DETERMINISTIC_MODE or Selection V1
+with PolicyTieRng V1, fails closed as a checkpoint compatibility mismatch.
 
 The current accepted total Environment V1 profile is an exact compatibility pair:
 
@@ -719,7 +727,6 @@ Selection V1 remains a valid historical contract:
 SELECTION_V1_VALID_CONTRACT=YES
 SELECTION_V1_CONTRACT_ID=argentum-ml-policy-selection@v1
 SELECTION_V1_MODE=DETERMINISTIC_ARGMAX
-POLICY_RNG_CONTRACT_ID=NONE_FOR_DETERMINISTIC_MODE
 SELECTION_V1_POLICY_RNG_CONTRACT=NONE_FOR_DETERMINISTIC_MODE
 SELECTION_V1_ENVIRONMENT_V1_TOTAL_POLICY=NO
 ```
@@ -775,8 +782,10 @@ It never silently uses the first row. Under historical Selection V1 it fails clo
 accepted Selection V2 it is resolved only by the explicitly supported PolicyTieRng V1 contract.
 
 For structured decisions, tie keys are typed semantic options/prefixes under the source domain.
-There is no global integer-option tie vocabulary. If a structured prefix has no unique accepted
-semantic discriminator, the decoder fails closed rather than heuristically completing it.
+There is no global integer-option tie vocabulary. Under Selection V1, a structured prefix without a
+unique accepted semantic discriminator fails closed. Under Selection V2, the same prefix proceeds
+to uniform PolicyTieRng V1 only when the complete validated inverse source binding is available;
+otherwise it fails closed. No heuristic completion is permitted.
 
 ### Deterministic baseline totality
 
