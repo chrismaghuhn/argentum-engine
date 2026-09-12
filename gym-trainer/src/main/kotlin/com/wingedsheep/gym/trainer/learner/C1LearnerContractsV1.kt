@@ -251,4 +251,3 @@ data class C1DerivedManifestV1(
         )
     }
 }
-
