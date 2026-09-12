@@ -128,6 +128,41 @@ class C1LearnerArtifactMaterializerTest : FunSpec({
         } shouldBe 2
     }
 
+    test("preserves decision source order and sample partition grouping") {
+        val root = Files.createTempDirectory("c1-materializer-decision-order-")
+        val source = com.wingedsheep.gym.trainer.trajectory.validFixture().twoDecisionEpisode()
+        val published = publishC1Fixture(root, source)
+        val output = root.resolve("output")
+        val manifest = C1LearnerArtifactMaterializer.materialize(
+            publishedDatasetDirectory = published.root,
+            outputDirectory = output,
+            sourceCommit = "e".repeat(40),
+            config = C1MaterializerConfig("c1-materializer@v1", "d".repeat(64)),
+        )
+        val samples = Files.readString(output.resolve("samples.ndjson"))
+            .lineSequence()
+            .filter(String::isNotEmpty)
+            .map { line ->
+                A3SemanticJson.decodeStrict(
+                    C1DerivedSampleV1.serializer(),
+                    A3SemanticJson.strictJson.parseToJsonElement(line),
+                    "derived sample",
+                )
+            }
+            .toList()
+
+        samples.map { it.sourceReference.decisionIndex } shouldBe listOf(0, 1)
+        samples.map { it.sourceReference.replayActionIndex } shouldBe listOf(0, 1)
+        samples.map { it.sourceReference.replayFrameIndex } shouldBe listOf(0, 1)
+        val partition = C1DatasetSplitV1.assign(source.trajectory.semanticEpisodeId)
+        samples.all { it.partition == partition } shouldBe true
+        when (partition) {
+            C1DatasetPartition.TRAIN -> manifest.sampleCountsByPartition.train
+            C1DatasetPartition.VALIDATION -> manifest.sampleCountsByPartition.validation
+            C1DatasetPartition.TEST -> manifest.sampleCountsByPartition.test
+        } shouldBe 2
+    }
+
     test("excludes quarantined episodes and preserves interrupted samples without synthetic values") {
         val root = Files.createTempDirectory("c1-materializer-quarantine-")
         val source = com.wingedsheep.gym.trainer.trajectory.validFixture().withClosure(

@@ -10,6 +10,8 @@ import com.wingedsheep.gym.trainer.trajectory.TrajectoryAdmissionResult
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryQuarantineReason
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryV1Admission
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryV1Publisher
+import com.wingedsheep.gym.trainer.trajectory.SemanticReplayInputV1
+import com.wingedsheep.gym.trainer.trajectory.SemanticReplayPrefixAccumulatorV1
 import com.wingedsheep.gym.trainer.trajectory.validFixture
 import com.wingedsheep.gym.trainer.trajectory.withPolicySeed
 import java.nio.file.Files
@@ -130,6 +132,89 @@ internal fun AdmissionFixture.zeroDecisionEpisode(): AdmissionFixture {
             chosenInputBinding = binding.chosenInputBinding.copy(
                 replayActionCount = 0,
                 chosenInputs = emptyList(),
+            ),
+        ),
+    )
+}
+
+internal fun AdmissionFixture.twoDecisionEpisode(): AdmissionFixture {
+    val first = trajectory.decisions.single()
+    val closure = when (val original = trajectory.closure) {
+        is EpisodeClosureV1.GameTerminal -> original.copy(stepCount = 2)
+        is EpisodeClosureV1.Interrupted -> original.copy(stepCount = 2)
+        is EpisodeClosureV1.Failed -> error("Cannot extend a failed fixture")
+    }
+    val prefix = SemanticReplayPrefixAccumulatorV1()
+    val firstIdentity = prefix.semanticDecisionIdentity(
+        semanticEpisodeId = trajectory.semanticEpisodeId,
+        replayActionIndex = 0,
+        observation = first.observationBefore,
+        domain = first.completeLegalDomain,
+        perspectivePlayerId = first.perspectivePlayerId.value,
+        decisionKind = first.decisionKind,
+    )
+    val firstInput = first.chosenSemanticAction?.let(SemanticReplayInputV1::action)
+        ?: first.chosenSemanticResponse?.let(SemanticReplayInputV1::response)
+        ?: error("Fixture has no chosen semantic input")
+    prefix.append(firstInput)
+    val secondIdentity = prefix.semanticDecisionIdentity(
+        semanticEpisodeId = trajectory.semanticEpisodeId,
+        replayActionIndex = 1,
+        observation = first.observationBefore,
+        domain = first.completeLegalDomain,
+        perspectivePlayerId = first.perspectivePlayerId.value,
+        decisionKind = first.decisionKind,
+    )
+    val second = first.copy(
+        decisionIndex = 1,
+        replayActionIndex = 1,
+        replayFrameIndex = 1,
+        semanticDecisionId = secondIdentity.semanticDecisionId(),
+    )
+    val firstRecord = first.copy(
+        decisionIndex = 0,
+        replayActionIndex = 0,
+        replayFrameIndex = 0,
+        semanticDecisionId = firstIdentity.semanticDecisionId(),
+    )
+    val metadata = trajectory.episodeMetadata.copy(
+        closure = closure,
+        compactReplayLink = trajectory.compactReplayLink.copy(
+            replayActionCount = 2,
+            replayActionEndExclusive = 2,
+        ),
+    )
+    val trajectoryBase = trajectory.copy(
+        trajectoryId = "f".repeat(64),
+        episodeMetadata = metadata,
+        decisions = listOf(firstRecord, second),
+    )
+    val twoDecisionTrajectory = trajectoryBase.copy(
+        trajectoryId = trajectoryBase.recomputeTrajectoryId(),
+    )
+    val verificationBase = binding.verificationBinding.verification
+    val initialFrame = verificationBase.frames.first()
+    val verification = verificationBase.copy(
+        replayActionCount = 2,
+        verifiedActionCount = 2,
+        frames = listOf(
+            initialFrame.copy(replayActionIndex = 0),
+            initialFrame.copy(replayActionIndex = 1),
+            initialFrame.copy(replayActionIndex = 2),
+        ),
+        closure = closure,
+    )
+    val chosen = binding.chosenInputBinding.chosenInputs.single()
+    return copy(
+        trajectory = twoDecisionTrajectory,
+        binding = binding.copy(
+            verificationBinding = binding.verificationBinding.copy(verification = verification),
+            chosenInputBinding = binding.chosenInputBinding.copy(
+                replayActionCount = 2,
+                chosenInputs = listOf(
+                    chosen.copy(replayActionIndex = 0),
+                    chosen.copy(replayActionIndex = 1),
+                ),
             ),
         ),
     )
