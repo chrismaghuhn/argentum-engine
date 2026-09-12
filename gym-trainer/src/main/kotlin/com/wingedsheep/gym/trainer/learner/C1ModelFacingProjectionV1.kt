@@ -18,11 +18,75 @@ import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import com.wingedsheep.gym.contract.PlayerObservationV1
+import com.wingedsheep.sdk.model.EntityId
 
 data class C1ProjectionContext(
     val datasetId: String,
     val sourceManifestContentDigest: String,
 )
+
+internal class C1SampleRelationTable private constructor(
+    private val perspectivePlayerId: EntityId?,
+    private val opponentPlayerId: EntityId?,
+    private val aliasesBySourceId: LinkedHashMap<String, String>,
+) {
+    companion object {
+        fun forObservation(observation: PlayerObservationV1): C1SampleRelationTable {
+            val playerIds = observation.players.map { it.id }
+            require(playerIds.size == 2 && playerIds.distinct().size == 2) {
+                "C1 learner projection requires exactly two distinct validated players"
+            }
+            require(observation.perspectivePlayerId in playerIds) {
+                "Perspective player is absent from the validated player set"
+            }
+            val opponent = playerIds.single { it != observation.perspectivePlayerId }
+            listOfNotNull(
+                observation.agentToAct,
+                observation.activePlayerId,
+                observation.priorityPlayerId,
+                observation.winnerId,
+            ).forEach { id ->
+                require(id in playerIds) {
+                    "Observation contains an unknown player identity"
+                }
+            }
+            return C1SampleRelationTable(
+                perspectivePlayerId = observation.perspectivePlayerId,
+                opponentPlayerId = opponent,
+                aliasesBySourceId = linkedMapOf<String, String>().also { aliases ->
+                    playerIds.forEachIndexed { index, id -> aliases[id.value] = "entity-$index" }
+                },
+            )
+        }
+
+        fun empty(): C1SampleRelationTable = C1SampleRelationTable(
+            perspectivePlayerId = null,
+            opponentPlayerId = null,
+            aliasesBySourceId = linkedMapOf(),
+        )
+    }
+
+    fun alias(id: EntityId): String = alias(id.value)
+
+    fun alias(sourceId: String): String {
+        require(sourceId.isNotBlank()) { "Source entity identity must not be blank" }
+        return aliasesBySourceId.getOrPut(sourceId) {
+            "entity-${aliasesBySourceId.size}"
+        }
+    }
+
+    fun roleOf(id: EntityId): String {
+        require(id == perspectivePlayerId || id == opponentPlayerId) {
+            "Observation contains an unknown player identity"
+        }
+        return if (id == perspectivePlayerId) "SELF" else "OPPONENT"
+    }
+
+    fun bindings(): List<C1EntityAliasBindingV1> = aliasesBySourceId.map { (sourceId, alias) ->
+        C1EntityAliasBindingV1(alias = alias, sourceEntityId = sourceId)
+    }
+}
 
 object C1ModelFacingProjectionV1 {
     fun project(
@@ -34,6 +98,16 @@ object C1ModelFacingProjectionV1 {
         requireOwnedRecord(trajectory, record)
 
         val observation = record.observationBefore
+        require(!observation.terminated) {
+            "Learner projection requires an accepted pre-choice observation"
+        }
+        require(!observation.truncated) {
+            "Learner projection requires an accepted pre-choice observation"
+        }
+        require(observation.winnerId == null) {
+            "Learner projection must not admit a terminal winner field"
+        }
+        val relations = C1SampleRelationTable.forObservation(observation)
         val domain = record.completeLegalDomain
         val chosenAction = record.chosenSemanticAction
         val chosenResponse = record.chosenSemanticResponse
@@ -89,7 +163,10 @@ object C1ModelFacingProjectionV1 {
             CompleteLegalDomainKind.FOLDED_DECISION_OPTIONS,
             -> C1SourceTieDiscriminatorV1.produce(
                 domain.candidates.mapIndexed { index, candidate ->
-                    C1ProjectedCandidateForTie(index, projectCandidate(candidate, FeatureProjectionMode.TIE))
+                    C1ProjectedCandidateForTie(
+                        index,
+                        projectCandidate(candidate, FeatureProjectionMode.TIE, null),
+                    )
                 },
             ).mapKeys { (ordinal, _) -> ordinal.toString() }
 
@@ -98,7 +175,7 @@ object C1ModelFacingProjectionV1 {
         return C1DerivedSampleV1(
             partition = partition,
             sourceReference = sourceReference,
-            input = projectInput(observation, domain),
+            input = projectInput(observation, domain, relations),
             target = target,
             binding = C1DerivedBindingChannel(
                 completeLegalDomain = encodeDomain(domain),
@@ -111,6 +188,7 @@ object C1ModelFacingProjectionV1 {
                     CompleteLegalDomainKind.STRUCTURED_DECISION -> emptyList()
                 },
                 semanticTieDiscriminators = tieDiscriminators,
+                entityAliasBindings = relations.bindings(),
             ),
             provenance = provenance,
         )
@@ -140,8 +218,9 @@ object C1ModelFacingProjectionV1 {
     }
 
     private fun projectInput(
-        observation: com.wingedsheep.gym.contract.PlayerObservationV1,
+        observation: PlayerObservationV1,
         domain: CompleteLegalDomainV1,
+        relations: C1SampleRelationTable,
     ): JsonObject = buildJsonObject {
         put("contractIdentity", C1_MODEL_FACING_CONTRACT_IDENTITY)
         put(
@@ -153,37 +232,36 @@ object C1ModelFacingProjectionV1 {
                 put("step", observation.step.name)
                 put(
                     "agentToActRole",
-                    observation.agentToAct?.let { roleOf(it, observation.perspectivePlayerId) } ?: "ABSENT",
+                    observation.agentToAct?.let(relations::roleOf) ?: "ABSENT",
                 )
                 put(
                     "activePlayerRole",
-                    observation.activePlayerId?.let { roleOf(it, observation.perspectivePlayerId) } ?: "ABSENT",
+                    observation.activePlayerId?.let(relations::roleOf) ?: "ABSENT",
                 )
                 put(
                     "priorityPlayerRole",
-                    observation.priorityPlayerId?.let { roleOf(it, observation.perspectivePlayerId) } ?: "ABSENT",
+                    observation.priorityPlayerId?.let(relations::roleOf) ?: "ABSENT",
                 )
             },
         )
         put(
             "observation",
-            projectObservation(observation),
+            projectObservation(observation, relations),
         )
-        put("domain", projectDomain(domain))
+        put("domain", projectDomain(domain, relations))
     }
 
     private fun projectObservation(
-        observation: com.wingedsheep.gym.contract.PlayerObservationV1,
+        observation: PlayerObservationV1,
+        relations: C1SampleRelationTable,
     ): JsonObject = buildJsonObject {
         put("turnNumber", observation.turnNumber)
         put("phase", observation.phase.name)
         put("step", observation.step.name)
-        put("terminated", observation.terminated)
-        put("truncated", observation.truncated)
         put("players", buildJsonArray {
             observation.players.forEach { player ->
                 add(buildJsonObject {
-                    put("role", roleOf(player.id, observation.perspectivePlayerId))
+                    put("role", relations.roleOf(player.id))
                     put("lifeTotal", player.lifeTotal)
                     put("handSize", player.handSize)
                     put("librarySize", player.librarySize)
@@ -200,12 +278,12 @@ object C1ModelFacingProjectionV1 {
         put("zones", buildJsonArray {
             observation.zones.forEach { zone ->
                 add(buildJsonObject {
-                    put("ownerRole", roleOf(zone.ownerId, observation.perspectivePlayerId))
+                    put("ownerRole", relations.roleOf(zone.ownerId))
                     put("zoneType", zone.zoneType.name)
                     put("hidden", zone.hidden)
                     put("size", zone.size)
                     put("cards", buildJsonArray {
-                        zone.cards.forEach { card -> add(projectEntity(card, observation)) }
+                        zone.cards.forEach { card -> add(projectEntity(card, relations)) }
                     })
                 })
             }
@@ -213,24 +291,30 @@ object C1ModelFacingProjectionV1 {
         put("stack", buildJsonArray {
             observation.stack.forEach { item ->
                 add(buildJsonObject {
+                    put("entityAlias", relations.alias(item.entityId))
                     put("name", item.name)
                     put("kind", item.kind.name)
                     put("oracleText", item.oracleText)
                     put("targetCount", item.targets.size)
                     put("controllerRole", item.controllerId?.let {
-                        roleOf(it, observation.perspectivePlayerId)
+                        relations.roleOf(it)
                     } ?: "UNKNOWN")
-                    put("sourcePresent", item.sourceEntityId != null)
+                    item.sourceEntityId?.let { put("sourceAlias", relations.alias(it)) }
+                    put("targetAliases", buildJsonArray {
+                        item.targets.forEach { target ->
+                            add(JsonPrimitive(relations.alias(target)))
+                        }
+                    })
                 })
             }
         })
         observation.pendingDecision?.let { pending ->
             put("pendingDecision", buildJsonObject {
                 put("kind", pending.kind.name)
-                put("playerRole", roleOf(pending.playerId, observation.perspectivePlayerId))
+                put("playerRole", relations.roleOf(pending.playerId))
                 put("requiresStructuredResponse", pending.requiresStructuredResponse)
-                put("sourcePresent", pending.sourceEntityId != null)
-                put("triggeringPresent", pending.triggeringEntityId != null)
+                pending.sourceEntityId?.let { put("sourceAlias", relations.alias(it)) }
+                pending.triggeringEntityId?.let { put("triggeringAlias", relations.alias(it)) }
                 put("minSelections", pending.shape.minSelections)
                 put("maxSelections", pending.shape.maxSelections)
                 pending.shape.numericMin?.let { put("numericMin", it) }
@@ -258,13 +342,14 @@ object C1ModelFacingProjectionV1 {
 
     private fun projectEntity(
         card: com.wingedsheep.gym.contract.EntityFeatures,
-        observation: com.wingedsheep.gym.contract.PlayerObservationV1,
+        relations: C1SampleRelationTable,
     ): JsonObject = buildJsonObject {
+        put("entityAlias", relations.alias(card.entityId))
         card.cardDefinitionId?.let { put("cardDefinitionId", it) }
         put("name", card.name)
         put("zone", card.zone.name)
-        put("ownerRole", card.ownerId?.let { roleOf(it, observation.perspectivePlayerId) } ?: "UNKNOWN")
-        put("controllerRole", card.controllerId?.let { roleOf(it, observation.perspectivePlayerId) } ?: "UNKNOWN")
+        put("ownerRole", card.ownerId?.let(relations::roleOf) ?: "UNKNOWN")
+        put("controllerRole", card.controllerId?.let(relations::roleOf) ?: "UNKNOWN")
         put("types", buildJsonArray { card.types.sorted().forEach { add(JsonPrimitive(it)) } })
         put("subtypes", buildJsonArray { card.subtypes.sorted().forEach { add(JsonPrimitive(it)) } })
         put("colors", buildJsonArray { card.colors.sorted().forEach { add(JsonPrimitive(it)) } })
@@ -283,14 +368,16 @@ object C1ModelFacingProjectionV1 {
         })
         put("attached", card.attachedTo != null)
         put("attachmentCount", card.attachments.size)
+        card.attachedTo?.let { put("attachedToAlias", relations.alias(it)) }
+        put("attachmentAliases", buildJsonArray {
+            card.attachments.forEach { add(JsonPrimitive(relations.alias(it))) }
+        })
     }
 
-    private fun roleOf(
-        id: com.wingedsheep.sdk.model.EntityId,
-        perspective: com.wingedsheep.sdk.model.EntityId,
-    ): String = if (id == perspective) "SELF" else "OPPONENT"
-
-    private fun projectDomain(domain: CompleteLegalDomainV1): JsonObject = buildJsonObject {
+    private fun projectDomain(
+        domain: CompleteLegalDomainV1,
+        relations: C1SampleRelationTable,
+    ): JsonObject = buildJsonObject {
         put("kind", domain.kind.name)
         domain.decisionKind?.let { put("decisionKind", it.name) }
         domain.shape?.let {
@@ -309,7 +396,7 @@ object C1ModelFacingProjectionV1 {
                 "candidates",
                 buildJsonArray {
                     domain.candidates.forEach {
-                        add(projectCandidate(it, FeatureProjectionMode.MODEL))
+                        add(projectCandidate(it, FeatureProjectionMode.MODEL, relations))
                     }
                 },
             )
@@ -318,7 +405,7 @@ object C1ModelFacingProjectionV1 {
                 val structured = requireNotNull(domain.structuredDomain)
                 put(
                     "structuredType",
-                    projectStructuredDomainRepresentation(structured),
+                    projectStructuredDomainRepresentation(structured, relations),
                 )
             }
         }
@@ -326,6 +413,7 @@ object C1ModelFacingProjectionV1 {
 
     internal fun projectStructuredDomainRepresentation(
         domain: com.wingedsheep.gym.contract.StructuredDecisionDomain,
+        relations: C1SampleRelationTable = C1SampleRelationTable.empty(),
     ): JsonObject {
         val type = when (domain) {
             is com.wingedsheep.gym.contract.TargetsDomain -> "targets"
@@ -415,7 +503,7 @@ object C1ModelFacingProjectionV1 {
                 )
         }
         val projected = requireNotNull(
-            projectFeatureElement(encoded, FeatureProjectionMode.MODEL),
+            projectFeatureElement(encoded, FeatureProjectionMode.MODEL, relations),
         ).jsonObject
         return buildJsonObject {
             put("type", type)
@@ -426,7 +514,16 @@ object C1ModelFacingProjectionV1 {
     private fun projectCandidate(
         candidate: JsonObject,
         mode: FeatureProjectionMode,
+        relations: C1SampleRelationTable?,
     ): JsonObject = buildJsonObject {
+        if (mode == FeatureProjectionMode.MODEL) {
+            candidate["sourceEntityId"]?.let { source ->
+                if (source !is JsonNull) {
+                    put("sourceAlias", requireEntityIdString(source, "candidate sourceEntityId")
+                        .let { requireNotNull(relations).alias(it) })
+                }
+            }
+        }
         listOf(
             "kind",
             "affordable",
@@ -453,7 +550,7 @@ object C1ModelFacingProjectionV1 {
                 return@forEach
             }
             candidate[key]?.let { value ->
-                projectFeatureElement(value, mode, fieldName = key)?.let {
+                projectFeatureElement(value, mode, relations, fieldName = key)?.let {
                     val outputKey = if (isRawIdentityKey(key) || isRawIdentityListField(key)) {
                         identityAliasKey(key)
                     } else {
@@ -464,10 +561,10 @@ object C1ModelFacingProjectionV1 {
             }
         }
         candidate["actionSemantics"]?.let { value ->
-            projectActionSemantics(value.jsonObject, mode)?.let { put("actionSemantics", it) }
+            put("actionSemantics", projectActionSemantics(value.jsonObject, mode, relations))
         }
         candidate["targetDomain"]?.jsonObject?.let {
-            put("targetDomain", projectTargetDomain(it, mode))
+            put("targetDomain", projectTargetDomain(it, mode, relations))
         }
         listOf(
             "attackDeclarationDomain",
@@ -477,7 +574,9 @@ object C1ModelFacingProjectionV1 {
             "repeatCountDomain",
         ).forEach { key ->
             candidate[key]?.let { value ->
-                projectFeatureElement(value, mode, fieldName = key)?.let { put(key, it) }
+                projectFeatureElement(value, mode, relations, fieldName = key)?.let {
+                    put(key, it)
+                }
             }
         }
     }
@@ -485,6 +584,7 @@ object C1ModelFacingProjectionV1 {
     private fun projectTargetDomain(
         value: JsonObject,
         mode: FeatureProjectionMode,
+        relations: C1SampleRelationTable?,
     ): JsonObject = buildJsonObject {
         value["version"]?.let { put("version", it) }
         value["composition"]?.let { put("composition", it) }
@@ -499,9 +599,10 @@ object C1ModelFacingProjectionV1 {
                         requirement["candidates"]?.jsonArray?.let {
                             put("candidateCount", it.size)
                             if (mode == FeatureProjectionMode.MODEL) {
-                                put("candidateAliases", buildJsonArray {
-                                    it.indices.forEach { index -> add(JsonPrimitive("entity-$index")) }
-                                })
+                                put(
+                                    "candidateAliases",
+                                    projectIdentityValue(it, requireNotNull(relations)),
+                                )
                             }
                         }
                         requirement["targetZone"]?.let { put("targetZone", it) }
@@ -527,12 +628,6 @@ object C1ModelFacingProjectionV1 {
     private enum class FeatureProjectionMode {
         MODEL,
         TIE,
-    }
-
-    private class LocalEntityAliasState {
-        private val aliases = linkedMapOf<String, String>()
-
-        fun alias(raw: String): String = aliases.getOrPut(raw) { "entity-${aliases.size}" }
     }
 
     private val routingForbiddenFeatureKeys = setOf(
@@ -648,23 +743,153 @@ object C1ModelFacingProjectionV1 {
         "objectLabels",
     )
 
+    private val actionSemanticFeatureKeys = setOf(
+        "type",
+        "playerId",
+        "cardId",
+        "sourceId",
+        "targets",
+        "xValue",
+        "manaColorChoice",
+        "castFaceDown",
+        "declaredCostSlot",
+        "wasWaterbendPaid",
+        "giftRecipient",
+        "splicedCardIds",
+        "damageDistribution",
+        "useAlternativeCost",
+        "chosenModes",
+        "modeTargetsOrdered",
+        "modeDamageDistribution",
+        "graveyardLifeCost",
+        "conspiredCreatures",
+        "casualtyCreature",
+        "faceIndex",
+        "useWithoutPayingManaCost",
+        "alternativeCostType",
+        "attackers",
+        "bands",
+        "blockers",
+        "attackerId",
+        "orderedBlockers",
+        "color",
+        "cardIds",
+        "vehicleId",
+        "crewCreatures",
+        "mountId",
+        "saddleCreatures",
+        "costTargetIds",
+        "roomId",
+        "faceId",
+        "procedureIndex",
+        "repeatCount",
+    )
+
+    private val actionSemanticIgnoredKeys = setOf(
+        "abilityId",
+        "paymentStrategy",
+        "alternativePayment",
+        "additionalCostPayment",
+        "costPayment",
+        "graveyardCastRider",
+        "modeTargetRequirementsOrdered",
+        "crewAbilityKey",
+        "response",
+        "actionId",
+        "decisionId",
+    )
+
+    private val actionSemanticContinuationKeys = setOf(
+        "preResolvedZoneChangeIds",
+        "preResolvedSneakAttackDefenderId",
+        "preResolvedWebSlingReturnedManaValue",
+        "opponentTargetsChosen",
+    )
+
     private fun projectActionSemantics(
         value: JsonObject,
         mode: FeatureProjectionMode,
-    ): JsonObject? = projectFeatureElement(value, mode)?.jsonObject
+        relations: C1SampleRelationTable?,
+    ): JsonObject = buildJsonObject {
+        value.forEach { (key, child) ->
+            when {
+                key in actionSemanticContinuationKeys -> {
+                    requireActionContinuationIsInert(key, child)
+                }
+
+                key in actionSemanticIgnoredKeys -> Unit
+                key !in actionSemanticFeatureKeys -> {
+                    throw IllegalArgumentException(
+                        "Unsupported action semantic field: $key",
+                    )
+                }
+
+                key == "playerId" -> {
+                    if (mode == FeatureProjectionMode.MODEL) {
+                        val playerId = EntityId(requireEntityIdString(child, "action playerId"))
+                        put("actorRole", requireNotNull(relations).roleOf(playerId))
+                    }
+                }
+
+                key == "giftRecipient" -> {
+                    if (mode == FeatureProjectionMode.MODEL && child !is JsonNull) {
+                        val recipient = EntityId(
+                            requireEntityIdString(child, "action giftRecipient"),
+                        )
+                        put("giftRecipientRole", requireNotNull(relations).roleOf(recipient))
+                    }
+                }
+
+                mode == FeatureProjectionMode.TIE &&
+                    (isRawIdentityKey(key) || isRawIdentityListField(key)) -> Unit
+
+                else -> projectFeatureElement(child, mode, relations, key)?.let {
+                    val outputKey = if (isRawIdentityKey(key) || isRawIdentityListField(key)) {
+                        identityAliasKey(key)
+                    } else {
+                        key
+                    }
+                    put(outputKey, it)
+                }
+            }
+        }
+    }
+
+    private fun requireActionContinuationIsInert(key: String, value: JsonElement) {
+        when (key) {
+            "preResolvedZoneChangeIds" -> require(value is JsonArray && value.isEmpty()) {
+                "Non-inert preResolvedZoneChangeIds are not model-facing features"
+            }
+
+            "preResolvedSneakAttackDefenderId",
+            "preResolvedWebSlingReturnedManaValue",
+            -> require(value is JsonNull) {
+                "Non-inert $key is not a model-facing feature"
+            }
+
+            "opponentTargetsChosen" -> require(
+                value is JsonPrimitive && !value.isString && value.content == "false",
+            ) {
+                "Non-inert opponentTargetsChosen is not a model-facing feature"
+            }
+        }
+    }
 
     private fun projectFeatureElement(
         value: JsonElement,
         mode: FeatureProjectionMode,
-        aliases: LocalEntityAliasState = LocalEntityAliasState(),
+        relations: C1SampleRelationTable?,
         fieldName: String? = null,
     ): JsonElement? = when (value) {
         is JsonObject -> when {
+            fieldName == "modeDamageDistribution" && mode == FeatureProjectionMode.MODEL ->
+                projectModeDamageDistribution(value, requireNotNull(relations))
+
             fieldName in identityRelationMapFields && mode == FeatureProjectionMode.MODEL ->
-                projectIdentityRelationMap(value, aliases)
+                projectIdentityRelationMap(value, requireNotNull(relations))
 
             fieldName in identityMapFields && mode == FeatureProjectionMode.MODEL ->
-                projectIdentityKeyedMap(value, aliases)
+                projectIdentityKeyedMap(value, requireNotNull(relations))
 
             else -> buildJsonObject {
                 value.forEach { (key, child) ->
@@ -672,24 +897,32 @@ object C1ModelFacingProjectionV1 {
                         key in forbiddenPresentationKeys || key in routingForbiddenFeatureKeys -> Unit
                         isRawIdentityListField(key) -> {
                             if (mode == FeatureProjectionMode.MODEL) {
-                                put(identityAliasKey(key), projectIdentityValue(child, aliases))
+                                put(
+                                    identityAliasKey(key),
+                                    projectIdentityValue(child, requireNotNull(relations)),
+                                )
                             }
                         }
 
                         isRawIdentityKey(key) -> {
                             if (mode == FeatureProjectionMode.MODEL) {
-                                put(identityAliasKey(key), projectIdentityValue(child, aliases))
+                                put(
+                                    identityAliasKey(key),
+                                    projectIdentityValue(child, requireNotNull(relations)),
+                                )
                             }
                         }
 
                         key in identityRelationMapFields || key in identityMapFields -> {
                             if (mode == FeatureProjectionMode.MODEL) {
-                                projectFeatureElement(child, mode, aliases, key)?.let { put(key, it) }
+                                projectFeatureElement(child, mode, relations, key)?.let {
+                                    put(key, it)
+                                }
                             }
                         }
 
                         key in forbiddenFeatureKeys -> Unit
-                        else -> projectFeatureElement(child, mode, aliases, key)?.let {
+                        else -> projectFeatureElement(child, mode, relations, key)?.let {
                             put(key, it)
                         }
                     }
@@ -698,6 +931,16 @@ object C1ModelFacingProjectionV1 {
         }
 
         is JsonArray -> if (
+            mode == FeatureProjectionMode.TIE && fieldName in identityRelationMapFields
+        ) {
+            JsonArray(emptyList())
+        } else if (
+            mode == FeatureProjectionMode.MODEL && fieldName in identityRelationMapFields
+        ) {
+            buildJsonArray {
+                value.forEach { child -> add(projectRelationValue(child, requireNotNull(relations))) }
+            }
+        } else if (
             fieldName != null &&
             (isRawIdentityKey(fieldName) || isRawIdentityListField(fieldName))
         ) {
@@ -708,12 +951,12 @@ object C1ModelFacingProjectionV1 {
                     value.forEach { child ->
                         when (child) {
                             is JsonPrimitive -> if (child.isString) {
-                                add(JsonPrimitive(aliases.alias(child.content)))
+                                add(JsonPrimitive(requireNotNull(relations).alias(child.content)))
                             } else {
                                 add(child)
                             }
 
-                            else -> projectFeatureElement(child, mode, aliases, fieldName)?.let(::add)
+                            else -> projectFeatureElement(child, mode, relations, fieldName)?.let(::add)
                         }
                     }
                 }
@@ -721,55 +964,76 @@ object C1ModelFacingProjectionV1 {
         } else {
             buildJsonArray {
                 value.forEach {
-                    projectFeatureElement(it, mode, aliases, fieldName)?.let(::add)
+                    projectFeatureElement(it, mode, relations, fieldName)?.let(::add)
                 }
             }
         }
 
         is JsonNull -> value
-        is JsonPrimitive -> value
+        is JsonPrimitive -> if (
+            mode == FeatureProjectionMode.MODEL &&
+            fieldName != null &&
+            (isRawIdentityKey(fieldName) || isRawIdentityListField(fieldName)) &&
+            value.isString
+        ) {
+            JsonPrimitive(requireNotNull(relations).alias(value.content))
+        } else {
+            value
+        }
     }
 
     private fun projectIdentityKeyedMap(
         value: JsonObject,
-        aliases: LocalEntityAliasState,
+        relations: C1SampleRelationTable,
     ): JsonObject = buildJsonObject {
         value.forEach { (key, child) ->
-            projectFeatureElement(child, FeatureProjectionMode.MODEL, aliases)?.let {
-                put(aliases.alias(key), it)
+            projectFeatureElement(child, FeatureProjectionMode.MODEL, relations)?.let {
+                put(relations.alias(key), it)
             }
         }
     }
 
     private fun projectIdentityRelationMap(
         value: JsonObject,
-        aliases: LocalEntityAliasState,
+        relations: C1SampleRelationTable,
     ): JsonObject = buildJsonObject {
         value.forEach { (key, child) ->
-            put(aliases.alias(key), projectRelationValue(child, aliases))
+            put(relations.alias(key), projectRelationValue(child, relations))
+        }
+    }
+
+    private fun projectModeDamageDistribution(
+        value: JsonObject,
+        relations: C1SampleRelationTable,
+    ): JsonObject = buildJsonObject {
+        value.forEach { (modeIndex, allocations) ->
+            put(
+                modeIndex,
+                projectIdentityRelationMap(allocations.jsonObject, relations),
+            )
         }
     }
 
     private fun projectRelationValue(
         value: JsonElement,
-        aliases: LocalEntityAliasState,
+        relations: C1SampleRelationTable,
     ): JsonElement = when (value) {
         is JsonObject -> buildJsonObject {
             value.forEach { (key, child) ->
                 if (isRawIdentityKey(key) || isRawIdentityListField(key)) {
-                    put(identityAliasKey(key), projectRelationValue(child, aliases))
+                    put(identityAliasKey(key), projectRelationValue(child, relations))
                 } else if (key !in forbiddenPresentationKeys && key !in routingForbiddenFeatureKeys) {
-                    put(key, projectRelationValue(child, aliases))
+                    put(key, projectRelationValue(child, relations))
                 }
             }
         }
 
         is JsonArray -> buildJsonArray {
-            value.forEach { child -> add(projectRelationValue(child, aliases)) }
+            value.forEach { child -> add(projectRelationValue(child, relations)) }
         }
 
         is JsonPrimitive -> if (value.isString) {
-            JsonPrimitive(aliases.alias(value.content))
+            JsonPrimitive(relations.alias(value.content))
         } else {
             value
         }
@@ -779,12 +1043,12 @@ object C1ModelFacingProjectionV1 {
 
     private fun projectIdentityValue(
         value: JsonElement,
-        aliases: LocalEntityAliasState,
+        relations: C1SampleRelationTable,
     ): JsonElement = when (value) {
         is JsonObject -> buildJsonObject {
             value.forEach { (key, child) ->
-                projectFeatureElement(child, FeatureProjectionMode.MODEL, aliases)?.let {
-                    put(aliases.alias(key), it)
+                projectFeatureElement(child, FeatureProjectionMode.MODEL, relations)?.let {
+                    put(relations.alias(key), it)
                 }
             }
         }
@@ -793,19 +1057,19 @@ object C1ModelFacingProjectionV1 {
             value.forEach { child ->
                 when (child) {
                     is JsonPrimitive -> if (child.isString) {
-                        add(JsonPrimitive(aliases.alias(child.content)))
+                        add(JsonPrimitive(relations.alias(child.content)))
                     } else {
                         add(child)
                     }
                     else -> add(
-                        projectFeatureElement(child, FeatureProjectionMode.MODEL, aliases)
+                        projectFeatureElement(child, FeatureProjectionMode.MODEL, relations)
                             ?: JsonNull,
                     )
                 }
             }
         }
 
-        is JsonPrimitive -> if (value.isString) JsonPrimitive(aliases.alias(value.content)) else value
+        is JsonPrimitive -> if (value.isString) JsonPrimitive(relations.alias(value.content)) else value
         is JsonNull -> value
     }
 
@@ -820,6 +1084,14 @@ object C1ModelFacingProjectionV1 {
 
     private fun isRawIdentityListField(key: String): Boolean =
         key in identityListFields || key.endsWith("Ids")
+
+    private fun requireEntityIdString(value: JsonElement, label: String): String {
+        val primitive = value as? JsonPrimitive
+        require(primitive != null && primitive.isString) {
+            "$label must be a string EntityId"
+        }
+        return primitive.content
+    }
 
     private fun encodeDomain(domain: CompleteLegalDomainV1): JsonObject =
         A3SemanticJson.strictJson.encodeToJsonElement(

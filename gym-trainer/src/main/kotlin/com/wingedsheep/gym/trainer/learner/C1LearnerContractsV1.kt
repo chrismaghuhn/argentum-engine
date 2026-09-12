@@ -87,12 +87,34 @@ data class C1DerivedTargetChannel(
 }
 
 @Serializable
+data class C1EntityAliasBindingV1(
+    val alias: String,
+    val sourceEntityId: String,
+)
+
+@Serializable
 data class C1DerivedBindingChannel(
     val completeLegalDomain: JsonObject,
     val selectedExactSourceBinding: JsonObject,
     val sourceBindingOrdinals: List<Int> = emptyList(),
     val semanticTieDiscriminators: Map<String, JsonElement> = emptyMap(),
-)
+    val entityAliasBindings: List<C1EntityAliasBindingV1> = emptyList(),
+) {
+    init {
+        val expectedAliases = entityAliasBindings.indices.map { "entity-$it" }
+        require(entityAliasBindings.map { it.alias } == expectedAliases) {
+            "Entity aliases must be contiguous and producer-ordered"
+        }
+        require(entityAliasBindings.map { it.sourceEntityId }.distinct().size ==
+            entityAliasBindings.size
+        ) {
+            "Entity alias bindings must be injective"
+        }
+        require(entityAliasBindings.all { it.sourceEntityId.isNotBlank() }) {
+            "Entity alias bindings must contain non-blank source IDs"
+        }
+    }
+}
 
 @Serializable
 data class C1DerivedSampleV1(

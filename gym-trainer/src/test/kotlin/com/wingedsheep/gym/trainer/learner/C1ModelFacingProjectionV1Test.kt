@@ -1,11 +1,23 @@
 package com.wingedsheep.gym.trainer.learner
 
+import com.wingedsheep.engine.core.ActivationCostComponentRefV1
+import com.wingedsheep.engine.core.AtomicManaCostUnitV1
+import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
+import com.wingedsheep.engine.core.InitialPoolBucketV1
+import com.wingedsheep.engine.core.PaymentCostKindV1
+import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.gym.EpisodeClosureV1
 import com.wingedsheep.gym.EpisodeInterruptionReason
 import com.wingedsheep.gym.contract.A3SemanticJson
 import com.wingedsheep.gym.contract.CandidateDomainDigestV1
 import com.wingedsheep.gym.contract.ChosenSemanticActionV1
 import com.wingedsheep.gym.contract.CardSelectionDomain
+import com.wingedsheep.gym.contract.CombatAttackerDomain
+import com.wingedsheep.gym.contract.CombatBlockerDomain
+import com.wingedsheep.gym.contract.CombatDamageDirection
+import com.wingedsheep.gym.contract.CombatDefenderDomain
+import com.wingedsheep.gym.contract.CombatTargetKind
 import com.wingedsheep.gym.contract.ConditionalSelectionMinimumDomain
 import com.wingedsheep.gym.contract.CompleteLegalDomainKind
 import com.wingedsheep.gym.contract.CompleteLegalDomainV1
@@ -17,6 +29,9 @@ import com.wingedsheep.gym.contract.ManaPoolView
 import com.wingedsheep.gym.contract.ModeSelectionDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
 import com.wingedsheep.gym.contract.OrderingDomain
+import com.wingedsheep.gym.contract.PaymentActivationSupportKindV1
+import com.wingedsheep.gym.contract.PaymentDeterministicNonManaCostKindV1
+import com.wingedsheep.gym.contract.PaymentSourceActivationDomainV2
 import com.wingedsheep.gym.contract.PendingDecisionKind
 import com.wingedsheep.gym.contract.PlayerObservationPendingDecisionV1
 import com.wingedsheep.gym.contract.PlayerObservationV1
@@ -159,7 +174,7 @@ class C1ModelFacingProjectionV1Test : FunSpec({
                 sourceEntityId = "entity-a",
                 actionSemantics = buildJsonObject {
                     put("type", "PlayLand")
-                    put("playerId", "player-a")
+                    put("playerId", "self")
                     put("cardId", "entity-a")
                     put("targets", buildJsonArray {
                         add(buildJsonObject { put("targetId", "target-a") })
@@ -171,7 +186,7 @@ class C1ModelFacingProjectionV1Test : FunSpec({
                 sourceEntityId = "entity-b",
                 actionSemantics = buildJsonObject {
                     put("type", "PlayLand")
-                    put("playerId", "player-b")
+                    put("playerId", "self")
                     put("cardId", "entity-b")
                     put("targets", buildJsonArray {
                         add(buildJsonObject { put("targetId", "target-b") })
@@ -200,7 +215,106 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         A3SemanticJson.canonicalJson(firstSample.input) shouldNotContain "cardId"
         A3SemanticJson.canonicalJson(firstSample.input) shouldNotContain "player-a"
         A3SemanticJson.canonicalJson(firstSample.input) shouldNotContain "target-a"
+        firstSample.binding.entityAliasBindings.any { it.sourceEntityId == "entity-a" } shouldBe true
+        secondSample.binding.entityAliasBindings.any { it.sourceEntityId == "entity-b" } shouldBe true
         firstSample.binding.semanticTieDiscriminators shouldBe emptyMap()
+    }
+
+    test("uses one injective inverse alias table across observation and domain relations") {
+        val self = EntityId("self")
+        val opponent = EntityId("opponent")
+        val source = fixture(
+            chosenCandidateIndex = 0,
+            candidateList = listOf(
+                candidate(
+                    kind = "PlayLand",
+                    sourceEntityId = "visible-card",
+                    targetEntityIds = listOf("visible-card"),
+                ),
+            ),
+            observationOverride = richObservation(self, opponent),
+        )
+        val sample = C1ModelFacingProjectionV1.project(
+            source.trajectory,
+            source.record,
+            C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+            C1DatasetPartition.TRAIN,
+        )
+        val alias = sample.binding.entityAliasBindings
+            .single { it.sourceEntityId == "visible-card" }
+            .alias
+        sample.binding.entityAliasBindings.map { it.alias }.distinct().size shouldBe
+            sample.binding.entityAliasBindings.size
+        val input = A3SemanticJson.canonicalJson(sample.input)
+        input shouldContain "\"entityAlias\":\"$alias\""
+        input shouldContain "\"targetEntityAliases\":[\"$alias\"]"
+        input shouldNotContain "visible-card"
+    }
+
+    test("rejects unknown and non-inert action-semantic fields") {
+        val invalidSemantics = listOf(
+            buildJsonObject {
+                put("type", "PlayLand")
+                put("preResolvedWebSlingReturnedManaValue", 7)
+            },
+            buildJsonObject {
+                put("type", "PlayLand")
+                put("futureInternalMarker", true)
+            },
+        )
+
+        invalidSemantics.forEach { semantics ->
+            val source = fixture(
+                chosenCandidateIndex = 0,
+                candidateList = listOf(
+                    candidate(
+                        kind = "PlayLand",
+                        sourceEntityId = "entity-source",
+                        actionSemantics = semantics,
+                    ),
+                ),
+            )
+            shouldThrow<IllegalArgumentException> {
+                C1ModelFacingProjectionV1.project(
+                    source.trajectory,
+                    source.record,
+                    C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+                    C1DatasetPartition.TRAIN,
+                )
+            }
+        }
+    }
+
+    test("rejects terminal observations and unknown player identities") {
+        val self = EntityId("self")
+        val opponent = EntityId("opponent")
+        val terminal = fixture(
+            chosenCandidateIndex = 0,
+            observationOverride = richObservation(self, opponent).copy(terminated = true),
+        )
+        shouldThrow<IllegalArgumentException> {
+            C1ModelFacingProjectionV1.project(
+                terminal.trajectory,
+                terminal.record,
+                C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+                C1DatasetPartition.TRAIN,
+            )
+        }
+
+        val unknownPlayer = fixture(
+            chosenCandidateIndex = 0,
+            observationOverride = richObservation(self, opponent).copy(
+                activePlayerId = EntityId("unknown-player"),
+            ),
+        )
+        shouldThrow<IllegalArgumentException> {
+            C1ModelFacingProjectionV1.project(
+                unknownPlayer.trajectory,
+                unknownPlayer.record,
+                C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+                C1DatasetPartition.TRAIN,
+            )
+        }
     }
 
     test("projects observation feature groups without raw entity IDs") {
@@ -489,6 +603,129 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         representations[4]["optionsAliases"] shouldNotBe null
         representations[5]["cardsAliases"].toString() shouldContain "entity-0"
     }
+
+    test("preserves nonempty current combat and mana domain relations") {
+        val attacker = EntityId("combat-attacker")
+        val blocker = EntityId("combat-blocker")
+        val defender = EntityId("combat-defender")
+        val chooser = EntityId("combat-chooser")
+        val combat = C1ModelFacingProjectionV1.projectStructuredDomainRepresentation(
+            CombatResolutionDomain(
+                firstStrike = true,
+                attackers = listOf(
+                    CombatAttackerDomain(
+                        id = attacker,
+                        name = "Attacker",
+                        power = 3,
+                        toughness = 3,
+                        hasTrample = true,
+                        hasDeathtouch = false,
+                        hasFirstStrike = false,
+                        hasDoubleStrike = false,
+                        dealsDamageThisStep = true,
+                        bandId = null,
+                        attackedDefenderId = defender,
+                        blockedByIds = listOf(blocker),
+                        markedDamage = 0,
+                    ),
+                ),
+                blockers = listOf(
+                    CombatBlockerDomain(
+                        id = blocker,
+                        name = "Blocker",
+                        power = 2,
+                        toughness = 2,
+                        hasDeathtouch = false,
+                        hasFirstStrike = false,
+                        hasDoubleStrike = false,
+                        dealsDamageThisStep = true,
+                        blockedAttackerIds = listOf(attacker),
+                        markedDamage = 0,
+                    ),
+                ),
+                defenders = listOf(
+                    CombatDefenderDomain(
+                        id = defender,
+                        kind = CombatTargetKind.PLAYER,
+                        name = "Defender",
+                        lifeOrLoyaltyOrDefense = 20,
+                    ),
+                ),
+                edges = listOf(
+                    com.wingedsheep.gym.contract.CombatDamageEdgeDomain(
+                        id = "combat-edge",
+                        sourceId = attacker,
+                        targetId = blocker,
+                        direction = CombatDamageDirection.ATTACKER_TO_BLOCKER,
+                        amount = 3,
+                        maximum = 3,
+                        lethal = 2,
+                        isTrampleDrain = false,
+                        editableBy = chooser,
+                    ),
+                ),
+                coChooserId = chooser,
+            ),
+        )
+        val mana = C1ModelFacingProjectionV1.projectStructuredDomainRepresentation(
+            ManaSourcesDomain(
+                paymentDomain = PaymentDomainV5(
+                    requiredCost = "{R}",
+                    outerAtomicCostUnits = listOf(
+                        AtomicManaCostUnitV1(
+                            symbolIndex = 0,
+                            unitIndexWithinSymbol = 0,
+                            kind = PaymentCostKindV1.COLORED,
+                            allowedColors = setOf(PaymentManaColor.RED),
+                        ),
+                    ),
+                    initialPoolBuckets = listOf(
+                        InitialPoolBucketV1(
+                            key = InitialPoolBucketKeyV1.UnrestrictedPoolBucket(PaymentManaColor.RED),
+                            availableAmount = 1,
+                        ),
+                    ),
+                    sourceActivationOptions = listOf(
+                        PaymentSourceActivationDomainV2(
+                            sourceId = EntityId("raw-mana-source-id"),
+                            sourceName = "Mana Source",
+                            manaAbilityKey = "mana-source-key",
+                            productionChoices = listOf(ProductionChoice(PaymentManaColor.GREEN)),
+                            atomicActivationManaCostUnits = emptyList(),
+                            activationSupportKind = PaymentActivationSupportKindV1.FixedManaAndTapSelf,
+                            deterministicNonManaCosts = listOf(
+                                PaymentDeterministicNonManaCostKindV1.TapSelf,
+                            ),
+                            activationCostOrderOptions = listOf(
+                                listOf(ActivationCostComponentRefV1.DeterministicNonManaComponent(0)),
+                            ),
+                        ),
+                    ),
+                ),
+                canDecline = false,
+            ),
+        )
+
+        val combatText = A3SemanticJson.canonicalJson(combat)
+        val manaText = A3SemanticJson.canonicalJson(mana)
+        listOf(
+            attacker.value,
+            blocker.value,
+            defender.value,
+            chooser.value,
+            "raw-mana-source-id",
+        ).forEach { raw ->
+            combatText shouldNotContain raw
+            manaText shouldNotContain raw
+        }
+        combat["attackers"] shouldNotBe null
+        combat["blockers"] shouldNotBe null
+        combat["defenders"] shouldNotBe null
+        combat["edges"] shouldNotBe null
+        mana["paymentDomain"] shouldNotBe null
+        mana["paymentDomain"].toString() shouldContain "sourceActivationOptions"
+        mana["paymentDomain"].toString() shouldContain "initialPoolBuckets"
+    }
 })
 
 private data class ProjectionFixture(
@@ -512,7 +749,36 @@ private fun fixture(
         step = Step.PRECOMBAT_MAIN,
         activePlayerId = self,
         priorityPlayerId = self,
-        players = emptyList(),
+        players = listOf(
+            PlayerView(
+                id = self,
+                name = "SELF",
+                lifeTotal = 20,
+                handSize = 0,
+                librarySize = 0,
+                graveyardSize = 0,
+                exileSize = 0,
+                manaPool = ManaPoolView(),
+                isPerspective = true,
+                isActive = true,
+                hasPriority = true,
+                hasLost = false,
+            ),
+            PlayerView(
+                id = opponent,
+                name = "OPPONENT",
+                lifeTotal = 20,
+                handSize = 0,
+                librarySize = 0,
+                graveyardSize = 0,
+                exileSize = 0,
+                manaPool = ManaPoolView(),
+                isPerspective = false,
+                isActive = false,
+                hasPriority = false,
+                hasLost = false,
+            ),
+        ),
         zones = emptyList(),
         stack = emptyList(),
         pendingDecision = null,

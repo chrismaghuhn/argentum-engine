@@ -27,6 +27,8 @@ internal object C1SourceTieDiscriminatorV1 {
         "sourceBindingOrdinal",
         "allocationOrder",
         "batchSlot",
+        "giftRecipient",
+        "casualtyCreature",
     )
 
     private fun isForbiddenKey(key: String): Boolean =
