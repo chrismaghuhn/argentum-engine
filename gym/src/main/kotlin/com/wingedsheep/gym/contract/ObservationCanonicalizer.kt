@@ -91,9 +91,13 @@ object ObservationCanonicalizer {
      * Produce the deterministic internal semantic projection used for equality and digesting.
      * Transport handles and presentation-only text are intentionally absent.
      */
-    fun semanticJson(observation: TrainingObservation): String {
+    fun semanticJson(observation: TrainingObservation): String =
+        canonicalize(sourceSemanticRoot(observation)).toString()
+
+    /** Build the source semantic root shared by the legacy String and direct digest paths. */
+    internal fun sourceSemanticRoot(observation: TrainingObservation): JsonObject {
         val encoded = json.encodeToJsonElement(TrainingObservation.serializer(), observation).jsonObject
-        return semanticJson(
+        return semanticRoot(
             encoded = encoded,
             legalActionFingerprints = observation.legalActions.map(::semanticActionFingerprint),
         )
@@ -119,7 +123,7 @@ object ObservationCanonicalizer {
         projection.remove("projectionSchemaIdentity")
         projection.remove("observationDigest")
 
-        return semanticJson(
+        return canonicalize(semanticRoot(
             encoded = JsonObject(projection),
             legalActionFingerprints = when (domain.kind) {
                 CompleteLegalDomainKind.ACTION_CANDIDATES,
@@ -129,7 +133,7 @@ object ObservationCanonicalizer {
                 CompleteLegalDomainKind.STRUCTURED_DECISION -> emptyList()
             },
             structuredDomain = domain.structuredDomain,
-        )
+        )).toString()
     }
 
     private fun requireDomainMatchesObservation(
@@ -164,11 +168,11 @@ object ObservationCanonicalizer {
         }
     }
 
-    private fun semanticJson(
+    private fun semanticRoot(
         encoded: JsonObject,
         legalActionFingerprints: List<JsonObject>,
         structuredDomain: StructuredDecisionDomain? = null,
-    ): String {
+    ): JsonObject {
         val semantic = encoded.toMutableMap()
         semantic.remove("stateDigest")
 
@@ -197,7 +201,7 @@ object ObservationCanonicalizer {
             sortSemanticActionFingerprints(legalActionFingerprints)
         )
 
-        return canonicalize(JsonObject(semantic)).toString()
+        return JsonObject(semantic)
     }
 
     /** Stable decorate-sort for legal-action semantic fingerprints. */
@@ -544,7 +548,7 @@ object ObservationCanonicalizer {
         "useTargetingUI"
     )
 
-    private val unorderedArrayKeys = setOf(
+    internal val unorderedArrayKeys = setOf(
         "types",
         "subtypes",
         "colors",

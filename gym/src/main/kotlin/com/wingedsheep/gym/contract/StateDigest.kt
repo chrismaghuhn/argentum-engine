@@ -13,8 +13,7 @@ import java.security.MessageDigest
 object StateDigest {
 
     fun compute(obs: TrainingObservation): String {
-        val semantic = ObservationCanonicalizer.semanticJson(obs)
-        return digest(semantic)
+        return SourceSemanticDigestWriter.digest(ObservationCanonicalizer.sourceSemanticRoot(obs))
     }
 
     /**
