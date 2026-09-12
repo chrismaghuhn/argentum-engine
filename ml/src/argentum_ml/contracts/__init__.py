@@ -1,0 +1,19 @@
+"""Strict, model-independent learner contract helpers."""
+
+from .canonical_json import canonical_bytes, canonical_json, sha256_hex
+from .identities import (
+    ARTIFACT_IDENTITY_SCHEMA,
+    DERIVED_VIEW_SCHEMA_IDENTITY,
+    MODEL_FACING_CONTRACT_IDENTITY,
+    SPLIT_CONTRACT_IDENTITY,
+)
+
+__all__ = [
+    "ARTIFACT_IDENTITY_SCHEMA",
+    "DERIVED_VIEW_SCHEMA_IDENTITY",
+    "MODEL_FACING_CONTRACT_IDENTITY",
+    "SPLIT_CONTRACT_IDENTITY",
+    "canonical_bytes",
+    "canonical_json",
+    "sha256_hex",
+]

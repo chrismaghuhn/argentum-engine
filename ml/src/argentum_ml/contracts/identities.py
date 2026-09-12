@@ -1,0 +1,13 @@
+"""Frozen C1 contract identities."""
+
+DERIVED_VIEW_SCHEMA_IDENTITY = "argentum-ml-derived-learner-view@v1"
+ARTIFACT_IDENTITY_SCHEMA = "argentum-ml-derived-artifact-id@v1"
+MODEL_FACING_CONTRACT_IDENTITY = "argentum-ml-model-facing-decision-sample@v1"
+SPLIT_CONTRACT_IDENTITY = "argentum-ml-dataset-split@v1"
+CHECKPOINT_MANIFEST_IDENTITY = "argentum-ml-checkpoint-manifest@v1"
+INFERENCE_CONTRACT_IDENTITY = "argentum-ml-inference@v1"
+NUMERIC_PROFILE_CONTRACT_IDENTITY = "argentum-ml-numeric-execution-profile@v1"
+SELECTION_V1_IDENTITY = "argentum-ml-policy-selection@v1"
+SELECTION_V2_IDENTITY = "argentum-ml-policy-selection@v2"
+POLICY_TIE_RNG_IDENTITY = "argentum-ml-policy-tie-rng@v1"
+POLICY_TIE_STREAM_IDENTITY = "argentum-ml-policy-tie-stream@v1"
