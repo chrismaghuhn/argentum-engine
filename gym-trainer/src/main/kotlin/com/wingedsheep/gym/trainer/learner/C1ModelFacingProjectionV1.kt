@@ -362,7 +362,9 @@ object C1ModelFacingProjectionV1 {
     ): JsonObject = buildJsonObject {
         put("entityAlias", relations.alias(card.entityId))
         card.cardDefinitionId?.let { put("cardDefinitionId", it) }
-        put("name", card.name)
+        if (!(card.faceDown && card.cardDefinitionId == null)) {
+            put("name", card.name)
+        }
         put("zone", card.zone.name)
         put("ownerRole", card.ownerId?.let(relations::roleOf) ?: "UNKNOWN")
         put("controllerRole", card.controllerId?.let(relations::roleOf) ?: "UNKNOWN")
@@ -768,6 +770,7 @@ object C1ModelFacingProjectionV1 {
         "runtimeAbilityId",
         "envId",
         "pendingDecisionId",
+        "manaAbilityKey",
         "sourceEntityId",
         "rowIndex",
         "sourceBindingOrdinal",
@@ -870,6 +873,7 @@ object C1ModelFacingProjectionV1 {
         "iconKey",
         "selectedLabel",
         "remainderLabel",
+        "useTargetingUI",
         "pileLabels",
         "objectLabels",
     )
@@ -886,6 +890,9 @@ object C1ModelFacingProjectionV1 {
         "castFaceDown",
         "declaredCostSlot",
         "wasWaterbendPaid",
+        "chosenModes",
+        "modeTargetsOrdered",
+        "graveyardLifeCost",
         "useAlternativeCost",
         "useWithoutPayingManaCost",
         "alternativeCostType",
@@ -898,10 +905,7 @@ object C1ModelFacingProjectionV1 {
         "giftRecipient",
         "splicedCardIds",
         "damageDistribution",
-        "chosenModes",
-        "modeTargetsOrdered",
         "modeDamageDistribution",
-        "graveyardLifeCost",
         "conspiredCreatures",
         "casualtyCreature",
         "faceIndex",
@@ -985,17 +989,19 @@ object C1ModelFacingProjectionV1 {
                     }
                 }
 
-                key == "giftRecipient" -> {
-                    if (mode == FeatureProjectionMode.MODEL && child !is JsonNull) {
-                        val recipient = EntityId(
-                            requireEntityIdString(child, "action giftRecipient"),
-                        )
-                        put("giftRecipientRole", requireNotNull(relations).roleOf(recipient))
-                    }
-                }
-
                 key == "abilityKey" -> {
                     put("abilityKey", projectAbilityKey(child, mode))
+                }
+
+                key == "chosenModes" -> {
+                    put("modeSlots", projectModeSlots(child))
+                }
+
+                key == "modeTargetsOrdered" -> {
+                    put(
+                        "modeTargetSlots",
+                        projectModeTargetSlots(child, mode, relations),
+                    )
                 }
 
                 mode == FeatureProjectionMode.TIE &&
@@ -1044,6 +1050,57 @@ object C1ModelFacingProjectionV1 {
                 val ordinal = objectValue.getValue("ordinal") as JsonPrimitive
                 require(!ordinal.isString) { "ActivateAbility abilityKey ordinal must be numeric" }
                 put("ordinalRelation", "ability-${ordinal.content}")
+            }
+        }
+    }
+
+    private fun projectModeSlots(value: JsonElement): JsonArray {
+        val modes = value as? JsonArray
+            ?: throw IllegalArgumentException("CastSpell chosenModes must be an array")
+        return buildJsonArray {
+            modes.forEachIndexed { occurrence, modeIndex ->
+                val primitive = modeIndex as? JsonPrimitive
+                require(primitive != null && !primitive.isString && primitive.content.toIntOrNull() != null) {
+                    "CastSpell chosenModes contains a non-numeric mode index"
+                }
+                add(buildJsonObject {
+                    put("occurrence", occurrence)
+                    put("modeIndex", primitive)
+                })
+            }
+        }
+    }
+
+    private fun projectModeTargetSlots(
+        value: JsonElement,
+        mode: FeatureProjectionMode,
+        relations: C1SampleRelationTable?,
+    ): JsonArray {
+        val modeTargets = value as? JsonArray
+            ?: throw IllegalArgumentException("CastSpell modeTargetsOrdered must be an array")
+        return buildJsonArray {
+            modeTargets.forEachIndexed { occurrence, targetsValue ->
+                val targets = targetsValue as? JsonArray
+                    ?: throw IllegalArgumentException("CastSpell mode target slots must be arrays")
+                add(buildJsonObject {
+                    put("occurrence", occurrence)
+                    if (mode == FeatureProjectionMode.TIE) {
+                        put("targetCount", targets.size)
+                    } else {
+                        put("targets", buildJsonArray {
+                            targets.forEach { target ->
+                                add(
+                                    projectFeatureElement(
+                                        target,
+                                        FeatureProjectionMode.MODEL,
+                                        relations,
+                                        "targets",
+                                    ) ?: JsonNull,
+                                )
+                            }
+                        })
+                    }
+                })
             }
         }
     }

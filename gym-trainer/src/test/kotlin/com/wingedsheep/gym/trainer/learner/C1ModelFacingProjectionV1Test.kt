@@ -323,6 +323,82 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         foldedInput shouldNotContain "presentation"
     }
 
+    test("retains fixed CastSpell mode and target-slot semantics") {
+        val candidates = listOf(
+            candidate(
+                kind = "CastSpellMode",
+                sourceEntityId = "spell-source",
+                actionSemantics = buildJsonObject {
+                    put("type", "CastSpell")
+                    put("playerId", "self")
+                    put("cardId", "spell-source")
+                    put("chosenModes", buildJsonArray {
+                        add(JsonPrimitive(0))
+                        add(JsonPrimitive(1))
+                    })
+                    put("modeTargetsOrdered", buildJsonArray {
+                        add(buildJsonArray {
+                            add(buildJsonObject {
+                                put("type", "Permanent")
+                                put("entityId", "target-a")
+                            })
+                        })
+                        add(buildJsonArray {
+                            add(buildJsonObject {
+                                put("type", "Permanent")
+                                put("entityId", "target-b")
+                            })
+                        })
+                    })
+                    put("graveyardLifeCost", 2)
+                },
+            ),
+            candidate(
+                kind = "CastSpellMode",
+                sourceEntityId = "spell-source",
+                actionSemantics = buildJsonObject {
+                    put("type", "CastSpell")
+                    put("playerId", "self")
+                    put("cardId", "spell-source")
+                    put("chosenModes", buildJsonArray {
+                        add(JsonPrimitive(1))
+                        add(JsonPrimitive(0))
+                    })
+                    put("modeTargetsOrdered", buildJsonArray {
+                        add(buildJsonArray {
+                            add(buildJsonObject {
+                                put("type", "Permanent")
+                                put("entityId", "target-b")
+                            })
+                        })
+                        add(buildJsonArray {
+                            add(buildJsonObject {
+                                put("type", "Permanent")
+                                put("entityId", "target-a")
+                            })
+                        })
+                    })
+                    put("graveyardLifeCost", 2)
+                },
+            ),
+        )
+        val source = fixture(chosenCandidateIndex = 0, candidateList = candidates)
+        val sample = C1ModelFacingProjectionV1.project(
+            source.trajectory,
+            source.record,
+            C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+            C1DatasetPartition.TRAIN,
+        )
+        val input = A3SemanticJson.canonicalJson(sample.input)
+        input shouldContain "modeSlots"
+        input shouldContain "modeTargetSlots"
+        input shouldContain "graveyardLifeCost"
+        input shouldContain "\"modeIndex\":0"
+        input shouldContain "\"modeIndex\":1"
+        input shouldNotContain "target-a"
+        input shouldNotContain "target-b"
+    }
+
     test("rejects unknown and non-inert action-semantic fields") {
         val invalidSemantics = listOf(
             buildJsonObject {
@@ -415,6 +491,34 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         input shouldContain "counters"
         input shouldNotContain "visible-card"
         input shouldNotContain "stack-object"
+    }
+
+    test("omits generated face-down placeholder names") {
+        val self = EntityId("self")
+        val opponent = EntityId("opponent")
+        val observation = richObservation(self, opponent).copy(
+            zones = richObservation(self, opponent).zones.map { zone ->
+                zone.copy(
+                    cards = zone.cards.map { card ->
+                        card.copy(
+                            cardDefinitionId = null,
+                            name = "Face-down permanent",
+                            faceDown = true,
+                        )
+                    },
+                )
+            },
+        )
+        val source = fixture(chosenCandidateIndex = 0, observationOverride = observation)
+        val sample = C1ModelFacingProjectionV1.project(
+            source.trajectory,
+            source.record,
+            C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+            C1DatasetPartition.TRAIN,
+        )
+        val input = A3SemanticJson.canonicalJson(sample.input)
+        input shouldContain "\"faceDown\":true"
+        input shouldNotContain "Face-down permanent"
     }
 
     test("retains semantic candidate domain constraints in input") {
@@ -677,6 +781,7 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         representations[0]["requirements"].toString() shouldContain "candidatesAliases"
         representations[1]["optionsAliases"].toString() shouldContain "entity-0"
         representations[1]["conditionalMinimums"].toString() shouldContain "matchingOptionsAliases"
+        representations[1].toString() shouldNotContain "useTargetingUI"
         representations[2]["targetsAliases"] shouldNotBe null
         representations[3]["objectsAliases"].toString() shouldContain "entity-0"
         representations[3]["objectLabels"] shouldNotBe null
@@ -811,6 +916,7 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         mana["paymentDomain"] shouldNotBe null
         mana["paymentDomain"].toString() shouldContain "sourceActivationOptions"
         mana["paymentDomain"].toString() shouldContain "initialPoolBuckets"
+        mana.toString() shouldNotContain "mana-source-key"
     }
 })
 
