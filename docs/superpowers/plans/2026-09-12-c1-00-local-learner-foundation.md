@@ -32,12 +32,14 @@ Kotlin production files under `gym-trainer/src/main/kotlin/com/wingedsheep/gym/t
 - `C1LearnerContractsV1.kt` — derived DTOs, identities, partition counts, and channel separation.
 - `C1DatasetSplitV1.kt` — exact C0-02 split function.
 - `C1ModelFacingProjectionV1.kt` — C0-01 admission, role normalization, local relations, and fail-closed projection.
+- `C1SourceTieDiscriminatorV1.kt` — source-owned, permutation-invariant tie-key production/validation; no caller-supplied tie keys.
 - `C1LearnerArtifactMaterializer.kt` — A7 traversal, exact bytes, digest accounting, and publication.
 
 Kotlin tests under `gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/`:
 
 - `C1DatasetSplitV1Test.kt`
 - `C1ModelFacingProjectionV1Test.kt`
+- `C1SourceTieDiscriminatorV1Test.kt`
 - `C1DerivedManifestV1Test.kt`
 - `C1LearnerArtifactMaterializerTest.kt`
 - `C1LearnerFixtureSupport.kt`
@@ -67,16 +69,20 @@ Modify only `.github/workflows/ci.yml`, `justfile`, and `.gitignore` for integra
 
 **Files:** None.
 
-- [ ] **Step 1: Verify the worktree.** Run:
+- [ ] **Step 1: Verify the implementation worktree and immutable base.** Run:
 
 ```powershell
 git rev-parse HEAD
+git rev-parse origin/main
+git merge-base --is-ancestor ce9f779bd3bd8375b6b83b9c5668b1b94ced924a HEAD
+if ($LASTEXITCODE -ne 0) { throw "BASE is not an ancestor of HEAD" }
 git branch --show-current
 git status --short --branch
 git diff --check
+git diff --name-only ce9f779bd3bd8375b6b83b9c5668b1b94ced924a..HEAD
 ```
 
-Expected: `HEAD=ce9f779bd3bd8375b6b83b9c5668b1b94ced924a`, branch `chris/c1-00-local-learner-foundation-20260912`, and a clean worktree.
+Expected: `origin/main=ce9f779bd3bd8375b6b83b9c5668b1b94ced924a`, merge-base check PASS, branch `chris/c1-00-local-learner-foundation-20260912`, a clean worktree, and a pre-implementation BASE..HEAD diff containing only the approved spec/plan documentation. Do not require HEAD to equal BASE; the spec and plan commits intentionally precede implementation.
 
 - [ ] **Step 2: Verify the protected original checkout.** Run `git -C C:\argentum-engine status --short --branch`. Only the existing `StackResolver.kt` modification may be present. Never stage, stash, reset, clean, edit, or reformat it.
 
@@ -113,12 +119,10 @@ Also test lowercase 64-hex validation and prove that trajectory ID, collection j
 ```kotlin
 const val C1_DERIVED_VIEW_SCHEMA_IDENTITY = "argentum-ml-derived-learner-view@v1"
 const val C1_DERIVED_ARTIFACT_IDENTITY_SCHEMA = "argentum-ml-derived-artifact-id@v1"
-const val C1_DERIVED_MANIFEST_SCHEMA_IDENTITY = "argentum-ml-derived-learner-manifest@v1"
-const val C1_DERIVED_SAMPLE_SCHEMA_IDENTITY = "argentum-ml-model-facing-decision-sample@v1"
 const val C1_SPLIT_CONTRACT_IDENTITY = "argentum-ml-dataset-split@v1"
 ```
 
-Create `enum class C1DatasetPartition { TRAIN, VALIDATION, TEST }`, `C1PartitionCounts`, `C1MaterializerImplementationIdentity`, `C1DerivedSourceReference`, `C1DerivedTargetChannel`, `C1DerivedBindingChannel`, and `C1DerivedSampleV1`. `C1DerivedTargetChannel` must enforce exactly one of `chosenSemanticAction` and `chosenSemanticResponse`. `C1DerivedManifestV1` must contain source identity, derived identity, materializer identity/config digest, fixed `samples.ndjson` reference, sample digest/bytes/count, episode count, sample count, both partition-count objects, and manifest content digest.
+Create `enum class C1DatasetPartition { TRAIN, VALIDATION, TEST }`, `C1PartitionCounts`, `C1MaterializerImplementationIdentity`, `C1DerivedSourceReference`, `C1DerivedTargetChannel`, `C1DerivedBindingChannel`, and `C1DerivedSampleV1`. Physical samples have only a format version; they do not add a second model-facing wire identity. The manifest carries the single physical `C1_DERIVED_VIEW_SCHEMA_IDENTITY` plus its format version. `modelFacingContractIdentity` remains a binding field, not a new physical sample schema. `C1DerivedBindingChannel` carries the complete domain, exact selected source binding, source-binding ordinals, and the optional map of source-produced semantic tie discriminators. `C1DerivedTargetChannel` must enforce exactly one of `chosenSemanticAction` and `chosenSemanticResponse`. `C1DerivedManifestV1` must contain source identity, derived identity, materializer identity/config digest, fixed `samples.ndjson` reference, sample digest/bytes/count, episode count, sample count, both partition-count objects, and manifest content digest.
 
 - [ ] **Step 4: Implement `C1DatasetSplitV1.bucket` and `.assign`.** Use exactly:
 
@@ -151,7 +155,9 @@ git commit -m "c1: add derived learner contracts and split runtime"
 **Files:**
 
 - Create: gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/learner/C1ModelFacingProjectionV1.kt
+- Create: gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/learner/C1SourceTieDiscriminatorV1.kt
 - Test: gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1ModelFacingProjectionV1Test.kt
+- Test: gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1SourceTieDiscriminatorV1Test.kt
 
 - [ ] **Step 1: Define the projection API in the tests.**
 
@@ -177,34 +183,38 @@ Construct fixtures through the existing typed PlayerObservationV1, CompleteLegal
 
 - [ ] **Step 2: Add RED tests for target isolation and privacy.**
 
-Test that changing only the chosen semantic target leaves the canonical input bytes unchanged while changing the target bytes. Recursively reject gameState, rawAction, actionId, decisionId, abilityId, envId, pendingDecisionInternal, engineSeed, policySeed, source IDs, outcome, and provenance IDs from input. Assert raw EntityId strings occur only in binding/provenance.
+Test that changing only the chosen semantic target leaves the canonical input bytes unchanged while changing the target bytes. Recursively reject gameState, rawAction, actionId, decisionId, abilityId, envId, pendingDecisionInternal, engineSeed, policySeed, source IDs, outcome, and provenance IDs from input. Assert raw EntityId strings are absent from input and candidate feature views; allow them in target/sourceReference/binding/provenance where the source contract requires them.
 
 - [ ] **Step 3: Add RED tests for complete and structured domains.**
 
-Cover one flat action domain, one folded domain with an unaffordable retained candidate, and the six currently reachable structured families: targets, card selection, ordering, reorder-library, combat resolution, and mana sources. Assert every source member remains in binding, presence is separate from executable support, typed versions remain, ordered arrays remain ordered, duplicate requirement instances remain distinct, and the chosen value is in the original domain. Add two distinct source candidates with identical admitted feature JSON and distinct binding references.
+Cover one flat action domain, one folded domain with an unaffordable retained candidate, and all twelve existing StructuredDecisionDomain variants: targets, card selection, mode selection, distribution, ordering, split piles, search library, reorder library, combat resolution, mana sources, replacement, and budget modal. Use full membership/target assertions for the six currently Environment-V1-reachable families and one focused typed-representation test for each of the six inventoried-but-not-currently-reachable families. Assert every source member remains in binding, presence is separate from executable support, typed versions remain, ordered arrays remain ordered, duplicate requirement instances remain distinct, and the chosen value is in the original domain. Add two distinct source candidates with identical admitted feature JSON and distinct binding references.
 
 - [ ] **Step 4: Run just test-class C1ModelFacingProjectionV1Test and confirm RED.**
 
 Expected: compilation failure because C1ModelFacingProjectionV1 and its projection helpers do not exist.
 
-- [ ] **Step 5: Implement explicit observation admission.**
+- [ ] **Step 5: Prove trajectory/record ownership and implement explicit observation admission.**
 
-Build input from an allowlist, never by serializing the entire PlayerObservationV1 and deleting guessed keys. Admit only the C0-01 categories: decision context; turn/phase/step; SELF/OPPONENT roles; public life/zone/mana/status; visible supplied cards and projected characteristics; stack sequence; and typed pending context. Keep raw IDs in sample-local inverse relation tables only. Preserve ABSENT, MASKED, and UNKNOWN_VISIBLE_IDENTITY. Never sort by raw ID, hash an ID into a feature, or use an ID as a tie preference.
+Before projection, prove that the supplied DecisionRecordV1 belongs to the supplied TrajectoryV1 by matching its decisionIndex/replay coordinates, semanticDecisionId, perspective, and canonical record element against the trajectory's record at that index. Reject a record from another trajectory even if its DTO shape is valid. Then build input from an allowlist, never by serializing the entire PlayerObservationV1 and deleting guessed keys. Admit only the C0-01 categories: decision context; turn/phase/step; SELF/OPPONENT roles; public life/zone/mana/status; visible supplied cards and projected characteristics; stack sequence; and typed pending context. Keep raw IDs in sample-local inverse relation tables only. Preserve ABSENT, MASKED, and UNKNOWN_VISIBLE_IDENTITY. Never sort by raw ID, hash an ID into a feature, or use an ID as a tie preference.
 
 - [ ] **Step 6: Implement exhaustive candidate/domain admission.**
 
 For flat/folded candidates allowlist kind/action type, support mask, supplied cost/X/target/sacrifice/repeat bounds, colors, required payload fields, decision-option presence, public relations, and typed domain certificates. Use an exhaustive Kotlin when over TargetsDomain, CardSelectionDomain, ModeSelectionDomain, DistributionDomain, OrderingDomain, SplitPilesDomain, SearchLibraryDomain, ReorderLibraryDomain, CombatResolutionDomain, ManaSourcesDomain, ReplacementDomain, and BudgetModalDomain. Retain the full source domain in binding, build separate feature/structural views, and fail closed on unsupported version/type tags. Never use toString(), silently flatten, auto-complete, or encode presentation text.
 
-- [ ] **Step 7: Implement target/binding/provenance separation.**
+- [ ] **Step 7: Add the source-authoritative tie-discriminator producer and validator.**
+
+Implement C1SourceTieDiscriminatorV1 as a Kotlin-only producer called by the projection/binding path. It derives a canonical discriminator only from the C0-admitted semantic candidate/domain view, never from raw EntityId, source-binding ordinal, row index, actionId, decisionId, allocation order, or map iteration. It validates canonical bytes and permutation invariance before placing the optional discriminator map into the binding channel. If two source-distinct candidates have identical admitted semantic keys, both receive no discriminator. The producer does not accept an arbitrary caller-supplied key; Selection V2 receives only discriminator values transported from this validated binding. Add tests for raw-ID rejection, row/ordinal rejection, candidate permutation, distinct semantic keys, and symmetric candidates falling through to PolicyTieRng.
+
+- [ ] **Step 8: Implement target/binding/provenance separation.**
 
 Encode the original chosen semantic action or response only in target; encode complete domain and exact source binding only in binding; encode episode/environment/policy/replay/dataset metadata only in provenance/sourceReference. Verify the target through existing ChosenSemanticActionV1.from(domain, candidate, choicePayload) or ChosenSemanticResponseV1.from(domain, response) before constructing the sample.
 
-- [ ] **Step 8: Run just test-class C1ModelFacingProjectionV1Test and confirm GREEN.**
+- [ ] **Step 9: Run just test-class C1ModelFacingProjectionV1Test and just test-class C1SourceTieDiscriminatorV1Test; confirm GREEN.**
 
-- [ ] **Step 9: Commit:**
+- [ ] **Step 10: Commit:**
 
 ~~~powershell
-git add gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/learner/C1ModelFacingProjectionV1.kt gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1ModelFacingProjectionV1Test.kt
+git add gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/learner/C1ModelFacingProjectionV1.kt gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/learner/C1SourceTieDiscriminatorV1.kt gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1ModelFacingProjectionV1Test.kt gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1SourceTieDiscriminatorV1Test.kt
 git commit -m "c1: add model-facing learner projection"
 ~~~
 
@@ -241,7 +251,7 @@ object C1LearnerArtifactMaterializer {
 
 - [ ] **Step 1: Write RED byte-framing tests.**
 
-Build a tiny finalized published dataset through TrajectoryV1Writer, run materialization twice into different temporary directories, and assert identical samples.ndjson and manifest.json bytes; no manifest BOM/trailing LF; every sample has exactly one LF; digest/byte/count fields match; and derivedArtifactId recomputes independently.
+Build a tiny finalized published dataset through the existing TrajectoryV1Admission plus TrajectoryV1Publisher path. Convert each valid fixture through TrajectoryV1Admission.admit(fixture.trajectory, fixture.binding, episodeOrdinal = 0).shouldBeInstanceOf<TrajectoryAdmissionResult.Admitted>().episode, pass that ReplayAdmittedEpisodeV1 to TrajectoryV1Publisher.appendFinalizedEpisode(admitted), and call finalizeDataset(). Run materialization twice into different temporary directories and assert identical samples.ndjson and manifest.json bytes; no manifest BOM/trailing LF; every sample has exactly one LF; digest/byte/count fields match; and derivedArtifactId recomputes independently. Do not introduce a new Writer API.
 
 - [ ] **Step 2: Run just test-class C1LearnerArtifactMaterializerTest and confirm RED.**
 
@@ -312,11 +322,11 @@ Expected: missing-module/attribute failures, not a packaging failure.
 
 - [ ] **Step 4: Implement canonical JSON and identity constants.**
 
-canonical_json must use json.dumps with ensure_ascii=False, allow_nan=False, separators=(",", ":"), and sort_keys=True; preserve list order; reject non-string keys and non-finite floats; and expose canonical_bytes/sha256_hex. Define exact IDs for the derived view, artifact identity, manifest, model-facing contract, split, checkpoint, inference, numeric profile, Selection V1/V2, and PolicyTieRng V1.
+canonical_json must use json.dumps with ensure_ascii=False, allow_nan=False, separators=(",", ":"), and sort_keys=True; preserve list order; reject non-string keys and non-finite floats; and expose canonical_bytes/sha256_hex. Define the physical derived-view identity argentum-ml-derived-learner-view@v1, the artifact-identity preimage schema, and the binding identities for model-facing, split, checkpoint, inference, numeric profile, Selection V1/V2, and PolicyTieRng V1. Do not define a separate persisted sample-schema or manifest-schema identity.
 
 - [ ] **Step 5: Implement strict DerivedArtifactReader.open(root: Path).**
 
-Require a real non-symlink directory; exact canonical no-BOM/no-LF manifest bytes; exact v1 keys/identities; fixed samples.ndjson reference; safe regular sample file; digest/byte/count matches; recomputed artifact ID; LF-terminated sample lines; strict sample schema; and final partition/total counts. Stream lines without filesystem enumeration and fail closed on every violation.
+Require a real non-symlink artifact directory; manifest.json itself must be a non-symlink regular file; manifest bytes must be exact canonical UTF-8 with no BOM/no LF; exact v1 keys/version and derived-view identity; fixed samples.ndjson reference; safe regular sample file; digest/byte/count matches; recomputed manifestContentDigest and derivedArtifactId; LF-terminated sample lines; and strict sample schema. Validate that any binding discriminator map carries the exact producer contract, canonical keys, no raw-ID/ordinal/order fields, and no duplicate key among candidates that could be tied. For every parsed sample, before yield or count mutation, recompute expectedPartition = assign_partition(sample.sourceReference.semanticEpisodeId) and reject any partition mismatch. Then validate target membership: an action target must canonically match exactly one original complete-domain candidate and be executable; a structured response must equal the selected source binding and every referenced member/slot must occur in the original typed domain. This is structural containment, not a second Rules engine. Only after these checks may sample/partition counters be incremented. Stream lines without filesystem enumeration and fail closed on every violation.
 
 - [ ] **Step 6: Implement Python split parity.**
 
@@ -399,7 +409,7 @@ cursor=1 rawWord=59279a6a1d1881bf accepted
 uniformBelow(9223372036854775809)=6424273174012658111 cursorAfter=2
 ~~~
 
-Also test signed -1 renders ffffffffffffffff, wrong policy identity rejects before seed use, engine/semantic episode/hidden-world inputs are not accepted by the stream-key API, cursor exhaustion at 2^64-1 fails before a draw, rejected words advance the cursor, fork copies by value, and restore reproduces exact state.
+Also test signed -1 renders ffffffffffffffff, Long.MIN_VALUE renders 8000000000000000, Long.MAX_VALUE renders 7fffffffffffffff, Python values below -2^63 or above 2^63-1 fail before bit interpretation, bool is rejected even though bool subclasses int, wrong policy identity rejects before seed use, engine/semantic episode/hidden-world inputs are not accepted by the stream-key API, cursor exhaustion at 2^64-1 fails before a draw, rejected words advance the cursor, fork copies by value, and restore reproduces exact state.
 
 - [ ] **Step 2: Run py -3.13 -m unittest tests.test_policy_tie_rng -v and confirm RED.**
 
@@ -434,13 +444,13 @@ git commit -m "c1: implement PolicyTieRng V1"
 
 - [ ] **Step 1: Write Selection V2 RED tests.**
 
-Test unique argmax with zero RNG draws; deterministic semantic discriminator with zero draws; missing/non-unique discriminator entering PolicyTieRng; source-binding ordinal absent from model features and deterministic preferences; ordinal used only as uniform sample address; NaN/+Inf/-Inf rejection; empty candidates; score-count mismatch; extra score binding; unselectable target; candidate permutation invariance; batch independence; and no structured auto-completion.
+Test unique argmax with zero RNG draws; deterministic semantic discriminator with zero draws; missing/non-unique discriminator entering PolicyTieRng; source-binding ordinal absent from model features and deterministic preferences; ordinal used only as uniform sample address; NaN/+Inf/-Inf rejection; empty candidates; score-count mismatch; extra score binding; unselectable target; candidate permutation invariance; batch independence; all candidate-presence entries receiving finite scores; executable-support masking preventing unaffordable selection; and no structured auto-completion.
 
 - [ ] **Step 2: Run py -3.13 -m unittest tests.test_selection_v2 -v and confirm RED.**
 
 - [ ] **Step 3: Implement the strict Selection V2 API.**
 
-Define immutable SelectionCandidate(source_binding_ordinal, score, selectable, deterministic_semantic_tie_discriminator) and SelectionResult(chosen_source_binding_ordinal, rng_state, rng_draw_count, cursor_before, cursor_after). Validate unique ordinals, finite scores, selectable support, exact score membership, and complete bindings before computing the maximum. Compare scores by exact equality with no epsilon. A unique maximum returns without a draw. A valid unique C0 discriminator chooses the lowest canonical discriminator without a draw. Otherwise order unresolved members by source-binding ordinal only as the unbiased address map, call uniform_below, and return the exact source binding. No method accepts engine RNG, Python random, a row index, or a first-candidate default.
+Define immutable ExactSemanticSourceBinding(exact_action, exact_response, source_binding_ordinal_audit), SelectionCandidate(source_binding_ordinal, exact_source_binding, score, candidate_presence, candidate_executable_support, deterministic_semantic_tie_discriminator), and SelectionResult(exact_source_binding, audit_source_binding_ordinal, rng_state, rng_draw_count, cursor_before, cursor_after). Validate unique ordinals, exact source bindings, finite scores for every candidate with candidate_presence=true, and complete binding membership before computing the maximum. A unique maximum among candidate_presence && candidate_executable_support returns without a draw. A valid unique C0 discriminator chooses the lowest canonical discriminator without a draw. Otherwise order unresolved eligible members by source-binding ordinal only as the unbiased address map, call uniform_below, and return the exact source binding plus the ordinal only as audit metadata. No method accepts engine RNG, Python random, a row index, a caller-provided tie key, or a first-candidate default.
 
 - [ ] **Step 4: Run GREEN and commit.**
 
@@ -514,13 +524,13 @@ git commit -m "c1: add strict checkpoint manifest identity"
 
 - [ ] **Step 1: Write RED tests for the provider boundary.**
 
-Create a fake provider that records its arguments and returns finite scores. Test that it receives only an immutable model-input object and current candidate feature views; its argument graph contains none of target, provenance, sourceReference, binding, gameState, rawAction, actionId, decisionId, abilityId, envId, policySeed, or outcome fields. Test that missing/extra score bindings fail closed and a valid provider reaches an exact source-binding ordinal.
+Create a fake provider that records its arguments and returns finite scores. Test that it receives only an immutable model-input object and feature views for every real candidate, including unaffordable placeholders; its argument graph contains none of target, provenance, sourceReference, binding, gameState, rawAction, actionId, decisionId, abilityId, envId, policySeed, or outcome fields. Test that missing/extra score bindings fail closed and a valid provider reaches an ExactSemanticSourceBinding, not an ordinal-only result.
 
 - [ ] **Step 2: Run py -3.13 -m unittest tests.test_inference_runtime -v and confirm RED.**
 
 - [ ] **Step 3: Implement the provider protocol and runtime.**
 
-Define ScoreProvider.score(model_input, candidates) -> Sequence[float] and an immutable InferenceContext containing NumericExecutionProfileIdentity, selection contract identity, and policy RNG contract identity. InferenceRuntime.select validates the numeric profile and Selection/RNG pair, sends only sample.input plus current scoreable candidate feature views to the provider, validates exactly one finite score per scoreable candidate, invokes Selection V2, and returns a semantic source binding. It never emits a live actionId, calls Rules legality, fills a structured remainder, or uses the recorded target to repair a score.
+Define ScoreProvider.score(model_input, candidates) -> Sequence[float] and an immutable InferenceContext containing NumericExecutionProfileIdentity, selection contract identity, and policy RNG contract identity. InferenceRuntime.select validates the numeric profile and Selection/RNG pair, sends sample.input plus one feature view for every candidatePresence=true candidate to the provider, validates SCORE_COUNT == count(candidatePresence=true), applies ARGMAX_ELIGIBLE = candidatePresence && candidateExecutableSupport, constructs SelectionCandidates only from the strict reader's source-produced discriminator map, invokes Selection V2, and returns an ExactSemanticSourceBinding containing the full action/response binding plus optional ordinal audit metadata. The public inference API accepts no discriminator argument. It never emits a live actionId, calls Rules legality, fills a structured remainder, accepts a caller-supplied tie key, or uses the recorded target to repair a score.
 
 - [ ] **Step 4: Run GREEN and commit.**
 
@@ -747,7 +757,7 @@ STOP_FOR_EXACT_SHA_REVIEW=YES
 
 ## Plan self-review
 
-The plan maps every approved requirement: A7 trust (Tasks 2–3), exact artifact framing and identity (Tasks 1 and 3–4), episode-level split and dual counts (Tasks 1 and 3–4), target/privacy separation and complete structured domains (Task 2), variable batches (Task 5), PolicyTieRng/provenance (Task 6), Selection V2 discriminator/RNG boundary (Task 7), complete checkpoint fields and numeric profile (Task 8), inference (Task 9), offline packaging/CI (Tasks 4 and 10), and verification/self-review (Task 11). All referenced types/functions are introduced before use. No task authorizes a raw-source Python reader, fixed-width action vocabulary, first-choice fallback, training loop, or C0 semantic change.
+The plan maps every approved requirement: A7 trust, record ownership, and strict per-sample split/binding validation (Tasks 2–4); exact artifact framing and identity (Tasks 1 and 3–4); episode-level split and dual counts (Tasks 1 and 3–4); target/privacy separation and all twelve structured-domain representations (Task 2); source-owned tie-discriminator production and validation (Task 2); variable batches (Task 5); PolicyTieRng/provenance and signed-Long range (Task 6); Selection V2 discriminator/RNG boundary and exact binding output (Task 7); complete checkpoint fields and numeric profile (Task 8); all-present-candidate scoring and inference (Task 9); offline packaging/CI (Tasks 4 and 10); and verification/self-review (Task 11). All referenced types/functions are introduced before use. No task authorizes a raw-source Python reader, fixed-width action vocabulary, first-choice fallback, training loop, or C0 semantic change.
 
 
 
