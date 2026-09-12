@@ -145,6 +145,7 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         input shouldNotContain "policySeed"
         input shouldNotContain "collectionJobId"
         input shouldNotContain "trajectoryId"
+        input shouldNotContain C1_MODEL_FACING_CONTRACT_IDENTITY
         sample.binding.completeLegalDomain.toString() shouldBe sample.binding.completeLegalDomain.toString()
     }
 

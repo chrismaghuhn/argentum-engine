@@ -237,7 +237,6 @@ object C1ModelFacingProjectionV1 {
         domain: CompleteLegalDomainV1,
         relations: C1SampleRelationTable,
     ): JsonObject = buildJsonObject {
-        put("contractIdentity", C1_MODEL_FACING_CONTRACT_IDENTITY)
         put(
             "decisionContext",
             buildJsonObject {
