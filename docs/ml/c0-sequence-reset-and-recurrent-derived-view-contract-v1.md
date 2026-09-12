@@ -795,17 +795,61 @@ recurrent candidate scorer
 Recurrence is not presumed superior. It is retained only if measured benefit justifies its added
 complexity. C0-03 does not change dataset membership, candidate/domain semantics or evaluation jobs.
 
-Training with recorded previous choices is teacher-forced history. Real inference uses the model's
-own previously executed and engine-accepted choices:
+Training with recorded previous choices is teacher-forced history. C0-03 freezes three distinct
+operating modes rather than using the ambiguous phrase `real inference` for both offline and
+gameplay evaluation:
+
+```text
+TRAINING
+  previous choice source = recorded accepted source choice
+
+OFFLINE_HELD_OUT_BEHAVIOR_EVALUATION
+  previous choice source = recorded accepted source choice
+
+GAMEPLAY_EVALUATION
+  previous choice source = model-executed and engine-accepted choice
+```
+
+The common previous-choice semantics remain shifted by one step:
 
 ```text
 TRAIN_PREVIOUS_CHOICE_SEMANTICS
-= INFERENCE_PREVIOUS_CHOICE_SEMANTICS
-  modulo the declared teacher-forcing source
+= RECORDED_ACCEPTED_SOURCE_CHOICE
+  for training and offline held-out behavior evaluation
+```
+
+At offline held-out step `t`, the evaluator scores the model against the source record. Regardless
+of whether the model agrees, it advances the recurrent previous-choice context with the recorded
+accepted source choice before consuming source step `t+1`. The source observation at `t+1` therefore
+remains causally consistent with the source action/response that produced it.
+
+```text
+OFFLINE_RECURRENT_EVALUATION_MODE=SOURCE_TEACHER_FORCED
+OFFLINE_HELD_OUT_PREVIOUS_CHOICE_SOURCE=RECORDED_ACCEPTED_SOURCE_CHOICE
+OFFLINE_MODEL_DISAGREEMENT_CHANGES_NEXT_HISTORY=NO
+COUNTERFACTUAL_MODEL_CHOICE_PLUS_SOURCE_FUTURE=FORBIDDEN_AS_CANONICAL_OFFLINE_EVAL
+```
+
+Offline behavior evaluation must not splice a model choice into the recorded future. If the source
+chose `A` at `t` and the model scores/selects `B`, the evaluator reports the disagreement and then
+uses source `A` as the previous choice before source step `t+1`.
+
+Gameplay evaluation is different because the engine actually advances from the model's accepted
+choice:
+
+```text
+GAMEPLAY_PREVIOUS_CHOICE_SOURCE=MODEL_EXECUTED_AND_ENGINE_ACCEPTED_CHOICE
 ```
 
 There is no current-step teacher forcing. An attempted invalid model output is not accepted history
-and is never fed forward as a previous choice.
+and is never fed forward as a previous choice. This preserves the C0-02 distinction:
+
+```text
+BEHAVIOR_AGREEMENT != GAMEPLAY_QUALITY
+```
+
+Autoregressive model-choice history belongs to real Argentum gameplay evaluation, not to a
+canonical offline held-out sequence built from factual source observations.
 
 ## 22. Multiple environments, checkpoints and policy instances
 
@@ -1064,7 +1108,7 @@ that the future recurrent implementation or window materializer has executed.
 | `C0_PER_PERSPECTIVE_STREAM_ISOLATION` | `PASS` | Sections 6-7; one filtered chronology per perspective. |
 | `C0_POLICY_INSTANCE_MAPPING` | `PASS` | Section 5; current equal-policy source is unambiguous, mixed unbound mapping fails closed. |
 | `C0_RESET_CONTRACT` | `PASS` | Sections 9-10; explicit episode/player/job/checkpoint reset boundaries. |
-| `C0_PREVIOUS_CHOICE_CONTRACT` | `PASS` | Sections 11-12; same-policy accepted choice, explicit BOS, shifted teacher forcing. |
+| `C0_PREVIOUS_CHOICE_CONTRACT` | `PASS` | Sections 11-12 and 21; same-policy accepted choice, explicit BOS, shifted teacher forcing and source-teacher-forced offline mode. |
 | `C0_CROSS_STEP_IDENTITY_CONTRACT` | `PASS` | Section 13; partial internal evidence is not Trajectory learner authority. |
 | `C0_NO_CROSS_PLAYER_STATE` | `PASS` | Sections 7 and 26; independent state tracks and no opponent-private injection. |
 | `C0_NO_CROSS_EPISODE_STATE` | `PASS` | Sections 9, 10 and 16; state discarded at episode/trajectory boundaries. |
@@ -1076,7 +1120,7 @@ that the future recurrent implementation or window materializer has executed.
 | `C0_BURN_IN_CONTRACT` | `PASS` | Section 18; real prior steps, state update, loss exclusion. |
 | `C0_PADDING_MASK_CONTRACT` | `PASS` | Section 19; padding is physical and fully masked. |
 | `C0_HIDDEN_STATE_ORIGIN_CONTRACT` | `PASS` | Section 20; exact prefix vs explicit approximation/cache. |
-| `C0_EVALUATION_STREAMING_SEMANTICS` | `PASS` | Section 18; episode-start reset and no artificial evaluation reset. |
+| `C0_EVALUATION_STREAMING_SEMANTICS` | `PASS` | Sections 18 and 21; episode-start reset, no artificial reset and no counterfactual source-future splicing. |
 | `C0_RECURRENT_PRIVACY_BOUNDARY` | `PASS` | Sections 7, 13, 14 and 23; no hidden/private side channel. |
 | `C0_DETERMINISTIC_DERIVATION` | `PASS` | Sections 6, 16, 17 and 23; source order and config bind derivation. |
 | `C0_UNKNOWN_VERSION_FAIL_CLOSED` | `PASS` | Section 29; unknown source/contract versions reject. |
@@ -1121,6 +1165,11 @@ BEGIN_SEQUENCE_IS_STRUCTURAL=YES
 CURRENT_TARGET_AS_CURRENT_INPUT=NO
 TEACHER_FORCING_IS_SHIFTED_BY_ONE_STEP=YES
 PREVIOUS_CHOICE_GLOBAL_ACTION_VOCABULARY=NO
+OFFLINE_RECURRENT_EVALUATION_MODE=SOURCE_TEACHER_FORCED
+OFFLINE_HELD_OUT_PREVIOUS_CHOICE_SOURCE=RECORDED_ACCEPTED_SOURCE_CHOICE
+GAMEPLAY_PREVIOUS_CHOICE_SOURCE=MODEL_EXECUTED_AND_ENGINE_ACCEPTED_CHOICE
+OFFLINE_MODEL_DISAGREEMENT_CHANGES_NEXT_HISTORY=NO
+COUNTERFACTUAL_MODEL_CHOICE_PLUS_SOURCE_FUTURE=FORBIDDEN_AS_CANONICAL_OFFLINE_EVAL
 
 CROSS_STEP_ENTITY_ALIAS_AUTHORITY=PARTIAL_INTERNAL_HISTORY_EVIDENCE; NOT_ESTABLISHED_FOR_TRAJECTORY_V1
 HISTORY_SIDECAR_AS_RECURRENT_INPUT=NO
