@@ -75,7 +75,21 @@ def _model_input(kind: str, *, structured_type: dict | None = None) -> dict:
             "actionSemantics": {"type": "PassPriority"},
             "affordable": True,
             "kind": "PassPriority",
+            "targetEntityAliases": [],
+            "manaCost": None,
+            "hasXCost": False,
+            "maxAffordableX": None,
+            "minTargets": 0,
+            "maxTargets": 0,
+            "validSacrificeTargetsAliases": [],
+            "sacrificeCount": 0,
+            "sacrificeMinCount": 0,
+            "sacrificeMaxCount": 0,
+            "requiresDamageDistribution": False,
+            "isManaAbility": False,
+            "requiresStructuredAction": False,
             "requiredPayloadFields": [],
+            "isDecisionOption": False,
         }]
     elif kind == "STRUCTURED_DECISION":
         domain.update({
@@ -93,7 +107,21 @@ def _sample() -> dict:
         "actionSemantics": {"type": "PassPriority"},
         "affordable": True,
         "kind": "PassPriority",
+        "targetEntityIds": [],
+        "manaCost": None,
+        "hasXCost": False,
+        "maxAffordableX": None,
+        "minTargets": 0,
+        "maxTargets": 0,
+        "validSacrificeTargets": [],
+        "sacrificeCount": 0,
+        "sacrificeMinCount": 0,
+        "sacrificeMaxCount": 0,
+        "requiresDamageDistribution": False,
+        "isManaAbility": False,
+        "requiresStructuredAction": False,
         "requiredPayloadFields": [],
+        "isDecisionOption": False,
     }
     domain = {
         "candidates": [candidate],
@@ -384,6 +412,52 @@ class DerivedReaderTests(unittest.TestCase):
             with self.assertRaises(DerivedArtifactError):
                 DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
 
+    def test_rejects_missing_producer_required_candidate_feature(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _sample()
+            sample["input"]["domain"]["candidates"][0].pop("requiredPayloadFields")
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_rejects_non_noop_additional_cost_payment_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _sample()
+            sample["binding"]["entityAliasBindings"].append(
+                {"alias": "entity-2", "sourceEntityId": "sacrifice-raw"},
+            )
+            candidate = sample["binding"]["completeLegalDomain"]["candidates"][0]
+            candidate["validSacrificeTargets"] = ["sacrifice-raw"]
+            candidate["sacrificeCount"] = 1
+            candidate["sacrificeMinCount"] = 1
+            candidate["sacrificeMaxCount"] = 1
+            candidate["requiredPayloadFields"] = ["additionalCostPayment"]
+            payment = {
+                "sacrificedPermanents": ["sacrifice-raw"],
+                "discardedCards": [],
+                "lifePaid": 1,
+                "exiledCards": [],
+                "variableCostPermanents": [],
+                "beheldCards": [],
+                "tappedPermanents": [],
+                "bouncedPermanents": [],
+                "blightTargets": [],
+                "blightAmount": 0,
+                "payXLifeAmount": 0,
+                "distributedCounterRemovals": [],
+            }
+            chosen = sample["target"]["chosenSemanticAction"]
+            chosen["choicePayload"] = {"additionalCostPayment": payment}
+            model_candidate = sample["input"]["domain"]["candidates"][0]
+            model_candidate.update({
+                "requiredPayloadFields": ["additionalCostPayment"],
+                "sacrificeCount": 1,
+                "sacrificeMinCount": 1,
+                "sacrificeMaxCount": 1,
+                "validSacrificeTargetsAliases": ["entity-2"],
+            })
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
     def test_rejects_structured_target_cardinality_outside_domain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sample = _structured_sample()
@@ -451,6 +525,19 @@ class DerivedReaderTests(unittest.TestCase):
                 "affordable": True,
                 "isDecisionOption": True,
                 "kind": "FoldedOption",
+                "targetEntityAliases": [],
+                "manaCost": None,
+                "hasXCost": False,
+                "maxAffordableX": None,
+                "minTargets": 0,
+                "maxTargets": 0,
+                "validSacrificeTargetsAliases": [],
+                "sacrificeCount": 0,
+                "sacrificeMinCount": 0,
+                "sacrificeMaxCount": 0,
+                "requiresDamageDistribution": False,
+                "isManaAbility": False,
+                "requiresStructuredAction": False,
                 "requiredPayloadFields": [],
             }]
             sample["input"]["domain"]["candidates"][0]["isDecisionOption"] = True

@@ -721,10 +721,83 @@ def _validate_action_choice_payload(candidate: dict[str, Any], chosen: dict[str,
         _validate_blocker_declaration_payload(candidate, payload["blockers"])
     if "orderedBlockers" in payload:
         _validate_blocker_order_payload(candidate, payload["orderedBlockers"])
-    for key in ("costPayment", "additionalCostPayment"):
-        if key in payload:
-            _expect_object(payload[key], key)
-            _validate_payload_references_against_candidate(candidate, payload[key], key)
+    if "costPayment" in payload:
+        _validate_cost_payment(candidate, payload["costPayment"], allow_tapped=True)
+    if "additionalCostPayment" in payload:
+        _validate_cost_payment(candidate, payload["additionalCostPayment"], allow_tapped=False)
+
+
+_ADDITIONAL_COST_KEYS = {
+    "sacrificedPermanents", "discardedCards", "lifePaid", "exiledCards", "variableCostPermanents",
+    "beheldCards", "tappedPermanents", "bouncedPermanents", "blightTargets", "blightAmount",
+    "payXLifeAmount", "distributedCounterRemovals",
+}
+
+
+def _validate_cost_payment(candidate: dict[str, Any], value: Any, *, allow_tapped: bool) -> None:
+    payment = _expect_object(value, "cost payment")
+    _expect_keys(payment, _ADDITIONAL_COST_KEYS, "cost payment")
+    list_fields = (
+        "sacrificedPermanents", "discardedCards", "exiledCards", "variableCostPermanents",
+        "beheldCards", "tappedPermanents", "bouncedPermanents", "blightTargets",
+    )
+    for field in list_fields:
+        values = _expect_list(payment[field], f"cost payment {field}")
+        _string_set(values, f"cost payment {field}") if values else None
+    if not isinstance(payment["distributedCounterRemovals"], list):
+        raise DerivedArtifactError("cost payment distributedCounterRemovals must be a list")
+    if not isinstance(payment["lifePaid"], int) or isinstance(payment["lifePaid"], bool):
+        raise DerivedArtifactError("cost payment lifePaid must be an integer")
+    for field in ("blightAmount", "payXLifeAmount"):
+        if not isinstance(payment[field], int) or isinstance(payment[field], bool):
+            raise DerivedArtifactError(f"cost payment {field} must be an integer")
+    if payment["discardedCards"] or payment["lifePaid"] != 0 or payment["exiledCards"] or payment["variableCostPermanents"] or payment["beheldCards"] or payment["bouncedPermanents"] or payment["blightTargets"] or payment["blightAmount"] != 0 or payment["payXLifeAmount"] != 0 or payment["distributedCounterRemovals"]:
+        raise DerivedArtifactError("cost payment contains an unsupported non-no-op channel")
+    if not allow_tapped and payment["tappedPermanents"]:
+        raise DerivedArtifactError("additional cost payment cannot carry tapped permanents")
+    valid_sacrifices = set(_expect_string_list(candidate.get("validSacrificeTargets", []), "valid sacrifice targets"))
+    sacrificed = _string_set(payment["sacrificedPermanents"], "sacrificed permanents")
+    if not sacrificed.issubset(valid_sacrifices):
+        raise DerivedArtifactError("sacrificed permanent is outside the source domain")
+    minimum = _expect_int(candidate.get("sacrificeMinCount"), "sacrifice minimum", nonnegative=True)
+    maximum = _expect_int(candidate.get("sacrificeMaxCount"), "sacrifice maximum", nonnegative=True)
+    if len(sacrificed) < minimum or len(sacrificed) > maximum:
+        raise DerivedArtifactError("sacrificed permanent count is outside the source domain")
+    if minimum == maximum and _expect_int(candidate.get("sacrificeCount"), "sacrifice count", nonnegative=True) != len(sacrificed):
+        raise DerivedArtifactError("sacrificed permanent count does not match the fixed source cost")
+    _validate_source_bound_taps(candidate, payment["tappedPermanents"], allow_tapped)
+
+
+def _validate_source_bound_taps(candidate: dict[str, Any], tapped: Any, allow_tapped: bool) -> None:
+    tapped_values = _string_set(tapped, "tapped permanents")
+    if not allow_tapped:
+        if tapped_values:
+            raise DerivedArtifactError("additional cost payment contains a tapped permanent")
+        return
+    source_id = candidate.get("sourceEntityId")
+    semantics = candidate.get("actionSemantics")
+    ability = _expect_object(semantics, "actionSemantics").get("abilityKey") if isinstance(semantics, dict) else None
+    ability_obj = _expect_object(ability, "abilityKey").get("ability") if ability is not None else None
+    cost = _expect_object(ability_obj, "ability") .get("cost") if ability_obj is not None else None
+    tap_count = _count_source_bound_tap_nodes(cost)
+    if tap_count == 0:
+        if tapped_values:
+            raise DerivedArtifactError("tapped permanent has no complete source domain")
+    elif tap_count == 1:
+        if not isinstance(source_id, str) or tapped_values != {source_id}:
+            raise DerivedArtifactError("tapped permanent is not the source-bound permanent")
+    else:
+        raise DerivedArtifactError("source-bound tap domain has unsupported cardinality")
+
+
+def _count_source_bound_tap_nodes(value: Any) -> int:
+    if not isinstance(value, dict):
+        return 0
+    if value.get("type") == "CostTap":
+        return 1
+    if value.get("type") == "CostComposite":
+        return sum(_count_source_bound_tap_nodes(child) for child in value.get("costs", []))
+    return 0
 
 
 def _validate_attack_declaration_payload(candidate: dict[str, Any], payload: dict[str, Any]) -> None:

@@ -100,6 +100,12 @@ _CANDIDATE_KEYS = {
     "targetDomain", "attackDeclarationDomain", "blockerDeclarationDomain", "paymentDomain",
     "targetPaymentDomain", "repeatCountDomain",
 }
+_CANDIDATE_REQUIRED_KEYS = {
+    "kind", "affordable", "targetEntityAliases", "manaCost", "hasXCost", "maxAffordableX",
+    "minTargets", "maxTargets", "validSacrificeTargetsAliases", "sacrificeCount", "sacrificeMinCount",
+    "sacrificeMaxCount", "requiresDamageDistribution", "isManaAbility", "requiresStructuredAction",
+    "requiredPayloadFields", "actionSemantics", "isDecisionOption",
+}
 
 
 def require_model_input(value: Any) -> dict[str, Any]:
@@ -345,7 +351,7 @@ def _validate_shape(value: Any) -> None:
 
 def _validate_candidate(value: Any, aliases: dict[str, str], label: str) -> None:
     obj = _object(value, label)
-    _keys(obj, _CANDIDATE_KEYS, label, {"kind", "affordable"})
+    _keys(obj, _CANDIDATE_KEYS, label, _CANDIDATE_REQUIRED_KEYS)
     _string(obj["kind"], f"{label}.kind")
     _boolean(obj["affordable"], f"{label}.affordable")
     for key in ("sourceAlias", "targetAlias", "attachedToAlias"):
