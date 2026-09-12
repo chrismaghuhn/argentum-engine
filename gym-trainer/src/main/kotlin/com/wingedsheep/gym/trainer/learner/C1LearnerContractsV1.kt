@@ -16,10 +16,10 @@ const val C1_DERIVED_ARTIFACT_IDENTITY_SCHEMA: String =
     "argentum-ml-derived-artifact-id@v1"
 const val C1_SPLIT_CONTRACT_IDENTITY: String =
     "argentum-ml-dataset-split@v1"
-const val C1_DERIVED_MANIFEST_VERSION: Int = 1
-const val C1_DERIVED_SAMPLE_VERSION: Int = 1
 const val C1_MODEL_FACING_CONTRACT_IDENTITY: String =
     "argentum-ml-model-facing-decision-sample@v1"
+const val C1_DERIVED_MANIFEST_VERSION: Int = 1
+const val C1_DERIVED_SAMPLE_VERSION: Int = 1
 
 private val sha256Pattern = Regex("[0-9a-f]{64}")
 private val commitPattern = Regex("[0-9a-f]{40}")

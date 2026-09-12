@@ -159,7 +159,7 @@ git commit -m "c1: add derived learner contracts and split runtime"
 - Test: gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1ModelFacingProjectionV1Test.kt
 - Test: gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1SourceTieDiscriminatorV1Test.kt
 
-- [ ] **Step 1: Define the projection API in the tests.**
+- [x] **Step 1: Define the projection API in the tests.**
 
 Use this API in the RED tests:
 
@@ -181,37 +181,37 @@ object C1ModelFacingProjectionV1 {
 
 Construct fixtures through the existing typed PlayerObservationV1, CompleteLegalDomainV1, ChosenSemanticActionV1, and ChosenSemanticResponseV1 constructors. Do not make an invalid TrajectoryV1 fixture to simplify a test.
 
-- [ ] **Step 2: Add RED tests for target isolation and privacy.**
+- [x] **Step 2: Add RED tests for target isolation and privacy.**
 
 Test that changing only the chosen semantic target leaves the canonical input bytes unchanged while changing the target bytes. Recursively reject gameState, rawAction, actionId, decisionId, abilityId, envId, pendingDecisionInternal, engineSeed, policySeed, source IDs, outcome, and provenance IDs from input. Assert raw EntityId strings are absent from input and candidate feature views; allow them in target/sourceReference/binding/provenance where the source contract requires them.
 
-- [ ] **Step 3: Add RED tests for complete and structured domains.**
+- [x] **Step 3: Add RED tests for complete and structured domains.**
 
 Cover one flat action domain, one folded domain with an unaffordable retained candidate, and all twelve existing StructuredDecisionDomain variants: targets, card selection, mode selection, distribution, ordering, split piles, search library, reorder library, combat resolution, mana sources, replacement, and budget modal. Use full membership/target assertions for the six currently Environment-V1-reachable families and one focused typed-representation test for each of the six inventoried-but-not-currently-reachable families. Assert every source member remains in binding, presence is separate from executable support, typed versions remain, ordered arrays remain ordered, duplicate requirement instances remain distinct, and the chosen value is in the original domain. Add two distinct source candidates with identical admitted feature JSON and distinct binding references.
 
-- [ ] **Step 4: Run just test-class C1ModelFacingProjectionV1Test and confirm RED.**
+- [x] **Step 4: Run just test-class C1ModelFacingProjectionV1Test and confirm RED.**
 
 Expected: compilation failure because C1ModelFacingProjectionV1 and its projection helpers do not exist.
 
-- [ ] **Step 5: Prove trajectory/record ownership and implement explicit observation admission.**
+- [x] **Step 5: Prove trajectory/record ownership and implement explicit observation admission.**
 
 Before projection, prove that the supplied DecisionRecordV1 belongs to the supplied TrajectoryV1 by matching its decisionIndex/replay coordinates, semanticDecisionId, perspective, and canonical record element against the trajectory's record at that index. Reject a record from another trajectory even if its DTO shape is valid. Then build input from an allowlist, never by serializing the entire PlayerObservationV1 and deleting guessed keys. Admit only the C0-01 categories: decision context; turn/phase/step; SELF/OPPONENT roles; public life/zone/mana/status; visible supplied cards and projected characteristics; stack sequence; and typed pending context. Keep raw IDs in sample-local inverse relation tables only. Preserve ABSENT, MASKED, and UNKNOWN_VISIBLE_IDENTITY. Never sort by raw ID, hash an ID into a feature, or use an ID as a tie preference.
 
-- [ ] **Step 6: Implement exhaustive candidate/domain admission.**
+- [x] **Step 6: Implement exhaustive candidate/domain admission.**
 
 For flat/folded candidates allowlist kind/action type, support mask, supplied cost/X/target/sacrifice/repeat bounds, colors, required payload fields, decision-option presence, public relations, and typed domain certificates. Use an exhaustive Kotlin when over TargetsDomain, CardSelectionDomain, ModeSelectionDomain, DistributionDomain, OrderingDomain, SplitPilesDomain, SearchLibraryDomain, ReorderLibraryDomain, CombatResolutionDomain, ManaSourcesDomain, ReplacementDomain, and BudgetModalDomain. Retain the full source domain in binding, build separate feature/structural views, and fail closed on unsupported version/type tags. Never use toString(), silently flatten, auto-complete, or encode presentation text.
 
-- [ ] **Step 7: Add the source-authoritative tie-discriminator producer and validator.**
+- [x] **Step 7: Add the source-authoritative tie-discriminator producer and validator.**
 
 Implement C1SourceTieDiscriminatorV1 as a Kotlin-only producer called by the projection/binding path. It derives a canonical discriminator only from the C0-admitted semantic candidate/domain view, never from raw EntityId, source-binding ordinal, row index, actionId, decisionId, allocation order, or map iteration. It validates canonical bytes and permutation invariance before placing the optional discriminator map into the binding channel. If two source-distinct candidates have identical admitted semantic keys, both receive no discriminator. The producer does not accept an arbitrary caller-supplied key; Selection V2 receives only discriminator values transported from this validated binding. Add tests for raw-ID rejection, row/ordinal rejection, candidate permutation, distinct semantic keys, and symmetric candidates falling through to PolicyTieRng.
 
-- [ ] **Step 8: Implement target/binding/provenance separation.**
+- [x] **Step 8: Implement target/binding/provenance separation.**
 
 Encode the original chosen semantic action or response only in target; encode complete domain and exact source binding only in binding; encode episode/environment/policy/replay/dataset metadata only in provenance/sourceReference. Verify the target through existing ChosenSemanticActionV1.from(domain, candidate, choicePayload) or ChosenSemanticResponseV1.from(domain, response) before constructing the sample.
 
-- [ ] **Step 9: Run just test-class C1ModelFacingProjectionV1Test and just test-class C1SourceTieDiscriminatorV1Test; confirm GREEN.**
+- [x] **Step 9: Run just test-class C1ModelFacingProjectionV1Test and just test-class C1SourceTieDiscriminatorV1Test; confirm GREEN.**
 
-- [ ] **Step 10: Commit:**
+- [x] **Step 10: Commit:**
 
 ~~~powershell
 git add gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/learner/C1ModelFacingProjectionV1.kt gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/learner/C1SourceTieDiscriminatorV1.kt gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1ModelFacingProjectionV1Test.kt gym-trainer/src/test/kotlin/com/wingedsheep/gym/trainer/learner/C1SourceTieDiscriminatorV1Test.kt
