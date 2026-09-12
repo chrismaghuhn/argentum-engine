@@ -86,20 +86,20 @@ class B1RootMaterializationCharacterizationTest : FunSpec({
     }
 })
 
-private fun currentCanonicalJson(element: JsonElement): String =
+internal fun currentCanonicalJson(element: JsonElement): String =
     com.wingedsheep.gym.contract.ObservationCanonicalizer.canonicalJson(element)
 
-private fun currentDigest(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+internal fun currentDigest(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
     .digest(bytes)
     .joinToString("") { "%02x".format(it) }
 
-private data class FixtureExpectation(
+internal data class FixtureExpectation(
     val json: String,
     val bytes: Int,
     val digest: String,
 )
 
-private fun expectedFixture(label: String): FixtureExpectation = when (label) {
+internal fun expectedFixture(label: String): FixtureExpectation = when (label) {
     "empty-object" -> FixtureExpectation(
         json = "{}",
         bytes = 2,
@@ -143,7 +143,7 @@ private fun expectedFixture(label: String): FixtureExpectation = when (label) {
     else -> error("Unknown Characterization-21 fixture: $label")
 }
 
-private fun rootMaterializationFixtures(): List<Pair<String, JsonElement>> = listOf(
+internal fun rootMaterializationFixtures(): List<Pair<String, JsonElement>> = listOf(
     "empty-object" to buildJsonObject { },
     "empty-array" to buildJsonArray { },
     "unsorted-nested-object" to buildJsonObject {

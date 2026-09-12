@@ -14,7 +14,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * to kotlinx.serialization's existing JsonPrimitive authority.
  */
 internal object B1CanonicalJsonReferenceWriter {
-    private val unorderedArrayKeys = setOf(
+    internal val unorderedArrayKeys = setOf(
         "types",
         "subtypes",
         "colors",

@@ -76,9 +76,12 @@ private val b1CoarseSingleEnvironment = System.getProperty("b1.scaling.runMode")
     "coarse-control",
 )
 private val b1PipelineAttributionEnabled = System.getProperty("b1.scaling.runMode") == "pipeline-attribution"
+private val b1DirectWriterRealRootEnabled =
+    System.getProperty("b1.scaling.runMode") == "direct-writer-real-root"
 private val b1PipelineSingleEnvironment = System.getProperty("b1.scaling.runMode") in setOf(
     "pipeline-attribution",
     "pipeline-control",
+    "direct-writer-real-root",
 )
 
 private val b1ScalingJson = Json {
@@ -905,7 +908,16 @@ private fun runB1ScalingMeasurement() {
     Files.deleteIfExists(jsonPath)
 
     val attributionSession = if (b1CoarseAttributionEnabled) B1StepCostAttributionProbe.start() else null
-    val pipelineSession = if (b1PipelineAttributionEnabled) B1CanonicalizationPipelineProbe.start() else null
+    val pipelineSession = if (b1PipelineAttributionEnabled || b1DirectWriterRealRootEnabled) {
+        B1CanonicalizationPipelineProbe.start()
+    } else {
+        null
+    }
+    val directWriterSession = if (b1DirectWriterRealRootEnabled) {
+        B1DirectWriterRealRootProbe.start()
+    } else {
+        null
+    }
     val attributionInstrumentation = try {
         if (b1CoarseAttributionEnabled) B1ObservationBytecodeInstrumentation.installCoarseAttribution() else null
     } catch (failure: Throwable) {
@@ -913,19 +925,21 @@ private fun runB1ScalingMeasurement() {
         throw failure
     }
     val pipelineInstrumentation = try {
-        if (b1PipelineAttributionEnabled) {
+        if (b1PipelineAttributionEnabled || b1DirectWriterRealRootEnabled) {
             B1ObservationBytecodeInstrumentation.installCanonicalizationPipeline()
         } else {
             null
         }
     } catch (failure: Throwable) {
         pipelineSession?.let { B1CanonicalizationPipelineProbe.stop(it) }
+        directWriterSession?.let { B1DirectWriterRealRootProbe.stop(it) }
         attributionInstrumentation?.close()
         attributionSession?.let { B1StepCostAttributionProbe.stop(it) }
         throw failure
     }
     var attributionSnapshot: B1StepCostAttributionProbe.Snapshot? = null
     var pipelineSnapshot: B1CanonicalizationPipelineProbe.Snapshot? = null
+    var directWriterSnapshot: B1DirectWriterRealRootProbe.Snapshot? = null
     val recording = openScalingJfrRecording()
     val referenceHolder = ReferenceTrajectoryHolder()
     try {
@@ -959,6 +973,7 @@ private fun runB1ScalingMeasurement() {
         attributionInstrumentation?.close()
         pipelineSnapshot = pipelineSession?.let { B1CanonicalizationPipelineProbe.stop(it) }
         pipelineInstrumentation?.close()
+        directWriterSnapshot = directWriterSession?.let { B1DirectWriterRealRootProbe.stop(it) }
 
         val report = B1ScalingReport(
             benchmarkSchemaVersion = B1_SCALING_BENCHMARK_SCHEMA_VERSION,
@@ -1009,6 +1024,14 @@ private fun runB1ScalingMeasurement() {
             )
             println("B1_CANONICALIZATION_PIPELINE_PATH=" + pipelinePath)
         }
+        directWriterSnapshot?.let { snapshot ->
+            val directWriterPath = outputDir.resolve("b1-direct-writer-real-root.json")
+            Files.writeString(
+                directWriterPath,
+                b1ScalingJson.encodeToString(B1DirectWriterRealRootProbe.Snapshot.serializer(), snapshot),
+            )
+            println("B1_DIRECT_WRITER_REAL_ROOT_PATH=" + directWriterPath)
+        }
         val trajectoryPath = outputDir.resolve("b1-semantic-trajectory-hashes.tsv")
         Files.writeString(
             trajectoryPath,
@@ -1033,6 +1056,9 @@ private fun runB1ScalingMeasurement() {
             runCatching { B1CanonicalizationPipelineProbe.stop(pipelineSession) }
         }
         runCatching { pipelineInstrumentation?.close() }
+        if (directWriterSession != null && directWriterSnapshot == null) {
+            runCatching { B1DirectWriterRealRootProbe.stop(directWriterSession) }
+        }
     }
 }
 
@@ -1246,12 +1272,39 @@ private fun measureScalingCondition(
     val afterSetup = ScalingJvmSnapshot.capture(includeProcessRss = true)
     try {
         warmup(service, slots, assignments, warmupSteps)
+        if (b1DirectWriterRealRootEnabled) {
+            val benchmarkWarmupPipelineSegment = B1CanonicalizationPipelineProbe.beginSegment(
+                "root-writer-warmup",
+            )
+            try {
+                warmup(
+                    service = service,
+                    slots = slots,
+                    assignments = assignments,
+                    warmupSteps = 1_024,
+                    historyPhase = "root-writer-warmup",
+                )
+            } finally {
+                benchmarkWarmupPipelineSegment?.close()
+            }
+            resetSlots(
+                service = service,
+                slots = slots,
+                specs = assignments.map { it.first() },
+                activeSlots = slots.indices.toList(),
+                tracker = ConcurrencyTracker(),
+                historyPhase = "root-writer-post-warmup",
+            )
+        }
         val beforeMeasured = ScalingJvmSnapshot.capture(includeProcessRss = true)
         val repetitionsMeasured = (0 until repetitions).map { repetition ->
             val attributionSegment = B1StepCostAttributionProbe.beginSegment(
                 "environmentCount=$environmentCount,repetition=$repetition",
             )
             val pipelineSegment = B1CanonicalizationPipelineProbe.beginSegment(
+                "environmentCount=$environmentCount,repetition=$repetition",
+            )
+            val directWriterSegment = B1DirectWriterRealRootProbe.beginSegment(
                 "environmentCount=$environmentCount,repetition=$repetition",
             )
             try {
@@ -1264,6 +1317,7 @@ private fun measureScalingCondition(
                     tracker = ConcurrencyTracker(),
                 )
             } finally {
+                directWriterSegment?.close()
                 pipelineSegment?.close()
                 attributionSegment?.close()
             }
@@ -1290,9 +1344,17 @@ private fun warmup(
     slots: List<ScalingSlot>,
     assignments: Array<List<ScalingEpisodeSpec>>,
     warmupSteps: Int,
+    historyPhase: String = "warmup",
 ) {
     val activeSlots = slots.indices.toList()
-    resetSlots(service, slots, assignments.map { it.first() }, activeSlots, ConcurrencyTracker())
+    resetSlots(
+        service,
+        slots,
+        assignments.map { it.first() },
+        activeSlots,
+        ConcurrencyTracker(),
+        historyPhase = historyPhase,
+    )
     val policy = DeterministicExternalPolicy()
     val policyStates = slots.indices
         .map { index -> DeterministicPolicyState(assignments[index].first().policySeed()) }
@@ -1554,7 +1616,9 @@ private fun executeChoice(
     choice: SemanticChoice,
 ): ObservationResult {
     if (b1CoarseAttributionEnabled) B1StepCostAttributionProbe.beginTransition()
-    if (b1PipelineAttributionEnabled) B1CanonicalizationPipelineProbe.beginTransition()
+    if (b1PipelineAttributionEnabled || b1DirectWriterRealRootEnabled) {
+        B1CanonicalizationPipelineProbe.beginTransition()
+    }
     return try {
         when (choice) {
             is SemanticChoice.Action -> {
@@ -1587,7 +1651,9 @@ private fun executeChoice(
             is SemanticChoice.Gap -> error("Scaling policy gap reached execution")
         }
     } finally {
-        if (b1PipelineAttributionEnabled) B1CanonicalizationPipelineProbe.endTransition()
+        if (b1PipelineAttributionEnabled || b1DirectWriterRealRootEnabled) {
+            B1CanonicalizationPipelineProbe.endTransition()
+        }
         if (b1CoarseAttributionEnabled) B1StepCostAttributionProbe.endTransition()
     }
 }

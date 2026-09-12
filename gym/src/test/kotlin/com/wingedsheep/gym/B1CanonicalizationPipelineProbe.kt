@@ -113,6 +113,7 @@ internal object B1CanonicalizationPipelineProbe {
         private val currentSegment = AtomicReference<Segment?>()
         private val segments = CopyOnWriteArrayList<Segment>()
         private val threadState = ThreadLocal<TransitionState?>()
+        private val suppressed = ThreadLocal.withInitial { false }
         private val integrityErrors = AtomicLong()
         private val integrityDetails = ConcurrentHashMap<String, LongAdder>()
 
@@ -128,6 +129,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun beginTransition() {
+            if (suppressed.get()) return
             val segment = currentSegment.get() ?: return
             if (threadState.get() != null) {
                 markIntegrityError("transition-overlap")
@@ -138,6 +140,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun endTransition() {
+            if (suppressed.get()) return
             val state = threadState.get() ?: return
             if (state.frames.isNotEmpty() || state.canonicalizeDepth != 0) {
                 markIntegrityError("transition-close-with-open-frame")
@@ -146,6 +149,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun enterMethod(kind: String, argument: Any?) {
+            if (suppressed.get()) return
             val state = threadState.get() ?: return
             when (kind) {
                 "SEMANTIC_JSON" -> enterSemanticJson(state, argument)
@@ -185,6 +189,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun exitMethod(kind: String) {
+            if (suppressed.get()) return
             val state = threadState.get() ?: return
             val frame = state.frames.removeLastOrNull()
             if (frame == null || frame.rawKind != kind) {
@@ -199,6 +204,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun enterCanonicalize(element: Any?) {
+            if (suppressed.get()) return
             val state = threadState.get() ?: return
             increment(state.segment.counters, "CANONICALIZE_RECURSIVE_NODE_VISITS")
             when (element) {
@@ -223,6 +229,9 @@ internal object B1CanonicalizationPipelineProbe {
                 "SEMANTIC_CORE" -> "ROOT_CANONICALIZATION"
                 "SORT_FINGERPRINTS" -> "ACTION_FINGERPRINT_SORT_KEY"
                 else -> "CANONICALIZATION_OTHER"
+            }
+            if (stage == "ROOT_CANONICALIZATION") {
+                B1DirectWriterRealRootProbe.recordRoot(element)
             }
             increment(
                 state.segment.counters,
@@ -258,6 +267,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun exitCanonicalize() {
+            if (suppressed.get()) return
             val state = threadState.get() ?: return
             if (state.canonicalizeDepth <= 0) {
                 markIntegrityError("canonicalize-exit-without-entry")
@@ -282,6 +292,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun recordSemanticJsonResult(result: Any?) {
+            if (suppressed.get()) return
             val state = threadState.get() ?: return
             val frame = state.frames.lastOrNull()
             val semantic = result as? String ?: run {
@@ -311,6 +322,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun recordDigestResult(result: Any?) {
+            if (suppressed.get()) return
             val state = threadState.get() ?: return
             val actual = result as? String ?: run {
                 markIntegrityError("digest-result-not-string")
@@ -323,6 +335,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun recordByteArrayResult(result: Any?) {
+            if (suppressed.get()) return
             val state = threadState.get() ?: return
             val bytes = result as? ByteArray ?: run {
                 markIntegrityError("utf8-result-not-byte-array")
@@ -346,6 +359,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun startOperation(operation: String) {
+            if (suppressed.get()) return
             val state = threadState.get() ?: return
             if (operation == "JSON_TO_STRING") {
                 increment(state.segment.counters, "JSON_TO_STRING_CALLS")
@@ -368,6 +382,7 @@ internal object B1CanonicalizationPipelineProbe {
         }
 
         internal fun endOperation(operation: String) {
+            if (suppressed.get()) return
             val state = threadState.get() ?: return
             val frame = state.frames.removeLastOrNull()
             if (frame == null || frame.rawKind != "OPERATION:$operation") {
@@ -577,6 +592,16 @@ internal object B1CanonicalizationPipelineProbe {
         private fun markIntegrityError(reason: String) {
             integrityErrors.incrementAndGet()
             integrityDetails.computeIfAbsent(reason) { LongAdder() }.increment()
+        }
+
+        internal fun <T> suppress(block: () -> T): T {
+            val previous = suppressed.get()
+            suppressed.set(true)
+            return try {
+                block()
+            } finally {
+                suppressed.set(previous)
+            }
         }
     }
 
@@ -810,6 +835,8 @@ internal object B1CanonicalizationPipelineProbe {
     internal fun endTransition() {
         activeSession.get()?.endTransition()
     }
+
+    internal fun <T> suppress(block: () -> T): T = activeSession.get()?.suppress(block) ?: block()
 
     @JvmStatic
     @JvmName("enterMethod")
