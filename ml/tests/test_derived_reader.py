@@ -274,6 +274,14 @@ class DerivedReaderTests(unittest.TestCase):
             self.assertEqual(len(samples), 1)
             self.assertEqual(samples[0]["sourceReference"]["decisionIndex"], 0)
 
+    def test_accepts_kotlin_materialized_cross_language_golden(self) -> None:
+        root = Path(__file__).parent / "fixtures" / "derived_artifact_v1"
+        reader = DerivedArtifactReader.open(root)
+        samples = list(reader.iter_samples())
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["partition"], "TRAIN")
+        self.assertEqual(samples[0]["sourceReference"]["decisionIndex"], 0)
+
     def test_rejects_missing_and_extra_manifest_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = _artifact(Path(directory))
@@ -399,10 +407,11 @@ class DerivedReaderTests(unittest.TestCase):
                     "occurrence": 0,
                     "targets": [{"entityAlias": "entity-2", "type": "Permanent"}],
                 }],
-                "targetAliases": [{"entityAlias": "entity-2", "type": "Permanent"}],
+                "targetsAliases": [{"entityAlias": "entity-2", "type": "Permanent"}],
                 "type": "CastSpell",
             }
             sample["input"]["domain"]["candidates"][0]["actionSemantics"] = action_semantics
+            sample["input"]["domain"]["candidates"][0]["targetEntityAliases"] = ["entity-2"]
             reader = DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
             list(reader.iter_samples())
 

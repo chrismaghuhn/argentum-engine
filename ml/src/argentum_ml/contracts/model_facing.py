@@ -52,7 +52,7 @@ _FEATURE_KEYS = {
     "key", "availableAmount", "poolColor", "sourceSubtypes", "color", "activationCostOrder",
     "fromOptions", "toOptions", "fromMetadata", "toMetadata", "allowedToByFrom",
     "defaultFromIndex", "budget", "candidateAliases", "sourceAlias", "sourceAliases",
-    "targetAlias", "targetAliases", "attachedToAlias", "attachmentAliases", "entityAlias",
+    "targetAlias", "targetAliases", "targetsAliases", "targetEntityAliases", "attachedToAlias", "attachmentAliases", "entityAlias",
     "cardDefinitionId", "name", "zone", "ownerRole", "controllerRole", "types", "subtypes",
     "colors", "keywords", "manaCost", "manaValue", "oracleText", "tapped", "summoningSick",
     "faceDown", "damageMarked", "counters", "attached", "attachmentCount", "decisionKind",
@@ -93,7 +93,7 @@ _RAW_OR_FORBIDDEN_KEYS = {
     "playerId", "cardId", "targetEntityIds", "entityId", "sourceId", "targetId", "manaAbilityKey",
 }
 _CANDIDATE_KEYS = {
-    "kind", "affordable", "sourceAlias", "targetAliases", "manaCost", "hasXCost", "maxAffordableX",
+    "kind", "affordable", "sourceAlias", "targetEntityAliases", "manaCost", "hasXCost", "maxAffordableX",
     "minTargets", "maxTargets", "validSacrificeTargetsAliases", "sacrificeCount", "sacrificeMinCount",
     "sacrificeMaxCount", "requiresDamageDistribution", "isManaAbility", "availableManaColors",
     "requiresStructuredAction", "requiredPayloadFields", "isDecisionOption", "actionSemantics",
@@ -351,7 +351,7 @@ def _validate_candidate(value: Any, aliases: dict[str, str], label: str) -> None
     for key in ("sourceAlias", "targetAlias", "attachedToAlias"):
         if key in obj:
             _alias(obj[key], aliases, f"{label}.{key}")
-    for key in ("targetAliases", "validSacrificeTargetsAliases", "sourceAliases", "candidateAliases"):
+    for key in ("targetEntityAliases", "validSacrificeTargetsAliases", "sourceAliases", "candidateAliases"):
         if key in obj:
             _alias_list(obj[key], aliases, f"{label}.{key}")
     if "actionSemantics" in obj:
@@ -370,7 +370,7 @@ def _validate_candidate(value: Any, aliases: dict[str, str], label: str) -> None
             if nested.get("version") != expected_version:
                 raise ModelFacingContractError(f"{label}.{key} has an unsupported version")
     for key, child in obj.items():
-        if key in {"sourceAlias", "targetAlias", "attachedToAlias", "targetAliases", "validSacrificeTargetsAliases", "sourceAliases", "candidateAliases", "actionSemantics"}:
+        if key in {"sourceAlias", "targetAlias", "attachedToAlias", "targetEntityAliases", "validSacrificeTargetsAliases", "sourceAliases", "candidateAliases", "actionSemantics"}:
             continue
         _validate_feature_tree(child, aliases, f"{label}.{key}")
 
@@ -440,14 +440,14 @@ def _validate_action_semantics(value: Any, aliases: dict[str, str], label: str) 
         }[type_name]
         _keys(obj, allowed, label, {"type"})
     else:
-        allowed = {"type", "actorRole", "abilityKey", "cardAlias", "sourceAlias", "targetAliases", "xValue", "manaColorChoice", "castFaceDown", "declaredCostSlot", "wasWaterbendPaid", "modeSlots", "modeTargetSlots", "graveyardLifeCost", "useAlternativeCost", "useWithoutPayingManaCost", "alternativeCostType", "color", "repeatCount"}
+        allowed = {"type", "actorRole", "abilityKey", "cardAlias", "sourceAlias", "targetsAliases", "xValue", "manaColorChoice", "castFaceDown", "declaredCostSlot", "wasWaterbendPaid", "modeSlots", "modeTargetSlots", "graveyardLifeCost", "useAlternativeCost", "useWithoutPayingManaCost", "alternativeCostType", "color", "repeatCount"}
         _keys(obj, allowed, label, {"type"})
     if "actorRole" in obj:
         _role(obj["actorRole"], f"{label}.actorRole")
     for key in ("cardAlias", "sourceAlias"):
         if key in obj:
             _alias(obj[key], aliases, f"{label}.{key}")
-    for key in ("targetAliases",):
+    for key in ("targetsAliases",):
         if key in obj:
             _validate_typed_targets(obj[key], aliases, f"{label}.{key}")
     for key in ("selectedCards", "selectedCardsAliases"):
@@ -479,7 +479,7 @@ def _validate_action_semantics(value: Any, aliases: dict[str, str], label: str) 
             if ("targetCount" in slot_obj) == ("targets" in slot_obj):
                 raise ModelFacingContractError(f"{label}.modeTargetSlots has invalid mode")
     for key, child in obj.items():
-        if key in {"type", "actorRole", "cardAlias", "sourceAlias", "targetAliases", "selectedCards", "selectedCardsAliases", "abilityKey", "modeSlots", "modeTargetSlots"}:
+        if key in {"type", "actorRole", "cardAlias", "sourceAlias", "targetsAliases", "selectedCards", "selectedCardsAliases", "abilityKey", "modeSlots", "modeTargetSlots"}:
             continue
         if key == "optionMetadata":
             metadata = _object(child, f"{label}.optionMetadata")

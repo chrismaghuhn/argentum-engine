@@ -49,6 +49,8 @@ import com.wingedsheep.gym.contract.SplitPilesDomain
 import com.wingedsheep.gym.contract.StructuredDecisionDomain
 import com.wingedsheep.gym.contract.TargetRequirementDomain
 import com.wingedsheep.gym.contract.TargetsDomain
+import com.wingedsheep.gym.contract.TargetPaymentBindingV1
+import com.wingedsheep.gym.contract.TargetPaymentDomainV1
 import com.wingedsheep.gym.contract.BudgetModalDomain
 import com.wingedsheep.gym.contract.PaymentDomainV5
 import com.wingedsheep.gym.contract.ZoneView
@@ -552,6 +554,47 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         input shouldContain "validSacrificeTargetsAliases"
         input shouldNotContain "entity-target"
         input shouldNotContain "entity-sacrifice"
+    }
+
+    test("aliases target-payment binding targets in the model view") {
+        val paymentDomain = PaymentDomainV5(
+            requiredCost = "{0}",
+            outerAtomicCostUnits = emptyList(),
+            initialPoolBuckets = emptyList(),
+            sourceActivationOptions = emptyList(),
+        )
+        val targetPayment = TargetPaymentDomainV1(
+            targetBindings = listOf(
+                TargetPaymentBindingV1(
+                    target = EntityId("target-raw"),
+                    affordable = true,
+                    paymentDomain = paymentDomain,
+                ),
+            ),
+        )
+        val rawCandidate = candidate(
+            kind = "PlayLand",
+            sourceEntityId = "source-raw",
+        ).let { value ->
+            JsonObject(
+                value + (
+                    "targetPaymentDomain" to A3SemanticJson.strictJson.encodeToJsonElement(
+                        TargetPaymentDomainV1.serializer(),
+                        targetPayment,
+                    )
+                ),
+            )
+        }
+        val source = fixture(chosenCandidateIndex = 0, candidateList = listOf(rawCandidate))
+        val sample = C1ModelFacingProjectionV1.project(
+            source.trajectory,
+            source.record,
+            C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+            C1DatasetPartition.TRAIN,
+        )
+        val input = A3SemanticJson.canonicalJson(sample.input)
+        input shouldContain "targetAlias"
+        input shouldNotContain "target-raw"
     }
 
     test("represents all twelve structured domain variants") {

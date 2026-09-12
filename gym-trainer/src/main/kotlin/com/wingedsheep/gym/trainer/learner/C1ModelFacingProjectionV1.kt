@@ -779,6 +779,7 @@ object C1ModelFacingProjectionV1 {
 
     private val identityFeatureKeys = setOf(
         "targetEntityIds",
+        "target",
         "validSacrificeTargets",
         "entityId",
         "sourceId",
@@ -1380,6 +1381,7 @@ object C1ModelFacingProjectionV1 {
     }
 
     private fun identityAliasKey(key: String): String = when {
+        key == "target" -> "targetAlias"
         key.endsWith("Ids") -> key.removeSuffix("Ids") + "Aliases"
         key.endsWith("Id") -> key.removeSuffix("Id") + "Alias"
         else -> key + "Aliases"
