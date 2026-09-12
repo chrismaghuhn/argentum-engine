@@ -59,6 +59,16 @@ class C1SourceTieDiscriminatorV1Test : FunSpec({
                 ),
             )
         }
+        shouldThrow<IllegalArgumentException> {
+            C1SourceTieDiscriminatorV1.produce(
+                listOf(
+                    C1ProjectedCandidateForTie(
+                        0,
+                        buildJsonObject { put("playerId", "player-raw") },
+                    ),
+                ),
+            )
+        }
     }
 
     test("is invariant under physical candidate permutation") {

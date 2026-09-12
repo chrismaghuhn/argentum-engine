@@ -6,25 +6,36 @@ import com.wingedsheep.gym.contract.A3SemanticJson
 import com.wingedsheep.gym.contract.CandidateDomainDigestV1
 import com.wingedsheep.gym.contract.ChosenSemanticActionV1
 import com.wingedsheep.gym.contract.CardSelectionDomain
+import com.wingedsheep.gym.contract.ConditionalSelectionMinimumDomain
 import com.wingedsheep.gym.contract.CompleteLegalDomainKind
 import com.wingedsheep.gym.contract.CompleteLegalDomainV1
 import com.wingedsheep.gym.contract.CombatResolutionDomain
 import com.wingedsheep.gym.contract.DecisionShape
 import com.wingedsheep.gym.contract.DistributionDomain
+import com.wingedsheep.gym.contract.EntityFeatures
+import com.wingedsheep.gym.contract.ManaPoolView
 import com.wingedsheep.gym.contract.ModeSelectionDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
 import com.wingedsheep.gym.contract.OrderingDomain
+import com.wingedsheep.gym.contract.PendingDecisionKind
+import com.wingedsheep.gym.contract.PlayerObservationPendingDecisionV1
 import com.wingedsheep.gym.contract.PlayerObservationV1
+import com.wingedsheep.gym.contract.PlayerView
 import com.wingedsheep.gym.contract.ReorderLibraryDomain
 import com.wingedsheep.gym.contract.ReplacementDomain
 import com.wingedsheep.gym.contract.SchemaHash
 import com.wingedsheep.gym.contract.SearchLibraryDomain
 import com.wingedsheep.gym.contract.SemanticDecisionKindV1
+import com.wingedsheep.gym.contract.StackItemKind
+import com.wingedsheep.gym.contract.StackItemView
+import com.wingedsheep.gym.contract.StructuredCardInfo
 import com.wingedsheep.gym.contract.SplitPilesDomain
 import com.wingedsheep.gym.contract.StructuredDecisionDomain
+import com.wingedsheep.gym.contract.TargetRequirementDomain
 import com.wingedsheep.gym.contract.TargetsDomain
 import com.wingedsheep.gym.contract.BudgetModalDomain
 import com.wingedsheep.gym.contract.PaymentDomainV5
+import com.wingedsheep.gym.contract.ZoneView
 import com.wingedsheep.gym.trainer.trajectory.CompactReplayLinkV1
 import com.wingedsheep.gym.trainer.trajectory.DecisionRecordV1
 import com.wingedsheep.gym.trainer.trajectory.EpisodeMetadataV1
@@ -35,14 +46,17 @@ import com.wingedsheep.gym.trainer.trajectory.SemanticDecisionIdV1
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryV1
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldNotContain
+import io.kotest.matchers.string.shouldContain
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -131,10 +145,122 @@ class C1ModelFacingProjectionV1Test : FunSpec({
             ?: error("missing complete candidates")
 
         candidates.toString().contains("entity-raw-source") shouldBe true
+        sample.binding.sourceBindingOrdinals shouldBe listOf(0, 1)
         sample.binding.semanticTieDiscriminators.keys shouldBe setOf("0", "1")
         A3SemanticJson.canonicalJson(sample.target.chosenSemanticAction!!).also { chosen ->
             A3SemanticJson.canonicalJson(sample.binding.selectedExactSourceBinding) shouldBe chosen
         }
+    }
+
+    test("filters raw action semantics without breaking symmetric candidates") {
+        val candidates = listOf(
+            candidate(
+                kind = "PlayLand",
+                sourceEntityId = "entity-a",
+                actionSemantics = buildJsonObject {
+                    put("type", "PlayLand")
+                    put("playerId", "player-a")
+                    put("cardId", "entity-a")
+                    put("targets", buildJsonArray {
+                        add(buildJsonObject { put("targetId", "target-a") })
+                    })
+                },
+            ),
+            candidate(
+                kind = "PlayLand",
+                sourceEntityId = "entity-b",
+                actionSemantics = buildJsonObject {
+                    put("type", "PlayLand")
+                    put("playerId", "player-b")
+                    put("cardId", "entity-b")
+                    put("targets", buildJsonArray {
+                        add(buildJsonObject { put("targetId", "target-b") })
+                    })
+                },
+            ),
+        )
+        val first = fixture(0, candidateList = candidates)
+        val second = fixture(1, candidateList = candidates)
+        val context = C1ProjectionContext("b".repeat(64), "c".repeat(64))
+        val firstSample = C1ModelFacingProjectionV1.project(
+            first.trajectory,
+            first.record,
+            context,
+            C1DatasetPartition.TRAIN,
+        )
+        val secondSample = C1ModelFacingProjectionV1.project(
+            second.trajectory,
+            second.record,
+            context,
+            C1DatasetPartition.TRAIN,
+        )
+
+        A3SemanticJson.canonicalJson(firstSample.input) shouldBe
+            A3SemanticJson.canonicalJson(secondSample.input)
+        A3SemanticJson.canonicalJson(firstSample.input) shouldNotContain "cardId"
+        A3SemanticJson.canonicalJson(firstSample.input) shouldNotContain "player-a"
+        A3SemanticJson.canonicalJson(firstSample.input) shouldNotContain "target-a"
+        firstSample.binding.semanticTieDiscriminators shouldBe emptyMap()
+    }
+
+    test("projects observation feature groups without raw entity IDs") {
+        val self = EntityId("self")
+        val opponent = EntityId("opponent")
+        val source = fixture(
+            chosenCandidateIndex = 0,
+            observationOverride = richObservation(self, opponent),
+        )
+        val sample = C1ModelFacingProjectionV1.project(
+            source.trajectory,
+            source.record,
+            C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+            C1DatasetPartition.TRAIN,
+        )
+        val input = A3SemanticJson.canonicalJson(sample.input)
+
+        input shouldContain "players"
+        input shouldContain "zones"
+        input shouldContain "stack"
+        input shouldContain "pendingDecision"
+        input shouldContain "lifeTotal"
+        input shouldContain "manaPool"
+        input shouldContain "cardDefinitionId"
+        input shouldContain "oracleText"
+        input shouldContain "counters"
+        input shouldNotContain "visible-card"
+        input shouldNotContain "stack-object"
+    }
+
+    test("retains semantic candidate domain constraints in input") {
+        val source = fixture(
+            chosenCandidateIndex = 0,
+            candidateList = listOf(
+                candidate(
+                    kind = "PlayLand",
+                    sourceEntityId = "entity-raw-source",
+                    targetDomain = minimalTargetDomain(),
+                    availableManaColors = listOf("RED"),
+                    targetEntityIds = listOf("entity-target"),
+                    validSacrificeTargets = listOf("entity-sacrifice"),
+                ),
+            ),
+        )
+        val sample = C1ModelFacingProjectionV1.project(
+            source.trajectory,
+            source.record,
+            C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+            C1DatasetPartition.TRAIN,
+        )
+        val input = A3SemanticJson.canonicalJson(sample.input)
+
+        input shouldContain "targetDomain"
+        input shouldContain "minTargets"
+        input shouldContain "maxTargets"
+        input shouldContain "availableManaColors"
+        input shouldContain "targetEntityAliases"
+        input shouldContain "validSacrificeTargetsAliases"
+        input shouldNotContain "entity-target"
+        input shouldNotContain "entity-sacrifice"
     }
 
     test("represents all twelve structured domain variants") {
@@ -230,7 +356,138 @@ class C1ModelFacingProjectionV1Test : FunSpec({
                 .projectStructuredDomainRepresentation(domain)
             representation["type"]?.jsonPrimitive?.content shouldBe expectedType
             representation["version"]?.jsonPrimitive?.content?.toInt() shouldBe domain.version
+            when (expectedType) {
+                "targets" -> representation["requirements"] shouldNotBe null
+                "card-selection" -> representation["optionsAliases"] shouldNotBe null
+                "mode-selection" -> representation["modes"] shouldNotBe null
+                "distribution" -> representation["targetsAliases"] shouldNotBe null
+                "ordering" -> representation["objectsAliases"] shouldNotBe null
+                "split-piles" -> representation["cardsAliases"] shouldNotBe null
+                "search-library" -> representation["optionsAliases"] shouldNotBe null
+                "reorder-library" -> representation["cardsAliases"] shouldNotBe null
+                "combat-resolution" -> representation["edges"] shouldNotBe null
+                "mana-sources" -> representation["paymentDomain"] shouldNotBe null
+                "replacement" -> representation["fromOptions"] shouldNotBe null
+                "budget-modal" -> representation["modes"] shouldNotBe null
+            }
         }
+    }
+
+    test("preserves nonempty membership and relation structure for reachable domains") {
+        val first = EntityId("structured-first")
+        val second = EntityId("structured-second")
+        val third = EntityId("structured-third")
+        val cardInfo = StructuredCardInfo(
+            name = "Visible Card",
+            manaCost = "{1}{R}",
+            typeLine = "Creature",
+            colors = listOf("RED"),
+            power = 2,
+        )
+        val representations = listOf(
+            C1ModelFacingProjectionV1.projectStructuredDomainRepresentation(
+                TargetsDomain(
+                    requirements = listOf(
+                        TargetRequirementDomain(
+                            index = 0,
+                            description = "target",
+                            minTargets = 1,
+                            maxTargets = 2,
+                            candidates = listOf(first, second),
+                            targetZone = "BATTLEFIELD",
+                            mustDifferFromEarlier = false,
+                            sameController = true,
+                            sameOwner = false,
+                            sameCreatureType = false,
+                            sameCardType = true,
+                            totalManaValueAtMost = 5,
+                            differentNames = true,
+                            xConstrainsManaValue = false,
+                            xConstrainsManaValueExactly = false,
+                            xConstrainsPower = false,
+                            xConstrainsCount = false,
+                        ),
+                    ),
+                    canCancel = false,
+                ),
+            ),
+            C1ModelFacingProjectionV1.projectStructuredDomainRepresentation(
+                CardSelectionDomain(
+                    options = listOf(first, second),
+                    minSelections = 1,
+                    maxSelections = 2,
+                    ordered = true,
+                    cardInfo = mapOf(first to cardInfo, second to cardInfo),
+                    useTargetingUI = true,
+                    selectedLabel = "Select",
+                    remainderLabel = null,
+                    nonSelectableOptions = listOf(third),
+                    onePerCardType = false,
+                    onePerColor = true,
+                    availableColors = listOf("RED"),
+                    onePerCardName = false,
+                    onePerBasicLandType = false,
+                    onePerPower = false,
+                    maxTotalManaValue = 5,
+                    minTotalManaValue = 1,
+                    maxTotalPower = 4,
+                    conditionalMinimums = listOf(
+                        ConditionalSelectionMinimumDomain(
+                            requiredSelections = 2,
+                            minimumSelections = 1,
+                            matchingOptions = listOf(first),
+                            requiredMatches = 1,
+                            description = null,
+                        ),
+                    ),
+                ),
+            ),
+            C1ModelFacingProjectionV1.projectStructuredDomainRepresentation(
+                DistributionDomain(
+                    totalAmount = 3,
+                    targets = listOf(first, second),
+                    minPerTarget = 1,
+                    maxPerTarget = mapOf(first to 2, second to 3),
+                    allowPartial = false,
+                ),
+            ),
+            C1ModelFacingProjectionV1.projectStructuredDomainRepresentation(
+                OrderingDomain(
+                    objects = listOf(second, first),
+                    cardInfo = mapOf(first to cardInfo, second to cardInfo),
+                    objectLabels = mapOf(first to "first", second to "second"),
+                ),
+            ),
+            C1ModelFacingProjectionV1.projectStructuredDomainRepresentation(
+                SearchLibraryDomain(
+                    options = listOf(first),
+                    minSelections = 0,
+                    maxSelections = 1,
+                    cards = mapOf(first to cardInfo),
+                    filterDescription = "creatures",
+                ),
+            ),
+            C1ModelFacingProjectionV1.projectStructuredDomainRepresentation(
+                ReorderLibraryDomain(
+                    cards = listOf(second, first),
+                    cardInfo = mapOf(first to cardInfo, second to cardInfo),
+                ),
+            ),
+        )
+
+        representations.forEach { representation ->
+            val text = A3SemanticJson.canonicalJson(representation)
+            text shouldNotContain first.value
+            text shouldNotContain second.value
+            text shouldNotContain third.value
+        }
+        representations[0]["requirements"].toString() shouldContain "candidatesAliases"
+        representations[1]["optionsAliases"].toString() shouldContain "entity-0"
+        representations[1]["conditionalMinimums"].toString() shouldContain "matchingOptionsAliases"
+        representations[2]["targetsAliases"] shouldNotBe null
+        representations[3]["objectsAliases"].toString() shouldContain "entity-0"
+        representations[4]["optionsAliases"] shouldNotBe null
+        representations[5]["cardsAliases"].toString() shouldContain "entity-0"
     }
 })
 
@@ -239,10 +496,14 @@ private data class ProjectionFixture(
     val record: DecisionRecordV1,
 )
 
-private fun fixture(chosenCandidateIndex: Int): ProjectionFixture {
+private fun fixture(
+    chosenCandidateIndex: Int,
+    candidateList: List<JsonObject>? = null,
+    observationOverride: PlayerObservationV1? = null,
+): ProjectionFixture {
     val self = EntityId("self")
     val opponent = EntityId("opponent")
-    val observation = PlayerObservationV1(
+    val observation = observationOverride ?: PlayerObservationV1(
         wireSchemaHash = SchemaHash.CURRENT,
         perspectivePlayerId = self,
         agentToAct = self,
@@ -260,7 +521,7 @@ private fun fixture(chosenCandidateIndex: Int): ProjectionFixture {
         winnerId = null,
         observationDigest = "0".repeat(64),
     )
-    val candidates = listOf(
+    val candidates = candidateList ?: listOf(
         candidate(kind = "PassPriority", sourceEntityId = "entity-raw-source"),
         candidate(kind = "PlayLand", sourceEntityId = "entity-second-source"),
     )
@@ -294,17 +555,29 @@ private fun fixture(chosenCandidateIndex: Int): ProjectionFixture {
     return ProjectionFixture(trajectory = trajectory, record = record)
 }
 
-private fun candidate(kind: String, sourceEntityId: String): JsonObject = buildJsonObject {
+private fun candidate(
+    kind: String,
+    sourceEntityId: String,
+    actionSemantics: JsonObject = buildJsonObject { put("type", kind) },
+    targetDomain: JsonObject? = null,
+    availableManaColors: List<String>? = null,
+    targetEntityIds: List<String> = emptyList(),
+    validSacrificeTargets: List<String> = emptyList(),
+): JsonObject = buildJsonObject {
     put("kind", kind)
     put("affordable", true)
     put("sourceEntityId", sourceEntityId)
-    put("targetEntityIds", buildJsonArray { })
+    put("targetEntityIds", buildJsonArray {
+        targetEntityIds.forEach { add(JsonPrimitive(it)) }
+    })
     put("manaCost", JsonNull)
     put("hasXCost", false)
     put("maxAffordableX", JsonNull)
     put("minTargets", 0)
     put("maxTargets", 0)
-    put("validSacrificeTargets", buildJsonArray { })
+    put("validSacrificeTargets", buildJsonArray {
+        validSacrificeTargets.forEach { add(JsonPrimitive(it)) }
+    })
     put("sacrificeCount", 0)
     put("sacrificeMinCount", 0)
     put("sacrificeMaxCount", 0)
@@ -312,9 +585,137 @@ private fun candidate(kind: String, sourceEntityId: String): JsonObject = buildJ
     put("isManaAbility", false)
     put("requiresStructuredAction", false)
     put("requiredPayloadFields", buildJsonArray { })
-    put("actionSemantics", buildJsonObject { put("type", kind) })
+    put("actionSemantics", actionSemantics)
     put("isDecisionOption", false)
+    targetDomain?.let { put("targetDomain", it) }
+    availableManaColors?.let { colors ->
+        put("availableManaColors", buildJsonArray { colors.forEach { add(JsonPrimitive(it)) } })
+    }
 }
+
+private fun minimalTargetDomain(): JsonObject = buildJsonObject {
+    put("version", 1)
+    put("composition", "FIXED")
+    put(
+        "requirements",
+        buildJsonArray {
+            add(
+                buildJsonObject {
+                    put("index", 0)
+                    put("minTargets", 0)
+                    put("maxTargets", 1)
+                    put("candidates", buildJsonArray { add(JsonPrimitive("entity-target")) })
+                    put("targetZone", JsonNull)
+                    put("mustDifferFromEarlier", false)
+                    put("sameController", false)
+                    put("sameOwner", false)
+                    put("sameCreatureType", false)
+                    put("sameCardType", false)
+                    put("totalManaValueAtMost", JsonNull)
+                    put("differentNames", false)
+                    put("xConstrainsManaValue", false)
+                    put("xConstrainsManaValueExactly", false)
+                    put("xConstrainsPower", false)
+                    put("xConstrainsCount", false)
+                },
+            )
+        },
+    )
+}
+
+private fun richObservation(self: EntityId, opponent: EntityId): PlayerObservationV1 = PlayerObservationV1(
+    wireSchemaHash = SchemaHash.CURRENT,
+    perspectivePlayerId = self,
+    agentToAct = self,
+    turnNumber = 3,
+    phase = Phase.PRECOMBAT_MAIN,
+    step = Step.PRECOMBAT_MAIN,
+    activePlayerId = self,
+    priorityPlayerId = self,
+    players = listOf(
+        PlayerView(
+            id = self,
+            name = "SELF-NAME",
+            lifeTotal = 20,
+            handSize = 2,
+            librarySize = 30,
+            graveyardSize = 1,
+            exileSize = 0,
+            manaPool = ManaPoolView(red = 2),
+            isPerspective = true,
+            isActive = true,
+            hasPriority = true,
+            hasLost = false,
+        ),
+        PlayerView(
+            id = opponent,
+            name = "OPPONENT-NAME",
+            lifeTotal = 18,
+            handSize = 4,
+            librarySize = 28,
+            graveyardSize = 2,
+            exileSize = 0,
+            manaPool = ManaPoolView(blue = 1),
+            isPerspective = false,
+            isActive = false,
+            hasPriority = false,
+            hasLost = false,
+        ),
+    ),
+    zones = listOf(
+        ZoneView(
+            ownerId = self,
+            zoneType = Zone.BATTLEFIELD,
+            hidden = false,
+            size = 1,
+            cards = listOf(
+                EntityFeatures(
+                    entityId = EntityId("visible-card"),
+                    cardDefinitionId = "CARD_DEF",
+                    name = "Visible Card",
+                    zone = Zone.BATTLEFIELD,
+                    ownerId = self,
+                    controllerId = self,
+                    types = setOf("CREATURE"),
+                    subtypes = setOf("WIZARD"),
+                    colors = setOf("RED"),
+                    keywords = setOf("HASTE"),
+                    manaCost = "{1}{R}",
+                    manaValue = 2,
+                    oracleText = "When this enters, draw a card.",
+                    power = 2,
+                    toughness = 2,
+                    tapped = true,
+                    damageMarked = 1,
+                    counters = mapOf("+1/+1" to 1),
+                ),
+            ),
+        ),
+    ),
+    stack = listOf(
+        StackItemView(
+            entityId = EntityId("stack-object"),
+            controllerId = self,
+            sourceEntityId = EntityId("visible-card"),
+            name = "Stack Spell",
+            kind = StackItemKind.SPELL,
+            oracleText = "Draw a card.",
+            targets = listOf(opponent),
+        ),
+    ),
+    pendingDecision = PlayerObservationPendingDecisionV1(
+        kind = PendingDecisionKind.YES_NO,
+        playerId = self,
+        sourceEntityId = EntityId("visible-card"),
+        triggeringEntityId = null,
+        requiresStructuredResponse = false,
+        shape = DecisionShape(),
+    ),
+    terminated = false,
+    truncated = false,
+    winnerId = null,
+    observationDigest = "0".repeat(64),
+)
 
 private fun episodeMetadata(self: EntityId, opponent: EntityId): EpisodeMetadataV1 {
     val roster = listOf(

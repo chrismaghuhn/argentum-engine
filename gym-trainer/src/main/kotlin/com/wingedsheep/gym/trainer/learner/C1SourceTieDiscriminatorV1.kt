@@ -16,6 +16,7 @@ internal data class C1ProjectedCandidateForTie(
  */
 internal object C1SourceTieDiscriminatorV1 {
     private val forbiddenKeys = setOf(
+        "id",
         "actionId",
         "decisionId",
         "sourceEntityId",
@@ -27,6 +28,9 @@ internal object C1SourceTieDiscriminatorV1 {
         "allocationOrder",
         "batchSlot",
     )
+
+    private fun isForbiddenKey(key: String): Boolean =
+        key in forbiddenKeys || key.endsWith("Id") || key.endsWith("Ids")
 
     fun produce(candidates: List<C1ProjectedCandidateForTie>): Map<Int, JsonElement> {
         require(candidates.map { it.sourceBindingOrdinal }.distinct().size == candidates.size) {
@@ -48,7 +52,7 @@ internal object C1SourceTieDiscriminatorV1 {
     private fun rejectForbiddenKeys(value: JsonElement) {
         when (value) {
             is kotlinx.serialization.json.JsonObject -> {
-                require(value.keys.none(forbiddenKeys::contains)) {
+                require(value.keys.none(::isForbiddenKey)) {
                     "Tie discriminator contains a forbidden identity/order field"
                 }
                 value.values.forEach(::rejectForbiddenKeys)
