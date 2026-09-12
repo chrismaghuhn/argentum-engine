@@ -18,8 +18,8 @@ const val C1_SPLIT_CONTRACT_IDENTITY: String =
     "argentum-ml-dataset-split@v1"
 const val C1_DERIVED_MANIFEST_VERSION: Int = 1
 const val C1_DERIVED_SAMPLE_VERSION: Int = 1
-const val C1_DERIVED_MANIFEST_CONTENT_SCHEMA: String =
-    "argentum-ml-derived-manifest-content@v1"
+const val C1_MODEL_FACING_CONTRACT_IDENTITY: String =
+    "argentum-ml-model-facing-decision-sample@v1"
 
 private val sha256Pattern = Regex("[0-9a-f]{64}")
 private val commitPattern = Regex("[0-9a-f]{40}")
@@ -148,8 +148,8 @@ data class C1DerivedManifestV1(
         require(trajectorySchemaIdentity == "argentum-trajectory@v1") {
             "Unsupported source trajectory schema identity: $trajectorySchemaIdentity"
         }
-        require(modelFacingContractIdentity.isNotBlank()) {
-            "Model-facing contract identity must not be blank"
+        require(modelFacingContractIdentity == C1_MODEL_FACING_CONTRACT_IDENTITY) {
+            "Unsupported model-facing contract identity: $modelFacingContractIdentity"
         }
         require(splitContractIdentity == C1_SPLIT_CONTRACT_IDENTITY) {
             "Unsupported split contract identity: $splitContractIdentity"
@@ -213,7 +213,6 @@ data class C1DerivedManifestV1(
     }
 
     private fun manifestContentElement(): JsonObject = buildJsonObject {
-        put("schema", C1_DERIVED_MANIFEST_CONTENT_SCHEMA)
         put("version", version)
         put("derivedViewSchemaIdentity", derivedViewSchemaIdentity)
         put("derivedArtifactId", derivedArtifactId)

@@ -47,7 +47,8 @@ class C1DerivedManifestV1Test : FunSpec({
         value.sampleCountsByPartition.total() shouldBe value.sampleCount
         value.samplesContentReference shouldBe "samples.ndjson"
         value.recomputeDerivedArtifactId().length shouldBe 64
-        value.recomputeManifestContentDigest().length shouldBe 64
+        value.recomputeManifestContentDigest() shouldBe
+            "dcb86a28cc0ee9d711abf9dec11c2bf7611e557577afd95da935ab78b8ee57f9"
     }
 
     test("rejects partition totals that disagree with declared totals") {
@@ -65,6 +66,34 @@ class C1DerivedManifestV1Test : FunSpec({
         }
         shouldThrow<IllegalArgumentException> {
             manifest().copy(samplesContentReference = "other.ndjson")
+        }
+        shouldThrow<IllegalArgumentException> {
+            manifest().copy(derivedViewSchemaIdentity = "argentum-ml-derived-learner-view@v2")
+        }
+        shouldThrow<IllegalArgumentException> {
+            manifest().copy(modelFacingContractIdentity = "foo@v99")
+        }
+        shouldThrow<IllegalArgumentException> {
+            manifest().copy(splitContractIdentity = "argentum-ml-dataset-split@v2")
+        }
+    }
+
+    test("rejects negative counts and malformed identities") {
+        shouldThrow<IllegalArgumentException> { C1PartitionCounts(-1, 0, 0) }
+        shouldThrow<IllegalArgumentException> { C1PartitionCounts(0, -1, 0) }
+        shouldThrow<IllegalArgumentException> { C1PartitionCounts(0, 0, -1) }
+        shouldThrow<IllegalArgumentException> { manifest().copy(samplesByteCount = -1) }
+        shouldThrow<IllegalArgumentException> { manifest().copy(sampleCount = -1) }
+        shouldThrow<IllegalArgumentException> { manifest().copy(episodeCount = -1) }
+        shouldThrow<IllegalArgumentException> { manifest().copy(derivedArtifactId = "") }
+        shouldThrow<IllegalArgumentException> { manifest().copy(derivedArtifactId = "g".repeat(63)) }
+        shouldThrow<IllegalArgumentException> { manifest().copy(sourceDatasetId = "bad") }
+        shouldThrow<IllegalArgumentException> { manifest().copy(sourceManifestContentDigest = "bad") }
+        shouldThrow<IllegalArgumentException> { manifest().copy(materializerConfigDigest = "bad") }
+        shouldThrow<IllegalArgumentException> { manifest().copy(samplesContentDigest = "bad") }
+        shouldThrow<IllegalArgumentException> { manifest().copy(manifestContentDigest = "bad") }
+        shouldThrow<IllegalArgumentException> {
+            C1MaterializerImplementationIdentity("c1-test-materializer@v1", "not-a-commit")
         }
     }
 
