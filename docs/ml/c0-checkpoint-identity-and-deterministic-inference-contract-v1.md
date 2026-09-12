@@ -705,6 +705,30 @@ For structured decisions, tie keys are typed semantic options/prefixes under the
 There is no global integer-option tie vocabulary. If a structured prefix has no unique accepted
 semantic discriminator, the decoder fails closed rather than heuristically completing it.
 
+### Deterministic baseline totality
+
+The deterministic selection mode is defined, but its totality over the policy-owned Environment V1
+decision surface is not established by this source audit. C0-01 explicitly permits distinct
+semantic choices to have identical feature representations, including perfectly symmetric choices
+that no invariant deterministic selector can distinguish.
+
+Therefore:
+
+```text
+C0_TIE_BREAK_CONTRACT=PASS
+  failure behavior is defined and remains fail-closed
+
+C0_DETERMINISTIC_SELECTION_CONTRACT=CHANGES_REQUIRED_FOR_TOTAL_POLICY
+C0_DETERMINISTIC_INFERENCE_CONTRACT=CHANGES_REQUIRED_FOR_TOTAL_POLICY
+C0_04_DETERMINISTIC_BASELINE_READY=NO
+OPEN_C0_BLOCKERS=TIE_BREAK_IDENTITY_GAP
+```
+
+`C0_04A_ENVIRONMENT_V1_TIE_TOTALITY_CHARACTERIZATION` must determine whether every reachable
+policy-owned tie has a permitted invariant semantic discriminator or whether a separately accepted
+policy-RNG/symmetry-resolution contract is required. Physical row order, raw `EntityId`, candidate
+JSON containing runtime IDs and batch indexes remain forbidden shortcuts.
+
 ## 20. Structured decoding
 
 Flat candidates, folded decision options and structured choices use the same authority split:
@@ -1040,10 +1064,12 @@ no accepted policy RNG algorithm
   -> FAIL_CLOSED
 ```
 
-The initial deterministic baseline remains usable without stochastic inference:
+The deterministic mode is specified without stochastic inference, but total baseline readiness
+remains blocked by the unresolved Environment V1 tie-totality question:
 
 ```text
-C0_04_DETERMINISTIC_BASELINE_READY=YES
+C0_04_DETERMINISTIC_MODE_DEFINED=YES
+C0_04_DETERMINISTIC_BASELINE_READY=NO
 C0_04_ALL_FUTURE_STOCHASTIC_MODES_READY=NO
 ```
 
@@ -1201,12 +1227,12 @@ model or inference runner has executed.
 | `C0_WEIGHT_CONTENT_INTEGRITY` | `PASS` | Section 8; exact physical-byte SHA-256 required. |
 | `C0_CHECKPOINT_COMPATIBILITY` | `PASS` | Sections 11-12 and 26; strict contract/version/tensor/profile validation. |
 | `C0_INFERENCE_VS_RESUME_SNAPSHOT_BOUNDARY` | `PASS` | Section 10; inference artifact and training continuation state are separate. |
-| `C0_DETERMINISTIC_INFERENCE_CONTRACT` | `PASS` | Section 12; exact checkpoint/input/history/profile/selection semantics. |
+| `C0_DETERMINISTIC_INFERENCE_CONTRACT` | `CHANGES_REQUIRED_FOR_TOTAL_POLICY` | Sections 12 and 19; execution semantics are defined, but Environment V1 tie totality is unestablished. |
 | `C0_NUMERIC_EXECUTION_PROFILE` | `PASS` | Sections 13-14; semantic, certification and operational classes are separated. |
 | `C0_BATCH_COMPOSITION_INVARIANCE` | `PASS` | Section 15; unrelated batch companions cannot affect semantic selection. |
 | `C0_CANDIDATE_PERMUTATION_INVARIANCE` | `PASS` | Section 15; unordered physical permutations preserve semantic choice. |
 | `C0_NONFINITE_OUTPUT_POLICY` | `PASS` | Section 17; NaN/Inf fail closed. |
-| `C0_DETERMINISTIC_SELECTION_CONTRACT` | `PASS` | Section 18; deterministic argmax is the initial supported mode. |
+| `C0_DETERMINISTIC_SELECTION_CONTRACT` | `CHANGES_REQUIRED_FOR_TOTAL_POLICY` | Sections 18-19; argmax/fail-closed semantics are defined, but unresolved ties prevent a total policy path. |
 | `C0_TIE_BREAK_CONTRACT` | `PASS` | Section 19; semantic discriminator or fail closed, never row order. |
 | `C0_POLICY_RNG_BOUNDARY` | `PASS` | Section 21; engine, inference and training RNG are separate; stochastic mode is unsupported. |
 | `C0_STRUCTURED_INFERENCE_CONTRACT` | `PASS` | Section 20; typed complete-domain selection without heuristic fallback. |
@@ -1215,12 +1241,13 @@ model or inference runner has executed.
 | `C0_UNKNOWN_VERSION_FAIL_CLOSED` | `PASS` | Sections 11 and 32; unknown versions/kinds/profiles reject. |
 
 ```text
-C0_04_DETERMINISTIC_BASELINE_READY=YES
+C0_04_DETERMINISTIC_BASELINE_READY=NO
 STOCHASTIC_POLICY_INFERENCE_SUPPORTED=NO
-OPEN_C0_BLOCKERS=NONE_FOR_THE_DETERMINISTIC_CONTRACT; STOCHASTIC_MODE_EXPLICITLY_UNSUPPORTED
+OPEN_C0_BLOCKERS=TIE_BREAK_IDENTITY_GAP
 SELF_REVIEW_P1=NONE
 SELF_REVIEW_P2=NONE
-C0_04_SPECIFICATION_GATES=ALL_MANDATORY_PASS
+C0_04_SPECIFICATION_GATES=PARTIAL; TIE_BREAK_TOTALITY_UNRESOLVED
+C0_04_SPECIFICATION_PASS=NO
 C0_04_FINAL_ACCEPTANCE_PASS=NO
 INDEPENDENT_EXACT_SHA_REVIEW=PENDING
 STOP_FOR_EXACT_SHA_REVIEW=YES
@@ -1268,6 +1295,10 @@ SELECTION_MODE_INITIAL=DETERMINISTIC_ARGMAX
 DETERMINISTIC_ARGMAX_CONSUMES_POLICY_RNG=NO
 TIE_BREAK_BY_PHYSICAL_ROW_ORDER=NO
 DETERMINISTIC_TIE_BREAK=unique invariant source-semantic discriminator; otherwise fail closed
+C0_TIE_BREAK_CONTRACT=PASS
+C0_DETERMINISTIC_SELECTION_CONTRACT=CHANGES_REQUIRED_FOR_TOTAL_POLICY
+C0_DETERMINISTIC_INFERENCE_CONTRACT=CHANGES_REQUIRED_FOR_TOTAL_POLICY
+C0_04_DETERMINISTIC_BASELINE_READY=NO
 
 ENGINE_RNG_EQUALS_POLICY_RNG=NO
 POLICY_INFERENCE_RNG_EQUALS_TRAINING_RNG=NO
@@ -1283,6 +1314,11 @@ EVALUATION_BINDS_EXACT_CHECKPOINT=YES
 EVALUATION_BINDS_NUMERIC_PROFILE=YES
 EVALUATION_BINDS_SELECTION_MODE=YES
 EVALUATION_BINDS_POLICY_RNG_WHEN_STOCHASTIC=YES
+```
+
+```text
+NEXT_REQUIRED=C0_04A_ENVIRONMENT_V1_TIE_TOTALITY_CHARACTERIZATION
+NEXT_TASK_STARTED=NO
 ```
 
 ## 38. Verification and stop condition
