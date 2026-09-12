@@ -16,7 +16,16 @@ import kotlin.io.path.deleteIfExists
 data class C1MaterializerConfig(
     val implementationIdentity: String,
     val configDigest: String,
-)
+) {
+    init {
+        require(implementationIdentity.isNotBlank()) {
+            "Materializer implementation identity must not be blank"
+        }
+        require(configDigest.matches(Regex("[0-9a-f]{64}"))) {
+            "Materializer config digest must be lowercase SHA-256 hex"
+        }
+    }
+}
 
 object C1LearnerArtifactMaterializer {
     fun materialize(
@@ -140,7 +149,7 @@ object C1LearnerArtifactMaterializer {
             if (samplesPublished) samplesPath.deleteIfExists()
             throw failure
         } finally {
-            deleteTree(stagingDirectory)
+            runCatching { deleteTree(stagingDirectory) }
         }
     }
 
