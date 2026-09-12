@@ -6,8 +6,8 @@
 TASK=C0_04_CHECKPOINT_IDENTITY_AND_DETERMINISTIC_INFERENCE_CONTRACT
 DATE=2026-09-12
 STATUS=DRAFT_SPECIFICATION_PENDING_INDEPENDENT_EXACT_SHA_REVIEW
-AUDIT_BASE=57a22d64711c760c274b7f366a58ac56bdda7b09
-ORIGIN_MAIN_AT_AUDIT=57a22d64711c760c274b7f366a58ac56bdda7b09
+AUDIT_BASE=b483d322f67dc22eadc3b2b249767fd2b68d451b
+ORIGIN_MAIN_AT_AUDIT=b483d322f67dc22eadc3b2b249767fd2b68d451b
 UPSTREAM_MAIN_AT_AUDIT=3f46367d87c88bcf156a843a9e69fd29e1693872
 ORIGIN=https://github.com/chrismaghuhn/argentum-engine.git
 UPSTREAM=https://github.com/wingedsheep/argentum-engine.git
@@ -28,7 +28,9 @@ C1_STARTED=NO
 CHECKPOINT_MANIFEST_CONTRACT_ID=argentum-ml-checkpoint-manifest@v1
 INFERENCE_CONTRACT_ID=argentum-ml-inference@v1
 NUMERIC_EXECUTION_PROFILE_CONTRACT_ID=argentum-ml-numeric-execution-profile@v1
-SELECTION_CONTRACT_ID=argentum-ml-policy-selection@v1
+SELECTION_CONTRACT_ID=argentum-ml-policy-selection@v2
+SELECTION_V1_CONTRACT_ID=argentum-ml-policy-selection@v1
+POLICY_RNG_CONTRACT_ID=argentum-ml-policy-tie-rng@v1
 MODEL_FACING_CONTRACT_ID=argentum-ml-model-facing-decision-sample@v1
 RECURRENT_SEQUENCE_CONTRACT_ID=argentum-ml-recurrent-sequence@v1
 SPLIT_CONTRACT_ID=argentum-ml-dataset-split@v1
@@ -42,8 +44,23 @@ C0_03_HEAD=00ea654c3a36a02fdbf9c488e5b49a8b1176a713
 C0_03_MERGE_COMMIT=57a22d64711c760c274b7f366a58ac56bdda7b09
 ```
 
-`origin/main` was fetched and equals `AUDIT_BASE`. PRs #175, #176 and #177 are merged. Upstream is
-recorded for provenance only and was not integrated.
+`origin/main` was fetched and equals `AUDIT_BASE`. The accepted C0-04 predecessor sequence is:
+
+```text
+PR #178  C0-04 intermediate checkpoint/inference contract
+  reviewed head=3c8104eff4835494db2eadc49e712c28b1f6b7ce
+  merge=5b4c1ab741e2c098febd83003b32770743c34954
+PR #179  C0-04A Environment V1 tie-totality characterization
+  reviewed head=cb677f76aa72085e2935b37df0afffcf7005309e
+  merge=51a01e1d9baa4f33e5bfc049443e95d00d2291c3
+PR #180  C0-04B policy RNG and symmetry-resolution contract
+  reviewed head=5af00e2547044908f95bda840a1a4b1034cab118
+  merge=b483d322f67dc22eadc3b2b249767fd2b68d451b
+```
+
+The PR #180 merge parents are `51a01e1d9baa4f33e5bfc049443e95d00d2291c3` and
+`5af00e2547044908f95bda840a1a4b1034cab118`. Upstream is recorded for provenance only and was not
+integrated.
 
 The accepted state is:
 
@@ -119,6 +136,8 @@ The checkpoint must consume, without weakening:
 | [`c0-model-facing-sample-and-candidate-scoring-contract-v1.md`](c0-model-facing-sample-and-candidate-scoring-contract-v1.md) | Exact input feature admission, complete legal domain, candidate scoring, structured choice and semantic label binding. |
 | [`c0-split-and-frozen-evaluation-contract-v1.md`](c0-split-and-frozen-evaluation-contract-v1.md) | Exact dataset/split provenance, immutable offline test and frozen gameplay jobs. |
 | [`c0-sequence-reset-and-recurrent-derived-view-contract-v1.md`](c0-sequence-reset-and-recurrent-derived-view-contract-v1.md) | Recurrent stream identity, state ownership, reset, previous-choice, causality, window and burn-in semantics. |
+| [`c0-environment-v1-tie-totality-characterization-2026-09-12.md`](c0-environment-v1-tie-totality-characterization-2026-09-12.md) | C0-04A source characterization: deterministic Environment V1 totality is not available for reachable symmetric choices. |
+| [`c0-policy-rng-and-symmetry-resolution-contract-v1.md`](c0-policy-rng-and-symmetry-resolution-contract-v1.md) | C0-04B accepted Selection V2 and PolicyTieRng V1 symmetry-resolution contract. |
 | `TrajectoryV1` | Authoritative accepted source episode and policy/data provenance. |
 | `A3SemanticJson` | Existing strict canonical JSON and SHA-256 convention for conceptual identity preimages. |
 | current replay contracts | Factual game/replay proof only; replay checkpoints are not model checkpoints. |
@@ -157,6 +176,8 @@ The exact source authority includes:
 | [`c0-model-facing-sample-and-candidate-scoring-contract-v1.md`](c0-model-facing-sample-and-candidate-scoring-contract-v1.md) | Accepted model-facing contract and deferred C0-04 decisions. |
 | [`c0-split-and-frozen-evaluation-contract-v1.md`](c0-split-and-frozen-evaluation-contract-v1.md) | Accepted split/evaluation contract. |
 | [`c0-sequence-reset-and-recurrent-derived-view-contract-v1.md`](c0-sequence-reset-and-recurrent-derived-view-contract-v1.md) | Accepted recurrent state/history contract. |
+| [`c0-environment-v1-tie-totality-characterization-2026-09-12.md`](c0-environment-v1-tie-totality-characterization-2026-09-12.md) | Accepted C0-04A deterministic tie-totality characterization. |
+| [`c0-policy-rng-and-symmetry-resolution-contract-v1.md`](c0-policy-rng-and-symmetry-resolution-contract-v1.md) | Accepted C0-04B policy RNG and symmetry-resolution contract. |
 | [`docs/ai/training-data.md`](../../docs/ai/training-data.md) | Legacy Phase-9/ECL artifact boundary; not C0 model/checkpoint authority. |
 | Issue [#124](https://github.com/chrismaghuhn/argentum-engine/issues/124) | C0/C1 roadmap authority. |
 | Issue [#137](https://github.com/chrismaghuhn/argentum-engine/issues/137) | Replaceable physical learner/artifact tooling boundary. |
@@ -381,9 +402,9 @@ checkpointIdentityPayload = {
   "weightArtifactIdentity": { "container": ..., "artifact": ... },
   "weightContentDigest": ...,
   "inferenceContractIdentity": "argentum-ml-inference@v1",
-  "selectionContractIdentity": "argentum-ml-policy-selection@v1",
+  "selectionContractIdentity": "argentum-ml-policy-selection@v2",
   "requiredNumericProfileClass": ...,
-  "policyRngContractIdentity": "NONE_FOR_DETERMINISTIC_MODE" | ...,
+  "policyRngContractIdentity": "argentum-ml-policy-tie-rng@v1" | "NONE_FOR_DETERMINISTIC_MODE",
   "trainingRecipeIdentity": ... | null,
   "trainingRunIdentity": ... | null,
   "parentCheckpointIdentity": ... | null,
@@ -401,6 +422,21 @@ may resolve to this ID but cannot replace it. The `...` markers above stand for 
 field values supplied by a future concrete manifest; they do not mean that fields may be omitted or
 left unspecified. Optional non-applicable values are explicit `null`, while feed-forward and
 deterministic-RNG cases use the declared sentinel strings.
+
+The current accepted total Environment V1 profile is an exact compatibility pair:
+
+```text
+ENVIRONMENT_V1_BASELINE_SELECTION_CONTRACT=argentum-ml-policy-selection@v2
+ENVIRONMENT_V1_BASELINE_POLICY_RNG_CONTRACT=argentum-ml-policy-tie-rng@v1
+CHECKPOINT_OWNS_POLICY_RNG_ALGORITHM=YES
+CHECKPOINT_OWNS_CONCRETE_POLICY_SEED=NO
+SELECTION_CONTRACT_MISMATCH=FAIL_CLOSED
+POLICY_RNG_CONTRACT_MISMATCH=FAIL_CLOSED
+```
+
+The historical `argentum-ml-policy-selection@v1` plus
+`NONE_FOR_DETERMINISTIC_MODE` remains a distinct valid versioned profile, but it is not silently
+interpreted as the accepted total Environment V1 baseline.
 
 ## 9. Checkpoint provenance versus model input
 
@@ -517,6 +553,10 @@ SCORE_BITWISE_REPRODUCIBILITY=
 Within one exact certified profile, any score divergence that changes semantic selection is a
 failure of that profile's certification. Across profiles, equal choices are evidence only after a
 conformance campaign.
+
+Reproducibility here means the same exact semantic choice under the same declared inputs and
+contracts. It does not mean that every accepted policy path is purely deterministic from
+observation: unresolved exact symmetry uses the explicitly bound PolicyTieRng state.
 
 ## 13. Numeric execution profile
 
@@ -656,20 +696,53 @@ No positional repair, domain clipping or hidden fallback is allowed.
 
 ## 18. Selection modes
 
-The selection contract is:
+The finalized selection contract identities are:
 
 ```text
-SELECTION_CONTRACT_ID=argentum-ml-policy-selection@v1
-SELECTION_MODE_INITIAL=DETERMINISTIC_ARGMAX
+SELECTION_CONTRACT_ID=argentum-ml-policy-selection@v2
+SELECTION_V1_CONTRACT_ID=argentum-ml-policy-selection@v1
+POLICY_RNG_CONTRACT_ID=argentum-ml-policy-tie-rng@v1
+SELECTION_V1_MODE=DETERMINISTIC_ARGMAX
 ```
 
-The initial deterministic mode selects the highest finite score among source-authorized executable
+The deterministic subset selects the highest finite score among source-authorized executable
 choices. It consumes no policy RNG:
 
 ```text
 DETERMINISTIC_ARGMAX_CONSUMES_POLICY_RNG=NO
 DETERMINISTIC_POLICY_INFERENCE_SUPPORTED=YES
 ```
+
+Selection V1 remains a valid historical contract:
+
+```text
+SELECTION_V1_VALID_CONTRACT=YES
+SELECTION_V1_CONTRACT_ID=argentum-ml-policy-selection@v1
+SELECTION_V1_MODE=DETERMINISTIC_ARGMAX
+POLICY_RNG_CONTRACT_ID=NONE_FOR_DETERMINISTIC_MODE
+SELECTION_V1_POLICY_RNG_CONTRACT=NONE_FOR_DETERMINISTIC_MODE
+SELECTION_V1_ENVIRONMENT_V1_TOTAL_POLICY=NO
+```
+
+It selects the highest finite score among source-authorized executable choices, consumes no policy
+RNG, and fails closed when an exact tie has no invariant semantic discriminator. Its deterministic
+semantics remain versioned and are not silently redefined.
+
+The accepted complete Environment V1 baseline is Selection V2:
+
+```text
+SELECTION_CONTRACT_ID=argentum-ml-policy-selection@v2
+POLICY_RNG_CONTRACT_ID=argentum-ml-policy-tie-rng@v1
+SELECTION_MODE=ARGMAX_WITH_UNIFORM_UNRESOLVED_TIE_SAMPLING
+DETERMINISTIC_ARGMAX_CONSUMES_POLICY_RNG=NO
+GENERAL_STOCHASTIC_POLICY_SAMPLING_SUPPORTED=NO
+STOCHASTIC_SYMMETRY_RESOLUTION_SUPPORTED=YES
+```
+
+Selection V2 keeps deterministic argmax wherever possible. A unique maximum and an exact
+max-score tie resolved by a valid invariant semantic discriminator both consume zero policy-RNG
+words. Only an unresolved exact max-score tie invokes the uniform PolicyTieRng V1 path defined by
+C0-04B.
 
 Scores are finite comparable policy scores within one decision boundary. They are not automatically
 probabilities, calibrated utilities, Q-values or value estimates.
@@ -698,8 +771,8 @@ source-semantic discriminator is unavailable, deterministic selection fails clos
 UNRESOLVED_DETERMINISTIC_TIE=FAIL_CLOSED
 ```
 
-It never silently uses the first row or becomes stochastic. A future stochastic selection contract
-may resolve it only with an explicitly supported policy RNG.
+It never silently uses the first row. Under historical Selection V1 it fails closed; under the
+accepted Selection V2 it is resolved only by the explicitly supported PolicyTieRng V1 contract.
 
 For structured decisions, tie keys are typed semantic options/prefixes under the source domain.
 There is no global integer-option tie vocabulary. If a structured prefix has no unique accepted
@@ -707,10 +780,10 @@ semantic discriminator, the decoder fails closed rather than heuristically compl
 
 ### Deterministic baseline totality
 
-The deterministic selection mode is defined, but its totality over the policy-owned Environment V1
-decision surface is not established by this source audit. C0-01 explicitly permits distinct
-semantic choices to have identical feature representations, including perfectly symmetric choices
-that no invariant deterministic selector can distinguish.
+The deterministic selection mode is defined, and C0-04A established that it is not total over the
+policy-owned Environment V1 decision surface. C0-01 permits distinct semantic choices to have
+identical feature representations, including perfectly symmetric choices that no invariant
+deterministic selector can distinguish.
 
 Therefore:
 
@@ -718,16 +791,31 @@ Therefore:
 C0_TIE_BREAK_CONTRACT=PASS
   failure behavior is defined and remains fail-closed
 
-C0_DETERMINISTIC_SELECTION_CONTRACT=CHANGES_REQUIRED_FOR_TOTAL_POLICY
-C0_DETERMINISTIC_INFERENCE_CONTRACT=CHANGES_REQUIRED_FOR_TOTAL_POLICY
+C0_DETERMINISTIC_SELECTION_CONTRACT=PASS
+C0_DETERMINISTIC_INFERENCE_CONTRACT=PASS
 C0_04_DETERMINISTIC_BASELINE_READY=NO
-OPEN_C0_BLOCKERS=TIE_BREAK_IDENTITY_GAP
+OPEN_C0_BLOCKERS=NONE
 ```
 
-`C0_04A_ENVIRONMENT_V1_TIE_TOTALITY_CHARACTERIZATION` must determine whether every reachable
-policy-owned tie has a permitted invariant semantic discriminator or whether a separately accepted
-policy-RNG/symmetry-resolution contract is required. Physical row order, raw `EntityId`, candidate
+`C0_04A_ENVIRONMENT_V1_TIE_TOTALITY_CHARACTERIZATION` established that reachable symmetric choices
+can lack a permitted invariant semantic discriminator. C0-04B supplied the separately accepted
+policy-RNG/symmetry-resolution contract. Physical row order, raw `EntityId`, candidate
 JSON containing runtime IDs and batch indexes remain forbidden shortcuts.
+
+The merged C0-04A/B evidence now closes the total-policy mechanism without changing the historical
+deterministic result:
+
+```text
+C0_04A_CHARACTERIZATION_PASS=YES
+C0_04B_SPECIFICATION_PASS=YES
+DETERMINISTIC_POLICY_TOTALITY=NO
+TIE_BREAK_IDENTITY_GAP=CLOSED_BY_POLICY_RNG_CONTRACT
+C0_TIE_BREAK_CONTRACT=PASS
+C0_TOTAL_POLICY_SELECTION_CONTRACT=PASS
+SOURCE_BINDING_ORDINAL_AS_MODEL_FEATURE=NO
+SOURCE_BINDING_ORDINAL_AS_DETERMINISTIC_PREFERENCE=NO
+SOURCE_BINDING_ORDINAL_AS_UNIFORM_SAMPLE_ADDRESS=YES
+```
 
 ## 20. Structured decoding
 
@@ -735,61 +823,73 @@ Flat candidates, folded decision options and structured choices use the same aut
 
 | Domain | Score source | Mask authority | Deterministic selection | RNG use |
 | --- | --- | --- | --- | --- |
-| Flat action candidates | Model candidate scorer, one score per supplied candidate. | C0-01 complete domain and executable-support mask. | Finite argmax, semantic tie key or fail closed. | None in v1. |
-| Folded decision options | Model scorer over supplied semantic decision options. | C0-01 folded domain and executable support. | Finite argmax, semantic tie key or fail closed. | None in v1. |
-| Structured choices | Model-owned typed component/prefix or complete-response scorer. | Exact source typed domain and completion predicate. | Finite typed argmax, semantic tie key or fail closed. | None in v1. |
+| Flat action candidates | Model candidate scorer, one score per supplied candidate. | C0-01 complete domain and executable-support mask. | V1 finite argmax/tie key or fail closed; V2 adds uniform unresolved-tie resolution. | V1 none; V2 PolicyTieRng V1 only for unresolved exact ties. |
+| Folded decision options | Model scorer over supplied semantic decision options. | C0-01 folded domain and executable support. | V1 finite argmax/tie key or fail closed; V2 adds uniform unresolved-tie resolution. | V1 none; V2 PolicyTieRng V1 only for unresolved exact ties. |
+| Structured choices | Model-owned typed component/prefix or complete-response scorer. | Exact source typed domain and completion predicate. | V1 finite typed argmax/tie key or fail closed; V2 adds uniform unresolved-tie resolution. | V1 none; V2 PolicyTieRng V1 only for unresolved exact ties. |
 
 Structured decoding must preserve full payment, target, combat, ordering and other C0-01 semantics.
 It may not deterministically score a root and then choose payment, target or order with AutoPay,
-cheapest-source, first-legal, lexicographic-row or random fallback. A dead-end prefix or invalid
-semantic response is a visible failure.
+cheapest-source, first-legal, lexicographic-row or an unbound random fallback. A dead-end prefix or
+invalid semantic response is a visible failure. Selection V2 may sample only from the complete
+validated unresolved tie set through the C0-04B inverse source binding.
 
 ## 21. Policy RNG boundary
 
 The three RNG domains remain separate:
 
 ```text
-ENGINE_RNG != POLICY_INFERENCE_RNG != TRAINING_RNG
+ENGINE_RNG != POLICY_TIE_RNG != TRAINING_RNG
 ```
 
-The engine RNG is Argentum environment authority. `PolicyProvenanceV1.policySeed` currently records
-collection-policy provenance; it is not silently promoted to a future model-inference RNG. Training
-initialization, minibatch shuffle, dropout, augmentation and optimizer randomness are training
+The engine RNG is Argentum environment authority. `PolicyProvenanceV1.policySeed` remains concrete
+evaluation/collection-job provenance and is not checkpoint identity or engine RNG state. It supplies
+the root seed bits to PolicyTieRng only when the exact C0-04B identity gate is declared. Training
+initialization, minibatch shuffle, dropout, augmentation and optimizer randomness remain training
 provenance, not policy selection randomness.
 
-No exact reusable stochastic policy RNG algorithm is currently defined by the repository or the
-accepted C0 contracts. V1 deliberately supports deterministic selection only:
+C0-04B is the authoritative detailed PolicyTieRng V1 specification, including stream derivation,
+uniform sampling, source binding, known-answer tests and lifecycle. C0-04 adopts it without
+duplicating its algorithm:
 
 ```text
-POLICY_RNG_CONTRACT_ID=NONE_FOR_DETERMINISTIC_MODE
-STOCHASTIC_POLICY_INFERENCE_SUPPORTED=NO
-STOCHASTIC_UNSUPPORTED_BEHAVIOR=FAIL_CLOSED
+POLICY_RNG_CONTRACT_ID=argentum-ml-policy-tie-rng@v1
+POLICY_RNG_SCOPE=one evaluation episode x one policy instance
+GENERAL_STOCHASTIC_POLICY_SAMPLING_SUPPORTED=NO
+SOFTMAX_ACTION_SAMPLING_SUPPORTED=NO
+TEMPERATURE_SAMPLING_SUPPORTED=NO
+STOCHASTIC_SYMMETRY_RESOLUTION_SUPPORTED=YES
+UNRESOLVED_EXACT_TIE_SYMMETRY_SAMPLING=YES
+POLICY_RNG_STATE_AS_MODEL_INPUT=NO
+ENGINE_RNG_EQUALS_POLICY_TIE_RNG=NO
+TRAINING_RNG_EQUALS_POLICY_TIE_RNG=NO
 ```
 
-If a future stochastic mode is accepted, its versioned contract must freeze:
+The stream key uses only schema, policySeedBitsHex and seatIndex. In particular:
 
 ```text
-exact RNG algorithm/version
-seed representation
-stream identity
-initialization/derivation
-cursor/state semantics
-draw consumption
-reset semantics
-sampling algorithm
-probability conversion
+SEMANTIC_EPISODE_ID_AS_POLICY_RNG_INPUT=NO
+ENGINE_SEED_AS_POLICY_RNG_INPUT=NO
+HIDDEN_WORLD_IDENTITY_AS_POLICY_RNG_INPUT=NO
+CHECKPOINT_OWNS_POLICY_RNG_ALGORITHM=YES
+CHECKPOINT_OWNS_CONCRETE_POLICY_SEED=NO
 ```
 
-The future scope is:
+Each player/policy instance gets independent state. There is no cross-player or cross-episode
+cursor, batch-slot ownership or initialization from wall clock, PID, thread, Python/NumPy/framework/
+CUDA global state or filesystem path. Selection V1 retains the deterministic sentinel from Section
+18; Selection V2 requires PolicyTieRng V1 for an unresolved exact tie.
+
+The lifecycle boundary is explicit:
 
 ```text
-POLICY_RNG_SCOPE=one environment episode x one policy instance
+ENVIRONMENT_RESTORE != POLICY_RNG_STATE_RESTORE
+POLICY_RNG_FORK_COPIES_STATE=YES
+POLICY_RNG_FORKS_SHARE_MUTABLE_CURSOR=NO
+POLICY_RNG_RESTORE_REQUIRES=
+  EXACT_SAVED_POLICY_RNG_STATE
+  or
+  EXACT_RECOMPUTATION_FROM_POLICY_INFERENCE_HISTORY
 ```
-
-Each player gets an independent RNG state. There is no cross-player or cross-episode cursor,
-batch-slot ownership or initialization from wall clock, PID, thread, Python/NumPy/framework/CUDA
-global state or filesystem path. The evaluation job supplies the concrete RNG seed/state; the
-checkpoint supplies only a supported RNG contract.
 
 ## 22. Inference mode and hidden framework randomness
 
@@ -808,7 +908,8 @@ framework global RNG
 CUDA RNG
 ```
 
-Any intentional stochastic model internals require separately owned explicit RNG streams. No such
+PolicyTieRng is explicit downstream selection machinery, not stochastic model internals. Any future
+intentional stochastic model internals would require separately owned explicit RNG streams; no such
 architecture is selected by C0-04.
 
 ## 23. Contract bindings for inference
@@ -819,12 +920,23 @@ Checkpoint compatibility requires the exact accepted identities:
 MODEL_FACING_CONTRACT_ID=argentum-ml-model-facing-decision-sample@v1
 SPLIT_CONTRACT_ID=argentum-ml-dataset-split@v1
 RECURRENT_SEQUENCE_CONTRACT_ID=argentum-ml-recurrent-sequence@v1 when recurrent
+SELECTION_CONTRACT_ID=argentum-ml-policy-selection@v2
+POLICY_RNG_CONTRACT_ID=argentum-ml-policy-tie-rng@v1
 ```
 
 A feed-forward checkpoint uses `NONE_FOR_FEED_FORWARD` for recurrent sequence identity. A recurrent
 checkpoint missing the C0-03 sequence/reset/history identity is invalid. A checkpoint built for a
 different model-facing, candidate-scoring, split, vocabulary or recurrent contract cannot run
 silently.
+
+For the accepted complete Environment V1 baseline, a checkpoint must bind Selection V2 together
+with PolicyTieRng V1. Selection V1 plus NONE_FOR_DETERMINISTIC_MODE remains a historical profile and
+cannot be silently migrated to the V2 total-policy baseline:
+
+```text
+SELECTION_CONTRACT_MISMATCH=FAIL_CLOSED
+POLICY_RNG_CONTRACT_MISMATCH=FAIL_CLOSED
+```
 
 Vocabulary/tokenizer identity is required whenever categorical or free-text processing is used:
 
@@ -848,6 +960,10 @@ selection mode
 policy RNG contract identity
 policy RNG seed/state when stochastic
 ```
+
+The checkpoint binds the supported PolicyTieRng algorithm, while the concrete policySeed and
+per-policy runtime state remain evaluation/collection-job provenance. The stream key intentionally
+excludes checkpoint identity and semantic episode identity; C0-04B owns that privacy boundary.
 
 For recurrent evaluation, C0-03 additionally remains authoritative:
 
@@ -891,6 +1007,15 @@ C0-01/C0-02/C0-03 input contracts
 numeric execution profile
 selection mode
 policy RNG contract and job seeds where relevant
+```
+
+For the accepted V2 model-only comparison, both runs use the same policySeed, seatIndex, Selection
+V2, PolicyTieRng V1, numeric profile and initial policy-RNG state. The checkpoint identity is the
+only changed causal policy artifact:
+
+```text
+A_B_POLICY_RNG_INITIALIZATION_IDENTICAL=YES
+COMMON_RANDOMNESS_AFTER_POLICY_DIVERGENCE=NOT_GUARANTEED
 ```
 
 Change only:
@@ -984,22 +1109,33 @@ exact tie -> semantic tie result or fail closed
 hidden framework RNG -> detected/forbidden
 ```
 
-If stochastic inference is ever separately supported, also prove:
+The accepted Selection V2 tie path must prove:
 
 ```text
-same policy RNG seed/state -> same samples
+same policy RNG contract, seed, seat and state -> same sampled semantic tie member
 different players -> independent RNG state
-new episode -> declared RNG reset/derivation
-no draw-consumption drift
+new episode -> fresh declared state at cursor zero
+every attempted raw word -> exactly one cursor increment
 batch order -> no RNG stream reassignment
-unsupported RNG version -> fail closed
+fork/restore -> exact copied or exactly reconstructed policy state
+unsupported RNG or selection version -> fail closed
 ```
+
+This conformance obligation is limited to unresolved exact-tie symmetry. General stochastic action
+sampling remains unsupported.
 
 No conformance corpus, checkpoint, tensor, learner or model implementation is created here.
 
 ## 30. Deterministic inference examples
 
 ### 30.1 Flat candidates
+
+For a unique maximum, Selection V2 is deterministic and consumes no policy-RNG word:
+
+    candidate A: score=0.90, executable=true
+    candidate B: score=0.80, executable=true
+    chosen=A
+    policy RNG draw count=0
 
 Suppose a source complete domain supplies three candidates in physical order `[C, A, B]`:
 
@@ -1014,7 +1150,7 @@ and `B` tie exactly; deterministic selection compares their unique source-semant
 `K_A` is lexicographically before `K_B`, the chosen semantic candidate is `A`, independent of the
 physical row order. The first array row is never an allowed tie-break.
 
-### 30.2 Exact tie without a discriminator
+### 30.2 Selection V1 historical tie and V2 resolution
 
 ```text
 A score=1.0
@@ -1027,9 +1163,23 @@ If no accepted unique source-semantic discriminator exists:
 UNRESOLVED_DETERMINISTIC_TIE=FAIL_CLOSED
 ```
 
-No first-row choice and no random fallback is allowed.
+Selection V1 makes no first-row choice and fails closed. Under the accepted Selection V2, the same
+unresolved exact tie is sampled uniformly through PolicyTieRng V1 after complete source binding.
+The source-binding ordinal is only the uniform sample address; it is not a model feature or
+deterministic preference. This is symmetry resolution, not general stochastic policy sampling.
 
-### 30.3 Backend profiles
+### 30.3 Duplicate Plains under Selection V2
+
+    Plains-A score=0.75, executable=true
+    Plains-B score=0.75, executable=true
+    invariant semantic discriminator=none
+    source-binding ordinal -> uniform sample address only
+    PolicyTieRng V1 -> exact source action
+
+The inverse source binding travels with each semantic candidate, so a physical permutation does not
+change the sampled source choice or its probability.
+
+### 30.4 Backend profiles
 
 The same checkpoint and model-facing input run under a certified CPU profile and an uncertified GPU
 profile. Equal output choices do not make the profiles equivalent automatically:
@@ -1045,7 +1195,7 @@ cross-profile certification = NOT_ESTABLISHED without a conformance campaign
 If a declared conformance corpus proves equal semantic choices, that is evidence for the exact
 profile pair only; it is not an assumption about all devices, kernels or inputs.
 
-### 30.4 Recurrent input
+### 30.5 Recurrent input
 
 ```text
 same checkpoint
@@ -1056,21 +1206,22 @@ is insufficient to reproduce a recurrent decision without the same accepted prio
 history or an exact checkpoint-bound hidden-state cache. C0-03 owns that history/state semantics;
 C0-04 does not serialize the state into `TrajectoryV1`.
 
-### 30.5 Unsupported stochastic selection
+### 30.6 Unsupported general stochastic sampling
 
 ```text
-STOCHASTIC_SAMPLE requested
-no accepted policy RNG algorithm
+SOFTMAX_ACTION_SAMPLING requested
+GENERAL_STOCHASTIC_POLICY_SAMPLING_SUPPORTED=NO
   -> FAIL_CLOSED
 ```
 
-The deterministic mode is specified without stochastic inference, but total baseline readiness
-remains blocked by the unresolved Environment V1 tie-totality question:
+The deterministic mode remains fully specified and intentionally non-total on unresolved symmetry;
+Selection V2 supplies the complete Environment V1 path only for that exact-tie case:
 
 ```text
 C0_04_DETERMINISTIC_MODE_DEFINED=YES
 C0_04_DETERMINISTIC_BASELINE_READY=NO
-C0_04_ALL_FUTURE_STOCHASTIC_MODES_READY=NO
+C0_04_REPRODUCIBLE_POLICY_BASELINE_READY=YES
+STOCHASTIC_SYMMETRY_RESOLUTION_SUPPORTED=YES
 ```
 
 ## 31. Versioning
@@ -1102,6 +1253,8 @@ Future checkpoint loading/inference fails closed on:
 ```text
 unknown checkpoint manifest version
 unknown policy artifact kind
+unknown selection contract version
+unknown policy RNG contract version
 checkpoint ID mismatch
 weight content digest mismatch
 missing/incompatible model config
@@ -1114,25 +1267,31 @@ model-facing contract mismatch
 candidate/domain contract mismatch
 recurrent sequence contract mismatch
 unsupported numeric profile
+selection contract mismatch
+policy RNG contract mismatch
 unsupported selection mode
 NaN/Inf output
 candidate-count or executable-mask mismatch
-unresolved deterministic tie
-unsupported stochastic RNG contract
-missing policy RNG state when stochastic
+unresolved Selection V1 deterministic tie
+unsupported PolicyTieRng V1 when required by Selection V2
+missing concrete policy seed
+missing policy RNG state on an unresolved tie
+RNG cursor exhaustion
+invalid inverse source binding
+structured RNG binding gap
 structured decoder dead end
 invalid semantic response
 ```
 
 No hidden fallback, partial load, automatic reshape/cast, candidate truncation, AutoPay, first legal
-choice, random retry or heuristic structured completion is permitted. A loaded but uncertified
+choice, unbound random retry or heuristic structured completion is permitted. A loaded but uncertified
 numeric profile is:
 
 ```text
 TRUSTED_EVALUATION=BLOCKED
 ```
 
-The focused blocker classes are:
+The focused failure classes are:
 
 ```text
 CHECKPOINT_IDENTITY_GAP
@@ -1147,9 +1306,16 @@ STRUCTURED_INFERENCE_SELECTION_GAP
 CHECKPOINT_COMPATIBILITY_GAP
 ```
 
-The absence of a stochastic RNG algorithm is not a deterministic-baseline blocker because
-`STOCHASTIC_POLICY_INFERENCE_SUPPORTED=NO` is explicit and deterministic argmax fails closed on
-unsupported requests.
+C0-04A historically established that deterministic argmax is not total over Environment V1. C0-04B
+supplies the accepted PolicyTieRng V1 path for the remaining unresolved exact ties. The current
+complete baseline therefore fails closed on any missing or mismatched Selection V2/RNG binding, but
+has no open C0 blocker:
+
+```text
+OPEN_C0_BLOCKERS=NONE
+DETERMINISTIC_POLICY_TOTALITY=NO
+TOTAL_POLICY_SELECTION_WITH_DECLARED_RNG=YES
+```
 
 ## 33. Identity dependency graph
 
@@ -1167,8 +1333,8 @@ C0-01 model-facing contract
 checkpointId
   + inference contract
   + accepted numeric execution profile
-  + selection mode
-  + policy RNG state when stochastic
+  + Selection V2 contract
+  + PolicyTieRng V1 algorithm contract
   -> reproducible policy execution
 ```
 
@@ -1180,8 +1346,8 @@ No checkpoint identity node grants Rules, legality, observation visibility or re
 C0-02 frozen evaluation job
   + immutable checkpoint identity
   + accepted inference profile
-  + selection contract
-  + policy RNG seed/state where relevant
+  + Selection V2 contract
+  + PolicyTieRng V1 seed/state where an unresolved exact tie occurs
   + C0-03 stream/reset/history semantics when recurrent
   -> policy run
   -> semantic choices
@@ -1227,27 +1393,45 @@ model or inference runner has executed.
 | `C0_WEIGHT_CONTENT_INTEGRITY` | `PASS` | Section 8; exact physical-byte SHA-256 required. |
 | `C0_CHECKPOINT_COMPATIBILITY` | `PASS` | Sections 11-12 and 26; strict contract/version/tensor/profile validation. |
 | `C0_INFERENCE_VS_RESUME_SNAPSHOT_BOUNDARY` | `PASS` | Section 10; inference artifact and training continuation state are separate. |
-| `C0_DETERMINISTIC_INFERENCE_CONTRACT` | `CHANGES_REQUIRED_FOR_TOTAL_POLICY` | Sections 12 and 19; execution semantics are defined, but Environment V1 tie totality is unestablished. |
+| `C0_DETERMINISTIC_INFERENCE_CONTRACT` | `PASS` | Sections 12 and 19; deterministic behavior is fully specified and intentionally non-total on unresolved symmetry. |
 | `C0_NUMERIC_EXECUTION_PROFILE` | `PASS` | Sections 13-14; semantic, certification and operational classes are separated. |
 | `C0_BATCH_COMPOSITION_INVARIANCE` | `PASS` | Section 15; unrelated batch companions cannot affect semantic selection. |
 | `C0_CANDIDATE_PERMUTATION_INVARIANCE` | `PASS` | Section 15; unordered physical permutations preserve semantic choice. |
 | `C0_NONFINITE_OUTPUT_POLICY` | `PASS` | Section 17; NaN/Inf fail closed. |
-| `C0_DETERMINISTIC_SELECTION_CONTRACT` | `CHANGES_REQUIRED_FOR_TOTAL_POLICY` | Sections 18-19; argmax/fail-closed semantics are defined, but unresolved ties prevent a total policy path. |
+| `C0_DETERMINISTIC_SELECTION_CONTRACT` | `PASS` | Sections 18-19; the deterministic subset is fully specified, while Selection V1 remains non-total on unresolved symmetry. |
 | `C0_TIE_BREAK_CONTRACT` | `PASS` | Section 19; semantic discriminator or fail closed, never row order. |
-| `C0_POLICY_RNG_BOUNDARY` | `PASS` | Section 21; engine, inference and training RNG are separate; stochastic mode is unsupported. |
+| `C0_POLICY_RNG_BOUNDARY` | `PASS` | Section 21; engine, PolicyTieRng and training RNG are separate, with C0-04B as the accepted tie-RNG authority. |
+| `C0_POLICY_RNG_PRIVACY_BOUNDARY` | `PASS` | Section 21; engine seed, hidden-world identity and semantic episode identity do not enter PolicyTieRng stream derivation. |
+| `C0_POLICY_RNG_LIFECYCLE_CONTRACT` | `PASS` | Section 21; per-policy ownership, reset, fork-copy and exact restore/recomputation semantics are explicit. |
+| `C0_TOTAL_POLICY_SELECTION_CONTRACT` | `PASS` | Sections 18-21; Selection V2 plus PolicyTieRng V1 covers unresolved exact symmetry without general stochastic sampling. |
 | `C0_STRUCTURED_INFERENCE_CONTRACT` | `PASS` | Section 20; typed complete-domain selection without heuristic fallback. |
 | `C0_EVALUATION_INFERENCE_PROVENANCE` | `PASS` | Section 24; exact checkpoint/profile/selection/RNG bindings required. |
 | `C0_CROSS_BACKEND_CERTIFICATION_BOUNDARY` | `PASS` | Section 14; cross-backend equivalence is not assumed. |
 | `C0_UNKNOWN_VERSION_FAIL_CLOSED` | `PASS` | Sections 11 and 32; unknown versions/kinds/profiles reject. |
 
 ```text
+C0_04A_CHARACTERIZATION_PASS=YES
+C0_04B_SPECIFICATION_PASS=YES
+SELECTION_V1_VALID_CONTRACT=YES
+SELECTION_V1_ENVIRONMENT_V1_TOTAL_POLICY=NO
+ENVIRONMENT_V1_BASELINE_SELECTION_CONTRACT=argentum-ml-policy-selection@v2
+ENVIRONMENT_V1_BASELINE_POLICY_RNG_CONTRACT=argentum-ml-policy-tie-rng@v1
+DETERMINISTIC_POLICY_TOTALITY=NO
+GENERAL_STOCHASTIC_POLICY_SAMPLING_SUPPORTED=NO
+STOCHASTIC_SYMMETRY_RESOLUTION_SUPPORTED=YES
+TOTAL_POLICY_SELECTION_WITH_DECLARED_RNG=YES
+ENGINE_SEED_AS_POLICY_RNG_INPUT=NO
+HIDDEN_WORLD_IDENTITY_AS_POLICY_RNG_INPUT=NO
+SEMANTIC_EPISODE_ID_AS_POLICY_RNG_INPUT=NO
+TIE_BREAK_IDENTITY_GAP=CLOSED_BY_POLICY_RNG_CONTRACT
 C0_04_DETERMINISTIC_BASELINE_READY=NO
-STOCHASTIC_POLICY_INFERENCE_SUPPORTED=NO
-OPEN_C0_BLOCKERS=TIE_BREAK_IDENTITY_GAP
+C0_04_REPRODUCIBLE_POLICY_BASELINE_READY=YES
+OPEN_C0_BLOCKERS=NONE
 SELF_REVIEW_P1=NONE
 SELF_REVIEW_P2=NONE
-C0_04_SPECIFICATION_GATES=PARTIAL; TIE_BREAK_TOTALITY_UNRESOLVED
-C0_04_SPECIFICATION_PASS=NO
+C0_04_SPECIFICATION_GATES=COMPLETE
+C0_04_SPECIFICATION_PASS=YES
+C0_04_FINALIZATION_READY_FOR_ACCEPTANCE=YES
 C0_04_FINAL_ACCEPTANCE_PASS=NO
 INDEPENDENT_EXACT_SHA_REVIEW=PENDING
 STOP_FOR_EXACT_SHA_REVIEW=YES
@@ -1259,7 +1443,9 @@ STOP_FOR_EXACT_SHA_REVIEW=YES
 CHECKPOINT_MANIFEST_CONTRACT_ID=argentum-ml-checkpoint-manifest@v1
 INFERENCE_CONTRACT_ID=argentum-ml-inference@v1
 NUMERIC_EXECUTION_PROFILE_CONTRACT_ID=argentum-ml-numeric-execution-profile@v1
-SELECTION_CONTRACT_ID=argentum-ml-policy-selection@v1
+SELECTION_CONTRACT_ID=argentum-ml-policy-selection@v2
+SELECTION_V1_CONTRACT_ID=argentum-ml-policy-selection@v1
+POLICY_RNG_CONTRACT_ID=argentum-ml-policy-tie-rng@v1
 
 CHECKPOINT_IDENTITY_FORM=
   lineage-bound semantic manifest digest plus exact physical weight-artifact content digest
@@ -1291,33 +1477,46 @@ BATCH_COMPOSITION_AS_POLICY_SEMANTICS=NO
 BATCH_INVARIANT_SEMANTIC_SELECTION=YES
 CANDIDATE_PERMUTATION_INVARIANCE=YES
 NON_FINITE_POLICY_SCORE=FAIL_CLOSED
-SELECTION_MODE_INITIAL=DETERMINISTIC_ARGMAX
+SELECTION_V1_MODE=DETERMINISTIC_ARGMAX
+SELECTION_MODE=ARGMAX_WITH_UNIFORM_UNRESOLVED_TIE_SAMPLING
 DETERMINISTIC_ARGMAX_CONSUMES_POLICY_RNG=NO
 TIE_BREAK_BY_PHYSICAL_ROW_ORDER=NO
-DETERMINISTIC_TIE_BREAK=unique invariant source-semantic discriminator; otherwise fail closed
+DETERMINISTIC_TIE_BREAK=unique invariant source-semantic discriminator; Selection V1 otherwise fail closed
+SELECTION_V2_UNRESOLVED_EXACT_TIE=uniform PolicyTieRng V1 over the complete bound tie set
 C0_TIE_BREAK_CONTRACT=PASS
-C0_DETERMINISTIC_SELECTION_CONTRACT=CHANGES_REQUIRED_FOR_TOTAL_POLICY
-C0_DETERMINISTIC_INFERENCE_CONTRACT=CHANGES_REQUIRED_FOR_TOTAL_POLICY
+C0_DETERMINISTIC_SELECTION_CONTRACT=PASS
+C0_DETERMINISTIC_INFERENCE_CONTRACT=PASS
+C0_TOTAL_POLICY_SELECTION_CONTRACT=PASS
+C0_POLICY_RNG_SYMMETRY_RESOLUTION_CONTRACT=PASS
 C0_04_DETERMINISTIC_BASELINE_READY=NO
+C0_04_REPRODUCIBLE_POLICY_BASELINE_READY=YES
+DETERMINISTIC_POLICY_TOTALITY=NO
+GENERAL_STOCHASTIC_POLICY_SAMPLING_SUPPORTED=NO
+STOCHASTIC_SYMMETRY_RESOLUTION_SUPPORTED=YES
+ENGINE_RNG != POLICY_TIE_RNG != TRAINING_RNG
 
-ENGINE_RNG_EQUALS_POLICY_RNG=NO
-POLICY_INFERENCE_RNG_EQUALS_TRAINING_RNG=NO
-POLICY_RNG_CONTRACT_ID=NONE_FOR_DETERMINISTIC_MODE
+ENGINE_RNG_EQUALS_POLICY_TIE_RNG=NO
+TRAINING_RNG_EQUALS_POLICY_TIE_RNG=NO
 DETERMINISTIC_POLICY_INFERENCE_SUPPORTED=YES
-STOCHASTIC_POLICY_INFERENCE_SUPPORTED=NO
-STOCHASTIC_UNSUPPORTED_BEHAVIOR=FAIL_CLOSED
-POLICY_RNG_SCOPE=one environment episode x one policy instance when later supported
+POLICY_RNG_SCOPE=one evaluation episode x one policy instance
+POLICY_RNG_STATE_AS_MODEL_INPUT=NO
 HIDDEN_FRAMEWORK_RNG_ALLOWED=NO
 STRUCTURED_INFERENCE_HIDDEN_FALLBACK=NO
 
 EVALUATION_BINDS_EXACT_CHECKPOINT=YES
 EVALUATION_BINDS_NUMERIC_PROFILE=YES
 EVALUATION_BINDS_SELECTION_MODE=YES
-EVALUATION_BINDS_POLICY_RNG_WHEN_STOCHASTIC=YES
+EVALUATION_BINDS_SELECTION_CONTRACT=YES
+EVALUATION_BINDS_POLICY_RNG_WHEN_UNRESOLVED_TIE=YES
+CHECKPOINT_OWNS_POLICY_RNG_ALGORITHM=YES
+CHECKPOINT_OWNS_CONCRETE_POLICY_SEED=NO
+SEMANTIC_EPISODE_ID_AS_POLICY_RNG_INPUT=NO
+ENGINE_SEED_AS_POLICY_RNG_INPUT=NO
+HIDDEN_WORLD_IDENTITY_AS_POLICY_RNG_INPUT=NO
 ```
 
 ```text
-NEXT_REQUIRED=C0_04A_ENVIRONMENT_V1_TIE_TOTALITY_CHARACTERIZATION
+NEXT_REQUIRED=C0_04_FINAL_ACCEPTANCE_AFTER_INDEPENDENT_EXACT_SHA_REVIEW
 NEXT_TASK_STARTED=NO
 ```
 
@@ -1339,11 +1538,23 @@ The requested delivery state is:
 one documentation commit
 Draft PR against chrismaghuhn/argentum-engine:main
 PR state remains DRAFT
-no Ready-for-review transition
-no merge
+C0_04_FINALIZATION_READY_FOR_ACCEPTANCE=YES
+C0_04_FINAL_ACCEPTANCE_PASS=NO
+STOP_FOR_EXACT_SHA_REVIEW=YES
 no C0_05/C1/training start
 ```
 
 The Draft PR must state that C0-01, C0-02 and C0-03 are preserved, no model/checkpoint/learner or
 schema/production work was performed, and the unrelated `StackResolver.kt` change in the original
 checkout was not staged, reset, stashed, cleaned, edited, reformatted or included.
+
+## 39. Expected post-acceptance state
+
+After independent exact-SHA review passes, Hosted CI passes on that exact head and the Draft PR is
+merged, no additional semantic C0-04 work is required:
+
+    C0_04_SPECIFICATION_PASS=YES
+    C0_04_FINAL_ACCEPTANCE_PASS=YES
+    C0_04_FINALIZATION_COMPLETE=YES
+    NEXT_RECOMMENDED_TASK=C0_05_TEACHER_BOOTSTRAP_AND_VALUE_REWARD_BOUNDARY_CONTRACT
+    C0_05_STARTED=NO
