@@ -715,17 +715,87 @@ def _validate_action_choice_payload(candidate: dict[str, Any], chosen: dict[str,
             raise DerivedArtifactError("manaColorChoice is outside the source domain")
     if "paymentStrategy" in payload:
         _validate_payment_strategy(candidate, payload["paymentStrategy"], payload)
-    for key in ("attackers", "bands", "blockers", "orderedBlockers"):
-        if key in payload:
-            if candidate.get("attackDeclarationDomain") is None and key in {"attackers", "bands"}:
-                raise DerivedArtifactError("attack declaration has no complete source domain")
-            if candidate.get("blockerDeclarationDomain") is None and key in {"blockers", "orderedBlockers"}:
-                raise DerivedArtifactError("blocker declaration has no complete source domain")
-            _validate_payload_references_against_candidate(candidate, payload[key], key)
+    if "attackers" in payload or "bands" in payload:
+        _validate_attack_declaration_payload(candidate, payload)
+    if "blockers" in payload:
+        _validate_blocker_declaration_payload(candidate, payload["blockers"])
+    if "orderedBlockers" in payload:
+        _validate_blocker_order_payload(candidate, payload["orderedBlockers"])
     for key in ("costPayment", "additionalCostPayment"):
         if key in payload:
             _expect_object(payload[key], key)
             _validate_payload_references_against_candidate(candidate, payload[key], key)
+
+
+def _validate_attack_declaration_payload(candidate: dict[str, Any], payload: dict[str, Any]) -> None:
+    domain = _expect_object(candidate.get("attackDeclarationDomain"), "attackDeclarationDomain")
+    _expect_keys(domain, {"version", "attackerOrder", "attackerToDefenders", "mandatoryAttackers", "canDeclareZeroAttackers", "maxAttackers", "coAttackerRequirements", "bandConstraints"}, "attackDeclarationDomain")
+    if domain["version"] != 2:
+        raise DerivedArtifactError("unsupported attack declaration domain")
+    attackers = _expect_object(payload.get("attackers"), "attackers")
+    order = _expect_string_list(domain["attackerOrder"], "attackerOrder")
+    allowed_by_attacker = _expect_object(domain["attackerToDefenders"], "attackerToDefenders")
+    if any(attacker not in order for attacker in attackers):
+        raise DerivedArtifactError("attack declaration contains an outside attacker")
+    for attacker, defender in attackers.items():
+        if not isinstance(defender, str) or defender not in _expect_string_list(allowed_by_attacker.get(attacker, []), f"attackers[{attacker}] defenders"):
+            raise DerivedArtifactError("attack declaration selects an outside defender")
+    mandatory = set(_expect_string_list(domain["mandatoryAttackers"], "mandatory attackers"))
+    if not mandatory.issubset(attackers):
+        raise DerivedArtifactError("attack declaration omits a mandatory attacker")
+    maximum = domain["maxAttackers"]
+    if maximum is not None and len(attackers) > _expect_int(maximum, "maximum attackers", nonnegative=True):
+        raise DerivedArtifactError("attack declaration exceeds the source maximum")
+    if not domain["canDeclareZeroAttackers"] and not attackers:
+        raise DerivedArtifactError("attack declaration cannot be empty")
+    bands = _expect_list(payload.get("bands", []), "attack bands")
+    seen: set[str] = set()
+    for band in bands:
+        members = _string_set(band, "attack band")
+        if len(members) < 2 or seen.intersection(members) or not members.issubset(attackers):
+            raise DerivedArtifactError("attack band is outside the source declaration")
+        seen.update(members)
+
+
+def _validate_blocker_declaration_payload(candidate: dict[str, Any], value: Any) -> None:
+    domain = _expect_object(candidate.get("blockerDeclarationDomain"), "blockerDeclarationDomain")
+    _expect_keys(domain, {"version", "blockerOrder", "attackerOrder", "blockerToAttackers", "maxAttackersByBlocker", "minBlockersByAttacker", "maxBlockersByAttacker", "globalMaxBlockers", "coBlockerRequirements", "requirements", "minimumSatisfiedRequirementCount", "canDeclareZeroBlockers"}, "blockerDeclarationDomain")
+    if domain["version"] != 1:
+        raise DerivedArtifactError("unsupported blocker declaration domain")
+    blockers = _expect_object(value, "blockers")
+    blocker_order = _expect_string_list(domain["blockerOrder"], "blocker order")
+    allowed_by_blocker = _expect_object(domain["blockerToAttackers"], "blockerToAttackers")
+    if any(blocker not in blocker_order for blocker in blockers):
+        raise DerivedArtifactError("blocker declaration contains an outside blocker")
+    for blocker, attackers in blockers.items():
+        selected = _string_set(attackers, f"blockers[{blocker}]")
+        allowed = set(_expect_string_list(allowed_by_blocker.get(blocker, []), f"blockers[{blocker}] domain"))
+        if not selected.issubset(allowed):
+            raise DerivedArtifactError("blocker declaration selects an outside attacker")
+        maximum = _expect_object(domain["maxAttackersByBlocker"], "maxAttackersByBlocker").get(blocker)
+        if maximum is not None and len(selected) > _expect_int(maximum, "blocker maximum", nonnegative=True):
+            raise DerivedArtifactError("blocker declaration exceeds a source maximum")
+    if not domain["canDeclareZeroBlockers"] and not blockers:
+        raise DerivedArtifactError("blocker declaration cannot be empty")
+    global_max = domain["globalMaxBlockers"]
+    if global_max is not None and len(blockers) > _expect_int(global_max, "global blocker maximum", nonnegative=True):
+        raise DerivedArtifactError("blocker declaration exceeds the source global maximum")
+
+
+def _validate_blocker_order_payload(candidate: dict[str, Any], value: Any) -> None:
+    domain = _expect_object(candidate.get("blockerDeclarationDomain"), "blockerDeclarationDomain")
+    semantics = _expect_object(candidate.get("actionSemantics"), "actionSemantics")
+    attacker_id = semantics.get("attackerId")
+    if not isinstance(attacker_id, str):
+        raise DerivedArtifactError("blocker order has no source attacker")
+    expected = [
+        blocker
+        for blocker in _expect_string_list(domain.get("blockerOrder"), "blocker order")
+        if attacker_id in _expect_string_list(_expect_object(domain.get("blockerToAttackers"), "blockerToAttackers").get(blocker, []), "blocker relation")
+    ]
+    actual = _expect_string_list(value, "orderedBlockers")
+    if actual != expected:
+        raise DerivedArtifactError("orderedBlockers does not equal the source order")
 
 
 def _validate_action_target_choice(candidate: dict[str, Any], value: Any) -> None:
@@ -841,10 +911,31 @@ def _validate_payment_strategy(candidate: dict[str, Any], value: Any, payload: d
     if strategy.get("type") != "ExplicitV3":
         raise DerivedArtifactError("only ExplicitV3 payment is admitted")
     plan = _expect_object(strategy.get("paymentPlan"), "paymentStrategy.paymentPlan")
-    domain = candidate.get("paymentDomain")
-    if domain is None and candidate.get("targetPaymentDomain") is None:
+    domains: list[dict[str, Any]] = []
+    if candidate.get("paymentDomain") is not None:
+        domains.append(_expect_object(candidate["paymentDomain"], "paymentDomain"))
+    target_payment = candidate.get("targetPaymentDomain")
+    if target_payment is not None:
+        target_domain = _expect_object(target_payment, "targetPaymentDomain")
+        _expect_keys(target_domain, {"version", "targetBindings"}, "targetPaymentDomain")
+        if target_domain["version"] != 1:
+            raise DerivedArtifactError("unsupported target payment domain")
+        selected_targets = [_chosen_target_entity_id(item) for item in _expect_list(payload.get("targets"), "target payment targets")]
+        if len(selected_targets) != 1:
+            raise DerivedArtifactError("target-bound payment requires exactly one selected target")
+        binding = None
+        for raw_binding in _expect_list(target_domain["targetBindings"], "target payment bindings"):
+            candidate_binding = _expect_object(raw_binding, "target payment binding")
+            if candidate_binding.get("target") == selected_targets[0]:
+                binding = candidate_binding
+                break
+        if binding is None or binding.get("affordable") is not True:
+            raise DerivedArtifactError("target-bound payment target is outside or unaffordable")
+        domains.append(_expect_object(binding.get("paymentDomain"), "target payment binding domain"))
+    if not domains:
         raise DerivedArtifactError("payment strategy has no complete source domain")
-    _validate_payment_plan(domain or {}, plan)
+    for domain in domains:
+        _validate_payment_plan(domain, plan)
 
 
 def _validate_payment_plan(domain: dict[str, Any], plan: dict[str, Any]) -> None:
@@ -1105,6 +1196,27 @@ def _validate_structured_response_membership(
             matching = set(_expect_string_list(minimum_obj.get("matchingOptions"), "conditional matching options"))
             if len(selected) < _expect_int(minimum_obj.get("minimumSelections"), "conditional minimum selections") or sum(card in matching for card in selected) < _expect_int(minimum_obj.get("requiredMatches"), "conditional required matches"):
                 raise DerivedArtifactError("card response violates a source conditional minimum")
+        card_info = domain.get("cardInfo")
+        if any(domain.get(key) for key in ("onePerCardName", "onePerColor", "onePerPower", "onePerCardType", "onePerBasicLandType")) or any(domain.get(key) is not None for key in ("maxTotalPower", "maxTotalManaValue", "minTotalManaValue")):
+            info_map = _expect_object(card_info, "card selection cardInfo")
+            infos = []
+            for card in selected:
+                info = _expect_object(info_map.get(card), f"card selection cardInfo[{card}]")
+                infos.append(info)
+            if domain.get("onePerCardName") and len({info.get("name") for info in infos}) != len(infos):
+                raise DerivedArtifactError("card response violates onePerCardName")
+            if domain.get("onePerColor"):
+                colors = [color for info in infos for color in _expect_string_list(info.get("colors"), "card colors")]
+                if len(colors) != len(set(colors)):
+                    raise DerivedArtifactError("card response violates onePerColor")
+            if domain.get("onePerPower"):
+                powers = [info.get("power") for info in infos]
+                if any(power is None for power in powers) or len(powers) != len(set(powers)):
+                    raise DerivedArtifactError("card response violates onePerPower")
+            if domain.get("maxTotalPower") is not None:
+                powers = [info.get("power") or 0 for info in infos]
+                if sum(powers) > _expect_int(domain["maxTotalPower"], "maxTotalPower", nonnegative=True):
+                    raise DerivedArtifactError("card response exceeds source power bound")
         return
 
     if structured_type == "mode-selection":
@@ -1219,13 +1331,22 @@ def _validate_structured_response_membership(
             _expect_object(option, "mana source option").get("sourceId")
             for option in source_options
         }
+        if "autoPay" in response and response["autoPay"] is not False:
+            raise DerivedArtifactError("mana response contains an untrusted AutoPay choice")
         selected_sources = response.get("selectedSources", [])
         selected = _expect_string_list(selected_sources, "selectedSources")
         if any(source not in allowed for source in selected):
             raise DerivedArtifactError("mana response contains an outside-domain source")
+        declined = response.get("declined") is True
+        if declined:
+            if domain.get("canDecline") is not True or response.get("paymentPlan") is not None or selected or response.get("waterbendPermanents"):
+                raise DerivedArtifactError("declined mana response violates the source envelope")
+            return
+        if selected or response.get("waterbendPermanents"):
+            raise DerivedArtifactError("mana response carries legacy selections")
         if response.get("paymentPlan") is not None:
             _validate_payment_plan(payment, _expect_object(response["paymentPlan"], "paymentPlan"))
-        elif response.get("declined") is not True:
+        else:
             raise DerivedArtifactError("mana response has no explicit V3 payment plan")
         return
 

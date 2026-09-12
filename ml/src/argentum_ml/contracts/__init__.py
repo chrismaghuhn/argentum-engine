@@ -7,6 +7,7 @@ from .identities import (
     MODEL_FACING_CONTRACT_IDENTITY,
     SPLIT_CONTRACT_IDENTITY,
 )
+from .model_facing import ModelFacingContractError, require_model_input, validate_model_input
 
 __all__ = [
     "ARTIFACT_IDENTITY_SCHEMA",
@@ -16,4 +17,7 @@ __all__ = [
     "canonical_bytes",
     "canonical_json",
     "sha256_hex",
+    "ModelFacingContractError",
+    "require_model_input",
+    "validate_model_input",
 ]

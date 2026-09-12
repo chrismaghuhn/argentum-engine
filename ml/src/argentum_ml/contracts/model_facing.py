@@ -65,7 +65,7 @@ _FEATURE_KEYS = {
     "wasWaterbendPaid", "modeSlots", "modeTargetSlots", "graveyardLifeCost", "useAlternativeCost",
     "useWithoutPayingManaCost", "alternativeCostType", "repeatCount", "optionMetadata",
     "triggeringPlayerRole", "choice", "selectedModes", "selectedCardsAliases", "number",
-    "optionIndex", "referenceType", "semantic", "orderedObjects", "piles", "distribution",
+    "optionIndex", "selectedCards", "referenceType", "semantic", "orderedObjects", "piles", "distribution",
     "selectedTargets", "edgeId", "activations", "outerAllocation", "target", "resource",
     "activationIndex", "outputIndex", "productionChoice", "producedColor", "bonusChoice",
     "fixedOutputs", "activationCostAllocation", "objectLabels", "sourceColorBuckets",
@@ -91,6 +91,14 @@ _RAW_OR_FORBIDDEN_KEYS = {
     "datasetId", "trajectoryId", "collectionJobId", "sourceManifestContentDigest", "provenance",
     "engineSeed", "hiddenWorld", "runtimeAbilityId", "pendingDecisionId", "sourceEntityId",
     "playerId", "cardId", "targetEntityIds", "entityId", "sourceId", "targetId", "manaAbilityKey",
+}
+_CANDIDATE_KEYS = {
+    "kind", "affordable", "sourceAlias", "targetAliases", "manaCost", "hasXCost", "maxAffordableX",
+    "minTargets", "maxTargets", "validSacrificeTargetsAliases", "sacrificeCount", "sacrificeMinCount",
+    "sacrificeMaxCount", "requiresDamageDistribution", "isManaAbility", "availableManaColors",
+    "requiresStructuredAction", "requiredPayloadFields", "isDecisionOption", "actionSemantics",
+    "targetDomain", "attackDeclarationDomain", "blockerDeclarationDomain", "paymentDomain",
+    "targetPaymentDomain", "repeatCountDomain",
 }
 
 
@@ -337,8 +345,7 @@ def _validate_shape(value: Any) -> None:
 
 def _validate_candidate(value: Any, aliases: dict[str, str], label: str) -> None:
     obj = _object(value, label)
-    allowed = set(_FEATURE_KEYS)
-    _keys(obj, allowed, label, {"kind", "affordable"})
+    _keys(obj, _CANDIDATE_KEYS, label, {"kind", "affordable"})
     _string(obj["kind"], f"{label}.kind")
     _boolean(obj["affordable"], f"{label}.affordable")
     for key in ("sourceAlias", "targetAlias", "attachedToAlias"):
@@ -349,6 +356,7 @@ def _validate_candidate(value: Any, aliases: dict[str, str], label: str) -> None
             _alias_list(obj[key], aliases, f"{label}.{key}")
     if "actionSemantics" in obj:
         _validate_action_semantics(obj["actionSemantics"], aliases, f"{label}.actionSemantics")
+    _validate_candidate_nested_domains(obj, aliases, label)
     for key, expected_version in {
         "targetDomain": 1,
         "repeatCountDomain": 1,
@@ -367,6 +375,56 @@ def _validate_candidate(value: Any, aliases: dict[str, str], label: str) -> None
         _validate_feature_tree(child, aliases, f"{label}.{key}")
 
 
+def _validate_candidate_nested_domains(obj: dict[str, Any], aliases: dict[str, str], label: str) -> None:
+    if "targetDomain" in obj:
+        domain = _object(obj["targetDomain"], f"{label}.targetDomain")
+        allowed = {"version", "composition", "requirements"}
+        _keys(domain, allowed, f"{label}.targetDomain", allowed)
+        if domain["version"] != 1 or domain["composition"] != "FIXED":
+            raise ModelFacingContractError(f"{label}.targetDomain has an unsupported version")
+        requirement_keys = {"index", "minTargets", "maxTargets", "candidateCount", "candidateAliases", "targetZone", "mustDifferFromEarlier", "sameController", "sameOwner", "sameCreatureType", "sameCardType", "totalManaValueAtMost", "differentNames", "xConstrainsManaValue", "xConstrainsManaValueExactly", "xConstrainsPower", "xConstrainsCount"}
+        for index, requirement in enumerate(_list(domain["requirements"], f"{label}.targetDomain.requirements")):
+            requirement_obj = _object(requirement, f"{label}.targetDomain.requirements[{index}]")
+            _keys(requirement_obj, requirement_keys, f"{label}.targetDomain.requirements[{index}]")
+            _alias_list(requirement_obj["candidateAliases"], aliases, f"{label}.targetDomain.requirements[{index}].candidateAliases")
+    if "repeatCountDomain" in obj:
+        repeat = _object(obj["repeatCountDomain"], f"{label}.repeatCountDomain")
+        _keys(repeat, {"version", "minCount", "maxCount"}, f"{label}.repeatCountDomain", {"version", "minCount", "maxCount"})
+        if repeat["version"] != 1 or repeat["minCount"] != 1:
+            raise ModelFacingContractError(f"{label}.repeatCountDomain has an unsupported version")
+    if "paymentDomain" in obj:
+        _validate_projected_payment_domain(obj["paymentDomain"], aliases, f"{label}.paymentDomain")
+    if "targetPaymentDomain" in obj:
+        target_payment = _object(obj["targetPaymentDomain"], f"{label}.targetPaymentDomain")
+        _keys(target_payment, {"version", "targetBindings"}, f"{label}.targetPaymentDomain", {"version", "targetBindings"})
+        if target_payment["version"] != 1:
+            raise ModelFacingContractError(f"{label}.targetPaymentDomain has an unsupported version")
+        for index, binding in enumerate(_list(target_payment["targetBindings"], f"{label}.targetPaymentDomain.targetBindings")):
+            binding_obj = _object(binding, f"{label}.targetPaymentDomain.targetBindings[{index}]")
+            _keys(binding_obj, {"targetAlias", "affordable", "paymentDomain"}, f"{label}.targetPaymentDomain.targetBindings[{index}]", {"targetAlias", "affordable", "paymentDomain"})
+            _alias(binding_obj["targetAlias"], aliases, f"{label}.targetPaymentDomain.targetBindings[{index}].targetAlias")
+            _boolean(binding_obj["affordable"], f"{label}.targetPaymentDomain.targetBindings[{index}].affordable")
+            _validate_projected_payment_domain(binding_obj["paymentDomain"], aliases, f"{label}.targetPaymentDomain.targetBindings[{index}].paymentDomain")
+    for key, expected_version in (("attackDeclarationDomain", 2), ("blockerDeclarationDomain", 1)):
+        if key in obj:
+            nested = _object(obj[key], f"{label}.{key}")
+            if nested.get("version") != expected_version:
+                raise ModelFacingContractError(f"{label}.{key} has an unsupported version")
+            if key == "attackDeclarationDomain":
+                _keys(nested, {"version", "attackerOrderAliases", "attackerToDefenders", "mandatoryAttackersAliases", "canDeclareZeroAttackers", "maxAttackers", "coAttackerRequirements", "bandConstraints"}, f"{label}.{key}", {"version", "attackerOrderAliases", "attackerToDefenders", "mandatoryAttackersAliases", "canDeclareZeroAttackers", "maxAttackers", "coAttackerRequirements", "bandConstraints"})
+            else:
+                _keys(nested, {"version", "blockerOrderAliases", "attackerOrderAliases", "blockerToAttackers", "maxAttackersByBlocker", "minBlockersByAttacker", "maxBlockersByAttacker", "globalMaxBlockers", "coBlockerRequirements", "requirements", "minimumSatisfiedRequirementCount", "canDeclareZeroBlockers"}, f"{label}.{key}", {"version", "blockerOrderAliases", "attackerOrderAliases", "blockerToAttackers", "maxAttackersByBlocker", "minBlockersByAttacker", "maxBlockersByAttacker", "globalMaxBlockers", "coBlockerRequirements", "requirements", "minimumSatisfiedRequirementCount", "canDeclareZeroBlockers"})
+
+
+def _validate_projected_payment_domain(value: Any, aliases: dict[str, str], label: str) -> None:
+    domain = _object(value, label)
+    allowed = {"version", "requiredCost", "outerAtomicCostUnits", "initialPoolBuckets", "sourceActivationOptions", "reservedOuterLifePayment", "fixedSelfDamageBudget"}
+    _keys(domain, allowed, label, allowed)
+    if domain["version"] != 5:
+        raise ModelFacingContractError(f"{label} has an unsupported version")
+    _validate_feature_tree(domain, aliases, label)
+
+
 def _validate_action_semantics(value: Any, aliases: dict[str, str], label: str) -> None:
     obj = _object(value, label)
     response_types = {"YesNoResponse", "ModesChosenResponse", "ColorChosenResponse", "NumberChosenResponse", "OptionChosenResponse", "CardsSelectedResponse"}
@@ -378,7 +436,7 @@ def _validate_action_semantics(value: Any, aliases: dict[str, str], label: str) 
             "ColorChosenResponse": {"type", "color"},
             "NumberChosenResponse": {"type", "number"},
             "OptionChosenResponse": {"type", "optionIndex", "optionMetadata"},
-            "CardsSelectedResponse": {"type", "selectedCardsAliases"},
+            "CardsSelectedResponse": {"type", "selectedCards"},
         }[type_name]
         _keys(obj, allowed, label, {"type"})
     else:
@@ -389,7 +447,10 @@ def _validate_action_semantics(value: Any, aliases: dict[str, str], label: str) 
     for key in ("cardAlias", "sourceAlias"):
         if key in obj:
             _alias(obj[key], aliases, f"{label}.{key}")
-    for key in ("targetAliases", "selectedCardsAliases"):
+    for key in ("targetAliases",):
+        if key in obj:
+            _validate_typed_targets(obj[key], aliases, f"{label}.{key}")
+    for key in ("selectedCards", "selectedCardsAliases"):
         if key in obj:
             _alias_list(obj[key], aliases, f"{label}.{key}")
     if "abilityKey" in obj:
@@ -414,11 +475,11 @@ def _validate_action_semantics(value: Any, aliases: dict[str, str], label: str) 
             if "targetCount" in slot_obj:
                 _integer(slot_obj["targetCount"], f"{label}.modeTargetSlots[{index}].targetCount")
             if "targets" in slot_obj:
-                _alias_list(slot_obj["targets"], aliases, f"{label}.modeTargetSlots[{index}].targets")
+                _validate_typed_targets(slot_obj["targets"], aliases, f"{label}.modeTargetSlots[{index}].targets")
             if ("targetCount" in slot_obj) == ("targets" in slot_obj):
                 raise ModelFacingContractError(f"{label}.modeTargetSlots has invalid mode")
     for key, child in obj.items():
-        if key in {"type", "actorRole", "cardAlias", "sourceAlias", "targetAliases", "selectedCardsAliases", "abilityKey", "modeSlots", "modeTargetSlots"}:
+        if key in {"type", "actorRole", "cardAlias", "sourceAlias", "targetAliases", "selectedCards", "selectedCardsAliases", "abilityKey", "modeSlots", "modeTargetSlots"}:
             continue
         if key == "optionMetadata":
             metadata = _object(child, f"{label}.optionMetadata")
@@ -429,12 +490,33 @@ def _validate_action_semantics(value: Any, aliases: dict[str, str], label: str) 
             _validate_feature_tree(child, aliases, f"{label}.{key}")
 
 
+def _validate_typed_targets(value: Any, aliases: dict[str, str], label: str) -> None:
+    for index, target in enumerate(_list(value, label)):
+        if isinstance(target, str):
+            _alias(target, aliases, f"{label}[{index}]")
+            continue
+        obj = _object(target, f"{label}[{index}]")
+        target_type = _string(obj.get("type"), f"{label}[{index}].type")
+        fields = {
+            "Player": {"type", "playerAlias"},
+            "Permanent": {"type", "entityAlias"},
+            "Card": {"type", "cardAlias", "ownerAlias", "zone"},
+            "Spell": {"type", "spellEntityAlias"},
+        }.get(target_type)
+        if fields is None:
+            raise ModelFacingContractError(f"{label}[{index}] has an unsupported target type")
+        _keys(obj, fields, f"{label}[{index}]", fields)
+        for key in fields - {"type", "zone"}:
+            _alias(obj[key], aliases, f"{label}[{index}].{key}")
+        if "zone" in obj:
+            _string(obj["zone"], f"{label}[{index}].zone")
+
+
 def _validate_feature_tree(value: Any, aliases: dict[str, str], label: str) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             if key in _RAW_OR_FORBIDDEN_KEYS or key not in _FEATURE_KEYS:
-                if not re.fullmatch(r"entity-[0-9]+", key):
-                    raise ModelFacingContractError(f"{label} contains unknown or forbidden field: {key}")
+                raise ModelFacingContractError(f"{label} contains unknown or forbidden field: {key}")
             if key.endswith("Alias") and child is not None:
                 _alias(child, aliases, f"{label}.{key}")
             elif key.endswith("Aliases") and child is not None:

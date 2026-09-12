@@ -388,6 +388,70 @@ class DerivedReaderTests(unittest.TestCase):
             with self.assertRaises(DerivedArtifactError):
                 DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
 
+    def test_accepts_task2_typed_target_and_folded_card_projection_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _sample()
+            sample["binding"]["entityAliasBindings"].append(
+                {"alias": "entity-2", "sourceEntityId": "target-raw"},
+            )
+            action_semantics = {
+                "modeTargetSlots": [{
+                    "occurrence": 0,
+                    "targets": [{"entityAlias": "entity-2", "type": "Permanent"}],
+                }],
+                "targetAliases": [{"entityAlias": "entity-2", "type": "Permanent"}],
+                "type": "CastSpell",
+            }
+            sample["input"]["domain"]["candidates"][0]["actionSemantics"] = action_semantics
+            reader = DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+            list(reader.iter_samples())
+
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _sample()
+            raw_card = "raw-card"
+            sample["binding"]["entityAliasBindings"].append(
+                {"alias": "entity-2", "sourceEntityId": raw_card},
+            )
+            raw_candidate = sample["binding"]["completeLegalDomain"]["candidates"][0]
+            raw_candidate["isDecisionOption"] = True
+            raw_candidate["actionSemantics"] = {"selectedCards": [raw_card], "type": "CardsSelectedResponse"}
+            sample["binding"]["completeLegalDomain"].update({
+                "decisionKind": "SELECT_CARDS",
+                "kind": "FOLDED_DECISION_OPTIONS",
+                "shape": {
+                    "availableColors": [],
+                    "budget": None,
+                    "maxSelections": 1,
+                    "minSelections": 1,
+                    "numericMax": None,
+                    "numericMin": None,
+                    "totalToDistribute": None,
+                },
+            })
+            chosen = {
+                "response": {"selectedCards": [raw_card], "type": "CardsSelectedResponse"},
+                "type": "chosen-response",
+            }
+            sample["binding"]["selectedExactSourceBinding"] = chosen
+            sample["target"] = {"chosenSemanticAction": None, "chosenSemanticResponse": chosen}
+            sample["input"] = _model_input("FOLDED_DECISION_OPTIONS")
+            sample["input"]["domain"]["decisionKind"] = "SELECT_CARDS"
+            sample["input"]["domain"]["shape"] = sample["binding"]["completeLegalDomain"]["shape"]
+            sample["input"]["domain"]["candidates"] = [{
+                "actionSemantics": {"selectedCards": ["entity-2"], "type": "CardsSelectedResponse"},
+                "affordable": True,
+                "isDecisionOption": True,
+                "kind": "FoldedOption",
+                "requiredPayloadFields": [],
+            }]
+            sample["input"]["domain"]["candidates"][0]["isDecisionOption"] = True
+            sample["input"]["domain"]["candidates"][0]["actionSemantics"] = {
+                "selectedCards": ["entity-2"],
+                "type": "CardsSelectedResponse",
+            }
+            reader = DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+            list(reader.iter_samples())
+
     def test_iteration_remains_bound_to_open_validated_sample_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = _artifact(Path(directory))
