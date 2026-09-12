@@ -18,11 +18,82 @@ def _sha(char: str) -> str:
     return char * 64
 
 
+def _player_row(alias: str, role: str) -> dict:
+    return {
+        "entityAlias": alias,
+        "exileSize": 0,
+        "graveyardSize": 0,
+        "handSize": 0,
+        "hasLost": False,
+        "hasPriority": role == "SELF",
+        "isActive": role == "SELF",
+        "isPerspective": role == "SELF",
+        "librarySize": 0,
+        "lifeTotal": 20,
+        "manaPool": {
+            "black": 0,
+            "blue": 0,
+            "colorless": 0,
+            "green": 0,
+            "red": 0,
+            "white": 0,
+        },
+        "role": role,
+    }
+
+
+def _model_input(kind: str, *, structured_type: dict | None = None) -> dict:
+    decision_context = {
+        "activePlayerRole": "SELF",
+        "agentToActRole": "SELF",
+        "domainKind": kind,
+        "phase": "MAIN1",
+        "priorityPlayerRole": "SELF",
+        "step": "PRECOMBAT_MAIN",
+        "turnNumber": 1,
+    }
+    observation = {
+        "phase": "MAIN1",
+        "players": [_player_row("entity-0", "SELF"), _player_row("entity-1", "OPPONENT")],
+        "stack": [],
+        "step": "PRECOMBAT_MAIN",
+        "turnNumber": 1,
+        "zones": [],
+    }
+    shape = {
+        "availableColors": [],
+        "budget": None,
+        "maxSelections": 0,
+        "minSelections": 0,
+        "numericMax": None,
+        "numericMin": None,
+        "totalToDistribute": None,
+    }
+    domain = {"kind": kind}
+    if kind == "ACTION_CANDIDATES":
+        domain["candidates"] = [{
+            "actionSemantics": {"type": "PassPriority"},
+            "affordable": True,
+            "kind": "PassPriority",
+            "requiredPayloadFields": [],
+        }]
+    elif kind == "STRUCTURED_DECISION":
+        domain.update({
+            "decisionKind": "CHOOSE_TARGETS",
+            "shape": shape,
+            "structuredType": structured_type,
+        })
+    else:
+        domain.update({"decisionKind": "YES_NO", "shape": shape, "candidates": []})
+    return {"decisionContext": decision_context, "domain": domain, "observation": observation}
+
+
 def _sample() -> dict:
     candidate = {
         "actionSemantics": {"type": "PassPriority"},
         "affordable": True,
         "kind": "PassPriority",
+        "requiredPayloadFields": [],
     }
     domain = {
         "candidates": [candidate],
@@ -37,12 +108,15 @@ def _sample() -> dict:
     return {
         "binding": {
             "completeLegalDomain": domain,
-            "entityAliasBindings": [],
+            "entityAliasBindings": [
+                {"alias": "entity-0", "sourceEntityId": "player-0"},
+                {"alias": "entity-1", "sourceEntityId": "player-1"},
+            ],
             "selectedExactSourceBinding": chosen,
             "semanticTieDiscriminators": {},
             "sourceBindingOrdinals": [0],
         },
-        "input": {"decisionContext": {}, "domain": {}, "observation": {}},
+        "input": _model_input("ACTION_CANDIDATES"),
         "partition": "TRAIN",
         "provenance": {},
         "sourceReference": {
@@ -107,9 +181,38 @@ def _structured_sample() -> dict:
     }
     chosen = {"response": response, "type": "chosen-response"}
     sample = _sample()
+    sample["binding"]["entityAliasBindings"].append(
+        {"alias": "entity-2", "sourceEntityId": "entity-a"},
+    )
     sample["binding"]["completeLegalDomain"] = domain
     sample["binding"]["selectedExactSourceBinding"] = chosen
     sample["binding"]["sourceBindingOrdinals"] = []
+    sample["input"] = _model_input(
+        "STRUCTURED_DECISION",
+        structured_type={
+            "canCancel": False,
+            "requirements": [{
+                "candidateAliases": ["entity-2"],
+                "differentNames": False,
+                "index": 0,
+                "maxTargets": 1,
+                "minTargets": 1,
+                "sameCardType": False,
+                "sameController": False,
+                "sameCreatureType": False,
+                "sameOwner": False,
+                "targetZone": None,
+                "totalManaValueAtMost": None,
+                "xConstrainsCount": False,
+                "xConstrainsManaValue": False,
+                "xConstrainsManaValueExactly": False,
+                "xConstrainsPower": False,
+                "mustDifferFromEarlier": False,
+            }],
+            "type": "targets",
+            "version": 2,
+        },
+    )
     sample["target"] = {"chosenSemanticAction": None, "chosenSemanticResponse": chosen}
     return sample
 
@@ -230,6 +333,69 @@ class DerivedReaderTests(unittest.TestCase):
             sample["input"] = {"decisionContext": {}, "observation": {}, "extra": {}}
             with self.assertRaises(DerivedArtifactError):
                 DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_rejects_unknown_nested_model_input_field(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _sample()
+            sample["input"]["decisionContext"]["futureUnknownField"] = 1
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_rejects_unknown_structured_domain_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _structured_sample()
+            sample["binding"]["completeLegalDomain"]["structuredDomain"]["version"] = 999
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_rejects_dangling_and_blank_entity_alias_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _sample()
+            sample["input"]["observation"]["players"][0]["entityAlias"] = "entity-999"
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _sample()
+            sample["binding"]["entityAliasBindings"][0]["sourceEntityId"] = "   "
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_rejects_action_payload_outside_candidate_repeat_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _sample()
+            candidate = sample["binding"]["completeLegalDomain"]["candidates"][0]
+            candidate["requiredPayloadFields"] = ["repeatCount"]
+            candidate["repeatCountDomain"] = {"maxCount": 2, "minCount": 1, "version": 1}
+            chosen = sample["target"]["chosenSemanticAction"]
+            chosen["choicePayload"] = {"repeatCount": 999}
+            sample["input"]["domain"]["candidates"][0].update({
+                "repeatCountDomain": {"maxCount": 2, "minCount": 1, "version": 1},
+                "requiredPayloadFields": ["repeatCount"],
+            })
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_rejects_structured_target_cardinality_outside_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _structured_sample()
+            requirement = sample["binding"]["completeLegalDomain"]["structuredDomain"]["requirements"][0]
+            requirement["minTargets"] = 2
+            requirement["maxTargets"] = 2
+            input_requirement = sample["input"]["domain"]["structuredType"]["requirements"][0]
+            input_requirement["minTargets"] = 2
+            input_requirement["maxTargets"] = 2
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_iteration_remains_bound_to_open_validated_sample_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = _artifact(Path(directory))
+            reader = DerivedArtifactReader.open(root)
+            valid = (root / "samples.ndjson").read_bytes()
+            (root / "samples.ndjson").write_bytes(valid + valid)
+            with self.assertRaises(DerivedArtifactError):
+                list(reader.iter_samples())
 
     def test_rejects_raw_entity_id_in_model_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

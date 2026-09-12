@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
 
 from ..contracts.canonical_json import (
     _RawJsonNumber,
@@ -21,7 +22,7 @@ from ..contracts.identities import (
     MODEL_FACING_CONTRACT_IDENTITY,
     SPLIT_CONTRACT_IDENTITY,
 )
-from ..contracts.model_facing import require_model_input
+from ..contracts.model_facing import validate_model_input
 from .split import assign_partition
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -259,10 +260,12 @@ def _artifact_identity_payload(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@dataclass(frozen=True)
+@dataclass
 class DerivedArtifactReader:
     root: Path
     manifest: dict[str, Any]
+    _samples_stream: BinaryIO = field(repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
 
     @classmethod
     def open(cls, root: Path) -> "DerivedArtifactReader":
@@ -279,22 +282,52 @@ class DerivedArtifactReader:
             raise DerivedArtifactError("manifest.json is not canonical UTF-8")
         _validate_manifest(manifest)
         _require_regular_file(samples_path, "samples.ndjson")
-        _validate_sample_file(samples_path, manifest)
-        return cls(root=root, manifest=manifest)
+        samples_stream = samples_path.open("rb")
+        try:
+            _validate_sample_file(samples_stream, manifest)
+            samples_stream.seek(0)
+            return cls(root=root, manifest=manifest, _samples_stream=samples_stream)
+        except Exception:
+            samples_stream.close()
+            raise
 
     def iter_samples(self) -> Iterator[dict[str, Any]]:
-        samples_path = self.root / "samples.ndjson"
-        with samples_path.open("rb") as stream:
-            for raw_line in stream:
+        if self._closed:
+            raise DerivedArtifactError("derived artifact reader is closed")
+        try:
+            if os.fstat(self._samples_stream.fileno()).st_size != self.manifest["samplesByteCount"]:
+                raise DerivedArtifactError("samples.ndjson changed after artifact validation")
+            _validate_sample_file(self._samples_stream, self.manifest)
+            self._samples_stream.seek(0)
+            for raw_line in self._samples_stream:
                 sample = _parse_sample_line(raw_line)
                 _validate_sample(sample, self.manifest)
                 yield sample
+        finally:
+            self.close()
 
     def stream_samples(self) -> Iterator[dict[str, Any]]:
         return self.iter_samples()
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         return self.iter_samples()
+
+    def close(self) -> None:
+        if not self._closed:
+            self._samples_stream.close()
+            self._closed = True
+
+    def __enter__(self) -> "DerivedArtifactReader":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def _require_directory(path: Path, label: str) -> None:
@@ -374,25 +407,25 @@ def _parse_sample_line(raw_line: bytes) -> dict[str, Any]:
     return sample
 
 
-def _validate_sample_file(path: Path, manifest: dict[str, Any]) -> None:
+def _validate_sample_file(stream: BinaryIO, manifest: dict[str, Any]) -> None:
     digest = hashlib.sha256()
     byte_count = 0
     sample_count = 0
     partition_counts = {key: 0 for key in _PARTITIONS}
     seen_references: set[tuple[str, int]] = set()
-    with path.open("rb") as stream:
-        for raw_line in stream:
-            sample = _parse_sample_line(raw_line)
-            _validate_sample(sample, manifest)
-            source = sample["sourceReference"]
-            reference = (source["trajectoryId"], source["decisionIndex"])
-            if reference in seen_references:
-                raise DerivedArtifactError("duplicate sample source reference")
-            seen_references.add(reference)
-            digest.update(raw_line)
-            byte_count += len(raw_line)
-            sample_count += 1
-            partition_counts[sample["partition"]] += 1
+    stream.seek(0)
+    for raw_line in stream:
+        sample = _parse_sample_line(raw_line)
+        _validate_sample(sample, manifest)
+        source = sample["sourceReference"]
+        reference = (source["trajectoryId"], source["decisionIndex"])
+        if reference in seen_references:
+            raise DerivedArtifactError("duplicate sample source reference")
+        seen_references.add(reference)
+        digest.update(raw_line)
+        byte_count += len(raw_line)
+        sample_count += 1
+        partition_counts[sample["partition"]] += 1
     if byte_count != manifest["samplesByteCount"]:
         raise DerivedArtifactError("samplesByteCount mismatch")
     if sample_count != manifest["sampleCount"]:
@@ -443,13 +476,13 @@ def _validate_sample(sample: dict[str, Any], manifest: dict[str, Any]) -> None:
     binding = _expect_object(sample["binding"], "binding")
     _expect_keys(binding, _BINDING_KEYS, "binding")
     domain = _validate_domain(binding["completeLegalDomain"])
-    raw_entity_ids = _validate_alias_bindings(binding["entityAliasBindings"])
-    _validate_input(sample["input"], raw_entity_ids)
+    aliases = _validate_alias_bindings(binding["entityAliasBindings"])
+    _validate_input(sample["input"], aliases, domain)
     _validate_ordinals(binding["sourceBindingOrdinals"], domain)
     _validate_tie_discriminators(
         binding["semanticTieDiscriminators"],
         binding["sourceBindingOrdinals"],
-        raw_entity_ids,
+        set(aliases.values()),
     )
     _validate_target_membership(target, binding["selectedExactSourceBinding"], domain)
     expected_partition = assign_partition(source["semanticEpisodeId"])
@@ -457,14 +490,12 @@ def _validate_sample(sample: dict[str, Any], manifest: dict[str, Any]) -> None:
         raise DerivedArtifactError("sample partition does not match semanticEpisodeId")
 
 
-def _validate_input(value: Any, raw_entity_ids: set[str]) -> None:
+def _validate_input(value: Any, aliases: dict[str, str], source_domain: dict[str, Any]) -> None:
     try:
-        input_value = require_model_input(value)
+        validate_model_input(value, aliases=aliases, source_domain=source_domain)
     except ValueError as exc:
         raise DerivedArtifactError(str(exc)) from exc
-    if "contractIdentity" in input_value or "terminated" in input_value or "truncated" in input_value:
-        raise DerivedArtifactError("policy input contains a wrapper/admission control field")
-    _reject_raw_literals(input_value, raw_entity_ids, "model input")
+    _reject_raw_literals(value, set(aliases.values()), "model input")
 
 
 def _validate_domain(value: Any) -> dict[str, Any]:
@@ -488,6 +519,22 @@ def _validate_domain(value: Any) -> dict[str, Any]:
         structured_type = domain["structuredDomain"].get("type")
         if structured_type not in _STRUCTURED_DOMAIN_TYPES:
             raise DerivedArtifactError("unsupported structured domain type")
+        expected_version = {
+            "targets": 2,
+            "card-selection": 1,
+            "mode-selection": 1,
+            "distribution": 1,
+            "ordering": 1,
+            "split-piles": 1,
+            "search-library": 1,
+            "reorder-library": 1,
+            "combat-resolution": 1,
+            "mana-sources": 3,
+            "replacement": 1,
+            "budget-modal": 1,
+        }[structured_type]
+        if domain["structuredDomain"].get("version") != expected_version:
+            raise DerivedArtifactError("unsupported structured domain version")
     elif domain["structuredDomain"] is not None:
         raise DerivedArtifactError("flat domain cannot carry a structured domain")
     elif domain["kind"] == "ACTION_CANDIDATES":
@@ -498,19 +545,23 @@ def _validate_domain(value: Any) -> dict[str, Any]:
     return domain
 
 
-def _validate_alias_bindings(value: Any) -> set[str]:
+def _validate_alias_bindings(value: Any) -> dict[str, str]:
     if not isinstance(value, list):
         raise DerivedArtifactError("entityAliasBindings must be a list")
-    raw_ids: set[str] = set()
+    aliases: dict[str, str] = {}
     for index, binding in enumerate(value):
         obj = _expect_object(binding, "entityAliasBinding")
         _expect_keys(obj, {"alias", "sourceEntityId"}, "entityAliasBinding")
-        if obj["alias"] != f"entity-{index}" or not isinstance(obj["sourceEntityId"], str):
+        if (
+            obj["alias"] != f"entity-{index}"
+            or not isinstance(obj["sourceEntityId"], str)
+            or not obj["sourceEntityId"].strip()
+        ):
             raise DerivedArtifactError("entity aliases are not producer-canonical")
-        if obj["sourceEntityId"] in raw_ids:
+        if obj["sourceEntityId"] in aliases.values():
             raise DerivedArtifactError("entity aliases are not injective")
-        raw_ids.add(obj["sourceEntityId"])
-    return raw_ids
+        aliases[obj["alias"]] = obj["sourceEntityId"]
+    return aliases
 
 
 def _validate_ordinals(value: Any, domain: dict[str, Any]) -> None:
@@ -585,6 +636,7 @@ def _validate_target_membership(
             raise DerivedArtifactError("chosen action is not uniquely in the complete domain")
         if matches[0].get("affordable") is not True:
             raise DerivedArtifactError("chosen action is not executable")
+        _validate_action_choice_payload(matches[0], chosen)
     else:
         chosen = _expect_object(target["chosenSemanticResponse"], "chosenSemanticResponse")
         exact = selected.get("exactResponse", selected)
@@ -621,6 +673,344 @@ def _validate_target_membership(
                             matches.append(candidate_obj)
             if len(matches) != 1:
                 raise DerivedArtifactError("chosen folded response is not uniquely in the domain")
+
+
+def _validate_action_choice_payload(candidate: dict[str, Any], chosen: dict[str, Any]) -> None:
+    payload = _expect_object(chosen.get("choicePayload"), "chosen action choicePayload")
+    required_value = candidate.get("requiredPayloadFields")
+    if not isinstance(required_value, list) or any(not isinstance(field, str) for field in required_value):
+        raise DerivedArtifactError("chosen action candidate has malformed requiredPayloadFields")
+    if len(set(required_value)) != len(required_value) or set(payload) != set(required_value):
+        raise DerivedArtifactError("chosen action payload keys do not match the source contract")
+    if any(value is None for value in payload.values()):
+        raise DerivedArtifactError("chosen action payload contains a null choice")
+    supported = {
+        "targets", "xValue", "repeatCount", "manaColorChoice", "attackers", "bands", "blockers",
+        "orderedBlockers", "paymentStrategy", "costPayment", "additionalCostPayment",
+    }
+    unsupported = set(payload) - supported
+    if unsupported:
+        raise DerivedArtifactError(
+            "chosen action payload has no complete stored-domain validator: " + ",".join(sorted(unsupported))
+        )
+    if "targets" in payload:
+        _validate_action_target_choice(candidate, payload["targets"])
+    if "repeatCount" in payload:
+        domain = _expect_object(candidate.get("repeatCountDomain"), "repeatCountDomain")
+        _expect_keys(domain, {"version", "minCount", "maxCount"}, "repeatCountDomain")
+        if domain["version"] != 1 or domain["minCount"] != 1:
+            raise DerivedArtifactError("unsupported repeat-count domain")
+        count = _expect_int(payload["repeatCount"], "repeatCount")
+        if count < domain["minCount"] or count > domain["maxCount"]:
+            raise DerivedArtifactError("repeatCount is outside the source domain")
+    if "xValue" in payload:
+        if candidate.get("hasXCost") is not True or not isinstance(candidate.get("maxAffordableX"), int):
+            raise DerivedArtifactError("xValue has no complete source bound")
+        x_value = _expect_int(payload["xValue"], "xValue")
+        if x_value < 0 or x_value > candidate["maxAffordableX"]:
+            raise DerivedArtifactError("xValue is outside the source domain")
+    if "manaColorChoice" in payload:
+        colors = candidate.get("availableManaColors")
+        if not isinstance(colors, list) or payload["manaColorChoice"] not in colors:
+            raise DerivedArtifactError("manaColorChoice is outside the source domain")
+    if "paymentStrategy" in payload:
+        _validate_payment_strategy(candidate, payload["paymentStrategy"], payload)
+    for key in ("attackers", "bands", "blockers", "orderedBlockers"):
+        if key in payload:
+            if candidate.get("attackDeclarationDomain") is None and key in {"attackers", "bands"}:
+                raise DerivedArtifactError("attack declaration has no complete source domain")
+            if candidate.get("blockerDeclarationDomain") is None and key in {"blockers", "orderedBlockers"}:
+                raise DerivedArtifactError("blocker declaration has no complete source domain")
+            _validate_payload_references_against_candidate(candidate, payload[key], key)
+    for key in ("costPayment", "additionalCostPayment"):
+        if key in payload:
+            _expect_object(payload[key], key)
+            _validate_payload_references_against_candidate(candidate, payload[key], key)
+
+
+def _validate_action_target_choice(candidate: dict[str, Any], value: Any) -> None:
+    domain = _expect_object(candidate.get("targetDomain"), "targetDomain")
+    _expect_keys(domain, {"version", "composition", "requirements"}, "targetDomain")
+    if domain["version"] != 1 or domain["composition"] != "FIXED":
+        raise DerivedArtifactError("unsupported action target domain")
+    requirements = []
+    for expected_index, raw in enumerate(_expect_list(domain["requirements"], "targetDomain.requirements")):
+        requirement = _expect_object(raw, "target requirement")
+        _expect_keys(
+            requirement,
+            {
+                "index", "description", "minTargets", "maxTargets", "candidates", "targetZone",
+                "mustDifferFromEarlier", "sameController", "sameOwner", "sameCreatureType",
+                "sameCardType", "totalManaValueAtMost", "differentNames", "xConstrainsManaValue",
+                "xConstrainsManaValueExactly", "xConstrainsPower", "xConstrainsCount",
+            },
+            "target requirement",
+        )
+        if requirement["index"] != expected_index:
+            raise DerivedArtifactError("action target requirements are not producer ordered")
+        minimum = _expect_int(requirement["minTargets"], "target requirement minTargets", nonnegative=True)
+        maximum = _expect_int(requirement["maxTargets"], "target requirement maxTargets", nonnegative=True)
+        if maximum < minimum:
+            raise DerivedArtifactError("target requirement has an invalid cardinality")
+        candidates = _string_set(requirement["candidates"], "target requirement candidates")
+        unresolved = any(
+            requirement[key] is not False
+            for key in (
+                "sameController", "sameOwner", "sameCreatureType", "sameCardType", "differentNames",
+                "xConstrainsManaValue", "xConstrainsManaValueExactly", "xConstrainsPower", "xConstrainsCount",
+            )
+        ) or requirement["totalManaValueAtMost"] is not None
+        if unresolved:
+            raise DerivedArtifactError("target choice requires unavailable source metadata")
+        requirements.append((minimum, maximum, candidates, requirement["mustDifferFromEarlier"]))
+    selected = [_chosen_target_entity_id(item) for item in _expect_list(value, "chosen targets")]
+    variable = [index for index, (minimum, maximum, _, _) in enumerate(requirements) if minimum != maximum]
+    if len(variable) > 1:
+        raise DerivedArtifactError("target domain has ambiguous flat payload partition")
+    total_min = sum(item[0] for item in requirements)
+    total_max = sum(item[1] for item in requirements)
+    if not total_min <= len(selected) <= total_max:
+        raise DerivedArtifactError("chosen targets have an outside-domain cardinality")
+    variable_index = variable[0] if variable else None
+    fixed_minimum = sum(item[0] for index, item in enumerate(requirements) if index != variable_index)
+    counts = [
+        len(selected) - fixed_minimum if index == variable_index else item[0]
+        for index, item in enumerate(requirements)
+    ]
+    if any(count < requirements[index][0] or count > requirements[index][1] for index, count in enumerate(counts)):
+        raise DerivedArtifactError("chosen targets cannot be partitioned by the source domain")
+    offset = 0
+    earlier: set[str] = set()
+    for index, count in enumerate(counts):
+        slot = selected[offset:offset + count]
+        if len(set(slot)) != len(slot) or any(item not in requirements[index][2] for item in slot):
+            raise DerivedArtifactError("chosen target is outside the source requirement")
+        if requirements[index][3] and any(item in earlier for item in slot):
+            raise DerivedArtifactError("chosen target violates source distinctness")
+        earlier.update(slot)
+        offset += count
+    if offset != len(selected):
+        raise DerivedArtifactError("chosen target contains an unassigned member")
+
+
+def _chosen_target_entity_id(value: Any) -> str:
+    target = _expect_object(value, "chosen target")
+    target_type = target.get("type")
+    key_by_type = {"Player": "playerId", "Permanent": "entityId", "Card": "cardId", "Spell": "spellEntityId"}
+    key = key_by_type.get(target_type)
+    if key is None:
+        raise DerivedArtifactError("unsupported chosen target type")
+    return _expect_string(target.get(key), f"chosen target {key}")
+
+
+def _string_set(value: Any, label: str) -> set[str]:
+    values = _expect_list(value, label)
+    if any(not isinstance(item, str) or not item for item in values):
+        raise DerivedArtifactError(f"{label} must contain non-empty strings")
+    if len(set(values)) != len(values):
+        raise DerivedArtifactError(f"{label} contains duplicate members")
+    return set(values)
+
+
+def _validate_payload_references_against_candidate(candidate: dict[str, Any], value: Any, label: str) -> None:
+    known = set(candidate.get("validSacrificeTargets", []))
+    semantics = candidate.get("actionSemantics")
+    if isinstance(semantics, dict):
+        for key in ("sourceEntityId", "attackerId", "vehicleId", "mountId"):
+            if isinstance(semantics.get(key), str):
+                known.add(semantics[key])
+    if not known:
+        return
+    def visit(child: Any) -> None:
+        if isinstance(child, dict):
+            for key, item in child.items():
+                if key.endswith("Id") or key.endswith("Ids"):
+                    if isinstance(item, str) and item not in known:
+                        raise DerivedArtifactError(f"{label} references a member outside the source candidate")
+                    if isinstance(item, list) and any(entry not in known for entry in item if isinstance(entry, str)):
+                        raise DerivedArtifactError(f"{label} references a member outside the source candidate")
+                visit(item)
+        elif isinstance(child, list):
+            for item in child:
+                visit(item)
+    visit(value)
+
+
+def _validate_payment_strategy(candidate: dict[str, Any], value: Any, payload: dict[str, Any]) -> None:
+    strategy = _expect_object(value, "paymentStrategy")
+    if strategy.get("type") != "ExplicitV3":
+        raise DerivedArtifactError("only ExplicitV3 payment is admitted")
+    plan = _expect_object(strategy.get("paymentPlan"), "paymentStrategy.paymentPlan")
+    domain = candidate.get("paymentDomain")
+    if domain is None and candidate.get("targetPaymentDomain") is None:
+        raise DerivedArtifactError("payment strategy has no complete source domain")
+    _validate_payment_plan(domain or {}, plan)
+
+
+def _validate_payment_plan(domain: dict[str, Any], plan: dict[str, Any]) -> None:
+    _expect_keys(plan, {"activations", "outerAllocation"}, "paymentPlan")
+    _expect_keys(domain, {"version", "requiredCost", "outerAtomicCostUnits", "initialPoolBuckets", "sourceActivationOptions", "reservedOuterLifePayment", "fixedSelfDamageBudget"}, "paymentDomain")
+    if domain["version"] != 5:
+        raise DerivedArtifactError("unsupported PaymentDomainV5 version")
+    options = {}
+    for option in _expect_list(domain["sourceActivationOptions"], "paymentDomain.sourceActivationOptions"):
+        obj = _expect_object(option, "payment source option")
+        key = (obj.get("sourceId"), obj.get("manaAbilityKey"))
+        if not isinstance(key[0], str) or not isinstance(key[1], str) or key in options:
+            raise DerivedArtifactError("malformed payment source option")
+        options[key] = obj
+    expected_targets: dict[str, dict[str, Any]] = {}
+    selected_options: list[dict[str, Any]] = []
+    activations = _expect_list(plan["activations"], "paymentPlan.activations")
+    selected_sources: set[str] = set()
+    for activation_index, activation in enumerate(activations):
+        obj = _expect_object(activation, "payment activation")
+        _expect_keys(obj, {"sourceId", "manaAbilityKey", "productionChoice", "activationCostOrder", "activationCostAllocation"}, "payment activation")
+        source_key = (obj["sourceId"], obj["manaAbilityKey"])
+        if source_key not in options or obj["sourceId"] in selected_sources:
+            raise DerivedArtifactError("payment plan selects a source outside the source domain")
+        selected_sources.add(obj["sourceId"])
+        option = options[source_key]
+        if not any(_canonical_element(obj["productionChoice"], "production choice") == _canonical_element(choice, "source production choice") for choice in _expect_list(option["productionChoices"], "source production choices")):
+            raise DerivedArtifactError("payment plan selects an outside production choice")
+        orders = _expect_list(option["activationCostOrderOptions"], "activation cost order options")
+        if not any(_canonical_element(obj["activationCostOrder"], "activation cost order") == _canonical_element(order, "source activation cost order") for order in orders):
+            raise DerivedArtifactError("payment plan selects an outside activation-cost order")
+        selected_options.append(option)
+        for unit in _expect_list(option["atomicActivationManaCostUnits"], "activation cost units"):
+            unit_obj = _expect_object(unit, "activation cost unit")
+            expected_targets[_canonical_element({"type": "ActivationCostUnit", "activationIndex": activation_index, "symbolIndex": unit_obj["symbolIndex"], "unitIndexWithinSymbol": unit_obj["unitIndexWithinSymbol"]}, "activation cost target")] = unit_obj
+    for unit in _expect_list(domain["outerAtomicCostUnits"], "outer cost units"):
+        unit_obj = _expect_object(unit, "outer cost unit")
+        expected_targets[_canonical_element({"type": "OuterCostUnit", "symbolIndex": unit_obj["symbolIndex"], "unitIndexWithinSymbol": unit_obj["unitIndexWithinSymbol"]}, "outer cost target")] = unit_obj
+    pool_buckets: dict[str, tuple[int, str]] = {}
+    for bucket in _expect_list(domain["initialPoolBuckets"], "initial pool buckets"):
+        bucket_obj = _expect_object(bucket, "initial pool bucket")
+        key = _canonical_element(bucket_obj.get("key"), "initial pool bucket key")
+        key_obj = _expect_object(bucket_obj.get("key"), "initial pool bucket key")
+        if key_obj.get("type") == "UnrestrictedPoolBucket":
+            color = _expect_string(key_obj.get("color"), "initial pool color")
+        elif key_obj.get("type") == "CertifiedFloatingBucket":
+            color = _expect_string(_expect_object(key_obj.get("key"), "certified pool bucket key").get("poolColor"), "certified pool color")
+        else:
+            raise DerivedArtifactError("unsupported initial pool bucket key")
+        pool_buckets[key] = (_expect_int(bucket_obj.get("availableAmount"), "initial pool availability", nonnegative=True), color)
+    output_colors = [_production_colors(_expect_object(activation, "payment activation")["productionChoice"]) for activation in activations]
+    fixed_self_damage = sum(
+        _expect_int(option.get("fixedSelfDamageAmount"), "fixed self-damage amount", nonnegative=True)
+        for option in selected_options
+    )
+    if domain["fixedSelfDamageBudget"] is not None and fixed_self_damage > _expect_int(domain["fixedSelfDamageBudget"], "fixed self-damage budget", nonnegative=True):
+        raise DerivedArtifactError("payment plan exceeds the source fixed self-damage budget")
+    used_pool: dict[str, int] = {}
+    used_outputs: set[tuple[int, int]] = set()
+    seen_targets: set[str] = set()
+    for activation_index, activation in enumerate(activations):
+        for allocation in _expect_list(_expect_object(activation, "payment activation")["activationCostAllocation"], "activation cost allocation"):
+            _validate_payment_allocation(
+                allocation,
+                expected_targets,
+                seen_targets,
+                activation_index,
+                output_colors,
+                pool_buckets,
+                used_pool,
+                used_outputs,
+            )
+    for allocation in _expect_list(plan["outerAllocation"], "outer allocation"):
+        _validate_payment_allocation(
+            allocation,
+            expected_targets,
+            seen_targets,
+            None,
+            output_colors,
+            pool_buckets,
+            used_pool,
+            used_outputs,
+        )
+    if seen_targets != set(expected_targets):
+        raise DerivedArtifactError("payment plan does not allocate every source-domain cost target")
+
+
+def _production_colors(value: Any) -> list[str]:
+    choice = _expect_object(value, "production choice")
+    if choice.get("fixedOutputs") is not None:
+        if choice.get("bonusChoice") is not None:
+            raise DerivedArtifactError("fixed production carries a bonus choice")
+        outputs = _expect_list(choice["fixedOutputs"], "fixed production outputs")
+        if not outputs or [
+            _expect_int(_expect_object(output, "fixed output").get("index"), "fixed output index")
+            for output in outputs
+        ] != list(range(len(outputs))):
+            raise DerivedArtifactError("fixed production output indices are not canonical")
+        colors = []
+        for output in outputs:
+            output_obj = _expect_object(output, "fixed output")
+            if _expect_int(output_obj.get("amount"), "fixed output amount") != 1:
+                raise DerivedArtifactError("fixed production output amount is not canonical")
+            colors.append(_expect_string(output_obj.get("color"), "fixed output color"))
+        if choice.get("producedColor") != colors[0]:
+            raise DerivedArtifactError("fixed production first color mismatch")
+        return colors
+    if choice.get("amount") != 1 or choice.get("bonusChoice") is not None:
+        raise DerivedArtifactError("single-output production is not canonical")
+    return [_expect_string(choice.get("producedColor"), "production color")]
+
+
+def _validate_payment_allocation(
+    value: Any,
+    expected_targets: dict[str, dict[str, Any]],
+    seen_targets: set[str],
+    activation_index: int | None,
+    output_colors: list[list[str]],
+    pool_buckets: dict[str, tuple[int, str]],
+    used_pool: dict[str, int],
+    used_outputs: set[tuple[int, int]],
+) -> None:
+    allocation = _expect_object(value, "payment allocation")
+    _expect_keys(allocation, {"target", "resource"}, "payment allocation")
+    target = _expect_object(allocation["target"], "payment allocation target")
+    target_key = _canonical_element(target, "payment allocation target")
+    if target_key not in expected_targets or target_key in seen_targets:
+        raise DerivedArtifactError("payment allocation target is outside or duplicated in the source domain")
+    if target.get("type") == "ActivationCostUnit" and target.get("activationIndex") != activation_index:
+        raise DerivedArtifactError("activation allocation targets the wrong source activation")
+    if target.get("type") == "OuterCostUnit" and activation_index is not None:
+        raise DerivedArtifactError("outer allocation appears in an activation allocation")
+    seen_targets.add(target_key)
+    expected = expected_targets[target_key]
+    resource = _expect_object(allocation["resource"], "payment allocation resource")
+    resource_type = resource.get("type")
+    if resource_type == "ActivationOutputUnit":
+        resource_activation = resource.get("activationIndex")
+        resource_output = resource.get("outputIndex")
+        if not isinstance(resource_activation, int) or isinstance(resource_activation, bool) or not isinstance(resource_output, int) or isinstance(resource_output, bool):
+            raise DerivedArtifactError("malformed activation output resource")
+        if activation_index is not None and resource_activation >= activation_index:
+            raise DerivedArtifactError("activation payment references a future output")
+        if resource_activation < 0 or resource_activation >= len(output_colors) or resource_output < 0 or resource_output >= len(output_colors[resource_activation]):
+            raise DerivedArtifactError("payment plan references an unknown activation output")
+        if (resource_activation, resource_output) in used_outputs:
+            raise DerivedArtifactError("payment plan consumes an activation output more than once")
+        used_outputs.add((resource_activation, resource_output))
+        color = output_colors[resource_activation][resource_output]
+    elif resource_type == "InitialPoolResource":
+        bucket_key = _canonical_element(resource.get("bucketKey"), "initial pool bucket resource")
+        if bucket_key not in pool_buckets:
+            raise DerivedArtifactError("payment plan references an unknown initial pool bucket")
+        used = used_pool.get(bucket_key, 0)
+        capacity, color = pool_buckets[bucket_key]
+        if used >= capacity:
+            raise DerivedArtifactError("payment plan exceeds an initial pool bucket capacity")
+        used_pool[bucket_key] = used + 1
+    else:
+        raise DerivedArtifactError("unsupported payment resource")
+    kind = expected.get("kind")
+    allowed_colors = expected.get("allowedColors", [])
+    if kind == "COLORED" and color not in allowed_colors:
+        raise DerivedArtifactError("payment resource does not satisfy a colored source cost")
+    if kind == "COLORLESS" and color != "COLORLESS":
+        raise DerivedArtifactError("payment resource does not satisfy a colorless source cost")
 
 
 def _validate_structured_response_membership(
@@ -663,6 +1053,7 @@ def _validate_structured_response_membership(
         selected = _expect_object(response.get("selectedTargets"), "selectedTargets")
         if set(selected) != {str(index) for index in requirements_by_index}:
             raise DerivedArtifactError("target response does not cover the stored requirements")
+        earlier: set[str] = set()
         for key, values in selected.items():
             requirement = requirements_by_index.get(int(key))
             if requirement is None:
@@ -671,6 +1062,23 @@ def _validate_structured_response_membership(
             candidates = set(_expect_string_list(requirement.get("candidates"), "target candidates"))
             if any(member not in candidates for member in selected_values):
                 raise DerivedArtifactError("target response contains an outside-domain target")
+            minimum = _expect_int(requirement.get("minTargets"), "target minimum", nonnegative=True)
+            maximum = _expect_int(requirement.get("maxTargets"), "target maximum", nonnegative=True)
+            if len(selected_values) < minimum or len(selected_values) > maximum:
+                raise DerivedArtifactError("target response violates source cardinality")
+            if len(set(selected_values)) != len(selected_values):
+                raise DerivedArtifactError("target response duplicates a source target")
+            if requirement.get("mustDifferFromEarlier") is True and any(member in earlier for member in selected_values):
+                raise DerivedArtifactError("target response violates source distinctness")
+            if any(
+                requirement.get(field) is True
+                for field in (
+                    "sameController", "sameOwner", "sameCreatureType", "sameCardType", "differentNames",
+                    "xConstrainsManaValue", "xConstrainsManaValueExactly", "xConstrainsPower", "xConstrainsCount",
+                )
+            ) or requirement.get("totalManaValueAtMost") is not None:
+                raise DerivedArtifactError("target response requires unavailable source metadata")
+            earlier.update(selected_values)
         return
 
     if structured_type in {"card-selection", "search-library"}:
@@ -681,17 +1089,37 @@ def _validate_structured_response_membership(
         allowed = set(_expect_string_list(options, "structured card options"))
         if any(card not in allowed for card in selected):
             raise DerivedArtifactError("card response contains an outside-domain card")
+        if len(set(selected)) != len(selected):
+            raise DerivedArtifactError("card response duplicates a source card")
+        minimum = _expect_int(domain.get("minSelections"), "card minimum", nonnegative=True)
+        maximum = _expect_int(domain.get("maxSelections"), "card maximum", nonnegative=True)
+        if len(selected) < minimum or len(selected) > maximum:
+            raise DerivedArtifactError("card response violates source cardinality")
+        non_selectable = set(_expect_string_list(domain.get("nonSelectableOptions", []), "non-selectable options"))
+        if any(card in non_selectable for card in selected):
+            raise DerivedArtifactError("card response contains a non-selectable source card")
+        for minimum_domain in _expect_list(domain.get("conditionalMinimums", []), "conditional minimums"):
+            minimum_obj = _expect_object(minimum_domain, "conditional minimum")
+            if len(selected) >= _expect_int(minimum_obj.get("requiredSelections"), "conditional required selections"):
+                continue
+            matching = set(_expect_string_list(minimum_obj.get("matchingOptions"), "conditional matching options"))
+            if len(selected) < _expect_int(minimum_obj.get("minimumSelections"), "conditional minimum selections") or sum(card in matching for card in selected) < _expect_int(minimum_obj.get("requiredMatches"), "conditional required matches"):
+                raise DerivedArtifactError("card response violates a source conditional minimum")
         return
 
     if structured_type == "mode-selection":
         selected = _expect_int_list(response.get("selectedModes"), "selectedModes")
         modes = _expect_list(domain.get("modes"), "mode options")
-        available = {
-            _expect_int(_expect_object(mode, "mode option").get("index"), "mode index")
+        mode_by_index = {
+            _expect_int(_expect_object(mode, "mode option").get("index"), "mode index"): _expect_object(mode, "mode option")
             for mode in modes
         }
-        if any(mode not in available for mode in selected):
+        if len(set(selected)) != len(selected) or any(mode not in mode_by_index or mode_by_index[mode].get("available") is not True for mode in selected):
             raise DerivedArtifactError("mode response contains an outside-domain mode")
+        minimum = _expect_int(domain.get("minModes"), "mode minimum", nonnegative=True)
+        maximum = _expect_int(domain.get("maxModes"), "mode maximum", nonnegative=True)
+        if len(selected) < minimum or len(selected) > maximum:
+            raise DerivedArtifactError("mode response violates source cardinality")
         return
 
     if structured_type == "distribution":
@@ -699,6 +1127,21 @@ def _validate_structured_response_membership(
         allowed = set(_expect_string_list(domain.get("targets"), "distribution targets"))
         if any(key not in allowed for key in distribution):
             raise DerivedArtifactError("distribution response contains an outside-domain target")
+        maxima = domain.get("maxPerTarget") or {}
+        minimum = _expect_int(domain.get("minPerTarget"), "distribution minimum", nonnegative=True)
+        total = 0
+        for key, raw_amount in distribution.items():
+            amount = _expect_int(raw_amount, f"distribution[{key}]", nonnegative=True)
+            if amount < minimum:
+                raise DerivedArtifactError("distribution response violates source minimum")
+            if key in maxima and amount > _expect_int(maxima[key], f"distribution maximum[{key}]", nonnegative=True):
+                raise DerivedArtifactError("distribution response exceeds source maximum")
+            total += amount
+        total_amount = _expect_int(domain.get("totalAmount"), "distribution total", nonnegative=True)
+        if (not domain.get("allowPartial") and total != total_amount) or (domain.get("allowPartial") and total > total_amount):
+            raise DerivedArtifactError("distribution response violates source total")
+        if minimum > 0 and any(target not in distribution for target in allowed):
+            raise DerivedArtifactError("distribution response omits a required source target")
         return
 
     if structured_type in {"ordering", "reorder-library"}:
@@ -707,8 +1150,10 @@ def _validate_structured_response_membership(
             allowed = set(_expect_string_list(domain.get("cards"), "reorder cards"))
             if any(not isinstance(item, str) or item not in allowed for item in ordered):
                 raise DerivedArtifactError("reorder response contains an outside-domain card")
+            if len(ordered) != len(allowed) or set(ordered) != allowed:
+                raise DerivedArtifactError("reorder response is not the source permutation")
         else:
-            _validate_ordering_references(ordered, domain)
+            _validate_ordering_references(ordered, domain, require_exact=True)
         return
 
     if structured_type == "split-piles":
@@ -718,6 +1163,11 @@ def _validate_structured_response_membership(
             members = _expect_string_list(pile, "split-pile members")
             if any(member not in allowed for member in members):
                 raise DerivedArtifactError("split response contains an outside-domain card")
+        flattened = [member for pile in piles for member in _expect_string_list(pile, "split-pile members")]
+        if len(piles) != _expect_int(domain.get("numberOfPiles"), "split-pile count"):
+            raise DerivedArtifactError("split response has the wrong source pile count")
+        if len(flattened) != len(set(flattened)) or set(flattened) != allowed:
+            raise DerivedArtifactError("split response is not the source card partition")
         return
 
     if structured_type == "combat-resolution":
@@ -730,6 +1180,33 @@ def _validate_structured_response_membership(
             edge_obj = _expect_object(edge, "combat response edge")
             if edge_obj.get("edgeId") not in allowed:
                 raise DerivedArtifactError("combat response contains an outside-domain edge")
+        if len({ _expect_object(edge, "combat response edge").get("edgeId") for edge in edges }) != len(edges):
+            raise DerivedArtifactError("combat response duplicates a source edge")
+        amounts = {
+            _expect_object(edge, "combat domain edge").get("id"): _expect_object(edge, "combat domain edge").get("amount")
+            for edge in _expect_list(domain.get("edges"), "combat edges")
+        }
+        for edge in edges:
+            edge_obj = _expect_object(edge, "combat response edge")
+            source_edge = next(item for item in _expect_list(domain.get("edges"), "combat edges") if _expect_object(item, "combat edge").get("id") == edge_obj.get("edgeId"))
+            maximum = _expect_int(_expect_object(source_edge, "combat edge").get("maximum"), "combat edge maximum", nonnegative=True)
+            amount = _expect_int(edge_obj.get("amount"), "combat edge amount", nonnegative=True)
+            if amount > maximum:
+                raise DerivedArtifactError("combat response exceeds a source edge maximum")
+            amounts[edge_obj.get("edgeId")] = amount
+        by_source: dict[Any, list[int]] = {}
+        for edge in _expect_list(domain.get("edges"), "combat edges"):
+            edge_obj = _expect_object(edge, "combat edge")
+            by_source.setdefault(edge_obj.get("sourceId"), []).append(amounts[edge_obj.get("id")])
+        for source_id, source_amounts in by_source.items():
+            source_edges = [
+                _expect_object(edge, "combat edge")
+                for edge in _expect_list(domain.get("edges"), "combat edges")
+                if _expect_object(edge, "combat edge").get("sourceId") == source_id
+            ]
+            maximums = {_expect_int(edge.get("maximum"), "combat edge maximum") for edge in source_edges}
+            if len(maximums) != 1 or sum(source_amounts) != next(iter(maximums)):
+                raise DerivedArtifactError("combat response does not satisfy the source edge total")
         return
 
     if structured_type == "mana-sources":
@@ -746,6 +1223,10 @@ def _validate_structured_response_membership(
         selected = _expect_string_list(selected_sources, "selectedSources")
         if any(source not in allowed for source in selected):
             raise DerivedArtifactError("mana response contains an outside-domain source")
+        if response.get("paymentPlan") is not None:
+            _validate_payment_plan(payment, _expect_object(response["paymentPlan"], "paymentPlan"))
+        elif response.get("declined") is not True:
+            raise DerivedArtifactError("mana response has no explicit V3 payment plan")
         return
 
     if structured_type == "replacement":
@@ -755,6 +1236,9 @@ def _validate_structured_response_membership(
         to_options = _expect_list(domain.get("toOptions"), "replacement to options")
         if from_index < 0 or from_index >= len(from_options) or to_index < 0 or to_index >= len(to_options):
             raise DerivedArtifactError("replacement response contains an outside-domain option")
+        allowed = _expect_list(domain.get("allowedToByFrom"), "replacement relations")
+        if from_index >= len(allowed) or to_index not in _expect_list(allowed[from_index], "replacement relation"):
+            raise DerivedArtifactError("replacement response violates the source relation")
         return
 
     if structured_type == "budget-modal":
@@ -762,6 +1246,8 @@ def _validate_structured_response_membership(
         modes = _expect_list(domain.get("modes"), "budget modes")
         if any(index < 0 or index >= len(modes) for index in selected):
             raise DerivedArtifactError("budget response contains an outside-domain mode")
+        if sum(_expect_int(_expect_object(modes[index], "budget mode").get("cost"), "budget mode cost") for index in selected) > _expect_int(domain.get("budget"), "budget"):
+            raise DerivedArtifactError("budget response exceeds the source budget")
         return
 
     raise DerivedArtifactError("unsupported structured response membership")
@@ -770,6 +1256,12 @@ def _validate_structured_response_membership(
 def _expect_list(value: Any, label: str) -> list[Any]:
     if not isinstance(value, list):
         raise DerivedArtifactError(f"{label} must be a list")
+    return value
+
+
+def _expect_string(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise DerivedArtifactError(f"{label} must be a string")
     return value
 
 
@@ -787,7 +1279,12 @@ def _expect_int_list(value: Any, label: str) -> list[int]:
     return values
 
 
-def _validate_ordering_references(ordered: list[Any], domain: dict[str, Any]) -> None:
+def _validate_ordering_references(
+    ordered: list[Any],
+    domain: dict[str, Any],
+    *,
+    require_exact: bool = False,
+) -> None:
     objects = _expect_string_list(domain.get("objects"), "ordering objects")
     labels = domain.get("objectLabels") or {}
     card_info = domain.get("cardInfo") or {}
@@ -823,5 +1320,7 @@ def _validate_ordering_references(ordered: list[Any], domain: dict[str, Any]) ->
         if not isinstance(reference, dict):
             raise DerivedArtifactError("ordering response contains a malformed reference")
         actual.add(_canonical_element(reference, "ordering response reference"))
-    if not actual.issubset(expected):
+    if len(actual) != len(ordered) or not actual.issubset(expected):
         raise DerivedArtifactError("ordering response contains an outside-domain object")
+    if require_exact and actual != expected:
+        raise DerivedArtifactError("ordering response is not the source permutation")
