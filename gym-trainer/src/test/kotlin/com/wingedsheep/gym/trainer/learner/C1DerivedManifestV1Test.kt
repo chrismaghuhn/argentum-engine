@@ -97,6 +97,21 @@ class C1DerivedManifestV1Test : FunSpec({
         }
     }
 
+    test("rejects partition count integer overflow") {
+        shouldThrow<IllegalArgumentException> {
+            manifest(
+                episodeCount = 0,
+                episodeCounts = C1PartitionCounts(Int.MAX_VALUE, Int.MAX_VALUE, 2),
+            )
+        }
+        shouldThrow<IllegalArgumentException> {
+            manifest(
+                sampleCount = 0,
+                sampleCounts = C1PartitionCounts(Int.MAX_VALUE, Int.MAX_VALUE, 2),
+            )
+        }
+    }
+
     test("derived identity changes with source or sample content identity") {
         val original = manifest().recomputeDerivedArtifactId()
         val changedSource = manifest().copy(sourceDatasetId = "2".repeat(64)).recomputeDerivedArtifactId()

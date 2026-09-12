@@ -42,7 +42,7 @@ data class C1PartitionCounts(
         }
     }
 
-    fun total(): Int = train + validation + test
+    fun total(): Long = train.toLong() + validation.toLong() + test.toLong()
 }
 
 @Serializable
@@ -161,10 +161,10 @@ data class C1DerivedManifestV1(
         require(sampleCount >= 0 && episodeCount >= 0) {
             "Derived counts must not be negative"
         }
-        require(episodeCountsByPartition.total() == episodeCount) {
+        require(episodeCountsByPartition.total() == episodeCount.toLong()) {
             "Episode partition counts do not match episodeCount"
         }
-        require(sampleCountsByPartition.total() == sampleCount) {
+        require(sampleCountsByPartition.total() == sampleCount.toLong()) {
             "Sample partition counts do not match sampleCount"
         }
     }
