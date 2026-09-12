@@ -2,15 +2,19 @@
 
 ## Status and boundary
 
-This design is approved for the implementation-plan review, but it is not the
-C1_00 implementation itself.
+This design is pending independent spec review. It is not the C1_00
+implementation itself, and it does not authorize an implementation plan yet.
 
 ```text
 TASK=C1_00_LOCAL_LEARNER_FOUNDATION_AND_CONTRACT_IMPLEMENTATION
 BASE=ce9f779bd3bd8375b6b83b9c5668b1b94ced924a
 BRANCH=chris/c1-00-local-learner-foundation-20260912
 CURRENT_PHASE=C1
-C1_IMPLEMENTATION_AUTHORIZED=YES
+STATUS=PENDING_INDEPENDENT_SPEC_REVIEW
+SPEC_APPROVED=NO
+IMPLEMENTATION_PLAN_AUTHORIZED=NO
+IMPLEMENTATION_AUTHORIZED=NO
+C1_IMPLEMENTATION_AUTHORIZED=NO
 TRAINING_AUTHORIZED=NO
 SMALL_LEARNER_SMOKE_AUTHORIZED=NO
 ```
@@ -70,9 +74,36 @@ samples.ndjson      one canonical UTF-8 JSON object per learner sample
 `manifest.json` binds the derived-view schema, all C0 contract identities, the
 source dataset ID and manifest digest, the TrajectoryV1 schema identity, the
 materializer implementation/source-commit identity, the fixed
-`episode-ordinal-ascending` enumeration policy, partition counts, sample-file
-digest, byte count, and record count. It never uses paths, mtimes, hostnames,
-PIDs, worker IDs, wall-clock values, or completion order as semantic identity.
+`episode-ordinal-ascending` enumeration policy, and both episode and sample
+counts:
+
+```text
+episodeCount
+episodeCountsByPartition { TRAIN, VALIDATION, TEST }
+sampleCount
+sampleCountsByPartition { TRAIN, VALIDATION, TEST }
+```
+
+It also binds the exact sample-file digest and byte/record counts. An accepted
+source episode with zero materialized policy samples remains visible in the
+episode counts. It never uses paths, mtimes, hostnames, PIDs, worker IDs,
+wall-clock values, or completion order as semantic identity.
+
+The physical bytes are frozen independently of the host platform:
+
+```text
+manifest.json = UTF8(A3SemanticJson.canonicalJson(manifest))
+manifest.json has no BOM and no trailing newline
+
+samples.ndjson = for each sample in deterministic order:
+    UTF8(A3SemanticJson.canonicalJson(sample)) || 0x0A
+
+FINAL_RECORD_HAS_LF=YES
+PLATFORM_NEWLINE_API=FORBIDDEN
+```
+
+The materializer writes bytes directly; it does not use platform text-mode
+newline conversion.
 
 Each sample has physically separate top-level channels:
 
@@ -89,6 +120,48 @@ feature/structural view. `target`, source references, raw inverse bindings, and
 episode/dataset provenance cannot be nested inside it. The binding channel
 retains enough exact source information to recover the chosen semantic action or
 response without using a physical batch row as meaning.
+
+The derived artifact has an explicit immutable identity separate from its
+manifest's physical location:
+
+```text
+DERIVED_VIEW_SCHEMA_IDENTITY=argentum-ml-derived-learner-view@v1
+DERIVED_ARTIFACT_IDENTITY_CONTRACT_ID=argentum-ml-derived-artifact-id@v1
+
+derivedArtifactIdentityPayload = {
+    "schema": "argentum-ml-derived-artifact-id@v1",
+    "derivedViewSchemaIdentity": "argentum-ml-derived-learner-view@v1",
+    "sourceDatasetId": ...,
+    "sourceManifestContentDigest": ...,
+    "trajectorySchemaIdentity": "argentum-trajectory@v1",
+    "modelFacingContractIdentity": "argentum-ml-model-facing-decision-sample@v1",
+    "splitContractIdentity": "argentum-ml-dataset-split@v1",
+    "materializerImplementationIdentity": {
+        "implementation": ...,
+        "sourceCommit": ...
+    },
+    "materializerConfigDigest": ...,
+    "samplesContentDigest": ...,
+    "episodeCountsByPartition": { "TRAIN": ..., "VALIDATION": ..., "TEST": ... },
+    "sampleCountsByPartition": { "TRAIN": ..., "VALIDATION": ..., "TEST": ... }
+}
+
+derivedArtifactId =
+    SHA-256(UTF8(A3SemanticJson.canonicalJson(derivedArtifactIdentityPayload)))
+```
+
+`derivedArtifactId` excludes `manifestContentDigest`, `derivedArtifactId`
+itself, physical file references, paths, and other operational metadata. The
+manifest integrity field is independently defined as:
+
+```text
+manifestContentDigest =
+    SHA-256(UTF8(A3SemanticJson.canonicalJson(
+        manifest with manifestContentDigest omitted
+    )))
+```
+
+This removes self-reference while still detecting manifest-byte changes.
 
 The materializer preserves every source candidate and every typed structured
 domain, including unaffordable/non-executable placeholders and intentional
@@ -118,7 +191,8 @@ Planned focused production units under
   source/reference envelopes, separated sample channels, and strict manifest
   data types.
 - `C1DatasetSplitV1.kt` — exact semanticEpisodeId hash preimage, unsigned
-  big-endian extraction, modulo-100 mapping, and fixed KATs.
+  big-endian extraction and modulo-100 mapping; expected KAT values live in
+  focused tests, not in production source.
 - `C1ModelFacingProjectionV1.kt` — explicit C0-01 observation/domain admission,
   perspective normalization, sample-local relation aliases, complete binding,
   and fail-closed handling of unsupported fields.
@@ -182,19 +256,129 @@ No first-row fallback, physical-row tie break, global/engine/training RNG,
 softmax, temperature, epsilon-greedy, AutoPay, or implicit structured completion
 is available.
 
+The deterministic-tie boundary is explicit. Selection accepts an optional
+`deterministicSemanticTieDiscriminator` supplied by the C0-04-authorized source
+binding; it is not generated from a physical row or from a model feature. It
+must be invariant under candidate permutation and uniquely order the exact
+maximal candidates. If it is absent, invalid, or non-unique, Selection V2 goes
+directly to unresolved PolicyTieRng sampling.
+
+```text
+SOURCE_BINDING_ORDINAL_AS_MODEL_FEATURE=NO
+SOURCE_BINDING_ORDINAL_AS_DETERMINISTIC_PREFERENCE=NO
+SOURCE_BINDING_ORDINAL_AS_UNIFORM_SAMPLE_ADDRESS=YES
+
+FORBIDDEN_TIE_DISCRIMINATORS=
+    raw EntityId, row index, source ordinal, actionId, decisionId,
+    allocation order, batch slot, hash-map iteration, or runtime artifact order
+```
+
+The sample-local source-binding ordinal is only the inverse address used after
+the uniform sampler returns an unbiased member address. It never affects which
+member is considered semantically first.
+
 `policy_tie_rng.py` implements the accepted stream-key payload, signed-Long
 bit-pattern conversion, SHA-256 raw-word preimage, cursor/exhaustion rules,
 rejection-sampling `uniformBelow`, snapshot/restore, and by-value fork.
 
+Policy provenance is gated before any seed bits are consumed:
+
+```text
+POLICY_SEED_REUSE_ALLOWED_ONLY_WHEN=
+    policyRngIdentity == argentum-ml-policy-tie-rng@v1
+
+CURRENT_A9_POLICY_SEED_AS_POLICY_TIE_RNG_SEED=NO
+POLICY_TIE_RNG_STATE_SCOPE=one semantic episode x one policy instance
+```
+
+The legacy `explicit-seed/kotlin-policy-state-v1` identity is never
+retroactively interpreted as PolicyTieRng V1. C1_00 KATs use explicit
+PolicyTieRng test provenance or a directly defined `PolicyTieRngStateV1`.
+Each episode/policy instance receives a fresh state object; the stream-key
+payload still excludes `semanticEpisodeId`, `actualEngineSeed`, and hidden-world
+identity exactly as required by C0-04B.
+
 `checkpoint/manifest.py` implements strict
 `argentum-ml-checkpoint-manifest@v1` parsing, accepted artifact kinds,
 selection/RNG compatibility pairs, exact weight-byte digest binding, canonical
-identity recomputation, and rejection of unknown fields/versions/kinds. It does
-not load model tensors or claim a usable checkpoint.
+identity recomputation, and rejection of unknown fields/versions/kinds. Its
+strict manifest model mirrors the complete C0-04 field set:
+
+```text
+manifest contract/version
+policyArtifactKind
+modelImplementationIdentity
+modelArchitectureIdentity
+modelConfigDigest
+modelFacingContractIdentity
+candidateScoringContractIdentity
+splitContractIdentity
+sourceDatasetIdentity
+recurrentSequenceContractIdentity
+vocabularyIdentity
+weightArtifactIdentity
+weightContentDigest
+inferenceContractIdentity
+selectionContractIdentity
+requiredNumericProfileClass
+policyRngContractIdentity
+trainingRecipeIdentity
+trainingRunIdentity
+parentCheckpointIdentity
+teacherBootstrapProvenance
+```
+
+Only `FEED_FORWARD_POLICY` and `RECURRENT_POLICY` are recognized artifact kinds;
+unknown kinds fail closed. It does not load model tensors or claim a usable
+checkpoint.
 
 `inference/runtime.py` composes a model-facing sample, an injected
-`ScoreProvider`, Selection V2, and the policy RNG into one exact semantic source
-binding. It does not produce a live engine action ID or duplicate Rules legality.
+`ScoreProvider`, a strict `NumericExecutionProfileIdentity`, Selection V2, and
+the policy RNG into one exact semantic source binding. It does not produce a
+live engine action ID or duplicate Rules legality.
+
+### Numeric execution profile boundary
+
+The model-independent seam validates the C0-04 profile identity without
+selecting a framework, dtype, device, kernel, or backend:
+
+```text
+NUMERIC_EXECUTION_PROFILE_CONTRACT_ID=
+    argentum-ml-numeric-execution-profile@v1
+C1_00_NUMERIC_PROFILE_IDENTITY_BINDING=YES
+C1_00_NUMERIC_BACKEND_CERTIFICATION=NO
+```
+
+`requiredNumericProfileClass` is a strict checkpoint/inference compatibility
+field and is part of the checkpoint semantic identity. Cross-backend
+equivalence, PyTorch behavior, CUDA behavior, and numeric certification remain
+deferred to a later scorer/checkpoint slice.
+
+## Design-review follow-up state
+
+The seven local P2 findings from the independent spec review are resolved in
+this follow-up without changing the architecture or reopening C0:
+
+```text
+P1=0
+P2=0
+P2_1=RESOLVED  # explicit pending-review status and no plan authorization
+P2_2=RESOLVED  # exact manifest/NDJSON UTF-8 and LF framing
+P2_3=RESOLVED  # derivedArtifactId and non-self-referential identity payload
+P2_4=RESOLVED  # explicit C0 semantic tie-discriminator boundary
+P2_5=RESOLVED  # exact PolicyTieRng provenance gate and state scope
+P2_6=RESOLVED  # separate episode and sample partition counts
+P2_7=RESOLVED  # numeric execution profile identity binding
+
+C0_CONTRACT_REOPEN_REQUIRED=NO
+SPEC_APPROVED=NO
+IMPLEMENTATION_PLAN_AUTHORIZED=NO
+IMPLEMENTATION_AUTHORIZED=NO
+TRAINING_AUTHORIZED=NO
+SMALL_LEARNER_SMOKE_AUTHORIZED=NO
+```
+
+This document is ready for written spec re-review, not for implementation.
 
 ## Determinism and identity
 
@@ -218,6 +402,10 @@ payload, including contract bindings, model/config identity, lineage fields,
 selection/RNG pair, weight-artifact identity, and exact weight-content digest.
 Filename, path, mtime, `latest`, `best`, provider URL, or run number cannot define
 identity.
+
+The C0-04 identity payload also binds `requiredNumericProfileClass` and the
+`argentum-ml-numeric-execution-profile@v1` contract identity. The runtime must
+validate that field before Selection V2 is reachable.
 
 ## Error handling
 
