@@ -100,6 +100,18 @@ class B1ScalingMeasurementTest : FunSpec({
     }
 })
 
+/** Opt-in test-only pair oracle for every source-observation digest in a 1-env corpus run. */
+class B1SourceDigestPairEquivalenceTest : FunSpec({
+    val enabled = System.getProperty("b1.contract") == "source-digest-pair"
+
+    test("matches every source observation digest to the legacy canonical oracle").config(
+        enabled = enabled,
+        timeout = 4.hours,
+    ) {
+        runB1SourceDigestPairEquivalence()
+    }
+})
+
 /** Opt-in test-only latency characterization with normal and structured steps split. */
 class B1StructuredLatencyMeasurementTest : FunSpec({
     val enabled = System.getProperty("b1.latency") == "true"
@@ -953,6 +965,34 @@ private fun runB1ScalingMeasurement() {
     }
 }
 
+private fun runB1SourceDigestPairEquivalence() {
+    val session = SourceDigestCorpusPairProbe.start()
+    var snapshot: SourceDigestCorpusPairProbe.Snapshot? = null
+    val condition = try {
+        measureScalingCondition(
+            environmentCount = 1,
+            repetitions = B1_SCALING_DEFAULT_REPETITIONS,
+            warmupSteps = B1_SCALING_DEFAULT_WARMUP_STEPS,
+            referenceHolder = ReferenceTrajectoryHolder(),
+        )
+    } finally {
+        snapshot = SourceDigestCorpusPairProbe.stop(session)
+    }
+    val pair = checkNotNull(snapshot)
+    check(condition.semanticTrajectory == "PASS") {
+        "Source digest pair workload semantic trajectory was not PASS"
+    }
+    check(pair.observations >= 48_150L) {
+        "Source digest pair campaign was too small: ${pair.observations}"
+    }
+    check(pair.mismatches == 0L) {
+        "Source digest pair mismatch count=${pair.mismatches}; ${pair.firstMismatch}"
+    }
+    println("SOURCE_DIGEST_PAIR_OBSERVATIONS=${pair.observations}")
+    println("SOURCE_DIGEST_PAIR_MISMATCHES=${pair.mismatches}")
+    println("SOURCE_DIGEST_PAIR_EQUIVALENCE=PASS")
+}
+
 private fun runB1StructuredLatencyMeasurement() {
     val warmupSteps = positiveProperty("b1.latency.warmupSteps", B1_SCALING_DEFAULT_WARMUP_STEPS)
     val outputDir = Path.of(
@@ -1599,8 +1639,10 @@ private fun trainingObservation(result: ObservationResult): TrainingObservation 
     check(result.diagnostics.isEmpty()) {
         "B1 scaling observation carried diagnostics: ${result.diagnostics}"
     }
-    return result.observation as? TrainingObservation
+    val observation = result.observation as? TrainingObservation
         ?: error("B1 scaling requires TrainingObservation")
+    SourceDigestCorpusPairProbe.record(observation)
+    return observation
 }
 
 private fun b1ScalingRegistry(): CardRegistry = CardRegistry().apply {
