@@ -69,7 +69,7 @@ Modify only `.github/workflows/ci.yml`, `justfile`, and `.gitignore` for integra
 
 **Files:** None.
 
-- [ ] **Step 1: Verify the implementation worktree and immutable base.** Run:
+- [x] **Step 1: Verify the implementation worktree and immutable base.** Run:
 
 ```powershell
 git rev-parse HEAD
@@ -84,9 +84,9 @@ git diff --name-only ce9f779bd3bd8375b6b83b9c5668b1b94ced924a..HEAD
 
 Expected: `origin/main=ce9f779bd3bd8375b6b83b9c5668b1b94ced924a`, merge-base check PASS, branch `chris/c1-00-local-learner-foundation-20260912`, a clean worktree, and a pre-implementation BASE..HEAD diff containing only the approved spec/plan documentation. Do not require HEAD to equal BASE; the spec and plan commits intentionally precede implementation.
 
-- [ ] **Step 2: Verify the protected original checkout.** Run `git -C C:\argentum-engine status --short --branch`. Only the existing `StackResolver.kt` modification may be present. Never stage, stash, reset, clean, edit, or reformat it.
+- [x] **Step 2: Verify the protected original checkout.** Run `git -C C:\argentum-engine status --short --branch`. Only the existing `StackResolver.kt` modification may be present. Never stage, stash, reset, clean, edit, or reformat it.
 
-- [ ] **Step 3: Record `UNRELATED_STACKRESOLVER_CHANGE_TOUCHED=NO` in the final report.** Do not create a status artifact.
+- [x] **Step 3: Record `UNRELATED_STACKRESOLVER_CHANGE_TOUCHED=NO` in the final report.** Do not create a status artifact.
 
 ---
 
