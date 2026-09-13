@@ -83,6 +83,30 @@ class CheckpointManifestTests(unittest.TestCase):
         with self.assertRaises(CheckpointManifestError):
             ArgentumCheckpointManifestV1.from_dict(self._source_with_change("version", True))
 
+    def test_manifest_is_deeply_immutable_with_mutable_export(self) -> None:
+        source = self._source()
+        manifest = ArgentumCheckpointManifestV1.from_dict(source)
+
+        source["weightContentDigest"] = hashlib.sha256(b"changed").hexdigest()
+        source["modelImplementationIdentity"]["implementation"] = "changed"
+        source["weightArtifactIdentity"]["artifact"] = "changed"
+        self.assertEqual(manifest.weight_content_digest, "33f5b2ad62a009da8f27adec3e84b95c4be4340e6d089cd29c8464610642164c")
+        self.assertTrue(manifest.validate_weight_bytes(WEIGHT_BYTES))
+
+        with self.assertRaises(TypeError):
+            manifest._data["weightContentDigest"] = "rebound"
+        with self.assertRaises(TypeError):
+            manifest._data["modelImplementationIdentity"]["implementation"] = "rebound"
+        with self.assertRaises(TypeError):
+            manifest._data["weightArtifactIdentity"]["artifact"] = "rebound"
+
+        exported = manifest.to_dict()
+        exported["weightContentDigest"] = hashlib.sha256(b"export mutation").hexdigest()
+        exported["modelImplementationIdentity"]["implementation"] = "export mutation"
+        exported["weightArtifactIdentity"]["artifact"] = "export mutation"
+        self.assertTrue(manifest.validate_weight_bytes(WEIGHT_BYTES))
+        self.assertNotEqual(exported["weightContentDigest"], manifest.weight_content_digest)
+
     def test_rejects_bad_kind_pair_profile_and_weight(self) -> None:
         source = self._source()
         source["policyArtifactKind"] = "UNKNOWN_POLICY"

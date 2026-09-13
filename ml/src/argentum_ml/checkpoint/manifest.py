@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import re
@@ -60,6 +59,64 @@ class CheckpointManifestError(ValueError):
     """Raised when a checkpoint manifest or weight artifact is invalid."""
 
 
+class _FrozenDict(dict[str, Any]):
+    """Dict-compatible immutable JSON object retained by a validated manifest."""
+
+    def __init__(self, values: dict[str, Any]) -> None:
+        dict.__init__(self, values)
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("checkpoint manifest JSON is immutable")
+
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _immutable
+
+    def __ior__(self, other: Any) -> "_FrozenDict":
+        self._immutable()
+        return self
+
+
+class _FrozenList(list[Any]):
+    """List-compatible immutable JSON array retained by a validated manifest."""
+
+    def __init__(self, values: list[Any]) -> None:
+        list.__init__(self, values)
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("checkpoint manifest JSON is immutable")
+
+    __setitem__ = __delitem__ = append = clear = extend = insert = pop = remove = reverse = sort = _immutable
+
+    def __iadd__(self, other: Any) -> "_FrozenList":
+        self._immutable()
+        return self
+
+    def __imul__(self, other: Any) -> "_FrozenList":
+        self._immutable()
+        return self
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _FrozenDict({key: _deep_freeze(child) for key, child in value.items()})
+    if isinstance(value, list):
+        return _FrozenList([_deep_freeze(child) for child in value])
+    if isinstance(value, tuple):
+        return tuple(_deep_freeze(child) for child in value)
+    return value
+
+
+def _deep_thaw(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _deep_thaw(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_deep_thaw(child) for child in value]
+    if isinstance(value, tuple):
+        return tuple(_deep_thaw(child) for child in value)
+    return value
+
+
 @dataclass(frozen=True)
 class NumericExecutionProfileIdentity:
     contract_identity: str
@@ -81,7 +138,7 @@ class ArgentumCheckpointManifestV1:
         if not isinstance(value, dict):
             raise CheckpointManifestError("checkpoint manifest must be an object")
         _validate_manifest(value)
-        return cls(copy.deepcopy(value))
+        return cls(_deep_freeze(value))
 
     @classmethod
     def from_json(cls, raw: str | bytes) -> "ArgentumCheckpointManifestV1":
@@ -120,7 +177,7 @@ class ArgentumCheckpointManifestV1:
         return self._data["requiredNumericProfileClass"]
 
     def to_dict(self) -> dict[str, Any]:
-        return copy.deepcopy(self._data)
+        return _deep_thaw(self._data)
 
     def canonical_json(self) -> str:
         return canonical_json(self._data)
