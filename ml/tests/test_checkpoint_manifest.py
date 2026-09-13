@@ -17,6 +17,21 @@ WEIGHT_BYTES = b"c1-checkpoint-fixture-weight-v1\n"
 
 
 class CheckpointManifestTests(unittest.TestCase):
+    def _source(self) -> dict[str, object]:
+        return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+    def _source_with_change(self, key: str, value: object) -> dict[str, object]:
+        source = self._source()
+        source[key] = value
+        identity_payload = {
+            name: item
+            for name, item in source.items()
+            if name not in {"checkpointId", "version"}
+        }
+        identity_payload["schema"] = "argentum-ml-checkpoint-id@v1"
+        source["checkpointId"] = hashlib.sha256(canonical_bytes(identity_payload)).hexdigest()
+        return source
+
     def test_parses_fixture_and_recomputes_independent_identity(self) -> None:
         manifest = ArgentumCheckpointManifestV1.from_path(FIXTURE)
         self.assertEqual(manifest.checkpoint_id, "07b88ac3f37a9270bbf1db4888da4fb047429a864f7ab0c778335a69878a4290")
@@ -34,25 +49,50 @@ class CheckpointManifestTests(unittest.TestCase):
         self.assertTrue(manifest.validate_weight_bytes(WEIGHT_BYTES))
 
     def test_rejects_unknown_or_missing_fields_before_decoding(self) -> None:
-        source = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        source = self._source()
         source.pop("modelConfigDigest")
         with self.assertRaises(CheckpointManifestError):
             ArgentumCheckpointManifestV1.from_dict(source)
-        source = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        source = self._source()
         source["futureField"] = True
         with self.assertRaises(CheckpointManifestError):
             ArgentumCheckpointManifestV1.from_dict(source)
 
+    def test_rejects_non_exact_frozen_contract_identities(self) -> None:
+        for key, value in (
+            ("modelFacingContractIdentity", "other-model@v99"),
+            ("candidateScoringContractIdentity", "other-scoring@v99"),
+            ("splitContractIdentity", "other-split@v99"),
+        ):
+            with self.subTest(key=key):
+                with self.assertRaises(CheckpointManifestError):
+                    ArgentumCheckpointManifestV1.from_dict(self._source_with_change(key, value))
+
+    def test_rejects_untyped_teacher_provenance_and_identity_shapes(self) -> None:
+        for key, value in (
+            ("teacherBootstrapProvenance", {"path": "C:\\models\\teacher.pt"}),
+            ("weightArtifactIdentity", {"container": "", "artifact": "fixture.weights"}),
+            ("weightArtifactIdentity", {"container": "fixture-bytes@v1", "artifact": ""}),
+            ("parentCheckpointIdentity", "hello"),
+        ):
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(CheckpointManifestError):
+                    ArgentumCheckpointManifestV1.from_dict(self._source_with_change(key, value))
+
+    def test_rejects_boolean_manifest_version(self) -> None:
+        with self.assertRaises(CheckpointManifestError):
+            ArgentumCheckpointManifestV1.from_dict(self._source_with_change("version", True))
+
     def test_rejects_bad_kind_pair_profile_and_weight(self) -> None:
-        source = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        source = self._source()
         source["policyArtifactKind"] = "UNKNOWN_POLICY"
         with self.assertRaises(CheckpointManifestError):
             ArgentumCheckpointManifestV1.from_dict(source)
-        source = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        source = self._source()
         source["policyRngContractIdentity"] = "NONE_FOR_DETERMINISTIC_MODE"
         with self.assertRaises(CheckpointManifestError):
             ArgentumCheckpointManifestV1.from_dict(source)
-        source = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        source = self._source()
         source["requiredNumericProfileClass"] = ""
         with self.assertRaises(CheckpointManifestError):
             ArgentumCheckpointManifestV1.from_dict(source)

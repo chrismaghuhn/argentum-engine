@@ -14,10 +14,12 @@ from ..contracts.canonical_json import canonical_bytes, canonical_json
 from ..contracts.identities import (
     CHECKPOINT_MANIFEST_IDENTITY,
     INFERENCE_CONTRACT_IDENTITY,
+    MODEL_FACING_CONTRACT_IDENTITY,
     NUMERIC_PROFILE_CONTRACT_IDENTITY,
     POLICY_TIE_RNG_IDENTITY,
     SELECTION_V1_IDENTITY,
     SELECTION_V2_IDENTITY,
+    SPLIT_CONTRACT_IDENTITY,
 )
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -76,6 +78,8 @@ class ArgentumCheckpointManifestV1:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ArgentumCheckpointManifestV1":
+        if not isinstance(value, dict):
+            raise CheckpointManifestError("checkpoint manifest must be an object")
         _validate_manifest(value)
         return cls(copy.deepcopy(value))
 
@@ -155,7 +159,7 @@ def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def _validate_manifest(value: dict[str, Any]) -> None:
     if set(value) != _MANIFEST_KEYS:
         raise CheckpointManifestError("checkpoint manifest fields are not exact")
-    if value["version"] != 1:
+    if type(value["version"]) is not int or value["version"] != 1:
         raise CheckpointManifestError("unsupported checkpoint manifest version")
     if value["manifestContractIdentity"] != CHECKPOINT_MANIFEST_IDENTITY:
         raise CheckpointManifestError("unsupported checkpoint manifest identity")
@@ -171,6 +175,12 @@ def _validate_manifest(value: dict[str, Any]) -> None:
     for key in ("modelArchitectureIdentity", "modelFacingContractIdentity", "candidateScoringContractIdentity", "splitContractIdentity", "inferenceContractIdentity", "requiredNumericProfileClass"):
         if not _string(value[key], key):
             raise CheckpointManifestError(f"{key} must be non-empty")
+    if value["modelFacingContractIdentity"] != MODEL_FACING_CONTRACT_IDENTITY:
+        raise CheckpointManifestError("unsupported model-facing contract identity")
+    if value["candidateScoringContractIdentity"] != MODEL_FACING_CONTRACT_IDENTITY:
+        raise CheckpointManifestError("unsupported candidate-scoring contract identity")
+    if value["splitContractIdentity"] != SPLIT_CONTRACT_IDENTITY:
+        raise CheckpointManifestError("unsupported split contract identity")
     for key in ("modelConfigDigest", "sourceDatasetIdentity", "weightContentDigest", "checkpointId"):
         if _SHA256.fullmatch(_string(value[key], key)) is None:
             raise CheckpointManifestError(f"{key} must be lowercase SHA-256 hex")
@@ -184,8 +194,10 @@ def _validate_manifest(value: dict[str, Any]) -> None:
     _optional_identity(value["vocabularyIdentity"], "vocabularyIdentity")
     weight_artifact = _object(value["weightArtifactIdentity"], "weightArtifactIdentity")
     _exact_keys(weight_artifact, {"container", "artifact"}, "weightArtifactIdentity")
-    _string(weight_artifact["container"], "weightArtifactIdentity.container")
-    _string(weight_artifact["artifact"], "weightArtifactIdentity.artifact")
+    if not _string(weight_artifact["container"], "weightArtifactIdentity.container"):
+        raise CheckpointManifestError("weight artifact container identity must be non-empty")
+    if not _string(weight_artifact["artifact"], "weightArtifactIdentity.artifact"):
+        raise CheckpointManifestError("weight artifact identity must be non-empty")
     selection = _string(value["selectionContractIdentity"], "selectionContractIdentity")
     policy_rng = _string(value["policyRngContractIdentity"], "policyRngContractIdentity")
     if selection == SELECTION_V1_IDENTITY and policy_rng == _NONE_FOR_DETERMINISTIC_MODE:
@@ -194,10 +206,11 @@ def _validate_manifest(value: dict[str, Any]) -> None:
         pass
     else:
         raise CheckpointManifestError("selection and policy RNG contracts are incompatible")
-    for key in ("trainingRecipeIdentity", "trainingRunIdentity", "parentCheckpointIdentity"):
+    for key in ("trainingRecipeIdentity", "trainingRunIdentity"):
         _optional_identity(value[key], key)
-    if value["teacherBootstrapProvenance"] is not None and not isinstance(value["teacherBootstrapProvenance"], dict):
-        raise CheckpointManifestError("teacherBootstrapProvenance must be an object or null")
+    _optional_sha256_identity(value["parentCheckpointIdentity"], "parentCheckpointIdentity")
+    if value["teacherBootstrapProvenance"] is not None:
+        raise CheckpointManifestError("teacherBootstrapProvenance is reserved and must be null")
     if hashlib.sha256(canonical_bytes(_identity_payload(value))).hexdigest() != value["checkpointId"]:
         raise CheckpointManifestError("checkpointId does not match its identity payload")
 
@@ -232,3 +245,10 @@ def _string(value: Any, label: str) -> str:
 def _optional_identity(value: Any, label: str) -> None:
     if value is not None and (not isinstance(value, str) or not value):
         raise CheckpointManifestError(f"{label} must be a non-empty string or null")
+
+
+def _optional_sha256_identity(value: Any, label: str) -> None:
+    if value is not None and (
+        not isinstance(value, str) or _SHA256.fullmatch(value) is None
+    ):
+        raise CheckpointManifestError(f"{label} must be a lowercase SHA-256 hex or null")
