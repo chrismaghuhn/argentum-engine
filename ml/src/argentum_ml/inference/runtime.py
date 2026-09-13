@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import Any
 
-from ..checkpoint.manifest import NumericExecutionProfileIdentity
+from ..checkpoint.manifest import (
+    ArgentumCheckpointManifestV1,
+    NumericExecutionProfileIdentity,
+)
 from ..contracts.canonical_json import canonical_json
 from ..contracts.identities import (
     NUMERIC_PROFILE_CONTRACT_IDENTITY,
@@ -51,24 +54,46 @@ class InferenceError(ValueError):
     """Raised when the model-independent inference seam cannot proceed safely."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class InferenceContext:
     """The explicit runtime contracts required by one inference call."""
 
+    checkpoint_id: str
     numeric_profile: NumericExecutionProfileIdentity
     selection_contract_identity: str
     policy_rng_contract_identity: str
+    required_numeric_profile_class: str
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.numeric_profile, NumericExecutionProfileIdentity):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("InferenceContext must be created from a checkpoint manifest")
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        manifest: ArgentumCheckpointManifestV1,
+        numeric_profile: NumericExecutionProfileIdentity,
+    ) -> "InferenceContext":
+        if not isinstance(manifest, ArgentumCheckpointManifestV1):
+            raise InferenceError("inference context requires a validated checkpoint manifest")
+        if not isinstance(numeric_profile, NumericExecutionProfileIdentity):
             raise InferenceError("inference context requires NumericExecutionProfileIdentity")
-        if self.numeric_profile.contract_identity != NUMERIC_PROFILE_CONTRACT_IDENTITY:
+        if numeric_profile.contract_identity != NUMERIC_PROFILE_CONTRACT_IDENTITY:
             raise InferenceError("unsupported numeric execution profile contract")
+        data = manifest.to_dict()
+        if numeric_profile.required_profile_class != data["requiredNumericProfileClass"]:
+            raise InferenceError("numeric execution profile does not match checkpoint")
         if (
-            self.selection_contract_identity != SELECTION_V2_IDENTITY
-            or self.policy_rng_contract_identity != POLICY_TIE_RNG_IDENTITY
+            data["selectionContractIdentity"] != SELECTION_V2_IDENTITY
+            or data["policyRngContractIdentity"] != POLICY_TIE_RNG_IDENTITY
         ):
-            raise InferenceError("inference requires the Selection V2 and PolicyTieRng V1 pair")
+            raise InferenceError("checkpoint is not compatible with Selection V2 and PolicyTieRng V1")
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "checkpoint_id", manifest.checkpoint_id)
+        object.__setattr__(instance, "numeric_profile", numeric_profile)
+        object.__setattr__(instance, "selection_contract_identity", data["selectionContractIdentity"])
+        object.__setattr__(instance, "policy_rng_contract_identity", data["policyRngContractIdentity"])
+        object.__setattr__(instance, "required_numeric_profile_class", data["requiredNumericProfileClass"])
+        return instance
 
 
 @dataclass(frozen=True, init=False)
@@ -92,21 +117,30 @@ class SourceSelectionBindings:
     def from_derived_binding_channel(
         cls,
         channel: Mapping[str, Any],
-        exact_source_bindings: Sequence[ExactSemanticSourceBinding],
     ) -> "SourceSelectionBindings":
         if not isinstance(channel, Mapping):
             raise InferenceError("source binding channel must be an object")
+        source_domain = _object(channel.get("completeLegalDomain"), "completeLegalDomain")
+        source_kind = source_domain.get("kind")
+        if source_kind not in {"ACTION_CANDIDATES", "FOLDED_DECISION_OPTIONS", "STRUCTURED_DECISION"}:
+            raise InferenceError("source domain has an unsupported kind")
+        raw_source_candidates = source_domain.get("candidates")
+        if not isinstance(raw_source_candidates, (list, tuple)):
+            raise InferenceError("completeLegalDomain.candidates must be a list")
         raw_ordinals = channel.get("sourceBindingOrdinals")
         if not isinstance(raw_ordinals, (list, tuple)):
             raise InferenceError("sourceBindingOrdinals must be a list")
         ordinals = tuple(_nonnegative_int(value, "source binding ordinal") for value in raw_ordinals)
         if len(set(ordinals)) != len(ordinals):
             raise InferenceError("source binding ordinals must be unique")
-        bindings = tuple(exact_source_bindings)
-        if any(not isinstance(binding, ExactSemanticSourceBinding) for binding in bindings):
-            raise InferenceError("source bindings must be ExactSemanticSourceBinding values")
-        if len(bindings) != len(ordinals):
-            raise InferenceError("source binding count does not match source ordinals")
+        if len(raw_source_candidates) != len(ordinals):
+            raise InferenceError("source domain candidate count does not match source ordinals")
+        if source_kind != "STRUCTURED_DECISION" and ordinals != tuple(range(len(raw_source_candidates))):
+            raise InferenceError("source binding ordinals are not the authoritative candidate addresses")
+        bindings = tuple(
+            _derive_exact_source_binding(source_kind, candidate, ordinal)
+            for candidate, ordinal in zip(raw_source_candidates, ordinals)
+        )
         binding_keys: set[tuple[str | None, str | None]] = set()
         for ordinal, binding in zip(ordinals, bindings):
             audit = binding.source_binding_ordinal_audit
@@ -189,6 +223,10 @@ class SourceSelectionBindings:
 class InferenceRuntime:
     context: InferenceContext
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.context, InferenceContext):
+            raise InferenceError("inference runtime requires a checkpoint-bound InferenceContext")
+
     def select(
         self,
         item: VariableDomainItem,
@@ -200,6 +238,13 @@ class InferenceRuntime:
 
         if not isinstance(item, VariableDomainItem):
             raise InferenceError("inference requires VariableDomainItem transport")
+        if (
+            self.context.selection_contract_identity != SELECTION_V2_IDENTITY
+            or self.context.policy_rng_contract_identity != POLICY_TIE_RNG_IDENTITY
+            or self.context.numeric_profile.required_profile_class
+            != self.context.required_numeric_profile_class
+        ):
+            raise InferenceError("inference context is not checkpoint-compatible")
         if item.structured_domain is not None:
             raise InferenceError(
                 "C1_00 structured inference is non-total without approved scoreable alternatives"
@@ -274,6 +319,39 @@ def _object(value: Any, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise InferenceError(f"{label} must be an object")
     return value
+
+
+def _derive_exact_source_binding(
+    source_kind: Any,
+    candidate: Any,
+    ordinal: int,
+) -> ExactSemanticSourceBinding:
+    source_candidate = _object(candidate, f"completeLegalDomain.candidates[{ordinal}]")
+    if source_kind == "ACTION_CANDIDATES":
+        required_payload_fields = source_candidate.get("requiredPayloadFields")
+        if not isinstance(required_payload_fields, list) or required_payload_fields:
+            raise InferenceError(
+                "action candidate has no complete exact source binding for C1_00"
+            )
+        return ExactSemanticSourceBinding(
+            {
+                "candidate": source_candidate,
+                "choicePayload": {},
+                "type": "chosen-action",
+            },
+            None,
+            ordinal,
+        )
+    if source_kind == "FOLDED_DECISION_OPTIONS":
+        response = source_candidate.get("actionSemantics")
+        if not isinstance(response, Mapping):
+            raise InferenceError("folded candidate has no complete exact response binding")
+        return ExactSemanticSourceBinding(
+            None,
+            {"response": response, "type": "chosen-response"},
+            ordinal,
+        )
+    raise InferenceError("structured source bindings require approved scoreable alternatives")
 
 
 def _nonnegative_int(value: Any, label: str) -> int:

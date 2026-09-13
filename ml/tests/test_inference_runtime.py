@@ -1,7 +1,11 @@
 import math
 import unittest
+from pathlib import Path
 
-from argentum_ml.checkpoint import NumericExecutionProfileIdentity
+from argentum_ml.checkpoint import (
+    ArgentumCheckpointManifestV1,
+    NumericExecutionProfileIdentity,
+)
 from argentum_ml.contracts.identities import (
     NUMERIC_PROFILE_CONTRACT_IDENTITY,
     POLICY_TIE_RNG_IDENTITY,
@@ -15,7 +19,7 @@ from argentum_ml.inference import (
     InferenceRuntime,
     SourceSelectionBindings,
 )
-from argentum_ml.selection import ExactSemanticSourceBinding, PolicyTieRngStateV1
+from argentum_ml.selection import PolicyTieRngStateV1
 
 
 def _rng() -> PolicyTieRngStateV1:
@@ -27,13 +31,15 @@ def _rng() -> PolicyTieRngStateV1:
 
 
 def _context() -> InferenceContext:
-    return InferenceContext(
-        numeric_profile=NumericExecutionProfileIdentity(
+    manifest = ArgentumCheckpointManifestV1.from_path(
+        Path(__file__).parent / "fixtures" / "checkpoint_manifest_v1.json"
+    )
+    return InferenceContext.from_checkpoint(
+        manifest,
+        NumericExecutionProfileIdentity(
             NUMERIC_PROFILE_CONTRACT_IDENTITY,
             "C1_REFERENCE_NUMERIC_PROFILE",
         ),
-        selection_contract_identity=SELECTION_V2_IDENTITY,
-        policy_rng_contract_identity=POLICY_TIE_RNG_IDENTITY,
     )
 
 
@@ -64,6 +70,17 @@ def _flat_item() -> VariableDomainItem:
 
 def _source_bindings() -> SourceSelectionBindings:
     channel = {
+        "completeLegalDomain": {
+            "kind": "ACTION_CANDIDATES",
+            "candidates": [
+                {
+                    "kind": f"candidate-{ordinal}",
+                    "requiredPayloadFields": [],
+                    "actionSemantics": {"type": "PassPriority"},
+                }
+                for ordinal in range(3)
+            ],
+        },
         "sourceBindingOrdinals": [0, 1, 2],
         "semanticTieDiscriminators": {
             "0": '{"semantic":"a"}',
@@ -75,15 +92,7 @@ def _source_bindings() -> SourceSelectionBindings:
             {"alias": "entity-1", "sourceEntityId": "raw-b"},
         ],
     }
-    exact = tuple(
-        ExactSemanticSourceBinding(
-            {"type": "chosen-action", "kind": f"candidate-{ordinal}"},
-            None,
-            ordinal,
-        )
-        for ordinal in range(3)
-    )
-    return SourceSelectionBindings.from_derived_binding_channel(channel, exact)
+    return SourceSelectionBindings.from_derived_binding_channel(channel)
 
 
 class _RecordingProvider:
@@ -115,7 +124,10 @@ class InferenceRuntimeTests(unittest.TestCase):
 
         self.assertEqual(len(provider.candidates), 3)
         self.assertEqual([view["kind"] for view in provider.candidates], ["candidate-0", "candidate-1", "candidate-2"])
-        self.assertEqual(result.exact_source_binding.exact_action["kind"], "candidate-1")
+        self.assertEqual(
+            result.exact_source_binding.exact_action["candidate"]["kind"],
+            "candidate-1",
+        )
         self.assertEqual(result.audit_source_binding_ordinal, 1)
         self.assertEqual(result.rng_draw_count, 0)
         with self.assertRaises(TypeError):
@@ -147,7 +159,10 @@ class InferenceRuntimeTests(unittest.TestCase):
     def test_unaffordable_candidate_can_score_but_cannot_be_selected(self) -> None:
         provider = _RecordingProvider([0.1, 0.2, 100.0])
         result = InferenceRuntime(_context()).select(_flat_item(), _source_bindings(), provider, _rng())
-        self.assertEqual(result.exact_source_binding.exact_action["kind"], "candidate-1")
+        self.assertEqual(
+            result.exact_source_binding.exact_action["candidate"]["kind"],
+            "candidate-1",
+        )
 
     def test_missing_or_extra_scores_fail_closed(self) -> None:
         for scores in ([0.1, 0.2], [0.1, 0.2, 0.3, 0.4]):
@@ -198,21 +213,72 @@ class InferenceRuntimeTests(unittest.TestCase):
         self.assertEqual(rng.cursor, 0)
 
     def test_context_requires_numeric_profile_and_selection_pair(self) -> None:
+        with self.assertRaises(TypeError):
+            InferenceContext("not-a-profile", SELECTION_V2_IDENTITY, POLICY_TIE_RNG_IDENTITY)
         with self.assertRaises(InferenceError):
-            InferenceContext(
-                numeric_profile="not-a-profile",
-                selection_contract_identity=SELECTION_V2_IDENTITY,
-                policy_rng_contract_identity=POLICY_TIE_RNG_IDENTITY,
-            )
+            InferenceRuntime(None)
         with self.assertRaises(InferenceError):
-            InferenceContext(
-                numeric_profile=NumericExecutionProfileIdentity(
-                    NUMERIC_PROFILE_CONTRACT_IDENTITY,
-                    "C1_REFERENCE_NUMERIC_PROFILE",
+            InferenceContext.from_checkpoint(
+                ArgentumCheckpointManifestV1.from_path(
+                    Path(__file__).parent / "fixtures" / "checkpoint_manifest_v1.json"
                 ),
-                selection_contract_identity="argentum-ml-policy-selection@v1",
-                policy_rng_contract_identity=POLICY_TIE_RNG_IDENTITY,
+                NumericExecutionProfileIdentity(
+                    NUMERIC_PROFILE_CONTRACT_IDENTITY,
+                    "OTHER_PROFILE",
+                ),
             )
+
+    def test_source_binding_is_derived_from_the_authoritative_candidate(self) -> None:
+        channel = {
+            "completeLegalDomain": {
+                "kind": "ACTION_CANDIDATES",
+                "candidates": [
+                    {"kind": "candidate-a", "requiredPayloadFields": []},
+                    {"kind": "candidate-b", "requiredPayloadFields": []},
+                ],
+            },
+            "sourceBindingOrdinals": [0, 1],
+            "semanticTieDiscriminators": {},
+            "entityAliasBindings": [],
+        }
+        bindings = SourceSelectionBindings.from_derived_binding_channel(channel)
+        self.assertEqual(
+            bindings.exact_binding_for(0).exact_action["candidate"]["kind"],
+            "candidate-a",
+        )
+        self.assertEqual(
+            bindings.exact_binding_for(1).exact_action["candidate"]["kind"],
+            "candidate-b",
+        )
+
+    def test_action_candidates_requiring_payload_fail_closed_before_provider(self) -> None:
+        channel = {
+            "completeLegalDomain": {
+                "kind": "ACTION_CANDIDATES",
+                "candidates": [{"kind": "targeted", "requiredPayloadFields": ["targets"]}],
+            },
+            "sourceBindingOrdinals": [0],
+            "semanticTieDiscriminators": {},
+            "entityAliasBindings": [],
+        }
+        with self.assertRaises(InferenceError):
+            SourceSelectionBindings.from_derived_binding_channel(channel)
+
+    def test_source_binding_ordinals_cannot_reorder_authoritative_candidates(self) -> None:
+        channel = {
+            "completeLegalDomain": {
+                "kind": "ACTION_CANDIDATES",
+                "candidates": [
+                    {"kind": "candidate-a", "requiredPayloadFields": []},
+                    {"kind": "candidate-b", "requiredPayloadFields": []},
+                ],
+            },
+            "sourceBindingOrdinals": [1, 0],
+            "semanticTieDiscriminators": {},
+            "entityAliasBindings": [],
+        }
+        with self.assertRaises(InferenceError):
+            SourceSelectionBindings.from_derived_binding_channel(channel)
 
 
 if __name__ == "__main__":
