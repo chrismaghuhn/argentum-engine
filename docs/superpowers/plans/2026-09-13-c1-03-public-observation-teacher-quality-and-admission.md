@@ -1018,14 +1018,18 @@ Test-Path -LiteralPath <output>
 Start exactly one explicit manual run with the accepted source path and a new
 temporary output directory:
 
-~~~
-just test-class C1_03DerivedViewMaterializationTest -Dc1_03.dataset=<exact-accepted-source-dataset> -Dc1_03.output=<new-disposable-derived-view-directory>
+~~~powershell
+$env:C1_03_DATASET=<exact-accepted-source-dataset>
+$env:C1_03_OUTPUT=<new-disposable-derived-view-directory>
+just test-class C1_03DerivedViewMaterializationTest --rerun-tasks -DeclCollect=true
 ~~~
 
 If the Just wrapper is blocked, use the separately labelled native fallback:
 
-~~~
-gradlew.bat :gym-trainer:test --tests C1_03DerivedViewMaterializationTest -Dc1_03.dataset=<exact-accepted-source-dataset> -Dc1_03.output=<new-disposable-derived-view-directory> --console=plain
+~~~powershell
+$env:C1_03_DATASET=<exact-accepted-source-dataset>
+$env:C1_03_OUTPUT=<new-disposable-derived-view-directory>
+gradlew.bat :gym-trainer:test --rerun-tasks --tests C1_03DerivedViewMaterializationTest --console=plain -DeclCollect=true
 ~~~
 
 The output must be the only new data artifact. Do not generate any new A9
@@ -1075,7 +1079,9 @@ cd ml
 py -3.13 -m argentum_ml.characterization.c1_03 \
   --artifact-root <disposable-derived-view-directory> \
   --summary-out ..\docs\ml\c1-03-public-observation-teacher-quality-and-admission.json \
-  --report-out ..\docs\ml\c1-03-public-observation-teacher-quality-and-admission.md
+  --report-out ..\docs\ml\c1-03-public-observation-teacher-quality-and-admission.md \
+  --measurement-head <implementation-head> \
+  --focused-test-count <positive-focused-test-count>
 ~~~
 
 The command must stop on reader/identity/privacy/trust failure. It must not
