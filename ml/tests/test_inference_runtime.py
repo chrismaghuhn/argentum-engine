@@ -1,4 +1,6 @@
 import math
+import copy
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,10 +18,13 @@ from argentum_ml.inference import (
     C1_00_STRUCTURED_INFERENCE_TOTALITY,
     InferenceContext,
     InferenceError,
+    InferenceRequest,
     InferenceRuntime,
     SourceSelectionBindings,
 )
 from argentum_ml.selection import PolicyTieRngStateV1
+from argentum_ml.data.derived_reader import DerivedArtifactReader
+from tests.test_derived_reader import _artifact, _sample, _structured_sample
 
 
 def _rng() -> PolicyTieRngStateV1:
@@ -43,61 +48,87 @@ def _context() -> InferenceContext:
     )
 
 
-def _flat_item() -> VariableDomainItem:
+def _item_from_validated_sample(sample, *, prefix: str = "candidate-") -> VariableDomainItem:
+    model_input = sample.sample["input"]
+    features = model_input["domain"]["candidates"]
     candidates = tuple(
         CandidateFeature(
-            feature_view={"kind": f"candidate-{ordinal}"},
+            feature_view=feature,
             source_binding_ordinal=ordinal,
             present=True,
             executable_support=ordinal != 2,
         )
-        for ordinal in range(3)
+        for ordinal, feature in enumerate(features)
     )
     return VariableDomainItem(
-        model_input={
-            "decisionContext": {"domainKind": "ACTION_CANDIDATES"},
-            "observation": {"phase": "MAIN"},
-            "domain": {
-                "kind": "ACTION_CANDIDATES",
-                "candidates": [candidate.feature_view for candidate in candidates],
-            },
-        },
+        model_input=model_input,
         candidates=candidates,
         structured_domain=None,
         target_binding_ordinal=0,
     )
 
 
-def _source_bindings() -> SourceSelectionBindings:
-    channel = {
-        "completeLegalDomain": {
-            "kind": "ACTION_CANDIDATES",
-            "candidates": [
-                {
-                    "kind": f"candidate-{ordinal}",
-                    "requiredPayloadFields": [],
-                    "actionSemantics": {"type": "PassPriority"},
-                }
-                for ordinal in range(3)
-            ],
-        },
-        "sourceBindingOrdinals": [0, 1, 2],
-        "semanticTieDiscriminators": {
-            "0": '{"semantic":"a"}',
-            "1": '{"semantic":"b"}',
-            "2": '{"semantic":"c"}',
-        },
-        "entityAliasBindings": [
-            {"alias": "entity-0", "sourceEntityId": "raw-a"},
-            {"alias": "entity-1", "sourceEntityId": "raw-b"},
-        ],
+def _validated_sample(root: Path, *, prefix: str = "candidate-"):
+    sample = _sample()
+    source_candidates = []
+    model_candidates = []
+    base_source_candidate = sample["binding"]["completeLegalDomain"]["candidates"][0]
+    base_model_candidate = sample["input"]["domain"]["candidates"][0]
+    for ordinal in range(3):
+        source_candidate = copy.deepcopy(base_source_candidate)
+        source_candidate["kind"] = f"{prefix}{ordinal}"
+        source_candidates.append(source_candidate)
+        model_candidate = copy.deepcopy(base_model_candidate)
+        model_candidate["kind"] = f"{prefix}{ordinal}"
+        model_candidates.append(model_candidate)
+    sample["binding"]["completeLegalDomain"]["candidates"] = source_candidates
+    sample["binding"]["sourceBindingOrdinals"] = [0, 1, 2]
+    sample["binding"]["semanticTieDiscriminators"] = {
+        "0": '{"semantic":"a"}',
+        "1": '{"semantic":"b"}',
+        "2": '{"semantic":"c"}',
     }
-    return SourceSelectionBindings.from_derived_binding_channel(channel)
+    sample["input"]["domain"]["candidates"] = model_candidates
+    chosen = {"candidate": source_candidates[0], "choicePayload": {}, "type": "chosen-action"}
+    sample["binding"]["selectedExactSourceBinding"] = chosen
+    sample["target"] = {"chosenSemanticAction": chosen, "chosenSemanticResponse": None}
+    artifact = _artifact(root, sample=sample)
+    reader = DerivedArtifactReader.open(artifact)
+    stream = reader.iter_samples()
+    parsed = next(stream)
+    validated = reader.validate_sample_for_inference(parsed)
+    stream.close()
+    return validated
+
+
+def _request(root: Path, *, prefix: str = "candidate-") -> InferenceRequest:
+    validated = _validated_sample(root, prefix=prefix)
+    return InferenceRequest.from_validated_sample(validated, _item_from_validated_sample(validated))
+
+
+def _structured_request(root: Path) -> InferenceRequest:
+    sample = _structured_sample()
+    artifact = _artifact(root, sample=sample)
+    reader = DerivedArtifactReader.open(artifact)
+    stream = reader.iter_samples()
+    parsed = next(stream)
+    validated = reader.validate_sample_for_inference(parsed)
+    stream.close()
+    structured_type = validated.sample["input"]["domain"]["structuredType"]
+    item = VariableDomainItem(
+        model_input=validated.sample["input"],
+        candidates=(),
+        structured_domain=structured_type,
+        target_binding_ordinal=None,
+    )
+    return InferenceRequest.from_validated_sample(validated, item)
 
 
 class _RecordingProvider:
     def __init__(self, scores: list[float]) -> None:
         self.scores = scores
+        self.checkpoint_id = _context().checkpoint_id
+        self.numeric_profile_class = "C1_REFERENCE_NUMERIC_PROFILE"
         self.model_input = None
         self.candidates = None
 
@@ -115,12 +146,12 @@ class _FailIfCalledProvider:
 class InferenceRuntimeTests(unittest.TestCase):
     def test_scores_every_present_candidate_and_returns_exact_binding(self) -> None:
         provider = _RecordingProvider([0.2, 0.9, 99.0])
-        result = InferenceRuntime(_context()).select(
-            _flat_item(),
-            _source_bindings(),
-            provider,
-            _rng(),
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = InferenceRuntime(_context()).select(
+                _request(Path(directory)),
+                provider,
+                _rng(),
+            )
 
         self.assertEqual(len(provider.candidates), 3)
         self.assertEqual([view["kind"] for view in provider.candidates], ["candidate-0", "candidate-1", "candidate-2"])
@@ -137,7 +168,8 @@ class InferenceRuntimeTests(unittest.TestCase):
 
     def test_provider_arguments_have_no_target_or_provenance_channels(self) -> None:
         provider = _RecordingProvider([0.1, 0.2, 0.3])
-        InferenceRuntime(_context()).select(_flat_item(), _source_bindings(), provider, _rng())
+        with tempfile.TemporaryDirectory() as directory:
+            InferenceRuntime(_context()).select(_request(Path(directory)), provider, _rng())
 
         forbidden = {
             "target", "provenance", "sourceReference", "binding", "gameState", "rawAction",
@@ -158,7 +190,8 @@ class InferenceRuntimeTests(unittest.TestCase):
 
     def test_unaffordable_candidate_can_score_but_cannot_be_selected(self) -> None:
         provider = _RecordingProvider([0.1, 0.2, 100.0])
-        result = InferenceRuntime(_context()).select(_flat_item(), _source_bindings(), provider, _rng())
+        with tempfile.TemporaryDirectory() as directory:
+            result = InferenceRuntime(_context()).select(_request(Path(directory)), provider, _rng())
         self.assertEqual(
             result.exact_source_binding.exact_action["candidate"]["kind"],
             "candidate-1",
@@ -167,48 +200,62 @@ class InferenceRuntimeTests(unittest.TestCase):
     def test_missing_or_extra_scores_fail_closed(self) -> None:
         for scores in ([0.1, 0.2], [0.1, 0.2, 0.3, 0.4]):
             with self.subTest(scores=scores):
-                with self.assertRaises(InferenceError):
-                    InferenceRuntime(_context()).select(
-                        _flat_item(),
-                        _source_bindings(),
-                        _RecordingProvider(scores),
-                        _rng(),
-                    )
+                with tempfile.TemporaryDirectory() as directory:
+                    with self.assertRaises(InferenceError):
+                        InferenceRuntime(_context()).select(
+                            _request(Path(directory)),
+                            _RecordingProvider(scores),
+                            _rng(),
+                        )
 
     def test_non_finite_score_fails_before_selection(self) -> None:
         for value in (math.nan, math.inf, -math.inf):
             with self.subTest(value=value):
-                with self.assertRaises(InferenceError):
-                    InferenceRuntime(_context()).select(
-                        _flat_item(),
-                        _source_bindings(),
-                        _RecordingProvider([0.1, value, 0.3]),
-                        _rng(),
-                    )
+                with tempfile.TemporaryDirectory() as directory:
+                    with self.assertRaises(InferenceError):
+                        InferenceRuntime(_context()).select(
+                            _request(Path(directory)),
+                            _RecordingProvider([0.1, value, 0.3]),
+                            _rng(),
+                        )
+
+    def test_provider_checkpoint_and_numeric_profile_must_match_context(self) -> None:
+        provider = _RecordingProvider([0.1, 0.2, 0.3])
+        provider.checkpoint_id = "0" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(InferenceError):
+                InferenceRuntime(_context()).select(
+                    _request(Path(directory)),
+                    provider,
+                    _rng(),
+                )
+        provider = _RecordingProvider([0.1, 0.2, 0.3])
+        provider.numeric_profile_class = "OTHER_PROFILE"
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(InferenceError):
+                InferenceRuntime(_context()).select(
+                    _request(Path(directory)),
+                    provider,
+                    _rng(),
+                )
+
+    def test_reader_sample_and_transport_are_coupled(self) -> None:
+        with tempfile.TemporaryDirectory() as first_directory, tempfile.TemporaryDirectory() as second_directory:
+            first = _validated_sample(Path(first_directory), prefix="first-")
+            second = _validated_sample(Path(second_directory), prefix="second-")
+            item_from_second = _item_from_validated_sample(second)
+            with self.assertRaises(InferenceError):
+                InferenceRequest.from_validated_sample(first, item_from_second)
 
     def test_structured_inference_fails_closed_before_provider_or_rng(self) -> None:
-        structured = {"type": "targets", "version": 2, "requirements": []}
-        item = VariableDomainItem(
-            model_input={
-                "decisionContext": {},
-                "observation": {},
-                "domain": {
-                    "kind": "STRUCTURED_DECISION",
-                    "structuredType": structured,
-                },
-            },
-            candidates=(),
-            structured_domain=structured,
-            target_binding_ordinal=None,
-        )
         rng = _rng()
-        with self.assertRaises(InferenceError):
-            InferenceRuntime(_context()).select(
-                item,
-                _source_bindings(),
-                _FailIfCalledProvider(),
-                rng,
-            )
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(InferenceError):
+                InferenceRuntime(_context()).select(
+                    _structured_request(Path(directory)),
+                    _FailIfCalledProvider(),
+                    rng,
+                )
         self.assertEqual(C1_00_STRUCTURED_INFERENCE_TOTALITY, "NO")
         self.assertEqual(rng.cursor, 0)
 

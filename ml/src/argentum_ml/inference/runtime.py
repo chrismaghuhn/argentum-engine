@@ -19,6 +19,7 @@ from ..contracts.identities import (
     SELECTION_V2_IDENTITY,
 )
 from ..contracts.tie_discriminator import SemanticTieDiscriminator
+from ..data.derived_reader import ValidatedDerivedSample
 from ..data.variable_batch import VariableDomainItem
 from ..selection.policy_tie_rng import PolicyTieRngStateV1
 from ..selection.selection_v2 import (
@@ -219,6 +220,46 @@ class SourceSelectionBindings:
         raise InferenceError("candidate ordinal has no discriminator address")
 
 
+@dataclass(frozen=True, init=False)
+class InferenceRequest:
+    """Reader-issued coupling of one model transport and its source bindings."""
+
+    item: VariableDomainItem
+    source_bindings: SourceSelectionBindings
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("InferenceRequest must be created from a validated derived sample")
+
+    @classmethod
+    def from_validated_sample(
+        cls,
+        sample: ValidatedDerivedSample,
+        item: VariableDomainItem,
+    ) -> "InferenceRequest":
+        if not isinstance(sample, ValidatedDerivedSample):
+            raise InferenceError("inference request requires a reader-issued sample")
+        if not isinstance(item, VariableDomainItem):
+            raise InferenceError("inference request requires VariableDomainItem transport")
+        sample_value = sample.sample
+        try:
+            if canonical_json(item.model_input) != canonical_json(sample_value["input"]):
+                raise InferenceError("transport model input does not belong to validated sample")
+            source_bindings = SourceSelectionBindings.from_derived_binding_channel(
+                sample_value["binding"]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, InferenceError):
+                raise
+            raise InferenceError("validated sample cannot produce inference bindings") from exc
+        item_ordinals = {candidate.source_binding_ordinal for candidate in item.candidates}
+        if item_ordinals != set(source_bindings.source_binding_ordinals):
+            raise InferenceError("transport candidates do not belong to validated source sample")
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "item", item)
+        object.__setattr__(instance, "source_bindings", source_bindings)
+        return instance
+
+
 @dataclass(frozen=True)
 class InferenceRuntime:
     context: InferenceContext
@@ -229,15 +270,16 @@ class InferenceRuntime:
 
     def select(
         self,
-        item: VariableDomainItem,
-        source_bindings: SourceSelectionBindings,
+        request: InferenceRequest,
         provider: ScoreProvider,
         rng_state: PolicyTieRngStateV1,
     ) -> SelectionResult:
         """Score present candidates and return the exact selected source binding."""
 
-        if not isinstance(item, VariableDomainItem):
-            raise InferenceError("inference requires VariableDomainItem transport")
+        if not isinstance(request, InferenceRequest):
+            raise InferenceError("inference requires a validated InferenceRequest")
+        item = request.item
+        source_bindings = request.source_bindings
         if (
             self.context.selection_contract_identity != SELECTION_V2_IDENTITY
             or self.context.policy_rng_contract_identity != POLICY_TIE_RNG_IDENTITY
@@ -255,6 +297,10 @@ class InferenceRuntime:
             raise InferenceError("inference requires PolicyTieRngStateV1")
         if not callable(getattr(provider, "score", None)):
             raise InferenceError("inference requires a ScoreProvider")
+        if getattr(provider, "checkpoint_id", None) != self.context.checkpoint_id:
+            raise InferenceError("score provider is bound to a different checkpoint")
+        if getattr(provider, "numeric_profile_class", None) != self.context.required_numeric_profile_class:
+            raise InferenceError("score provider is bound to a different numeric profile")
 
         ordinals = tuple(candidate.source_binding_ordinal for candidate in item.candidates)
         if set(ordinals) != set(source_bindings.source_binding_ordinals):

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator
@@ -224,12 +225,35 @@ def _artifact_identity_payload(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True, init=False)
+class ValidatedDerivedSample:
+    """Reader-issued sample token for downstream authority-preserving adapters."""
+
+    _sample: dict[str, Any] = field(repr=False)
+    _reader_token: object = field(repr=False)
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("ValidatedDerivedSample must be issued by DerivedArtifactReader")
+
+    @classmethod
+    def _from_reader(cls, sample: dict[str, Any], reader_token: object) -> "ValidatedDerivedSample":
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "_sample", copy.deepcopy(sample))
+        object.__setattr__(instance, "_reader_token", reader_token)
+        return instance
+
+    @property
+    def sample(self) -> dict[str, Any]:
+        return copy.deepcopy(self._sample)
+
+
 @dataclass
 class DerivedArtifactReader:
     root: Path
     manifest: dict[str, Any]
     _samples_stream: BinaryIO = field(repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
+    _inference_token: object = field(default_factory=object, init=False, repr=False)
 
     @classmethod
     def open(cls, root: Path) -> "DerivedArtifactReader":
@@ -269,6 +293,16 @@ class DerivedArtifactReader:
                 yield sample
         finally:
             self.close()
+
+    def validate_sample_for_inference(self, sample: dict[str, Any]) -> ValidatedDerivedSample:
+        """Revalidate and issue a sample token for the model-independent seam."""
+
+        if self._closed:
+            raise DerivedArtifactError("derived artifact reader is closed")
+        if not isinstance(sample, dict):
+            raise DerivedArtifactError("validated sample must be an object")
+        _validate_sample(sample, self.manifest)
+        return ValidatedDerivedSample._from_reader(sample, self._inference_token)
 
     def stream_samples(self) -> Iterator[dict[str, Any]]:
         return self.iter_samples()
