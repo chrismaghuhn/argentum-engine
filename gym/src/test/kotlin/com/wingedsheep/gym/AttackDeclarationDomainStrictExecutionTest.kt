@@ -400,12 +400,14 @@ private fun prepareAttack(
     advanceToAttackers(environment, alice)
 
     if (includeAttackTaxer) {
-        val muse = environment.state.getZone(bob, Zone.LIBRARY).firstOrNull { id ->
-            cardName(environment, id) == "Windborn Muse"
-        } ?: error("Expected Windborn Muse in Bob's library")
+        val museSource = listOf(Zone.HAND, Zone.LIBRARY).firstNotNullOfOrNull { zone ->
+            environment.state.getZone(bob, zone).firstOrNull { id ->
+                cardName(environment, id) == "Windborn Muse"
+            }?.let { id -> id to zone }
+        } ?: error("Expected Windborn Muse in Bob's hand or library")
         val stateWithMuse = environment.state.moveToZone(
-            muse,
-            ZoneKey(bob, Zone.LIBRARY),
+            museSource.first,
+            ZoneKey(bob, museSource.second),
             ZoneKey(bob, Zone.BATTLEFIELD),
         )
         environment.restore(stateWithMuse, environment.playerIds, environment.stepCount)
