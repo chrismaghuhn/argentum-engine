@@ -101,3 +101,6 @@ Report the wrapper result as `JUST_WRAPPER=BLOCKED` and the native result separa
 - [ ] Commit the complete characterization as `c1: characterize bootstrap teacher candidates`.
 - [ ] Push only `chris/c1-01-teacher-bootstrap-characterization-20260913` to the writable `origin`; do not merge or create a PR.
 - [ ] Stop after the pushed exact SHA and report `STOP_FOR_EXACT_SHA_REVIEW=YES`, with `C1_01_FINAL_ACCEPTANCE_PASS=NO` until independent review.
+
+The final staged boundary also uses `git diff --cached --check` and
+`git diff --cached --name-only` before the standalone commit.

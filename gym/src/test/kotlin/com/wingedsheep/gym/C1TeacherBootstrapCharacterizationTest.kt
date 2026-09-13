@@ -90,8 +90,8 @@ class C1TeacherBootstrapCharacterizationTest : FunSpec({
 
     test("A9 structured target ordering changes label under runtime-ID renaming") {
         val original = listOf(
-            StructuredTarget(label = "LEFT", entityId = "target-z"),
             StructuredTarget(label = "RIGHT", entityId = "target-a"),
+            StructuredTarget(label = "LEFT", entityId = "target-z"),
         )
         val renamed = listOf(
             StructuredTarget(label = "LEFT", entityId = "target-a"),
@@ -104,8 +104,8 @@ class C1TeacherBootstrapCharacterizationTest : FunSpec({
 
     test("A9 structured target permutation preserves the selected target when IDs are unchanged") {
         val original = listOf(
-            StructuredTarget(label = "LEFT", entityId = "target-z"),
             StructuredTarget(label = "RIGHT", entityId = "target-a"),
+            StructuredTarget(label = "LEFT", entityId = "target-z"),
         )
         val permuted = original.asReversed()
 
@@ -232,6 +232,9 @@ private fun flatObservation(
 private fun targetObservation(
     alternatives: List<StructuredTarget>,
 ): TrainingObservation = baseObservation(
+    // The canonical fixture is producer-ordered; callers that pass asReversed() model a
+    // physical learner permutation after logical-domain construction and intentionally bypass
+    // CandidateDomainDigest's producer-order validator.
     pendingDecision = PendingDecisionView(
         decisionId = "decision-1",
         kind = PendingDecisionKind.CHOOSE_TARGETS,
