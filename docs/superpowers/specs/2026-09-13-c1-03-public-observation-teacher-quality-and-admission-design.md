@@ -67,6 +67,36 @@ The config digest is SHA-256 over the UTF-8 C0/A3-compatible canonical JSON
 preimage shown above. It identifies the characterization use of the existing
 materializer; it does not change projection semantics.
 
+The offline Teacher has its own exogenous tie-RNG schedule. The A9 source
+policy seed remains provenance only because its declared RNG identity is the
+legacy `explicit-seed/kotlin-policy-state-v1`:
+
+```text
+C1_03_TEACHER_POLICY_TIE_SCHEDULE_IDENTITY=
+  argentum-ml-c1-03-teacher-policy-tie-schedule@v1
+SOURCE_POLICY_RNG_IDENTITY=explicit-seed/kotlin-policy-state-v1
+C1_03_TEACHER_POLICY_TIE_SEED=0
+C1_03_INITIAL_POLICY_TIE_CURSOR=0
+LEGACY_A9_POLICY_SEED_REUSED=NO
+POLICY_TIE_RNG_IDENTITY=argentum-ml-policy-tie-rng@v1
+FIRST_DIVERGENCE_PER_EPISODE=1
+POLICY_A_EXECUTIONS=16
+POLICY_B_EXECUTIONS=16
+```
+
+For each offline Teacher policy instance and seat, the harness creates one
+`PolicyTieRngStateV1` from the fixed seed and seat at cursor zero. The state is
+keyed by semantic episode, Teacher policy identity, and roster seat, then
+carried across that instance's decisions. It is never recreated per decision.
+The source `policySeed` is not passed to `from_policy_seed()` and the source
+legacy `policyRngIdentity` is never reinterpreted. Unique maxima and semantic
+discriminator ties leave the cursor unchanged; unresolved exact ties advance
+it exactly as Selection V2 reports.
+
+The schedule values are part of the C1_03 plan digest. An equivalent plan
+therefore has the same Teacher tie seed, initial cursor, divergence bound, and
+planned A/B execution counts.
+
 ## Admission purpose and frozen decision rule
 
 The exact purpose identity is:
@@ -110,7 +140,9 @@ define a numeric threshold for this initial reference purpose. Agreement, tie
 rate, and gameplay are therefore diagnostic evidence. A gameplay trust or
 execution-ownership failure still fails the corresponding hard gate. Missing
 evidence (for example, no observed family in an allowed partition) produces
-`DEFERRED`, not an affirmative admission.
+`DEFERRED`, not an affirmative admission. An unexpected C1_00 authority
+failure produces `BLOCKED`; other observed Teacher trust or ownership failures
+produce `REJECTED`.
 
 The decision states are mutually exclusive:
 
@@ -158,6 +190,20 @@ complete source domain. In particular, a source Action candidate with a
 nonempty `requiredPayloadFields` can make the action domain unbindable before
 the Teacher runs. Such a row is not a Teacher `NO_LABEL` and not a Teacher
 runtime failure. It remains in the overall useful-coverage denominator.
+
+The only expected C1_00 flat-unbindable class in this characterization is:
+
+```text
+EXPECTED_C1_00_UNBINDABLE=
+  ACTION_CANDIDATES with one or more nonempty candidate.requiredPayloadFields
+```
+
+Any other request or binding error is an authority failure, including a
+binding mismatch, affordable-mask mismatch, invalid source ordinal, model
+projection mismatch, or malformed folded response. Such an error is recorded
+as `C1_00_AUTHORITY_FAILURE`, increments trust failure, and blocks the
+characterization. A `FOLDED_DECISION_OPTIONS` factory error is never converted
+to ordinary unbindable coverage.
 
 For an exact-bindable `ACTION_CANDIDATES` row, the selected candidate is
 admission-owned only when all of these are true:
@@ -430,14 +476,26 @@ shards, replay dumps, Teacher labels, or training targets.
 The derived view and any temporary source-audit/evaluation output remain
 outside the repository and are disposable.
 
+The persistent report records `MEASUREMENT_HEAD` as the exact implementation
+commit used for characterization. It does not attempt to embed a
+self-referential report commit. The final evidence commit and remote branch
+head are verified externally at the exact-SHA handoff.
+
 ## Verification and scope gates
 
-Focused unit tests use small controlled fixtures only. They cover:
+Focused unit tests use small controlled fixtures only. Every C1_03 test is a
+method of an actual `unittest.TestCase` class, and `unittest discover` must
+report a positive executed-test count. A collection/import success with zero
+executed C1_03 tests is not a verification pass. The tests cover:
 
 - exact-bindable versus C1_00-unbindable flat rows;
 - structured `NO_LABEL` accounting;
 - TEST exclusion from Teacher selection and admission metrics;
 - all tie classes and RNG word accounting;
+- the exogenous Teacher tie seed, per-episode/seat state carry, and legacy-A9
+  seed non-reuse;
+- expected C1_00 Action unbindability versus unexpected C1_00 authority
+  failure, including folded-response failures;
 - family-specific execution ownership;
 - existing alias representation in first-divergence output;
 - source/derived identity binding and no label persistence;
