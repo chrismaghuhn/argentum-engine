@@ -23,10 +23,7 @@ from ..contracts.identities import (
     SPLIT_CONTRACT_IDENTITY,
 )
 from ..contracts.model_facing import validate_model_input
-from ..contracts.tie_discriminator import (
-    TIE_DISCRIMINATOR_FORBIDDEN_KEYS,
-    is_forbidden_tie_discriminator_key,
-)
+from ..contracts.tie_discriminator import SemanticTieDiscriminator
 from .split import assign_partition
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -189,21 +186,6 @@ def _canonical_bytes(value: Any, label: str) -> bytes:
         return canonical_bytes(value)
     except (TypeError, ValueError, UnicodeError) as exc:
         raise DerivedArtifactError(f"{label} is not canonical JSON") from exc
-
-
-def _is_raw_tie_key(key: str) -> bool:
-    return is_forbidden_tie_discriminator_key(key)
-
-
-def _reject_tie_fields(value: Any, label: str) -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if _is_raw_tie_key(key):
-                raise DerivedArtifactError(f"{label} contains forbidden tie field: {key}")
-            _reject_tie_fields(child, label)
-    elif isinstance(value, list):
-        for child in value:
-            _reject_tie_fields(child, label)
 
 
 def _partition_counts(value: Any, label: str) -> dict[str, int]:
@@ -573,11 +555,10 @@ def _validate_tie_discriminators(
             raise DerivedArtifactError("tie discriminator key is not a source ordinal")
         if not isinstance(raw, str):
             raise DerivedArtifactError("tie discriminator value must be canonical JSON text")
-        parsed = _expect_object(_parse_json(raw.encode("utf-8"), "tie discriminator"), "tie discriminator")
-        if _canonical_element(parsed, "tie discriminator") != raw:
-            raise DerivedArtifactError("tie discriminator is not canonical")
-        _reject_tie_fields(parsed, "tie discriminator")
-        _reject_raw_literals(parsed, raw_entity_ids, "tie discriminator")
+        try:
+            SemanticTieDiscriminator.from_json(raw, forbidden_raw_values=raw_entity_ids)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise DerivedArtifactError("tie discriminator is not source-authority valid") from exc
         if raw in canonical_values:
             raise DerivedArtifactError("tie discriminators are not unique")
         canonical_values.add(raw)

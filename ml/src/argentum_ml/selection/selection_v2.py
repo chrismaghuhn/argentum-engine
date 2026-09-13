@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass
 from numbers import Real
 from typing import Any, Sequence
 
 from ..contracts.canonical_json import canonical_json
-from ..contracts.tie_discriminator import has_forbidden_tie_discriminator_field
+from ..contracts.tie_discriminator import SemanticTieDiscriminator
 from .policy_tie_rng import PolicyTieRngStateV1
 
 
@@ -98,7 +97,7 @@ class SelectionCandidate:
     score: Real
     candidate_presence: bool
     candidate_executable_support: bool
-    deterministic_semantic_tie_discriminator: str | None
+    deterministic_semantic_tie_discriminator: SemanticTieDiscriminator | None
 
     def __post_init__(self) -> None:
         if (
@@ -119,8 +118,8 @@ class SelectionCandidate:
         if self.candidate_executable_support and not self.candidate_presence:
             raise SelectionError("an absent candidate cannot be executable")
         if self.deterministic_semantic_tie_discriminator is not None and (
-            not isinstance(self.deterministic_semantic_tie_discriminator, str)
-            or not self.deterministic_semantic_tie_discriminator
+            not isinstance(self.deterministic_semantic_tie_discriminator, SemanticTieDiscriminator)
+            or not self.deterministic_semantic_tie_discriminator._source_validated
         ):
             raise SelectionError("tie discriminator must be a non-empty string")
 
@@ -178,23 +177,15 @@ def select_v2(
         return _result(tied[0], rng_state, cursor_before)
     discriminator_values = [candidate.deterministic_semantic_tie_discriminator for candidate in tied]
     if all(_valid_discriminator(value) for value in discriminator_values) and len(set(discriminator_values)) == len(tied):
-        winner = min(tied, key=lambda candidate: candidate.deterministic_semantic_tie_discriminator or "")
+        winner = min(tied, key=lambda candidate: candidate.deterministic_semantic_tie_discriminator.canonical_value if candidate.deterministic_semantic_tie_discriminator else "")
         return _result(winner, rng_state, cursor_before)
     ordered = sorted(tied, key=lambda candidate: candidate.source_binding_ordinal)
     address, after = rng_state.uniform_below(len(ordered))
     return _result(ordered[address], after, cursor_before)
 
 
-def _valid_discriminator(value: str | None) -> bool:
-    if not isinstance(value, str) or not value:
-        return False
-    try:
-        parsed = json.loads(value)
-        if not isinstance(parsed, dict) or has_forbidden_tie_discriminator_field(parsed):
-            return False
-        return canonical_json(parsed) == value
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return False
+def _valid_discriminator(value: SemanticTieDiscriminator | None) -> bool:
+    return isinstance(value, SemanticTieDiscriminator) and value._source_validated
 
 
 def _result(

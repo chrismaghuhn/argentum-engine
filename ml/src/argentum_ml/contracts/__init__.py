@@ -9,7 +9,9 @@ from .identities import (
 )
 from .model_facing import ModelFacingContractError, require_model_input, validate_model_input
 from .tie_discriminator import (
+    SemanticTieDiscriminator,
     TIE_DISCRIMINATOR_FORBIDDEN_KEYS,
+    has_forbidden_tie_discriminator_literal,
     has_forbidden_tie_discriminator_field,
     is_forbidden_tie_discriminator_key,
 )
@@ -26,6 +28,8 @@ __all__ = [
     "require_model_input",
     "validate_model_input",
     "TIE_DISCRIMINATOR_FORBIDDEN_KEYS",
+    "SemanticTieDiscriminator",
+    "has_forbidden_tie_discriminator_literal",
     "has_forbidden_tie_discriminator_field",
     "is_forbidden_tie_discriminator_key",
 ]

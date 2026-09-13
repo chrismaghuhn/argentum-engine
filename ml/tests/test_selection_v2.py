@@ -2,6 +2,7 @@ import math
 import unittest
 
 from argentum_ml.contracts.identities import POLICY_TIE_RNG_IDENTITY
+from argentum_ml.contracts.tie_discriminator import SemanticTieDiscriminator
 from argentum_ml.selection.policy_tie_rng import PolicyTieRngStateV1
 from argentum_ml.selection.selection_v2 import (
     ExactSemanticSourceBinding,
@@ -27,6 +28,10 @@ def _rng() -> PolicyTieRngStateV1:
     )
 
 
+def _disc(value: str) -> SemanticTieDiscriminator:
+    return SemanticTieDiscriminator.from_json(value)
+
+
 class SelectionV2Tests(unittest.TestCase):
     def test_exactly_one_source_binding_channel_is_required(self) -> None:
         with self.assertRaises(ValueError):
@@ -48,8 +53,8 @@ class SelectionV2Tests(unittest.TestCase):
 
     def test_unique_valid_semantic_discriminator_breaks_tie_without_draw(self) -> None:
         candidates = [
-            SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, '{"kind":"b"}'),
-            SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, '{"kind":"a"}'),
+            SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, _disc('{"kind":"b"}')),
+            SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, _disc('{"kind":"a"}')),
         ]
         result = select_v2(candidates, _rng())
         self.assertEqual(result.exact_source_binding.exact_action, {"kind": "action-b"})
@@ -65,21 +70,31 @@ class SelectionV2Tests(unittest.TestCase):
         self.assertEqual(result.cursor_after, 1)
 
         duplicate = [
-            SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, '{"kind":"same"}'),
-            SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, '{"kind":"same"}'),
+            SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, _disc('{"kind":"same"}')),
+            SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, _disc('{"kind":"same"}')),
         ]
         self.assertEqual(select_v2(duplicate, _rng()).rng_draw_count, 1)
 
         forbidden = [
-            SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, '{"rowIndex":0}'),
-            SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, '{"sourceBindingOrdinal":1}'),
+            SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, None),
+            SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, None),
         ]
+        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"rowIndex":0}'))
+        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"sourceBindingOrdinal":1}'))
         self.assertEqual(select_v2(forbidden, _rng()).rng_draw_count, 1)
         candidate_index = [
-            SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, '{"candidateIndex":0}'),
-            SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, '{"candidateIndex":1}'),
+            SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, None),
+            SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, None),
         ]
+        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"candidateIndex":0}'))
+        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"candidateIndex":1}'))
         self.assertEqual(select_v2(candidate_index, _rng()).rng_draw_count, 1)
+        self.assertIsNone(
+            SemanticTieDiscriminator.try_from_json(
+                '{"semantic":"e7"}',
+                forbidden_raw_values={"e7"},
+            )
+        )
 
     def test_rejects_duplicate_exact_source_alternatives_before_rng(self) -> None:
         duplicate_binding = ExactSemanticSourceBinding({"kind": "same"}, None, None)
