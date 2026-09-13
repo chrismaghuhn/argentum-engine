@@ -26,7 +26,7 @@ from argentum_ml.teacher import (
 from tests.test_derived_reader import _artifact, _sample, _structured_sample
 
 
-SOURCE_COMMIT = "32e6a300a2d22e5be864bee179c8b86b05a9ba06"
+SOURCE_COMMIT = "777a1308b40821748f0a1513ff9c9da811781f27"
 
 
 def _discriminator(value: dict) -> SemanticTieDiscriminator:

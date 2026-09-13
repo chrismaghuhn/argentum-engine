@@ -86,6 +86,7 @@ not a quality claim.
 The new immutable identities are:
 
 ```text
+argentum-ml-teacher-bootstrap@v1
 argentum-ml-public-observation-bootstrap-teacher@v1
 argentum-ml-public-observation-teacher-config@v1
 argentum-ml-public-observation-teacher-result@v1
@@ -100,6 +101,11 @@ digest excludes paths, timestamps, hostnames, PIDs, branches, workers, and mutab
 explicit source commit, configuration digest, Selection V2 identity, and PolicyTieRng V1 identity.
 The label-materializer identity remains `None`; this slice does not pretend that a materializer
 exists.
+
+The Teacher request is factory-only over C1_00's reader-issued `InferenceRequest`. It never accepts
+caller-created exact bindings. A factory-issued transport view may reorder already-authorized
+candidate records for permutation testing, but it must preserve source ordinals, feature views,
+presence, and executable-support masks.
 
 The result is a closed union:
 

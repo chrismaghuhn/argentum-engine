@@ -5,7 +5,7 @@ TASK=C1_02_PUBLIC_OBSERVATION_BOOTSTRAP_TEACHER_V1
 DATE=2026-09-13
 STATUS=IMPLEMENTED_PENDING_INDEPENDENT_REVIEW
 BASE=4af111cad62d0f268f4d28e2548fbb23a18a9a47
-IMPLEMENTATION_HEAD_AT_EVIDENCE_CAPTURE=32e6a300a2d22e5be864bee179c8b86b05a9ba06
+IMPLEMENTATION_HEAD_AT_EVIDENCE_CAPTURE=777a1308b40821748f0a1513ff9c9da811781f27
 BRANCH=chris/c1-02-public-observation-bootstrap-teacher-v1-20260913
 WORKTREE=C:\Users\chris\.config\superpowers\worktrees\argentum-engine\c1-02-public-observation-bootstrap-teacher-v1-20260913
 ```
@@ -14,11 +14,12 @@ WORKTREE=C:\Users\chris\.config\superpowers\worktrees\argentum-engine\c1-02-publ
 
 ```text
 TEACHER_POLICY_IDENTITY=argentum-ml-public-observation-bootstrap-teacher@v1
+TEACHER_CONTRACT_IDENTITY=argentum-ml-teacher-bootstrap@v1
 TEACHER_CONFIG_SCHEMA_IDENTITY=argentum-ml-public-observation-teacher-config@v1
 TEACHER_CONFIG_DIGEST=fa358597c09ce466e1be1823de485e0accd84be622184fa1d6505806aff0d7d8
 TEACHER_RESULT_SCHEMA_IDENTITY=argentum-ml-public-observation-teacher-result@v1
 TEACHER_SOURCE_IDENTITY=argentum-ml-public-observation-teacher-source@v1
-TEACHER_SOURCE_COMMIT_USED_IN_CONFORMANCE=32e6a300a2d22e5be864bee179c8b86b05a9ba06
+TEACHER_SOURCE_COMMIT_USED_IN_CONFORMANCE=777a1308b40821748f0a1513ff9c9da811781f27
 
 TEACHER_INPUT_INFORMATION_SET=ACTING_PLAYER_LEGAL_INFORMATION_SET
 RAW_GAME_STATE_USED=NO
@@ -31,7 +32,9 @@ views. Sample-local aliases remain allowed as opaque public references so relati
 preserved. The scorer reads only the generic candidate `kind`; alias values, alias ordinals,
 lexical order, hashes, physical positions, source ordinals, exact bindings, targets, and outcomes
 are not preference features. Binding metadata is joined only after scoring to return the exact
-source-authorized result.
+source-authorized result. The Teacher request is factory-only over a reader-issued C1_00
+`InferenceRequest`; its optional transport view can only reorder already-authorized candidate
+records and cannot construct or replace source bindings.
 
 ## Decision-family support
 
@@ -104,28 +107,30 @@ unsafe current decisions fail closed.
 
 ## Focused evidence
 
-The focused test file is:
+The focused test files are:
 
 ```text
 ml/tests/test_public_observation_teacher.py
+ml/tests/test_public_observation_teacher_review.py
 ```
 
 It covers RED-first package absence, immutable config and identity, complete-domain/truncation
 rejection, runtime-ID and opaque-alias renaming, physical permutation, source-ordinal and recorded
-target leakage, forbidden policy fields, one score per real candidate, unique-max/tie RNG behavior,
-exact response binding, determinism, non-finite scores, empty executable domains, unknown config and
-structured versions, and all twelve explicit structured `NO_LABEL` paths.
+target leakage, reader-issued binding authority, unbound scorer substitution, separate contract and
+policy identities, C1 model-facing feature vocabulary, one score per real candidate, unique-max/tie
+RNG behavior, exact response binding, determinism, non-finite scores, empty executable domains,
+unknown config and structured versions, and the explicit structured `NO_LABEL` path.
 
 ```text
 RED=ModuleNotFoundError: argentum_ml.teacher
-PYTHON_FOCUSED_TESTS=22/22_PASS
+PYTHON_FOCUSED_TESTS=25/25_PASS
 COMPILEALL=PASS
 ```
 
 The full Python suite was run from a freshly installed local package:
 
 ```text
-PYTHON_FULL_SUITE=FAIL (97/98; one pre-existing error)
+PYTHON_FULL_SUITE=FAIL (100/101; one pre-existing error)
 PRE_EXISTING_ERROR=test_accepts_kotlin_materialized_cross_language_golden
 PRE_EXISTING_ERROR=DerivedArtifactError: sample line contains CR or BOM
 ```
@@ -153,6 +158,10 @@ RULES_CHANGED=NO
 GYM_SEMANTICS_CHANGED=NO
 P1=0
 P2=0
+REVIEW_P1_1_UNBOUND_SCORER_SUBSTITUTION=FIXED
+REVIEW_P1_2_UNTRUSTED_REQUEST_BINDING_CONSTRUCTION=FIXED
+REVIEW_P2_1_CONTRACT_POLICY_IDENTITY_CONFLATION=FIXED
+REVIEW_P2_2_MODEL_FACING_FILTER_OVERREACH=FIXED
 
 PUBLIC_OBSERVATION_TEACHER_V1_IMPLEMENTATION_PASS=YES
 PUBLIC_OBSERVATION_TEACHER_V1_CODE_REVIEW_PASS=NO
