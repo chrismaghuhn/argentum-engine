@@ -56,6 +56,29 @@ C1_00 when no approved scoreable structured alternatives exist:
 C1_00_STRUCTURED_INFERENCE_TOTALITY=NO
 ```
 
+## C1_02 public-observation Teacher
+
+`argentum_ml.teacher.PublicObservationTeacherV1` is a separately identified, dependency-free
+conformance Teacher. It scores complete flat `ACTION_CANDIDATES` and
+`FOLDED_DECISION_OPTIONS` domains from public model input and generic candidate features, then
+delegates exact selection to Selection V2 and PolicyTieRng V1. Source bindings are joined only
+after scoring. Sample-local aliases may remain opaque public references for joins, but alias values,
+ordinals, lexical order, and hashes are never scoring features.
+
+Teacher requests are factory-only views over reader-issued C1_00 `InferenceRequest` values. The
+Teacher cannot construct source bindings directly; an optional transport permutation can move only
+already-authorized candidate records and must preserve their source ordinals, feature views, and
+masks.
+
+All structured families return typed `NO_LABEL` in C1_02. The Teacher does not materialize labels,
+train a learner, call Rules/AI, or claim strategic quality or bootstrap admission. Its immutable
+configuration digest is:
+
+```text
+TEACHER_CONFIG_DIGEST=fa358597c09ce466e1be1823de485e0accd84be622184fa1d6505806aff0d7d8
+TEACHER_CONTRACT_IDENTITY=argentum-ml-teacher-bootstrap@v1
+```
+
 In that case the runtime fails before provider access and consumes zero PolicyTieRng words.
 
 ## Scope and authorization
