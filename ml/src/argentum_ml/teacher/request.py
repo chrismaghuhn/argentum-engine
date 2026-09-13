@@ -1,89 +1,52 @@
-"""Public-policy and source-binding channels for Teacher requests."""
+"""Factory-issued Teacher transport over the existing C1_00 inference authority."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 from ..contracts.canonical_json import canonical_json
-from ..contracts.tie_discriminator import SemanticTieDiscriminator
 from ..data.variable_batch import VariableDomainItem
-from ..selection.selection_v2 import ExactSemanticSourceBinding
+from ..inference.runtime import InferenceRequest, SourceSelectionBindings
 from .contracts import TeacherInputError
 
 
-@dataclass(frozen=True)
-class TeacherSourceBindingV1:
-    """Binding-only metadata used after policy scoring has completed."""
-
-    source_binding_ordinal: int
-    exact_source_binding: ExactSemanticSourceBinding
-    deterministic_semantic_tie_discriminator: SemanticTieDiscriminator | None
-
-    def __post_init__(self) -> None:
-        if (
-            isinstance(self.source_binding_ordinal, bool)
-            or not isinstance(self.source_binding_ordinal, int)
-            or self.source_binding_ordinal < 0
-        ):
-            raise TeacherInputError("source_binding_ordinal must be a non-negative integer")
-        if not isinstance(self.exact_source_binding, ExactSemanticSourceBinding):
-            raise TeacherInputError("exact_source_binding must use the C1_00 binding contract")
-        audit = self.exact_source_binding.source_binding_ordinal_audit
-        if audit is not None and audit != self.source_binding_ordinal:
-            raise TeacherInputError("source binding audit ordinal does not match the binding ordinal")
-        if self.deterministic_semantic_tie_discriminator is not None and (
-            not isinstance(self.deterministic_semantic_tie_discriminator, SemanticTieDiscriminator)
-            or not self.deterministic_semantic_tie_discriminator._source_validated
-        ):
-            raise TeacherInputError("tie discriminator must be source-validated")
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class PublicObservationTeacherRequestV1:
-    """A C1_00 public transport item joined to exact binding metadata."""
+    """A Teacher view issued only from a reader-issued C1_00 InferenceRequest.
 
+    The optional item override is transport-only: it may reorder already-authorized candidate
+    records, but it cannot introduce a binding, feature view, mask, or source ordinal that was not
+    present in the reader-issued request.
+    """
+
+    inference_request: InferenceRequest
     item: VariableDomainItem
-    bindings: tuple[TeacherSourceBindingV1, ...] | Sequence[TeacherSourceBindingV1]
+    source_bindings: SourceSelectionBindings
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.item, VariableDomainItem):
-            raise TeacherInputError("Teacher request requires VariableDomainItem transport")
-        bindings = tuple(self.bindings)
-        object.__setattr__(self, "bindings", bindings)
-        if any(not isinstance(binding, TeacherSourceBindingV1) for binding in bindings):
-            raise TeacherInputError("Teacher request bindings must use TeacherSourceBindingV1")
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError(
+            "PublicObservationTeacherRequestV1 must be created from an InferenceRequest"
+        )
 
-        domain = self.item.model_input.get("domain")
-        if not isinstance(domain, dict):
-            raise TeacherInputError("Teacher model input domain must be an object")
-        domain_kind = domain.get("kind")
-        if self.item.structured_domain is not None:
-            if domain_kind != "STRUCTURED_DECISION":
-                raise TeacherInputError("structured transport must use STRUCTURED_DECISION")
-            if bindings:
-                raise TeacherInputError("structured transport cannot carry flat bindings")
-            return
-        if domain_kind == "STRUCTURED_DECISION":
-            raise TeacherInputError("flat transport cannot use STRUCTURED_DECISION")
-
-        candidate_ordinals = tuple(candidate.source_binding_ordinal for candidate in self.item.candidates)
-        binding_ordinals = tuple(binding.source_binding_ordinal for binding in bindings)
-        if len(set(binding_ordinals)) != len(binding_ordinals):
-            raise TeacherInputError("source binding ordinals must be unique")
-        if set(candidate_ordinals) != set(binding_ordinals) or len(candidate_ordinals) != len(binding_ordinals):
-            raise TeacherInputError("Teacher request does not retain every candidate binding")
-
-        exact_values: set[tuple[str | None, str | None]] = set()
-        for binding in bindings:
-            exact = binding.exact_source_binding
-            key = (
-                canonical_json(exact.exact_action) if exact.exact_action is not None else None,
-                canonical_json(exact.exact_response) if exact.exact_response is not None else None,
-            )
-            if key in exact_values:
-                raise TeacherInputError("source bindings must be injective")
-            exact_values.add(key)
+    @classmethod
+    def from_inference_request(
+        cls,
+        request: InferenceRequest,
+        *,
+        item: VariableDomainItem | None = None,
+    ) -> "PublicObservationTeacherRequestV1":
+        if not isinstance(request, InferenceRequest):
+            raise TeacherInputError("Teacher request requires a reader-issued InferenceRequest")
+        selected_item = item or request.item
+        if not isinstance(selected_item, VariableDomainItem):
+            raise TeacherInputError("Teacher request transport must use VariableDomainItem")
+        _validate_transport_view(request, selected_item)
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "inference_request", request)
+        object.__setattr__(instance, "item", selected_item)
+        object.__setattr__(instance, "source_bindings", request.source_bindings)
+        return instance
 
     @property
     def decision_family(self) -> str:
@@ -100,8 +63,43 @@ class PublicObservationTeacherRequestV1:
     def candidate_count(self) -> int:
         return len(self.item.candidates)
 
-    def binding_for(self, source_binding_ordinal: int) -> TeacherSourceBindingV1:
-        for binding in self.bindings:
-            if binding.source_binding_ordinal == source_binding_ordinal:
-                return binding
-        raise TeacherInputError("candidate has no exact source binding")
+
+def _validate_transport_view(
+    request: InferenceRequest,
+    item: VariableDomainItem,
+) -> None:
+    source_bindings = request.source_bindings
+    if item.structured_domain is not None:
+        if request.item.structured_domain is None:
+            raise TeacherInputError("structured transport cannot replace a flat source item")
+        if canonical_json(item.model_input) != canonical_json(request.item.model_input):
+            raise TeacherInputError("structured transport cannot alter the source model input")
+        return
+    if request.item.structured_domain is not None:
+        raise TeacherInputError("flat transport cannot replace a structured source item")
+    if len(item.candidates) != len(request.item.candidates):
+        raise TeacherInputError("Teacher transport cannot truncate the source candidate domain")
+    if tuple(candidate.source_binding_ordinal for candidate in item.candidates) == tuple(
+        candidate.source_binding_ordinal for candidate in request.item.candidates
+    ) and canonical_json(item.model_input) != canonical_json(request.item.model_input):
+        raise TeacherInputError("Teacher transport changed an authorized candidate feature")
+
+    source_ordinals = set(source_bindings.source_binding_ordinals)
+    item_ordinals = {candidate.source_binding_ordinal for candidate in item.candidates}
+    if item_ordinals != source_ordinals:
+        raise TeacherInputError("Teacher transport candidate ordinals are not source-authorized")
+
+    source_candidate_by_ordinal = {
+        candidate.source_binding_ordinal: candidate
+        for candidate in request.item.candidates
+    }
+    for candidate in item.candidates:
+        original = source_candidate_by_ordinal.get(candidate.source_binding_ordinal)
+        if original is None:
+            raise TeacherInputError("Teacher transport candidate has no source-authorized ordinal")
+        if canonical_json(candidate.feature_view) != canonical_json(original.feature_view):
+            raise TeacherInputError("Teacher transport changed a source-authorized feature view")
+        if candidate.present != original.present:
+            raise TeacherInputError("Teacher transport changed candidate presence authority")
+        if candidate.executable_support != original.executable_support:
+            raise TeacherInputError("Teacher transport changed executable support authority")

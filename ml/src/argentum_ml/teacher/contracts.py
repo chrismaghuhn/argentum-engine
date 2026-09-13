@@ -16,6 +16,7 @@ from ..selection.selection_v2 import ExactSemanticSourceBinding
 
 
 PUBLIC_OBSERVATION_TEACHER_ID = "argentum-ml-public-observation-bootstrap-teacher@v1"
+TEACHER_BOOTSTRAP_CONTRACT_IDENTITY = "argentum-ml-teacher-bootstrap@v1"
 PUBLIC_OBSERVATION_TEACHER_CONFIG_ID = "argentum-ml-public-observation-teacher-config@v1"
 PUBLIC_OBSERVATION_TEACHER_RESULT_ID = "argentum-ml-public-observation-teacher-result@v1"
 PUBLIC_OBSERVATION_TEACHER_SOURCE_ID = "argentum-ml-public-observation-teacher-source@v1"
@@ -259,7 +260,7 @@ class PublicObservationTeacherIdentityV1:
         if not isinstance(source_commit, str) or not _SOURCE_COMMIT.fullmatch(source_commit):
             raise TeacherConfigError("source_commit must be an explicit 40-hex commit")
         return cls(
-            teacher_contract_identity=PUBLIC_OBSERVATION_TEACHER_ID,
+            teacher_contract_identity=TEACHER_BOOTSTRAP_CONTRACT_IDENTITY,
             teacher_policy_identity=PUBLIC_OBSERVATION_TEACHER_ID,
             teacher_source_identity=PUBLIC_OBSERVATION_TEACHER_SOURCE_ID,
             source_commit=source_commit,

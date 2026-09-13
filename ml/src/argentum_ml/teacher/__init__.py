@@ -2,6 +2,7 @@
 
 from .contracts import (
     GENERIC_KIND_SCORER_ID,
+    TEACHER_BOOTSTRAP_CONTRACT_IDENTITY,
     PUBLIC_OBSERVATION_TEACHER_CONFIG_ID,
     PUBLIC_OBSERVATION_TEACHER_ID,
     PUBLIC_OBSERVATION_TEACHER_RESULT_ID,
@@ -18,11 +19,12 @@ from .contracts import (
     TeacherInputError,
 )
 from .public_observation_teacher import PublicObservationTeacherV1
-from .request import PublicObservationTeacherRequestV1, TeacherSourceBindingV1
+from .request import PublicObservationTeacherRequestV1
 from .scoring import GenericPublicObservationScorer, PublicObservationScorer
 
 __all__ = [
     "GENERIC_KIND_SCORER_ID",
+    "TEACHER_BOOTSTRAP_CONTRACT_IDENTITY",
     "PUBLIC_OBSERVATION_TEACHER_CONFIG_ID",
     "PUBLIC_OBSERVATION_TEACHER_ID",
     "PUBLIC_OBSERVATION_TEACHER_RESULT_ID",
@@ -40,6 +42,5 @@ __all__ = [
     "TeacherConfigError",
     "TeacherDiagnosticsV1",
     "TeacherInputError",
-    "TeacherSourceBindingV1",
     "GenericPublicObservationScorer",
 ]

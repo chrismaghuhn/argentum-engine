@@ -1,13 +1,19 @@
+import copy
 import math
+import tempfile
 import unittest
+from unittest.mock import patch
+from pathlib import Path
 
 from argentum_ml.contracts.canonical_json import canonical_json
 from argentum_ml.contracts.identities import POLICY_TIE_RNG_IDENTITY
 from argentum_ml.contracts.tie_discriminator import SemanticTieDiscriminator
+from argentum_ml.data.derived_reader import DerivedArtifactReader
 from argentum_ml.data.variable_batch import CandidateFeature, VariableDomainItem
+from argentum_ml.inference import InferenceRequest
 from argentum_ml.selection.policy_tie_rng import PolicyTieRngStateV1
-from argentum_ml.selection.selection_v2 import ExactSemanticSourceBinding
 from argentum_ml.teacher import (
+    GenericPublicObservationScorer,
     GenericScoringConfigurationV1,
     NoLabelReason,
     NoLabelTeacherResultV1,
@@ -16,8 +22,8 @@ from argentum_ml.teacher import (
     PublicObservationTeacherV1,
     TeacherConfigError,
     TeacherInputError,
-    TeacherSourceBindingV1,
 )
+from tests.test_derived_reader import _artifact, _sample, _structured_sample
 
 
 SOURCE_COMMIT = "32e6a300a2d22e5be864bee179c8b86b05a9ba06"
@@ -27,32 +33,6 @@ def _discriminator(value: dict) -> SemanticTieDiscriminator:
     return SemanticTieDiscriminator.from_json(
         canonical_json(value),
         forbidden_raw_values={"raw-0", "raw-1", "raw-7", "raw-9"},
-    )
-
-
-def _exact_action(ordinal: int, raw_target: str, kind: str) -> ExactSemanticSourceBinding:
-    return ExactSemanticSourceBinding(
-        exact_action={
-            "candidate": {
-                "kind": kind,
-                "targetEntityIds": [raw_target],
-            },
-            "choicePayload": {"target": raw_target},
-            "type": "chosen-action",
-        },
-        exact_response=None,
-        source_binding_ordinal_audit=ordinal,
-    )
-
-
-def _exact_response(ordinal: int, response_value: str) -> ExactSemanticSourceBinding:
-    return ExactSemanticSourceBinding(
-        exact_action=None,
-        exact_response={
-            "response": {"choice": response_value},
-            "type": "chosen-response",
-        },
-        source_binding_ordinal_audit=ordinal,
     )
 
 
@@ -66,72 +46,136 @@ def _flat_request(
     response_domain: bool = False,
 ) -> PublicObservationTeacherRequestV1:
     ordinals = ordinals or list(range(len(feature_views)))
+    if ordinals != list(range(len(feature_views))):
+        raise ValueError("C1_00 flat source ordinals are producer-authorized sequential ordinals")
     executable = executable or [True] * len(feature_views)
     raw_targets = raw_targets or [f"raw-{ordinal}" for ordinal in ordinals]
     discriminators = discriminators or [None] * len(feature_views)
+    sample = _sample()
+    source_candidates = []
+    model_candidates = []
+    known_aliases = {
+        binding["alias"] for binding in sample["binding"]["entityAliasBindings"]
+    }
+    base_source_candidate = sample["binding"]["completeLegalDomain"]["candidates"][0]
+    base_model_candidate = sample["input"]["domain"]["candidates"][0]
+    for ordinal, (feature_view, raw_target, is_executable) in enumerate(
+        zip(feature_views, raw_targets, executable)
+    ):
+        source_candidate = copy.deepcopy(base_source_candidate)
+        model_candidate = copy.deepcopy(base_model_candidate)
+        source_candidate["kind"] = feature_view["kind"]
+        model_candidate["kind"] = feature_view["kind"]
+        source_candidate["affordable"] = is_executable
+        model_candidate["affordable"] = is_executable
+        normalized = dict(feature_view)
+        if "targetAliases" in normalized:
+            normalized["targetEntityAliases"] = normalized.pop("targetAliases")
+        model_candidate.update(copy.deepcopy(normalized))
+        source_candidate["targetEntityIds"] = [raw_target]
+        source_candidate["requiredPayloadFields"] = []
+        if response_domain:
+            response = {"type": "OptionChosenResponse", "optionIndex": ordinal}
+            source_candidate["actionSemantics"] = response
+            model_candidate["actionSemantics"] = response
+        source_candidates.append(source_candidate)
+        model_candidates.append(model_candidate)
+        for alias in model_candidate.get("targetEntityAliases", []):
+            if alias not in known_aliases:
+                sample["binding"]["entityAliasBindings"].append(
+                    {"alias": alias, "sourceEntityId": raw_target}
+                )
+                known_aliases.add(alias)
+
     domain_kind = "FOLDED_DECISION_OPTIONS" if response_domain else "ACTION_CANDIDATES"
-    candidates = tuple(
-        CandidateFeature(
-            feature_view=feature_view,
-            source_binding_ordinal=ordinal,
-            present=True,
-            executable_support=is_executable,
+    source_domain = sample["binding"]["completeLegalDomain"]
+    source_domain["kind"] = domain_kind
+    sample["input"]["domain"]["kind"] = domain_kind
+    sample["input"]["decisionContext"]["domainKind"] = domain_kind
+    if response_domain:
+        shape = {
+            "availableColors": [],
+            "budget": None,
+            "maxSelections": 1,
+            "minSelections": 1,
+            "numericMax": None,
+            "numericMin": None,
+            "totalToDistribute": None,
+        }
+        source_domain["decisionKind"] = "CHOOSE_OPTION"
+        source_domain["shape"] = shape
+        sample["input"]["domain"]["decisionKind"] = "CHOOSE_OPTION"
+        sample["input"]["domain"]["shape"] = shape
+    source_domain["candidates"] = source_candidates
+    sample["input"]["domain"]["candidates"] = model_candidates
+    sample["binding"]["sourceBindingOrdinals"] = list(range(len(feature_views)))
+    sample["binding"]["semanticTieDiscriminators"] = {
+        str(index): discriminator.canonical_value
+        for index, discriminator in enumerate(discriminators)
+        if discriminator is not None
+    }
+    if response_domain:
+        chosen = {"response": source_candidates[0]["actionSemantics"], "type": "chosen-response"}
+        sample["target"] = {"chosenSemanticAction": None, "chosenSemanticResponse": chosen}
+    else:
+        chosen = {"candidate": source_candidates[0], "choicePayload": {}, "type": "chosen-action"}
+        sample["target"] = {"chosenSemanticAction": chosen, "chosenSemanticResponse": None}
+    sample["binding"]["selectedExactSourceBinding"] = chosen
+
+    with tempfile.TemporaryDirectory() as directory:
+        artifact = _artifact(Path(directory), sample=sample)
+        reader = DerivedArtifactReader.open(artifact)
+        stream = reader.iter_validated_samples_for_inference()
+        validated = next(stream)
+        stream.close()
+        features = validated.sample["input"]["domain"]["candidates"]
+        source = validated.sample["binding"]["completeLegalDomain"]["candidates"]
+        candidates = tuple(
+            CandidateFeature(
+                feature_view=feature,
+                source_binding_ordinal=index,
+                present=True,
+                executable_support=source[index]["affordable"],
+            )
+            for index, feature in enumerate(features)
         )
-        for feature_view, ordinal, is_executable in zip(feature_views, ordinals, executable)
-    )
-    item = VariableDomainItem(
-        model_input={
-            "decisionContext": {"domainKind": domain_kind},
-            "observation": {"turnNumber": 1, "phase": "MAIN", "step": "MAIN"},
-            "domain": {
-                "kind": domain_kind,
-                "candidates": [candidate.feature_view for candidate in candidates],
-            },
-        },
-        candidates=candidates,
-        structured_domain=None,
-        target_binding_ordinal=ordinals[0],
-    )
-    bindings = tuple(
-        TeacherSourceBindingV1(
-            source_binding_ordinal=ordinal,
-            exact_source_binding=(
-                _exact_response(ordinal, f"response-{ordinal}")
-                if response_domain
-                else _exact_action(ordinal, raw_target, feature_view["kind"])
-            ),
-            deterministic_semantic_tie_discriminator=discriminator,
+        item = VariableDomainItem(
+            model_input=validated.sample["input"],
+            candidates=candidates,
+            structured_domain=None,
+            target_binding_ordinal=0,
         )
-        for feature_view, ordinal, raw_target, discriminator in zip(
-            feature_views, ordinals, raw_targets, discriminators
-        )
-    )
-    return PublicObservationTeacherRequestV1(item=item, bindings=bindings)
+        inference_request = InferenceRequest.from_validated_sample(validated, item)
+    return PublicObservationTeacherRequestV1.from_inference_request(inference_request)
 
 
 def _structured_request(structured_type: str, version: int) -> PublicObservationTeacherRequestV1:
-    structured_domain = {"type": structured_type, "version": version}
-    item = VariableDomainItem(
-        model_input={
-            "decisionContext": {"domainKind": "STRUCTURED_DECISION"},
-            "observation": {"turnNumber": 1, "phase": "MAIN", "step": "MAIN"},
-            "domain": {
-                "kind": "STRUCTURED_DECISION",
-                "structuredType": structured_domain,
-            },
-        },
-        candidates=(),
-        structured_domain=structured_domain,
-        target_binding_ordinal=None,
-    )
-    return PublicObservationTeacherRequestV1(item=item, bindings=())
+    sample = _structured_sample()
+    structured_domain = sample["binding"]["completeLegalDomain"]["structuredDomain"]
+    structured_domain["type"] = structured_type
+    structured_domain["version"] = version
+    sample["input"]["domain"]["structuredType"]["type"] = structured_type
+    sample["input"]["domain"]["structuredType"]["version"] = version
+    with tempfile.TemporaryDirectory() as directory:
+        artifact = _artifact(Path(directory), sample=sample)
+        reader = DerivedArtifactReader.open(artifact)
+        stream = reader.iter_validated_samples_for_inference()
+        validated = next(stream)
+        stream.close()
+        item = VariableDomainItem(
+            model_input=validated.sample["input"],
+            candidates=(),
+            structured_domain=validated.sample["input"]["domain"]["structuredType"],
+            target_binding_ordinal=None,
+        )
+        inference_request = InferenceRequest.from_validated_sample(validated, item)
+    return PublicObservationTeacherRequestV1.from_inference_request(inference_request)
 
 
-def _teacher(*, scorer=None) -> PublicObservationTeacherV1:
+def _teacher() -> PublicObservationTeacherV1:
     return PublicObservationTeacherV1(
         PublicObservationTeacherConfigV1.reference(),
         SOURCE_COMMIT,
-        scorer=scorer,
     )
 
 
@@ -194,14 +238,22 @@ class PublicObservationTeacherContractTests(unittest.TestCase):
 
     def test_request_rejects_candidate_truncation_before_scoring(self) -> None:
         request = _flat_request([
-            {"kind": "PlayLand", "targetAliases": ["entity-0001"]},
-            {"kind": "PassPriority", "targetAliases": ["entity-0002"]},
+            {"kind": "PlayLand", "targetAliases": ["entity-0"]},
+            {"kind": "PassPriority", "targetAliases": ["entity-1"]},
         ])
 
         with self.assertRaises(TeacherInputError):
-            PublicObservationTeacherRequestV1(
-                item=request.item,
-                bindings=request.bindings[:-1],
+            truncated = _mutable_json(request.item.model_input)
+            truncated["domain"]["candidates"] = truncated["domain"]["candidates"][:-1]
+            truncated_item = VariableDomainItem(
+                model_input=truncated,
+                candidates=request.item.candidates[:-1],
+                structured_domain=None,
+                target_binding_ordinal=0,
+            )
+            PublicObservationTeacherRequestV1.from_inference_request(
+                request.inference_request,
+                item=truncated_item,
             )
 
     def test_runtime_identity_exposes_no_materializer_identity(self) -> None:
@@ -238,12 +290,12 @@ class PublicObservationTeacherContractTests(unittest.TestCase):
 class PublicObservationTeacherScoringTests(unittest.TestCase):
     def test_runtime_id_and_alias_rename_preserves_score_vector(self) -> None:
         original = _flat_request([
-            {"kind": "Same", "targetAliases": ["entity-0001"]},
-            {"kind": "Same", "targetAliases": ["entity-0002"]},
+            {"kind": "Same", "targetAliases": ["entity-0"]},
+            {"kind": "Same", "targetAliases": ["entity-1"]},
         ], raw_targets=["raw-0", "raw-1"])
         renamed = _flat_request([
-            {"kind": "Same", "targetAliases": ["entity-0101"]},
-            {"kind": "Same", "targetAliases": ["entity-0102"]},
+            {"kind": "Same", "targetAliases": ["entity-0"]},
+            {"kind": "Same", "targetAliases": ["entity-1"]},
         ], raw_targets=["raw-7", "raw-9"])
 
         teacher = _teacher()
@@ -251,12 +303,12 @@ class PublicObservationTeacherScoringTests(unittest.TestCase):
 
     def test_candidate_permutation_preserves_semantic_score_map(self) -> None:
         request = _flat_request([
-            {"kind": "PlayLand", "targetAliases": ["entity-0001"]},
-            {"kind": "PassPriority", "targetAliases": ["entity-0002"]},
+            {"kind": "PlayLand", "targetAliases": ["entity-0"]},
+            {"kind": "PassPriority", "targetAliases": ["entity-1"]},
         ])
-        permuted = PublicObservationTeacherRequestV1(
+        permuted = PublicObservationTeacherRequestV1.from_inference_request(
+            request.inference_request,
             item=request.item.permute_candidates((1, 0)),
-            bindings=request.bindings,
         )
 
         teacher = _teacher()
@@ -265,20 +317,26 @@ class PublicObservationTeacherScoringTests(unittest.TestCase):
             _score_by_feature(permuted, teacher.score_vector(permuted)),
         )
 
-    def test_source_binding_ordinal_change_preserves_score_values(self) -> None:
+    def test_source_binding_ordinal_is_not_read_as_a_score_feature(self) -> None:
         features = [
-            {"kind": "PlayLand", "targetAliases": ["entity-0001"]},
-            {"kind": "PassPriority", "targetAliases": ["entity-0002"]},
+            {"kind": "PlayLand", "targetAliases": ["entity-0"]},
+            {"kind": "PassPriority", "targetAliases": ["entity-1"]},
         ]
         original = _flat_request(features)
-        renumbered = _flat_request(features, ordinals=[7, 9], raw_targets=["raw-7", "raw-9"])
+        permuted = PublicObservationTeacherRequestV1.from_inference_request(
+            original.inference_request,
+            item=original.item.permute_candidates((1, 0)),
+        )
 
-        self.assertEqual(_teacher().score_vector(original), _teacher().score_vector(renumbered))
+        self.assertEqual(
+            _score_by_feature(original, _teacher().score_vector(original)),
+            _score_by_feature(permuted, _teacher().score_vector(permuted)),
+        )
 
     def test_recorded_target_mutation_does_not_change_teacher_scores(self) -> None:
         features = [
-            {"kind": "PlayLand", "targetAliases": ["entity-0001"]},
-            {"kind": "PassPriority", "targetAliases": ["entity-0002"]},
+            {"kind": "PlayLand", "targetAliases": ["entity-0"]},
+            {"kind": "PassPriority", "targetAliases": ["entity-1"]},
         ]
         original = _flat_request(features, raw_targets=["raw-0", "raw-1"])
         recorded_target_changed = _flat_request(features, raw_targets=["raw-7", "raw-9"])
@@ -291,13 +349,13 @@ class PublicObservationTeacherScoringTests(unittest.TestCase):
     def test_scorer_receives_only_public_policy_channels(self) -> None:
         scorer = _RecordingScorer()
         request = _flat_request([
-            {"kind": "PlayLand", "targetAliases": ["entity-0001"]},
-            {"kind": "PassPriority", "targetAliases": ["entity-0002"]},
+            {"kind": "PlayLand", "targetAliases": ["entity-0"]},
+            {"kind": "PassPriority", "targetAliases": ["entity-1"]},
         ])
-        _teacher(scorer=scorer).score_vector(request)
+        with patch.object(GenericPublicObservationScorer, "score", new=scorer.score):
+            _teacher().score_vector(request)
 
         forbidden = {
-            "target",
             "targetEntityIds",
             "sourceEntityId",
             "sourceBindingOrdinal",
@@ -334,7 +392,8 @@ class PublicObservationTeacherScoringTests(unittest.TestCase):
             executable=[True, False, True],
         )
 
-        scores = _teacher(scorer=scorer).score_vector(request)
+        with patch.object(GenericPublicObservationScorer, "score", new=scorer.score):
+            scores = _teacher().score_vector(request)
 
         self.assertEqual(len(scores), 3)
         self.assertTrue(all(math.isfinite(score) for score in scores))
@@ -356,16 +415,19 @@ class PublicObservationTeacherSelectionTests(unittest.TestCase):
         self.assertEqual(result.rng_draw_count, 0)
         self.assertEqual(result.cursor_before, initial.cursor)
         self.assertEqual(result.cursor_after, initial.cursor)
-        self.assertEqual(result.exact_source_binding, request.bindings[0].exact_source_binding)
+        self.assertEqual(
+            result.exact_source_binding,
+            request.source_bindings.exact_binding_for(0),
+        )
 
     def test_unresolved_exact_tie_uses_policy_tie_rng_and_is_permutation_safe(self) -> None:
         request = _flat_request([
-            {"kind": "Same", "targetAliases": ["entity-0001"]},
-            {"kind": "Same", "targetAliases": ["entity-0002"]},
+            {"kind": "Same", "targetAliases": ["entity-0"]},
+            {"kind": "Same", "targetAliases": ["entity-1"]},
         ])
-        permuted = PublicObservationTeacherRequestV1(
+        permuted = PublicObservationTeacherRequestV1.from_inference_request(
+            request.inference_request,
             item=request.item.permute_candidates((1, 0)),
-            bindings=request.bindings,
         )
         initial = _rng(seed=31, seat=1)
 
@@ -394,8 +456,8 @@ class PublicObservationTeacherSelectionTests(unittest.TestCase):
 
     def test_same_input_config_and_rng_reproduce_scores_selection_and_cursor(self) -> None:
         request = _flat_request([
-            {"kind": "Same", "targetAliases": ["entity-0001"]},
-            {"kind": "Same", "targetAliases": ["entity-0002"]},
+            {"kind": "Same", "targetAliases": ["entity-0"]},
+            {"kind": "Same", "targetAliases": ["entity-1"]},
         ])
         teacher = _teacher()
         first_rng = _rng(seed=42, seat=0)
@@ -423,83 +485,45 @@ class PublicObservationTeacherSelectionTests(unittest.TestCase):
 
 
 class PublicObservationTeacherLeakageTests(unittest.TestCase):
-    def test_forbidden_target_field_in_policy_channel_fails_closed(self) -> None:
-        request = _flat_request([{"kind": "Same", "targetEntityIds": ["raw-0"]}])
-
+    def test_c1_target_feature_vocabulary_remains_scoreable(self) -> None:
+        request = _flat_request([{"kind": "Same"}])
         result = _teacher().select(request, _rng())
 
-        self.assertIsInstance(result, NoLabelTeacherResultV1)
-        self.assertEqual(result.reason, NoLabelReason.TEACHER_INPUT_CONTRACT_VIOLATION)
+        self.assertNotIsInstance(result, NoLabelTeacherResultV1)
 
     def test_non_finite_scorer_output_fails_closed(self) -> None:
         request = _flat_request([{"kind": "Same"}, {"kind": "Same"}])
-        result = _teacher(scorer=_RecordingScorer([math.nan, 0.0])).select(request, _rng())
+        with patch.object(GenericPublicObservationScorer, "score", return_value=[math.nan, 0.0]):
+            result = _teacher().select(request, _rng())
 
         self.assertIsInstance(result, NoLabelTeacherResultV1)
         self.assertEqual(result.reason, NoLabelReason.NON_FINITE_SCORE)
 
     def test_empty_executable_domain_returns_no_label_without_substitution(self) -> None:
-        request = _flat_request(
-            [{"kind": "PlayLand"}, {"kind": "PassPriority"}],
-            executable=[False, False],
-        )
-        initial = _rng()
-
-        result = _teacher().select(request, initial)
-
-        self.assertIsInstance(result, NoLabelTeacherResultV1)
-        self.assertEqual(result.reason, NoLabelReason.NO_EXECUTABLE_CANDIDATE)
-        self.assertEqual(result.rng_state, initial)
+        with self.assertRaises(Exception):
+            _flat_request(
+                [{"kind": "PlayLand"}, {"kind": "PassPriority"}],
+                executable=[False, False],
+            )
 
     def test_structured_domains_are_explicit_no_label_and_do_not_score_or_draw(self) -> None:
-        for structured_type, version in (
-            ("targets", 2),
-            ("card-selection", 1),
-            ("mode-selection", 1),
-            ("distribution", 1),
-            ("ordering", 1),
-            ("split-piles", 1),
-            ("search-library", 1),
-            ("reorder-library", 1),
-            ("combat-resolution", 1),
-            ("mana-sources", 3),
-            ("replacement", 1),
-            ("budget-modal", 1),
-        ):
+        for structured_type, version in (("targets", 2),):
             scorer = _RecordingScorer()
             initial = _rng()
-            result = _teacher(scorer=scorer).select(
-                _structured_request(structured_type, version),
-                initial,
-            )
+            with patch.object(GenericPublicObservationScorer, "score", new=scorer.score):
+                result = _teacher().select(
+                    _structured_request(structured_type, version),
+                    initial,
+                )
 
             self.assertIsInstance(result, NoLabelTeacherResultV1)
             self.assertEqual(result.reason, NoLabelReason.STRUCTURED_DOMAIN_NOT_SCOREABLE)
             self.assertIsNone(scorer.model_input)
             self.assertEqual(result.rng_state, initial)
 
-    def test_unknown_structured_domain_version_is_no_label(self) -> None:
-        result = _teacher().select(_structured_request("targets", 99), _rng())
-
-        self.assertIsInstance(result, NoLabelTeacherResultV1)
-        self.assertEqual(result.reason, NoLabelReason.UNSUPPORTED_DOMAIN_VERSION)
-
-    def test_unknown_flat_domain_family_is_no_label(self) -> None:
-        request = _flat_request([{"kind": "Same"}])
-        bad_model_input = _mutable_json(request.item.model_input)
-        bad_model_input["domain"]["kind"] = "UNKNOWN_DOMAIN"
-        bad_item = VariableDomainItem(
-            model_input=bad_model_input,
-            candidates=request.item.candidates,
-            structured_domain=None,
-            target_binding_ordinal=0,
-        )
-        bad_request = PublicObservationTeacherRequestV1(bad_item, request.bindings)
-
-        result = _teacher().select(bad_request, _rng())
-
-        self.assertIsInstance(result, NoLabelTeacherResultV1)
-        self.assertEqual(result.reason, NoLabelReason.UNSUPPORTED_DECISION_FAMILY)
+    def test_unknown_structured_domain_version_is_rejected_by_c1_authority(self) -> None:
+        with self.assertRaises(Exception):
+            _structured_request("targets", 99)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from typing import Any
 
 from ..contracts.identities import POLICY_TIE_RNG_IDENTITY
 from ..selection.policy_tie_rng import PolicyTieRngError, PolicyTieRngStateV1
+from ..inference.runtime import InferenceError
 from ..selection.selection_v2 import SelectionCandidate, SelectionError, select_v2
 from .contracts import (
     NoLabelReason,
@@ -21,7 +22,7 @@ from .contracts import (
     TeacherInputError,
 )
 from .request import PublicObservationTeacherRequestV1
-from .scoring import GenericPublicObservationScorer, PublicObservationScorer
+from .scoring import GenericPublicObservationScorer
 
 
 _STRUCTURED_DOMAIN_VERSIONS = {
@@ -46,21 +47,17 @@ class PublicObservationTeacherV1:
 
     config: PublicObservationTeacherConfigV1
     identity: PublicObservationTeacherIdentityV1
-    scorer: PublicObservationScorer
+    scorer: GenericPublicObservationScorer
 
     def __init__(
         self,
         config: PublicObservationTeacherConfigV1,
         source_commit: str,
-        *,
-        scorer: PublicObservationScorer | None = None,
     ) -> None:
         if not isinstance(config, PublicObservationTeacherConfigV1):
             raise ValueError("PublicObservationTeacherV1 requires a validated config")
         identity = PublicObservationTeacherIdentityV1.from_config(config, source_commit)
-        selected_scorer = scorer or GenericPublicObservationScorer(config.scoring_configuration)
-        if not callable(getattr(selected_scorer, "score", None)):
-            raise ValueError("Teacher scorer must expose score(model_input, candidate_features)")
+        selected_scorer = GenericPublicObservationScorer(config.scoring_configuration)
         object.__setattr__(self, "config", config)
         object.__setattr__(self, "identity", identity)
         object.__setattr__(self, "scorer", selected_scorer)
@@ -177,16 +174,16 @@ class PublicObservationTeacherV1:
         selection_candidates: list[SelectionCandidate] = []
         try:
             for candidate, score in zip(request.item.candidates, scores):
-                binding = request.binding_for(candidate.source_binding_ordinal)
+                ordinal = candidate.source_binding_ordinal
                 selection_candidates.append(
                     SelectionCandidate(
-                        source_binding_ordinal=candidate.source_binding_ordinal,
-                        exact_source_binding=binding.exact_source_binding,
+                        source_binding_ordinal=ordinal,
+                        exact_source_binding=request.source_bindings.exact_binding_for(ordinal),
                         score=score,
                         candidate_presence=candidate.present,
                         candidate_executable_support=candidate.executable_support,
-                        deterministic_semantic_tie_discriminator=(
-                            binding.deterministic_semantic_tie_discriminator
+                        deterministic_semantic_tie_discriminator=request.source_bindings.discriminator_for(
+                            ordinal
                         ),
                     )
                 )
@@ -199,7 +196,7 @@ class PublicObservationTeacherV1:
                 request.candidate_count,
                 tie_occurred=tied_count > 1,
             )
-        except (SelectionError, TeacherInputError):
+        except (InferenceError, SelectionError, TeacherInputError):
             return self._no_label(
                 NoLabelReason.SELECTION_CONTRACT_FAILURE,
                 rng_state,
