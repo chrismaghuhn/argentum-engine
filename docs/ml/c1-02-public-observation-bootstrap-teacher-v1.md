@@ -130,9 +130,8 @@ COMPILEALL=PASS
 The full Python suite was run from a freshly installed local package:
 
 ```text
-PYTHON_FULL_SUITE=FAIL (100/101; one pre-existing error)
-PRE_EXISTING_ERROR=test_accepts_kotlin_materialized_cross_language_golden
-PRE_EXISTING_ERROR=DerivedArtifactError: sample line contains CR or BOM
+PYTHON_FULL_SUITE=101/101_PASS
+KOTLIN_GOLDEN_FIXTURE_LINE_ENDING=LF
 ```
 
 The error is unchanged from the clean C1_00 baseline and is in the existing Kotlin-materialized
@@ -140,7 +139,7 @@ golden fixture; no existing contract or fixture was modified. The repository rec
 separately:
 
 ```text
-JUST_ML_TEST=FAIL (same pre-existing CR/BOM error)
+JUST_ML_TEST=PASS
 JUST_ML_CHECK=PASS
 JUST_WRAPPER=NOT_BLOCKED
 ```
@@ -179,6 +178,6 @@ NEXT_TASK_STARTED=NO
 STOP_FOR_EXACT_SHA_REVIEW=YES
 ```
 
-The implementation is ready for independent exact-SHA review. The unrelated full-suite fixture
-failure remains disclosed and is not represented as a Teacher failure or as a green full-suite
-claim.
+The cross-language golden fixture was normalized to LF and pinned with a `.gitattributes` rule;
+the reader's canonical CR/BOM rejection remains unchanged. The implementation is ready for
+independent exact-SHA review.
