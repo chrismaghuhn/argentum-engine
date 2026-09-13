@@ -29,7 +29,7 @@ def _rng() -> PolicyTieRngStateV1:
 
 
 def _disc(value: str) -> SemanticTieDiscriminator:
-    return SemanticTieDiscriminator.from_json(value)
+    return SemanticTieDiscriminator.from_json(value, forbidden_raw_values=set())
 
 
 class SelectionV2Tests(unittest.TestCase):
@@ -79,15 +79,15 @@ class SelectionV2Tests(unittest.TestCase):
             SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, None),
             SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, None),
         ]
-        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"rowIndex":0}'))
-        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"sourceBindingOrdinal":1}'))
+        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"rowIndex":0}', forbidden_raw_values=set()))
+        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"sourceBindingOrdinal":1}', forbidden_raw_values=set()))
         self.assertEqual(select_v2(forbidden, _rng()).rng_draw_count, 1)
         candidate_index = [
             SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, None),
             SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, None),
         ]
-        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"candidateIndex":0}'))
-        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"candidateIndex":1}'))
+        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"candidateIndex":0}', forbidden_raw_values=set()))
+        self.assertIsNone(SemanticTieDiscriminator.try_from_json('{"candidateIndex":1}', forbidden_raw_values=set()))
         self.assertEqual(select_v2(candidate_index, _rng()).rng_draw_count, 1)
         self.assertIsNone(
             SemanticTieDiscriminator.try_from_json(
@@ -139,6 +139,12 @@ class SelectionV2Tests(unittest.TestCase):
             binding.exact_action["nested"]["values"].append(3)
         with self.assertRaises(TypeError):
             binding.exact_action["kind"] = "mutated"
+
+    def test_tie_discriminator_trust_token_requires_factory_and_explicit_raw_values(self) -> None:
+        with self.assertRaises(TypeError):
+            SemanticTieDiscriminator('{"semantic":"e7"}', True)
+        with self.assertRaises(TypeError):
+            SemanticTieDiscriminator.from_json('{"semantic":"e7"}')
 
 
 if __name__ == "__main__":

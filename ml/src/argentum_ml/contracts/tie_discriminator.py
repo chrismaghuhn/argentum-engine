@@ -62,19 +62,21 @@ class SemanticTieDiscriminator:
     """A source-validated canonical semantic tie discriminator."""
 
     canonical_value: str
-    _source_validated: bool = field(default=False, repr=False, compare=False)
+    _source_validated: bool = field(default=False, init=False, repr=False, compare=False)
 
     @classmethod
-    def from_json(cls, value: str, *, forbidden_raw_values: set[str] = frozenset()) -> "SemanticTieDiscriminator":
+    def from_json(cls, value: str, *, forbidden_raw_values: set[str]) -> "SemanticTieDiscriminator":
         parsed = _parse_canonical_object(value)
         if has_forbidden_tie_discriminator_field(parsed):
             raise ValueError("tie discriminator contains a forbidden field")
         if has_forbidden_tie_discriminator_literal(parsed, forbidden_raw_values):
             raise ValueError("tie discriminator contains a raw source entity literal")
-        return cls(value, True)
+        discriminator = cls(value)
+        object.__setattr__(discriminator, "_source_validated", True)
+        return discriminator
 
     @classmethod
-    def try_from_json(cls, value: str, *, forbidden_raw_values: set[str] = frozenset()) -> "SemanticTieDiscriminator | None":
+    def try_from_json(cls, value: str, *, forbidden_raw_values: set[str]) -> "SemanticTieDiscriminator | None":
         try:
             return cls.from_json(value, forbidden_raw_values=forbidden_raw_values)
         except (TypeError, ValueError, json.JSONDecodeError):
