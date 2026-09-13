@@ -541,3 +541,22 @@ C1_04_STARTED=NO
 PR_CREATED=NO
 MERGE_PERFORMED=NO
 ```
+
+## Execution amendment after the accepted C1_00 producer repair
+
+The design was originally frozen against `BASE_SHA`. The accepted C1_00
+producer repair changed the model-facing producer bytes without changing any
+schema identity or semantic contract. The disposable artifact used for the
+subsequent characterization is therefore bound to the accepted repaired-main
+commit:
+
+```text
+BASE_SHA=b9eb8da182390095d73b9c06d9bbe20049156e9b
+ACCEPTED_C1_00_PRODUCER_FIX_MAIN_SHA=4eb71de7893395c4abc965d3ce705d623bca8a92
+MATERIALIZER_SOURCE_COMMIT=4eb71de7893395c4abc965d3ce705d623bca8a92
+```
+
+This amendment changes provenance binding only. It does not change the
+source dataset, TrajectoryV1, C1_00 schema identity, Teacher, config, RNG
+schedule, admission semantics, gameplay semantics, or any authorization
+boundary.

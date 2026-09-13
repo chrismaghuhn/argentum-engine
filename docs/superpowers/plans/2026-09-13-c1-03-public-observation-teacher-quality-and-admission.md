@@ -48,7 +48,7 @@ POLICY_RNG_IDENTITY=argentum-ml-policy-tie-rng@v1
 DERIVED_VIEW_SCHEMA_IDENTITY=argentum-ml-derived-learner-view@v1
 MATERIALIZER_IMPLEMENTATION_IDENTITY=c1-materializer@v1
 MATERIALIZER_SOURCE_COMMIT=
-  b9eb8da182390095d73b9c06d9bbe20049156e9b
+  4eb71de7893395c4abc965d3ce705d623bca8a92
 MATERIALIZER_CONFIG_DIGEST=
   7d5fbfd0bfe71844fefbd25d3fcce7beac3de8de281d9a2f02cf225aef27364c
 
@@ -1359,3 +1359,21 @@ Before handing this plan to execution, verify:
 - [x] The final verification distinguishes local pass, wrapper block, hosted checks, code review, and exact-SHA acceptance.
 
 The placeholder scan must return no matches.
+
+## Execution rebind after the accepted C1_00 producer repair
+
+The original design and plan were frozen against `BASE_SHA` before the
+accepted C1_00 attack-band projection repair. The repair changed producer
+bytes in the derived view, so the execution binding is intentionally rebased
+only for the materializer source provenance:
+
+```text
+BASE_SHA=b9eb8da182390095d73b9c06d9bbe20049156e9b
+ACCEPTED_C1_00_PRODUCER_FIX_MAIN_SHA=4eb71de7893395c4abc965d3ce705d623bca8a92
+MATERIALIZER_SOURCE_COMMIT=4eb71de7893395c4abc965d3ce705d623bca8a92
+```
+
+All source dataset, manifest, schema, split, Teacher, RNG, ownership,
+TEST-isolation, gameplay, and admission semantics remain unchanged. This
+rebind is required for the strict manifest-to-plan authority check and is a
+new exact-SHA plan-review point before quality measurement.
