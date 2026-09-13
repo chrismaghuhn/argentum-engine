@@ -8,6 +8,11 @@ from .identities import (
     SPLIT_CONTRACT_IDENTITY,
 )
 from .model_facing import ModelFacingContractError, require_model_input, validate_model_input
+from .tie_discriminator import (
+    TIE_DISCRIMINATOR_FORBIDDEN_KEYS,
+    has_forbidden_tie_discriminator_field,
+    is_forbidden_tie_discriminator_key,
+)
 
 __all__ = [
     "ARTIFACT_IDENTITY_SCHEMA",
@@ -20,4 +25,7 @@ __all__ = [
     "ModelFacingContractError",
     "require_model_input",
     "validate_model_input",
+    "TIE_DISCRIMINATOR_FORBIDDEN_KEYS",
+    "has_forbidden_tie_discriminator_field",
+    "is_forbidden_tie_discriminator_key",
 ]

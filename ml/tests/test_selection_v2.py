@@ -75,6 +75,11 @@ class SelectionV2Tests(unittest.TestCase):
             SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, '{"sourceBindingOrdinal":1}'),
         ]
         self.assertEqual(select_v2(forbidden, _rng()).rng_draw_count, 1)
+        candidate_index = [
+            SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, '{"candidateIndex":0}'),
+            SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, '{"candidateIndex":1}'),
+        ]
+        self.assertEqual(select_v2(candidate_index, _rng()).rng_draw_count, 1)
 
     def test_rejects_duplicate_exact_source_alternatives_before_rng(self) -> None:
         duplicate_binding = ExactSemanticSourceBinding({"kind": "same"}, None, None)

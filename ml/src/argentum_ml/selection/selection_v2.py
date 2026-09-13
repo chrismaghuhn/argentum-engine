@@ -9,6 +9,7 @@ from numbers import Real
 from typing import Any, Sequence
 
 from ..contracts.canonical_json import canonical_json
+from ..contracts.tie_discriminator import has_forbidden_tie_discriminator_field
 from .policy_tie_rng import PolicyTieRngStateV1
 
 
@@ -54,11 +55,6 @@ def _deep_freeze(value: Any) -> Any:
     return value
 
 
-_DISCRIMINATOR_FORBIDDEN_KEYS = {
-    "id", "actionId", "decisionId", "sourceEntityId", "targetEntityIds", "entityId", "sourceId",
-    "targetId", "playerId", "cardId", "rowIndex", "sourceBindingOrdinal", "allocationOrder",
-    "batchSlot",
-}
 
 
 class SelectionError(ValueError):
@@ -194,23 +190,11 @@ def _valid_discriminator(value: str | None) -> bool:
         return False
     try:
         parsed = json.loads(value)
-        if not isinstance(parsed, dict) or _has_forbidden_discriminator_field(parsed):
+        if not isinstance(parsed, dict) or has_forbidden_tie_discriminator_field(parsed):
             return False
         return canonical_json(parsed) == value
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
-
-
-def _has_forbidden_discriminator_field(value: Any) -> bool:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if key in _DISCRIMINATOR_FORBIDDEN_KEYS or key.endswith("Id") or key.endswith("Ids"):
-                return True
-            if _has_forbidden_discriminator_field(child):
-                return True
-    elif isinstance(value, list):
-        return any(_has_forbidden_discriminator_field(child) for child in value)
-    return False
 
 
 def _result(

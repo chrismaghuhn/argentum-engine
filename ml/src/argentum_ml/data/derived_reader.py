@@ -23,6 +23,10 @@ from ..contracts.identities import (
     SPLIT_CONTRACT_IDENTITY,
 )
 from ..contracts.model_facing import validate_model_input
+from ..contracts.tie_discriminator import (
+    TIE_DISCRIMINATOR_FORBIDDEN_KEYS,
+    is_forbidden_tie_discriminator_key,
+)
 from .split import assign_partition
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -102,28 +106,6 @@ _STRUCTURED_DOMAIN_TYPES = {
     "budget-modal",
 }
 _SEMANTIC_DECISION_ID_KEYS = {"version", "schemaIdentity", "value"}
-_TIE_FORBIDDEN_KEYS = {
-    "id",
-    "actionId",
-    "decisionId",
-    "sourceEntityId",
-    "targetEntityIds",
-    "entityId",
-    "sourceId",
-    "targetId",
-    "playerId",
-    "cardId",
-    "rowIndex",
-    "sourceBindingOrdinal",
-    "allocationOrder",
-    "batchSlot",
-    "giftRecipient",
-    "casualtyCreature",
-    "sourceOrdinal",
-    "candidateIndex",
-    "orderIndex",
-    "iterationOrder",
-}
 _KOTLIN_INT_MAX = 2**31 - 1
 _KOTLIN_LONG_MAX = 2**63 - 1
 
@@ -210,7 +192,7 @@ def _canonical_bytes(value: Any, label: str) -> bytes:
 
 
 def _is_raw_tie_key(key: str) -> bool:
-    return key in _TIE_FORBIDDEN_KEYS or key.endswith("Id") or key.endswith("Ids")
+    return is_forbidden_tie_discriminator_key(key)
 
 
 def _reject_tie_fields(value: Any, label: str) -> None:
