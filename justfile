@@ -5,6 +5,8 @@
 default:
     @just --list
 
+ml-python := if os_family() == "windows" { "py -3.13" } else { "python3" }
+
 # Build the entire project
 [group: 'build']
 build:
@@ -14,6 +16,16 @@ build:
 [group: 'build']
 test:
     scripts/gradle-locked test
+
+# Install and run the dependency-free C1 Python contract suite offline.
+[group: 'build']
+ml-test:
+    cd ml && {{ml-python}} -m pip install --no-deps . && {{ml-python}} -m unittest discover -s tests -v
+
+# Compile-check the C1 Python package and tests without source discovery or materialization.
+[group: 'build']
+ml-check:
+    cd ml && {{ml-python}} -m compileall -q src tests
 
 # Card scenarios now live in the per-era `:mtg-sets:<era>:tests` modules, which `:mtg-sets:scenarioTest`
 # fans out to, so both are run here — same coverage as before the split.
