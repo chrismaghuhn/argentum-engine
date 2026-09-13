@@ -17,7 +17,7 @@ The Kotlin materialization entry point is
 `C1LearnerArtifactMaterializer.materialize(publishedDatasetDirectory, outputDirectory, sourceCommit, config)`.
 There is deliberately no `ml-materialize` Python command: source trust stays on the Kotlin/A7 side.
 
-## Installation and offline verification
+## Installation and local verification
 
 The package targets Python 3.13.15 and has no runtime dependencies:
 
@@ -35,7 +35,9 @@ just ml-test
 just ml-check
 ```
 
-`ml-test` installs locally with `--no-deps` and runs the offline contract suite. Neither command
+`ml-test` installs locally with `--no-deps` and runs the contract suite without accessing source
+datasets or runtime services. The PEP 517 build may resolve the pinned build-only setuptools package;
+after installation the contract suite itself is offline. Neither command
 trains a model, contacts a dataset service, or materializes source data.
 
 ## Package boundaries

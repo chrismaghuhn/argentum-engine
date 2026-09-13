@@ -164,7 +164,7 @@ py -3.13 -m compileall -q src tests
 ```
 
 The `ml-contracts` GitHub Actions job uses Python 3.13.15, installs the local package without runtime
-dependencies, runs the offline test suite, and compile-checks `src` and `tests`. The existing
+dependencies, runs the local contract suite, and compile-checks `src` and `tests`. The existing
 `backend` aggregate check remains and now requires both the Kotlin/backend matrix and `ml-contracts`.
 
 No source materialization command is exposed from `just` or Python. The reviewed Kotlin entry point is
