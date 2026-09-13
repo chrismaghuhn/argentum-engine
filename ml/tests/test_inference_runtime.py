@@ -51,12 +51,13 @@ def _context() -> InferenceContext:
 def _item_from_validated_sample(sample, *, prefix: str = "candidate-") -> VariableDomainItem:
     model_input = sample.sample["input"]
     features = model_input["domain"]["candidates"]
+    source_candidates = sample.sample["binding"]["completeLegalDomain"]["candidates"]
     candidates = tuple(
         CandidateFeature(
             feature_view=feature,
             source_binding_ordinal=ordinal,
             present=True,
-            executable_support=ordinal != 2,
+            executable_support=source_candidates[ordinal]["affordable"],
         )
         for ordinal, feature in enumerate(features)
     )
@@ -68,7 +69,12 @@ def _item_from_validated_sample(sample, *, prefix: str = "candidate-") -> Variab
     )
 
 
-def _validated_sample(root: Path, *, prefix: str = "candidate-"):
+def _validated_sample(
+    root: Path,
+    *,
+    prefix: str = "candidate-",
+    unaffordable_ordinal: int | None = None,
+):
     sample = _sample()
     source_candidates = []
     model_candidates = []
@@ -77,9 +83,11 @@ def _validated_sample(root: Path, *, prefix: str = "candidate-"):
     for ordinal in range(3):
         source_candidate = copy.deepcopy(base_source_candidate)
         source_candidate["kind"] = f"{prefix}{ordinal}"
+        source_candidate["affordable"] = ordinal != unaffordable_ordinal
         source_candidates.append(source_candidate)
         model_candidate = copy.deepcopy(base_model_candidate)
         model_candidate["kind"] = f"{prefix}{ordinal}"
+        model_candidate["affordable"] = ordinal != unaffordable_ordinal
         model_candidates.append(model_candidate)
     sample["binding"]["completeLegalDomain"]["candidates"] = source_candidates
     sample["binding"]["sourceBindingOrdinals"] = [0, 1, 2]
@@ -94,15 +102,23 @@ def _validated_sample(root: Path, *, prefix: str = "candidate-"):
     sample["target"] = {"chosenSemanticAction": chosen, "chosenSemanticResponse": None}
     artifact = _artifact(root, sample=sample)
     reader = DerivedArtifactReader.open(artifact)
-    stream = reader.iter_samples()
-    parsed = next(stream)
-    validated = reader.validate_sample_for_inference(parsed)
+    stream = reader.iter_validated_samples_for_inference()
+    validated = next(stream)
     stream.close()
     return validated
 
 
-def _request(root: Path, *, prefix: str = "candidate-") -> InferenceRequest:
-    validated = _validated_sample(root, prefix=prefix)
+def _request(
+    root: Path,
+    *,
+    prefix: str = "candidate-",
+    unaffordable_ordinal: int | None = None,
+) -> InferenceRequest:
+    validated = _validated_sample(
+        root,
+        prefix=prefix,
+        unaffordable_ordinal=unaffordable_ordinal,
+    )
     return InferenceRequest.from_validated_sample(validated, _item_from_validated_sample(validated))
 
 
@@ -110,9 +126,8 @@ def _structured_request(root: Path) -> InferenceRequest:
     sample = _structured_sample()
     artifact = _artifact(root, sample=sample)
     reader = DerivedArtifactReader.open(artifact)
-    stream = reader.iter_samples()
-    parsed = next(stream)
-    validated = reader.validate_sample_for_inference(parsed)
+    stream = reader.iter_validated_samples_for_inference()
+    validated = next(stream)
     stream.close()
     structured_type = validated.sample["input"]["domain"]["structuredType"]
     item = VariableDomainItem(
@@ -122,6 +137,30 @@ def _structured_request(root: Path) -> InferenceRequest:
         target_binding_ordinal=None,
     )
     return InferenceRequest.from_validated_sample(validated, item)
+
+
+def _item_with_mask(
+    sample,
+    ordinal: int,
+    *,
+    present: bool,
+    executable_support: bool,
+) -> VariableDomainItem:
+    base = _item_from_validated_sample(sample)
+    candidates = list(base.candidates)
+    original = candidates[ordinal]
+    candidates[ordinal] = CandidateFeature(
+        feature_view=original.feature_view,
+        source_binding_ordinal=original.source_binding_ordinal,
+        present=present,
+        executable_support=executable_support,
+    )
+    return VariableDomainItem(
+        model_input=base.model_input,
+        candidates=tuple(candidates),
+        structured_domain=None,
+        target_binding_ordinal=1 if ordinal == 0 and not present else 0,
+    )
 
 
 class _RecordingProvider:
@@ -145,7 +184,7 @@ class _FailIfCalledProvider:
 
 class InferenceRuntimeTests(unittest.TestCase):
     def test_scores_every_present_candidate_and_returns_exact_binding(self) -> None:
-        provider = _RecordingProvider([0.2, 0.9, 99.0])
+        provider = _RecordingProvider([0.2, 0.9, 0.3])
         with tempfile.TemporaryDirectory() as directory:
             result = InferenceRuntime(_context()).select(
                 _request(Path(directory)),
@@ -191,7 +230,11 @@ class InferenceRuntimeTests(unittest.TestCase):
     def test_unaffordable_candidate_can_score_but_cannot_be_selected(self) -> None:
         provider = _RecordingProvider([0.1, 0.2, 100.0])
         with tempfile.TemporaryDirectory() as directory:
-            result = InferenceRuntime(_context()).select(_request(Path(directory)), provider, _rng())
+            result = InferenceRuntime(_context()).select(
+                _request(Path(directory), unaffordable_ordinal=2),
+                provider,
+                _rng(),
+            )
         self.assertEqual(
             result.exact_source_binding.exact_action["candidate"]["kind"],
             "candidate-1",
@@ -237,6 +280,27 @@ class InferenceRuntimeTests(unittest.TestCase):
                     _request(Path(directory)),
                     provider,
                     _rng(),
+                )
+
+    def test_presence_and_executable_masks_must_match_source_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            validated = _validated_sample(Path(directory))
+            with self.assertRaises(InferenceError):
+                InferenceRequest.from_validated_sample(
+                    validated,
+                    _item_with_mask(validated, 0, present=False, executable_support=False),
+                )
+            with self.assertRaises(InferenceError):
+                InferenceRequest.from_validated_sample(
+                    validated,
+                    _item_with_mask(validated, 0, present=True, executable_support=False),
+                )
+        with tempfile.TemporaryDirectory() as directory:
+            validated = _validated_sample(Path(directory), unaffordable_ordinal=2)
+            with self.assertRaises(InferenceError):
+                InferenceRequest.from_validated_sample(
+                    validated,
+                    _item_with_mask(validated, 2, present=True, executable_support=True),
                 )
 
     def test_reader_sample_and_transport_are_coupled(self) -> None:

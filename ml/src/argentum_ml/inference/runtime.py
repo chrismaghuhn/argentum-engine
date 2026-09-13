@@ -254,6 +254,29 @@ class InferenceRequest:
         item_ordinals = {candidate.source_binding_ordinal for candidate in item.candidates}
         if item_ordinals != set(source_bindings.source_binding_ordinals):
             raise InferenceError("transport candidates do not belong to validated source sample")
+        source_domain = sample_value["binding"]["completeLegalDomain"]
+        source_kind = source_domain["kind"]
+        source_candidates = source_domain["candidates"]
+        if source_kind == "STRUCTURED_DECISION":
+            if item.structured_domain is None or item.candidates:
+                raise InferenceError("structured transport does not match validated source domain")
+        else:
+            if item.structured_domain is not None or len(item.candidates) != len(source_candidates):
+                raise InferenceError("flat transport does not match validated source domain")
+            source_candidate_by_ordinal = dict(
+                zip(source_bindings.source_binding_ordinals, source_candidates)
+            )
+            for candidate in item.candidates:
+                source_candidate = source_candidate_by_ordinal.get(candidate.source_binding_ordinal)
+                if not isinstance(source_candidate, Mapping):
+                    raise InferenceError("transport candidate has no source-domain member")
+                affordable = source_candidate.get("affordable")
+                if not isinstance(affordable, bool):
+                    raise InferenceError("source candidate affordable flag is not authoritative")
+                if not candidate.present:
+                    raise InferenceError("actual source candidates must be present; padding is external")
+                if candidate.executable_support != affordable:
+                    raise InferenceError("candidate executable support does not match source authority")
         instance = object.__new__(cls)
         object.__setattr__(instance, "item", item)
         object.__setattr__(instance, "source_bindings", source_bindings)

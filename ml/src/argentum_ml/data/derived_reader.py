@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator
@@ -26,6 +25,7 @@ from ..contracts.identities import (
 from ..contracts.model_facing import validate_model_input
 from ..contracts.tie_discriminator import SemanticTieDiscriminator
 from .split import assign_partition
+from .variable_batch import _deep_freeze as _deep_freeze_json
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
@@ -236,15 +236,25 @@ class ValidatedDerivedSample:
         raise TypeError("ValidatedDerivedSample must be issued by DerivedArtifactReader")
 
     @classmethod
-    def _from_reader(cls, sample: dict[str, Any], reader_token: object) -> "ValidatedDerivedSample":
+    def _issue(
+        cls,
+        sample: dict[str, Any],
+        reader_token: object,
+        issuer: object,
+    ) -> "ValidatedDerivedSample":
+        if issuer is not _VALIDATED_SAMPLE_ISSUER:
+            raise TypeError("validated sample token can only be issued by the reader")
         instance = object.__new__(cls)
-        object.__setattr__(instance, "_sample", copy.deepcopy(sample))
+        object.__setattr__(instance, "_sample", _deep_freeze_json(sample))
         object.__setattr__(instance, "_reader_token", reader_token)
         return instance
 
     @property
     def sample(self) -> dict[str, Any]:
-        return copy.deepcopy(self._sample)
+        return self._sample
+
+
+_VALIDATED_SAMPLE_ISSUER = object()
 
 
 @dataclass
@@ -294,15 +304,24 @@ class DerivedArtifactReader:
         finally:
             self.close()
 
-    def validate_sample_for_inference(self, sample: dict[str, Any]) -> ValidatedDerivedSample:
-        """Revalidate and issue a sample token for the model-independent seam."""
+    def iter_validated_samples_for_inference(self) -> Iterator[ValidatedDerivedSample]:
+        """Yield reader-issued tokens only for rows in the digest-validated shard."""
 
         if self._closed:
             raise DerivedArtifactError("derived artifact reader is closed")
-        if not isinstance(sample, dict):
-            raise DerivedArtifactError("validated sample must be an object")
-        _validate_sample(sample, self.manifest)
-        return ValidatedDerivedSample._from_reader(sample, self._inference_token)
+        try:
+            _validate_sample_file(self._samples_stream, self.manifest)
+            self._samples_stream.seek(0)
+            for raw_line in self._samples_stream:
+                sample = _parse_sample_line(raw_line)
+                _validate_sample(sample, self.manifest)
+                yield ValidatedDerivedSample._issue(
+                    sample,
+                    self._inference_token,
+                    _VALIDATED_SAMPLE_ISSUER,
+                )
+        finally:
+            self.close()
 
     def stream_samples(self) -> Iterator[dict[str, Any]]:
         return self.iter_samples()
