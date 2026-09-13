@@ -12,6 +12,55 @@ from ..contracts.canonical_json import canonical_json
 from .policy_tie_rng import PolicyTieRngStateV1
 
 
+class _FrozenDict(dict[str, Any]):
+    def __init__(self, values: dict[str, Any]) -> None:
+        dict.__init__(self, values)
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("source binding JSON is immutable")
+
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _immutable
+
+    def __ior__(self, other: Any) -> "_FrozenDict":
+        self._immutable()
+        return self
+
+
+class _FrozenList(list[Any]):
+    def __init__(self, values: list[Any]) -> None:
+        list.__init__(self, values)
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("source binding JSON is immutable")
+
+    __setitem__ = __delitem__ = append = clear = extend = insert = pop = remove = reverse = sort = _immutable
+
+    def __iadd__(self, other: Any) -> "_FrozenList":
+        self._immutable()
+        return self
+
+    def __imul__(self, other: Any) -> "_FrozenList":
+        self._immutable()
+        return self
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _FrozenDict({key: _deep_freeze(child) for key, child in value.items()})
+    if isinstance(value, list):
+        return _FrozenList([_deep_freeze(child) for child in value])
+    return value
+
+
+_DISCRIMINATOR_FORBIDDEN_KEYS = {
+    "id", "actionId", "decisionId", "sourceEntityId", "targetEntityIds", "entityId", "sourceId",
+    "targetId", "playerId", "cardId", "rowIndex", "sourceBindingOrdinal", "allocationOrder",
+    "batchSlot",
+}
+
+
 class SelectionError(ValueError):
     """Raised when Selection V2 input or binding is incomplete or invalid."""
 
@@ -29,7 +78,12 @@ class ExactSemanticSourceBinding:
         if not isinstance(exact, dict):
             raise SelectionError("exact source binding value must be an object")
         try:
-            canonical_json(exact)
+            frozen = _deep_freeze(exact)
+            canonical_json(frozen)
+            if self.exact_action is not None:
+                object.__setattr__(self, "exact_action", frozen)
+            else:
+                object.__setattr__(self, "exact_response", frozen)
         except (TypeError, ValueError) as exc:
             raise SelectionError("exact source binding is not canonical JSON-compatible") from exc
         if self.source_binding_ordinal_audit is not None:
@@ -99,10 +153,19 @@ def select_v2(
     ordinals = [candidate.source_binding_ordinal for candidate in values]
     if len(set(ordinals)) != len(ordinals):
         raise SelectionError("source binding ordinals must be unique")
+    binding_keys: set[tuple[str | None, str | None]] = set()
     for candidate in values:
         audit = candidate.exact_source_binding.source_binding_ordinal_audit
         if audit is not None and audit != candidate.source_binding_ordinal:
             raise SelectionError("incomplete source binding membership")
+        binding = candidate.exact_source_binding
+        binding_key = (
+            canonical_json(binding.exact_action) if binding.exact_action is not None else None,
+            canonical_json(binding.exact_response) if binding.exact_response is not None else None,
+        )
+        if binding_key in binding_keys:
+            raise SelectionError("source binding inverse map is not injective")
+        binding_keys.add(binding_key)
         if candidate.candidate_presence and not math.isfinite(float(candidate.score)):
             raise SelectionError("present candidate scores must be finite")
     eligible = [
@@ -131,9 +194,23 @@ def _valid_discriminator(value: str | None) -> bool:
         return False
     try:
         parsed = json.loads(value)
+        if not isinstance(parsed, dict) or _has_forbidden_discriminator_field(parsed):
+            return False
         return canonical_json(parsed) == value
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
+
+
+def _has_forbidden_discriminator_field(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in _DISCRIMINATOR_FORBIDDEN_KEYS or key.endswith("Id") or key.endswith("Ids"):
+                return True
+            if _has_forbidden_discriminator_field(child):
+                return True
+    elif isinstance(value, list):
+        return any(_has_forbidden_discriminator_field(child) for child in value)
+    return False
 
 
 def _result(

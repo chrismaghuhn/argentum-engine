@@ -70,6 +70,21 @@ class SelectionV2Tests(unittest.TestCase):
         ]
         self.assertEqual(select_v2(duplicate, _rng()).rng_draw_count, 1)
 
+        forbidden = [
+            SelectionCandidate(0, _binding("action-a", 0), 1.0, True, True, '{"rowIndex":0}'),
+            SelectionCandidate(1, _binding("action-b", 1), 1.0, True, True, '{"sourceBindingOrdinal":1}'),
+        ]
+        self.assertEqual(select_v2(forbidden, _rng()).rng_draw_count, 1)
+
+    def test_rejects_duplicate_exact_source_alternatives_before_rng(self) -> None:
+        duplicate_binding = ExactSemanticSourceBinding({"kind": "same"}, None, None)
+        candidates = [
+            SelectionCandidate(0, duplicate_binding, 1.0, True, True, None),
+            SelectionCandidate(1, duplicate_binding, 1.0, True, True, None),
+        ]
+        with self.assertRaises(SelectionError):
+            select_v2(candidates, _rng())
+
     def test_fails_closed_before_rng_for_empty_invalid_or_incomplete_candidates(self) -> None:
         with self.assertRaises(SelectionError):
             select_v2([], _rng())
@@ -94,6 +109,16 @@ class SelectionV2Tests(unittest.TestCase):
         candidates = [SelectionCandidate(0, exact, 1.0, True, True, None)]
         result = select_v2(candidates, _rng())
         self.assertEqual(result.exact_source_binding, exact)
+
+    def test_exact_source_binding_defensively_freezes_nested_values(self) -> None:
+        action = {"kind": "action", "nested": {"values": [1]}}
+        binding = ExactSemanticSourceBinding(action, None, None)
+        action["nested"]["values"].append(2)
+        self.assertEqual(binding.exact_action["nested"]["values"], [1])
+        with self.assertRaises(TypeError):
+            binding.exact_action["nested"]["values"].append(3)
+        with self.assertRaises(TypeError):
+            binding.exact_action["kind"] = "mutated"
 
 
 if __name__ == "__main__":
