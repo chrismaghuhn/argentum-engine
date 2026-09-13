@@ -123,14 +123,14 @@ unknown config and structured versions, and the explicit structured `NO_LABEL` p
 
 ```text
 RED=ModuleNotFoundError: argentum_ml.teacher
-PYTHON_FOCUSED_TESTS=25/25_PASS
+PYTHON_FOCUSED_TESTS=26/26_PASS
 COMPILEALL=PASS
 ```
 
 The full Python suite was run from a freshly installed local package:
 
 ```text
-PYTHON_FULL_SUITE=101/101_PASS
+PYTHON_FULL_SUITE=102/102_PASS
 KOTLIN_GOLDEN_FIXTURE_LINE_ENDING=LF
 ```
 
