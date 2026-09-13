@@ -112,11 +112,35 @@ jobs:
           kill "${WATCHDOG_PID}" 2>/dev/null || true
           exit "${STATUS}"
 
+  ml-contracts:
+    name: ml-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.13.15
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.13.15
+
+      - name: Install local ML package
+        run: python -m pip install --no-deps .
+        working-directory: ml
+
+      - name: Run ML contract tests
+        run: python -m unittest discover -s tests -v
+        working-directory: ml
+
+      - name: Compile-check ML package
+        run: python -m compileall -q src tests
+        working-directory: ml
+
   # Aggregate gate so branch protection can keep requiring a single "backend" check. It passes only
   # if every test group passed; with fail-fast disabled, a failure in one group still surfaces all
   # others before this job reports.
   backend:
-    needs: [test]
+    needs: [test, ml-contracts]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -126,7 +150,11 @@ jobs:
             echo "::error::One or more backend test groups failed."
             exit 1
           fi
-          echo "All backend test groups passed."
+          if [ "${{ needs.ml-contracts.result }}" != "success" ]; then
+            echo "::error::The ML contract job failed."
+            exit 1
+          fi
+          echo "All backend and ML contract groups passed."
 
   # Coverage runs only on main, off the PR critical path (Kover instruments the 3 covered modules'
   # test runs, and report generation + the PR comment add serial steps). Coverage is non-gating

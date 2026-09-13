@@ -200,6 +200,14 @@ CLAUDE.local.md
 # Bytecode from the shared modules the scripts/ tools import
 scripts/__pycache__/
 
+# C1 Python learner package artifacts
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+
 # Arena / benchmark run output (docs/ai/ carries the numbers worth keeping)
 /benchmarks/
 
