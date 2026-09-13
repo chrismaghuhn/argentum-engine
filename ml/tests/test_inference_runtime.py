@@ -311,6 +311,23 @@ class InferenceRuntimeTests(unittest.TestCase):
             with self.assertRaises(InferenceError):
                 InferenceRequest.from_validated_sample(first, item_from_second)
 
+    def test_transport_candidate_ordinal_bijection_is_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            validated = _validated_sample(Path(directory))
+            base = _item_from_validated_sample(validated)
+            swapped = VariableDomainItem(
+                model_input=base.model_input,
+                candidates=(
+                    CandidateFeature(base.candidates[0].feature_view, 1, True, True),
+                    CandidateFeature(base.candidates[1].feature_view, 0, True, True),
+                    CandidateFeature(base.candidates[2].feature_view, 2, True, True),
+                ),
+                structured_domain=None,
+                target_binding_ordinal=0,
+            )
+            with self.assertRaises(InferenceError):
+                InferenceRequest.from_validated_sample(validated, swapped)
+
     def test_structured_inference_fails_closed_before_provider_or_rng(self) -> None:
         rng = _rng()
         with tempfile.TemporaryDirectory() as directory:

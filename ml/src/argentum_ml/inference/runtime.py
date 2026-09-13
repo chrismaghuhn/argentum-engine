@@ -254,6 +254,8 @@ class InferenceRequest:
         item_ordinals = {candidate.source_binding_ordinal for candidate in item.candidates}
         if item_ordinals != set(source_bindings.source_binding_ordinals):
             raise InferenceError("transport candidates do not belong to validated source sample")
+        if tuple(candidate.source_binding_ordinal for candidate in item.candidates) != source_bindings.source_binding_ordinals:
+            raise InferenceError("transport candidate order does not match source binding order")
         source_domain = sample_value["binding"]["completeLegalDomain"]
         source_kind = source_domain["kind"]
         source_candidates = source_domain["candidates"]
