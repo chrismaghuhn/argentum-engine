@@ -243,17 +243,9 @@ class PublicObservationTeacherContractTests(unittest.TestCase):
         ])
 
         with self.assertRaises(TeacherInputError):
-            truncated = _mutable_json(request.item.model_input)
-            truncated["domain"]["candidates"] = truncated["domain"]["candidates"][:-1]
-            truncated_item = VariableDomainItem(
-                model_input=truncated,
-                candidates=request.item.candidates[:-1],
-                structured_domain=None,
-                target_binding_ordinal=0,
-            )
             PublicObservationTeacherRequestV1.from_inference_request(
                 request.inference_request,
-                item=truncated_item,
+                permutation=(0,),
             )
 
     def test_runtime_identity_exposes_no_materializer_identity(self) -> None:
@@ -308,7 +300,7 @@ class PublicObservationTeacherScoringTests(unittest.TestCase):
         ])
         permuted = PublicObservationTeacherRequestV1.from_inference_request(
             request.inference_request,
-            item=request.item.permute_candidates((1, 0)),
+            permutation=(1, 0),
         )
 
         teacher = _teacher()
@@ -325,7 +317,7 @@ class PublicObservationTeacherScoringTests(unittest.TestCase):
         original = _flat_request(features)
         permuted = PublicObservationTeacherRequestV1.from_inference_request(
             original.inference_request,
-            item=original.item.permute_candidates((1, 0)),
+            permutation=(1, 0),
         )
 
         self.assertEqual(
@@ -427,7 +419,7 @@ class PublicObservationTeacherSelectionTests(unittest.TestCase):
         ])
         permuted = PublicObservationTeacherRequestV1.from_inference_request(
             request.inference_request,
-            item=request.item.permute_candidates((1, 0)),
+            permutation=(1, 0),
         )
         initial = _rng(seed=31, seat=1)
 

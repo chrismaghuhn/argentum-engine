@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 from ..contracts.canonical_json import canonical_json
 from ..data.variable_batch import VariableDomainItem
@@ -15,9 +15,8 @@ from .contracts import TeacherInputError
 class PublicObservationTeacherRequestV1:
     """A Teacher view issued only from a reader-issued C1_00 InferenceRequest.
 
-    The optional item override is transport-only: it may reorder already-authorized candidate
-    records, but it cannot introduce a binding, feature view, mask, or source ordinal that was not
-    present in the reader-issued request.
+    The optional permutation is transport-only. It is applied internally to the reader-issued item;
+    callers cannot supply a replacement model input, observation, decision context, or binding.
     """
 
     inference_request: InferenceRequest
@@ -34,13 +33,17 @@ class PublicObservationTeacherRequestV1:
         cls,
         request: InferenceRequest,
         *,
-        item: VariableDomainItem | None = None,
+        permutation: Sequence[int] | None = None,
     ) -> "PublicObservationTeacherRequestV1":
         if not isinstance(request, InferenceRequest):
             raise TeacherInputError("Teacher request requires a reader-issued InferenceRequest")
-        selected_item = item or request.item
-        if not isinstance(selected_item, VariableDomainItem):
-            raise TeacherInputError("Teacher request transport must use VariableDomainItem")
+        if permutation is None:
+            selected_item = request.item
+        else:
+            try:
+                selected_item = request.item.permute_candidates(permutation)
+            except (IndexError, TypeError, ValueError) as exc:
+                raise TeacherInputError("Teacher permutation is not a complete candidate permutation") from exc
         _validate_transport_view(request, selected_item)
         instance = object.__new__(cls)
         object.__setattr__(instance, "inference_request", request)

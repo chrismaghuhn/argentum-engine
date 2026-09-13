@@ -134,9 +134,8 @@ PYTHON_FULL_SUITE=101/101_PASS
 KOTLIN_GOLDEN_FIXTURE_LINE_ENDING=LF
 ```
 
-The error is unchanged from the clean C1_00 baseline and is in the existing Kotlin-materialized
-golden fixture; no existing contract or fixture was modified. The repository recipes were run
-separately:
+The Kotlin-materialized golden fixture is now explicitly LF-pinned by `.gitattributes`; the
+reader's CR/BOM rejection remains unchanged. The repository recipes were run separately:
 
 ```text
 JUST_ML_TEST=PASS
