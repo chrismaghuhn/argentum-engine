@@ -1,4 +1,3 @@
-import copy
 import math
 import unittest
 
@@ -9,6 +8,7 @@ from argentum_ml.data.variable_batch import CandidateFeature, VariableDomainItem
 from argentum_ml.selection.policy_tie_rng import PolicyTieRngStateV1
 from argentum_ml.selection.selection_v2 import ExactSemanticSourceBinding
 from argentum_ml.teacher import (
+    GenericScoringConfigurationV1,
     NoLabelReason,
     NoLabelTeacherResultV1,
     PublicObservationTeacherConfigV1,
@@ -150,6 +150,14 @@ def _score_by_feature(request: PublicObservationTeacherRequestV1, scores: tuple[
     }
 
 
+def _mutable_json(value):
+    if isinstance(value, dict):
+        return {key: _mutable_json(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_mutable_json(child) for child in value]
+    return value
+
+
 class _RecordingScorer:
     def __init__(self, scores: list[float] | None = None) -> None:
         self.scores = scores
@@ -157,8 +165,8 @@ class _RecordingScorer:
         self.candidate_features = None
 
     def score(self, model_input, candidate_features):
-        self.model_input = copy.deepcopy(model_input)
-        self.candidate_features = copy.deepcopy(tuple(candidate_features))
+        self.model_input = model_input
+        self.candidate_features = tuple(candidate_features)
         if self.scores is not None:
             return self.scores
         return [0.0] * len(self.candidate_features)
@@ -202,6 +210,29 @@ class PublicObservationTeacherContractTests(unittest.TestCase):
         self.assertEqual(identity.source_commit, SOURCE_COMMIT)
         self.assertEqual(identity.teacher_configuration_identity_or_digest, _teacher().config.digest)
         self.assertIsNone(identity.label_materializer_identity)
+
+    def test_direct_config_sequences_are_defensively_immutable(self) -> None:
+        scoring = GenericScoringConfigurationV1(
+            default_score=0.0,
+            kind_scores=[("PlayLand", 1.0)],
+        )
+        config = PublicObservationTeacherConfigV1(
+            version=1,
+            schema_identity="argentum-ml-public-observation-teacher-config@v1",
+            teacher_policy_identity="argentum-ml-public-observation-bootstrap-teacher@v1",
+            selection_contract_identity="argentum-ml-policy-selection@v2",
+            policy_rng_contract_identity=POLICY_TIE_RNG_IDENTITY,
+            scorer_identity="argentum-ml-public-observation-generic-kind-scorer@v1",
+            scoring_configuration=scoring,
+            supported_decision_families=["ACTION_CANDIDATES", "FOLDED_DECISION_OPTIONS"],
+            unsupported_decision_policy="NO_LABEL",
+            structured_decision_policy_identity="argentum-ml-structured-no-label@v1",
+        )
+
+        with self.assertRaises((TypeError, AttributeError)):
+            scoring.kind_scores.append(("PassPriority", -1.0))
+        with self.assertRaises((TypeError, AttributeError)):
+            config.supported_decision_families.append("OTHER")
 
 
 class PublicObservationTeacherScoringTests(unittest.TestCase):
@@ -392,6 +423,14 @@ class PublicObservationTeacherSelectionTests(unittest.TestCase):
 
 
 class PublicObservationTeacherLeakageTests(unittest.TestCase):
+    def test_forbidden_target_field_in_policy_channel_fails_closed(self) -> None:
+        request = _flat_request([{"kind": "Same", "targetEntityIds": ["raw-0"]}])
+
+        result = _teacher().select(request, _rng())
+
+        self.assertIsInstance(result, NoLabelTeacherResultV1)
+        self.assertEqual(result.reason, NoLabelReason.TEACHER_INPUT_CONTRACT_VIOLATION)
+
     def test_non_finite_scorer_output_fails_closed(self) -> None:
         request = _flat_request([{"kind": "Same"}, {"kind": "Same"}])
         result = _teacher(scorer=_RecordingScorer([math.nan, 0.0])).select(request, _rng())
@@ -447,7 +486,7 @@ class PublicObservationTeacherLeakageTests(unittest.TestCase):
 
     def test_unknown_flat_domain_family_is_no_label(self) -> None:
         request = _flat_request([{"kind": "Same"}])
-        bad_model_input = copy.deepcopy(request.item.model_input)
+        bad_model_input = _mutable_json(request.item.model_input)
         bad_model_input["domain"]["kind"] = "UNKNOWN_DOMAIN"
         bad_item = VariableDomainItem(
             model_input=bad_model_input,
