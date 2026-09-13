@@ -74,6 +74,7 @@ def _validated_sample(
     *,
     prefix: str = "candidate-",
     unaffordable_ordinal: int | None = None,
+    source_kind_override: str | None = None,
 ):
     sample = _sample()
     source_candidates = []
@@ -82,7 +83,11 @@ def _validated_sample(
     base_model_candidate = sample["input"]["domain"]["candidates"][0]
     for ordinal in range(3):
         source_candidate = copy.deepcopy(base_source_candidate)
-        source_candidate["kind"] = f"{prefix}{ordinal}"
+        source_candidate["kind"] = (
+            source_kind_override
+            if ordinal == 0 and source_kind_override is not None
+            else f"{prefix}{ordinal}"
+        )
         source_candidate["affordable"] = ordinal != unaffordable_ordinal
         source_candidates.append(source_candidate)
         model_candidate = copy.deepcopy(base_model_candidate)
@@ -310,6 +315,15 @@ class InferenceRuntimeTests(unittest.TestCase):
             item_from_second = _item_from_validated_sample(second)
             with self.assertRaises(InferenceError):
                 InferenceRequest.from_validated_sample(first, item_from_second)
+
+    def test_source_candidate_direct_fields_bind_to_model_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            validated = _validated_sample(Path(directory), source_kind_override="source-only-kind")
+            with self.assertRaises(InferenceError):
+                InferenceRequest.from_validated_sample(
+                    validated,
+                    _item_from_validated_sample(validated),
+                )
 
     def test_transport_candidate_ordinal_bijection_is_exact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

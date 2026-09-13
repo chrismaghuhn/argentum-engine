@@ -307,6 +307,15 @@ class DerivedReaderTests(unittest.TestCase):
             self.assertEqual(len(samples), 1)
             self.assertEqual(samples[0]["sourceReference"]["decisionIndex"], 0)
 
+    def test_validated_manifest_state_is_immutable_after_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reader = DerivedArtifactReader.open(_artifact(Path(directory)))
+            with self.assertRaises(TypeError):
+                reader.manifest["sampleCount"] = 99
+            with self.assertRaises(TypeError):
+                reader.manifest["episodeCountsByPartition"]["TRAIN"] = 99
+            reader.close()
+
     def test_accepts_kotlin_materialized_cross_language_golden(self) -> None:
         root = Path(__file__).parent / "fixtures" / "derived_artifact_v1"
         reader = DerivedArtifactReader.open(root)

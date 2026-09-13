@@ -33,6 +33,27 @@ from .provider import ScoreProvider
 
 
 C1_00_STRUCTURED_INFERENCE_TOTALITY = "NO"
+_DIRECT_SOURCE_CANDIDATE_KEYS = frozenset(
+    {
+        "kind",
+        "affordable",
+        "manaCost",
+        "hasXCost",
+        "maxAffordableX",
+        "minTargets",
+        "maxTargets",
+        "sacrificeCount",
+        "sacrificeMinCount",
+        "sacrificeMaxCount",
+        "requiresDamageDistribution",
+        "isManaAbility",
+        "requiresStructuredAction",
+        "requiredPayloadFields",
+        "isDecisionOption",
+        "availableManaColors",
+        "repeatCountDomain",
+    }
+)
 _PROVIDER_FORBIDDEN_KEYS = frozenset(
     {
         "target",
@@ -265,6 +286,7 @@ class InferenceRequest:
         else:
             if item.structured_domain is not None or len(item.candidates) != len(source_candidates):
                 raise InferenceError("flat transport does not match validated source domain")
+            model_candidates = sample_value["input"]["domain"]["candidates"]
             source_candidate_by_ordinal = dict(
                 zip(source_bindings.source_binding_ordinals, source_candidates)
             )
@@ -279,6 +301,11 @@ class InferenceRequest:
                     raise InferenceError("actual source candidates must be present; padding is external")
                 if candidate.executable_support != affordable:
                     raise InferenceError("candidate executable support does not match source authority")
+                _validate_direct_candidate_projection(
+                    source_candidate,
+                    model_candidates[candidate.source_binding_ordinal],
+                    candidate.source_binding_ordinal,
+                )
         instance = object.__new__(cls)
         object.__setattr__(instance, "item", item)
         object.__setattr__(instance, "source_bindings", source_bindings)
@@ -423,6 +450,20 @@ def _derive_exact_source_binding(
             ordinal,
         )
     raise InferenceError("structured source bindings require approved scoreable alternatives")
+
+
+def _validate_direct_candidate_projection(
+    source_candidate: Mapping[str, Any],
+    model_candidate: Any,
+    ordinal: int,
+) -> None:
+    model_candidate = _object(model_candidate, f"input.domain.candidates[{ordinal}]")
+    for key in _DIRECT_SOURCE_CANDIDATE_KEYS:
+        if key in source_candidate:
+            if key not in model_candidate or canonical_json(source_candidate[key]) != canonical_json(model_candidate[key]):
+                raise InferenceError(
+                    f"model candidate {ordinal} does not retain source field {key}"
+                )
 
 
 def _nonnegative_int(value: Any, label: str) -> int:

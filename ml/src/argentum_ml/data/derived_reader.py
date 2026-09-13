@@ -279,6 +279,7 @@ class DerivedArtifactReader:
         if _canonical_bytes(manifest, "manifest.json") != manifest_raw:
             raise DerivedArtifactError("manifest.json is not canonical UTF-8")
         _validate_manifest(manifest)
+        manifest = _deep_freeze_json(manifest)
         _require_regular_file(samples_path, "samples.ndjson")
         samples_stream = samples_path.open("rb")
         try:
@@ -429,6 +430,7 @@ def _validate_sample_file(stream: BinaryIO, manifest: dict[str, Any]) -> None:
     byte_count = 0
     sample_count = 0
     partition_counts = {key: 0 for key in _PARTITIONS}
+    episode_ids_by_partition = {key: set[str]() for key in _PARTITIONS}
     seen_references: set[tuple[str, int]] = set()
     stream.seek(0)
     for raw_line in stream:
@@ -443,6 +445,7 @@ def _validate_sample_file(stream: BinaryIO, manifest: dict[str, Any]) -> None:
         byte_count += len(raw_line)
         sample_count += 1
         partition_counts[sample["partition"]] += 1
+        episode_ids_by_partition[sample["partition"]].add(source["semanticEpisodeId"])
     if byte_count != manifest["samplesByteCount"]:
         raise DerivedArtifactError("samplesByteCount mismatch")
     if sample_count != manifest["sampleCount"]:
@@ -451,6 +454,9 @@ def _validate_sample_file(stream: BinaryIO, manifest: dict[str, Any]) -> None:
         raise DerivedArtifactError("samplesContentDigest mismatch")
     if partition_counts != manifest["sampleCountsByPartition"]:
         raise DerivedArtifactError("sample partition counts mismatch")
+    for partition, episode_ids in episode_ids_by_partition.items():
+        if len(episode_ids) > manifest["episodeCountsByPartition"][partition]:
+            raise DerivedArtifactError("observed episode count exceeds manifest episode count")
 
 
 def _validate_sample(sample: dict[str, Any], manifest: dict[str, Any]) -> None:
