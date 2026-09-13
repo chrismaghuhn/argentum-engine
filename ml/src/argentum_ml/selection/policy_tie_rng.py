@@ -41,7 +41,7 @@ def derive_stream_key(
     policy_seed: int,
     seat_index: int,
     *,
-    policy_rng_identity: str = POLICY_RNG_IDENTITY,
+    policy_rng_identity: str,
 ) -> bytes:
     """Derive the exact 32-byte stream key for one policy instance."""
 
@@ -75,7 +75,7 @@ class PolicyTieRngStateV1:
         policy_seed: int,
         seat_index: int,
         *,
-        policy_rng_identity: str = POLICY_RNG_IDENTITY,
+        policy_rng_identity: str,
     ) -> "PolicyTieRngStateV1":
         return cls(
             stream_key=derive_stream_key(
