@@ -52,6 +52,13 @@ MATERIALIZER_SOURCE_COMMIT=
 MATERIALIZER_CONFIG_DIGEST=
   7d5fbfd0bfe71844fefbd25d3fcce7beac3de8de281d9a2f02cf225aef27364c
 
+TEACHER_POLICY_TIE_SCHEDULE_IDENTITY=
+  argentum-ml-c1-03-teacher-policy-tie-schedule@v1
+SOURCE_POLICY_RNG_IDENTITY=explicit-seed/kotlin-policy-state-v1
+C1_03_TEACHER_POLICY_TIE_SEED=0
+C1_03_INITIAL_POLICY_TIE_CURSOR=0
+LEGACY_A9_POLICY_SEED_REUSED=NO
+
 ALLOWED_OFFLINE_PARTITIONS=[TRAIN,VALIDATION]
 TEST_ROWS_SUBMITTED_TO_TEACHER=0
 FIRST_DIVERGENCE_LIMIT=32
@@ -79,7 +86,16 @@ receives a label, and the Action-family selected candidate has no structured
 payload. C1_00-unbindable rows remain in the useful-coverage denominator.
 Behavior agreement, tie coarseness, and gameplay remain diagnostic unless they
 reveal an already-defined hard failure. Missing evidence produces DEFERRED;
+unexpected C1_00 authority failure produces BLOCKED; other observed Teacher
 trust or ownership failure produces REJECTED.
+
+The source A9 policySeed and legacy policyRngIdentity are provenance-only.
+Offline Teacher tie selection uses the frozen exogenous seed 0 with PolicyTieRng
+V1. One state is created at cursor zero per semanticEpisodeId, Teacher policy
+identity, and roster seat, then carried across that instance's decisions. The
+state is never recreated per decision. Unique maxima and semantic-discriminator
+ties consume zero words; unresolved exact ties consume exactly the words
+returned by Selection V2.
 
 ## File map
 
@@ -111,10 +127,13 @@ decks, or replay code.
 - [ ] **Step 1: Write RED tests for the frozen plan contract.**
 
 Add tests that import the future module and assert the exact public constants
-and immutable plan shape:
+and immutable plan shape. Every test in this file is a method of the
+discoverable `C1_03CharacterizationTests(unittest.TestCase)` class; no
+top-level pytest-style test function is used:
 
 ~~~
 import dataclasses
+import unittest
 
 from argentum_ml.characterization.c1_03 import (
     ALLOWED_OFFLINE_PARTITIONS,
@@ -126,26 +145,29 @@ from argentum_ml.characterization.c1_03 import (
 )
 
 
-def test_plan_is_exactly_dataset_bound_and_uses_no_test_partition():
-    plan = C1_03PlanV1.reference()
-    assert plan.admission_purpose_identity == TEACHER_ADMISSION_PURPOSE_IDENTITY
-    assert plan.source_dataset_id == SOURCE_DATASET_ID
-    assert plan.allowed_partitions == ("TRAIN", "VALIDATION")
-    assert plan.test_rows_submitted_to_teacher == 0
-    assert plan.first_divergence_limit == FIRST_DIVERGENCE_LIMIT
-    assert plan.plan_identity == C1_03_CHARACTERIZATION_PLAN_IDENTITY
+class C1_03CharacterizationTests(unittest.TestCase):
+    def test_plan_is_exactly_dataset_bound_and_uses_no_test_partition(self):
+        plan = C1_03PlanV1.reference()
+        self.assertEqual(plan.admission_purpose_identity, TEACHER_ADMISSION_PURPOSE_IDENTITY)
+        self.assertEqual(plan.source_dataset_id, SOURCE_DATASET_ID)
+        self.assertEqual(plan.allowed_partitions, ("TRAIN", "VALIDATION"))
+        self.assertEqual(plan.test_rows_submitted_to_teacher, 0)
+        self.assertEqual(plan.first_divergence_limit, FIRST_DIVERGENCE_LIMIT)
+        self.assertEqual(plan.teacher_policy_tie_seed, 0)
+        self.assertEqual(plan.initial_policy_tie_cursor, 0)
+        self.assertFalse(plan.legacy_a9_policy_seed_reused)
+        self.assertEqual(plan.first_divergence_per_episode, 1)
+        self.assertEqual(plan.policy_a_executions, 16)
+        self.assertEqual(plan.policy_b_executions, 16)
+        self.assertEqual(plan.plan_identity, C1_03_CHARACTERIZATION_PLAN_IDENTITY)
 
 
-def test_plan_serialization_is_canonical_and_immutable():
-    plan = C1_03PlanV1.reference()
-    exported = plan.to_dict()
-    assert plan.digest == C1_03PlanV1.from_dict(exported).digest
-    try:
-        plan.source_dataset_id = "different"
-    except dataclasses.FrozenInstanceError:
-        pass
-    else:
-        raise AssertionError("C1_03PlanV1 must be immutable")
+    def test_plan_serialization_is_canonical_and_immutable(self):
+        plan = C1_03PlanV1.reference()
+        exported = plan.to_dict()
+        self.assertEqual(plan.digest, C1_03PlanV1.from_dict(exported).digest)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            plan.source_dataset_id = "different"
 ~~~
 
 The test must also assert the exact admission rule: behavior agreement and
@@ -164,6 +186,9 @@ py -3.13 -m unittest discover -s tests -p 'test_c1_03_characterization.py' -v
 Expected result: collection fails with ModuleNotFoundError because the new
 characterization package does not yet exist. Do not create a fallback module
 just to make collection pass.
+
+After implementation the same command must report `Ran N tests` with
+`N > 0`; a zero-test green exit is a verification failure.
 
 - [ ] **Step 3: Implement the immutable plan and identity constants.**
 
@@ -188,9 +213,14 @@ class C1_03PlanV1:
     materializer_implementation_identity: str
     materializer_source_commit: str
     materializer_config_digest: str
+    teacher_policy_tie_schedule_identity: str
+    teacher_policy_tie_seed: int
+    initial_policy_tie_cursor: int
+    legacy_a9_policy_seed_reused: bool
     allowed_partitions: tuple[str, ...]
     test_rows_submitted_to_teacher: int
     first_divergence_limit: int
+    first_divergence_per_episode: int
     gameplay_evaluation_contract_id: str
     policy_a_identity: str
     policy_b_identity: str
@@ -198,6 +228,8 @@ class C1_03PlanV1:
     structured_completion_policy_identity: str
     pairing_keys: int
     pairing_keys_per_cell: int
+    policy_a_executions: int
+    policy_b_executions: int
     total_game_executions: int
 
     @classmethod
@@ -246,11 +278,13 @@ ml/tests/test_derived_reader.py and ml/tests/test_public_observation_teacher.py.
 Do not read the accepted 6.13-GB source in unit tests. Cover these exact cases:
 
 ~~~
-def test_action_candidate_with_any_required_payload_is_c1_00_unbindable(): ...
-def test_action_domain_with_empty_required_payloads_is_exact_bindable(): ...
-def test_folded_option_domain_is_exact_bindable_as_complete_response(): ...
-def test_structured_domain_is_not_a_flat_teacher_row(): ...
-def test_unbindable_row_is_not_counted_as_teacher_no_label(): ...
+C1_03CharacterizationTests.test_action_candidate_with_any_required_payload_is_c1_00_unbindable
+C1_03CharacterizationTests.test_action_domain_with_empty_required_payloads_is_exact_bindable
+C1_03CharacterizationTests.test_folded_option_domain_is_exact_bindable_as_complete_response
+C1_03CharacterizationTests.test_structured_domain_is_not_a_flat_teacher_row
+C1_03CharacterizationTests.test_unbindable_row_is_not_counted_as_teacher_no_label
+C1_03CharacterizationTests.test_unexpected_action_binding_error_is_authority_failure
+C1_03CharacterizationTests.test_folded_binding_error_is_authority_failure_not_unbindable
 ~~~
 
 The action test must set a nonempty requiredPayloadFields on one candidate and
@@ -275,7 +309,11 @@ Implement these immutable result types and functions:
 ~~~
 class FlatEligibility(str, Enum):
     EXACT_BINDABLE = "EXACT_BINDABLE"
-    UNBINDABLE = "UNBINDABLE"
+    EXPECTED_C1_00_UNBINDABLE = "EXPECTED_C1_00_UNBINDABLE"
+
+
+class C1_00AuthorityFailure(ValueError):
+    """Unexpected C1_00 transport or source-binding failure; blocks the run."""
 
 
 @dataclass(frozen=True)
@@ -302,13 +340,19 @@ def teacher_request(
 ~~~
 
 sample_view() may inspect the partition and public input.domain shape. It must
-not inspect target, provenance, or binding values for a TEST sample. For allowed
-flat samples it may inspect the C1_00 binding only to construct the reader-issued
-transport. An ACTION_CANDIDATES sample is UNBINDABLE when the existing
-source-binding factory rejects any candidate with nonempty requiredPayloadFields;
-use the actual InferenceRequest.from_validated_sample path as the final
-authority. A FOLDED_DECISION_OPTIONS sample is bindable when the existing
-factory accepts its complete response candidates.
+not inspect target, provenance, or binding values for a TEST sample. The only
+expected C1_00 unbindable class is an ACTION_CANDIDATES domain with one or more
+source candidates whose requiredPayloadFields list is nonempty. That condition
+is classified before request construction as EXPECTED_C1_00_UNBINDABLE. It is
+not a Teacher NO_LABEL and not a Teacher failure.
+
+For every other allowed flat sample, use the actual
+InferenceRequest.from_validated_sample path as the final authority. A binding
+mismatch, affordable-mask mismatch, invalid source ordinal, projection
+mismatch, malformed required field, or malformed folded response is classified
+as C1_00_AUTHORITY_FAILURE, increments TRUST_FAILURE_COUNT, and blocks the
+characterization. A FOLDED_DECISION_OPTIONS factory error is never converted to
+ordinary unbindable coverage.
 
 Construct the request only through this chain:
 
@@ -326,9 +370,11 @@ to the source domain; do not use a first/sorted candidate. For structured rows,
 construct the empty-candidate VariableDomainItem with its validated structuredType
 and do not call the Teacher scorer.
 
-teacher_request() must raise the existing C1_00 error for an unbindable sample.
-The caller converts that error into an unbindable-row count, never into
-NoLabelTeacherResultV1 and never into a Teacher runtime failure.
+teacher_request() must raise the existing C1_00 error for an expected
+unbindable sample and the caller must distinguish that condition from every
+other InferenceError. Only EXPECTED_C1_00_UNBINDABLE increments
+C1_00_UNBINDABLE_FLAT_ROWS. C1_00_AUTHORITY_FAILURE is a trust failure and
+blocks; it is never hidden as a coverage gap.
 
 - [ ] **Step 4: Add a TEST-exclusion spy test.**
 
@@ -337,12 +383,18 @@ the future partition iterator with a recording Teacher and assert the Teacher
 receives exactly two samples, while the TEST sample contributes no target,
 agreement, selection, or outcome field to the accumulator:
 
+The discoverable method is
+`C1_03CharacterizationTests.test_test_sample_is_not_submitted_or_used_for_admission_metrics`.
+
+The method body must be:
+
 ~~~
-def test_test_sample_is_not_submitted_or_used_for_admission_metrics():
-    summary = run_offline(fixture, teacher=recording_teacher())
-    assert summary.test_rows_submitted_to_teacher == 0
-    assert summary.teacher_invocations == 2
-    assert summary.test_quality_metrics_inspected == 0
+class C1_03CharacterizationTests(unittest.TestCase):
+    def test_test_sample_is_not_submitted_or_used_for_admission_metrics(self):
+        summary = run_offline(fixture, teacher=recording_teacher())
+        self.assertEqual(summary.test_rows_submitted_to_teacher, 0)
+        self.assertEqual(summary.teacher_invocations, 2)
+        self.assertEqual(summary.test_quality_metrics_inspected, 0)
 ~~~
 
 - [ ] **Step 5: Run the focused tests and confirm GREEN.**
@@ -362,16 +414,22 @@ tests must pass.
 Add fixture tests for:
 
 ~~~
-def test_flat_and_overall_yield_use_different_explicit_denominators(): ...
-def test_structured_no_label_is_expected_and_separate_from_flat_failure(): ...
-def test_unique_maximum_consumes_zero_rng_words(): ...
-def test_semantic_discriminator_tie_consumes_zero_rng_words(): ...
-def test_unresolved_exact_tie_reports_policy_rng_words(): ...
-def test_same_kind_cross_kind_and_large_ties_are_distinct(): ...
-def test_candidate_count_and_executable_count_buckets_are_raw_counts(): ...
+C1_03CharacterizationTests.test_flat_and_overall_yield_use_different_explicit_denominators
+C1_03CharacterizationTests.test_structured_no_label_is_expected_and_separate_from_flat_failure
+C1_03CharacterizationTests.test_unique_maximum_consumes_zero_rng_words
+C1_03CharacterizationTests.test_semantic_discriminator_tie_consumes_zero_rng_words
+C1_03CharacterizationTests.test_unresolved_exact_tie_reports_policy_rng_words
+C1_03CharacterizationTests.test_same_kind_cross_kind_and_large_ties_are_distinct
+C1_03CharacterizationTests.test_candidate_count_and_executable_count_buckets_are_raw_counts
+C1_03CharacterizationTests.test_offline_teacher_uses_exogenous_zero_seed_not_source_a9_seed
+C1_03CharacterizationTests.test_policy_tie_rng_state_is_carried_per_episode_and_seat
+C1_03CharacterizationTests.test_unique_and_semantic_ties_leave_cursor_unchanged
+C1_03CharacterizationTests.test_unresolved_tie_advances_carried_cursor_exactly
 ~~~
 
 Use the existing Teacher reference config and PolicyTieRngStateV1 test helpers.
+The focused test count must remain positive and is recorded as
+`FOCUSED_TEST_COUNT` in the final evidence.
 Assert that the same fixture result contains both counts and rates, not a rate
 rounded without its numerator/denominator.
 
@@ -431,11 +489,21 @@ Use the exact candidate buckets 1, 2, 3-5, 6-10, 11-20, 21+ and
 turn buckets 1, 2-3, 4-6, 7-10, 11-20, 21+. Every table key must be emitted
 even when its count is zero so rare families are visible.
 
+Maintain a map of `PolicyTieRngStateV1` values keyed by
+`semanticEpisodeId × TEACHER_POLICY_IDENTITY × roster seat`. On first use of
+one key, create exactly one state with
+`PolicyTieRngStateV1.from_policy_seed(C1_03_TEACHER_POLICY_TIE_SEED, seat_index,
+policy_rng_identity=POLICY_RNG_IDENTITY)` and cursor zero. Pass the current
+state to `teacher.select()` and replace the map value with the returned state.
+Never pass the source A9 policySeed to this constructor, and never construct a
+new state for every decision. A missing or inconsistent perspective-to-roster
+seat mapping is `C1_00_AUTHORITY_FAILURE`/trust failure, not a guessed seat.
+
 For each exact-bindable flat sample:
 
 1. Call teacher.score_vector(request) once and retain the vector in memory only for the current row and a bounded divergence record.
 2. Compute the executable maximum set from the source-authoritative executable mask.
-3. Call teacher.select(request, rng_state) with a PolicyTieRng stream derived from the source policy seed and the acting perspective's roster seat index.
+3. Call teacher.select(request, rng_state) with the exogenous C1_03 Teacher seed `C1_03_TEACHER_POLICY_TIE_SEED` and the acting perspective's roster seat index; carry the returned state for later decisions in the same policy instance.
 4. Classify the row as unique maximum, semantic-discriminator tie, or unresolved PolicyTieRng tie using maximum-set size and returned diagnostic word count.
 5. Count selected kind, family, phase, turn bucket, perspective/deck role, PassPriority/non-PassPriority, candidate and executable counts, and ownership fields.
 
@@ -484,10 +552,10 @@ git commit -m "feat: add C1-03 offline teacher characterization"
 Add tests that assert:
 
 ~~~
-def test_action_selection_requires_empty_payload_for_admission_ownership(): ...
-def test_folded_selection_is_complete_response_owned_without_action_payload_gate(): ...
-def test_unowned_action_payload_is_reported_but_not_admitted(): ...
-def test_selected_action_candidate_payload_is_not_attributed_to_teacher(): ...
+C1_03CharacterizationTests.test_action_selection_requires_empty_payload_for_admission_ownership
+C1_03CharacterizationTests.test_folded_selection_is_complete_response_owned_without_action_payload_gate
+C1_03CharacterizationTests.test_unowned_action_payload_is_reported_but_not_admitted
+C1_03CharacterizationTests.test_selected_action_candidate_payload_is_not_attributed_to_teacher
 ~~~
 
 The Action test must exercise all four required conditions:
@@ -607,12 +675,12 @@ divergence output, preserve aliases, and enforce family-specific ownership.
 Add tests for:
 
 ~~~
-def test_offline_runner_skips_test_before_target_or_teacher_access(): ...
-def test_offline_runner_uses_reader_issued_samples_only(): ...
-def test_flat_no_label_is_a_failure_but_structured_no_label_is_expected(): ...
-def test_admission_defers_when_a_supported_family_has_no_train_or_validation_evidence(): ...
-def test_admission_rejects_any_hard_trust_or_ownership_failure(): ...
-def test_admission_admits_only_exact_bindable_teacher_owned_flat_rows(): ...
+C1_03CharacterizationTests.test_offline_runner_skips_test_before_target_or_teacher_access
+C1_03CharacterizationTests.test_offline_runner_uses_reader_issued_samples_only
+C1_03CharacterizationTests.test_flat_no_label_is_a_failure_but_structured_no_label_is_expected
+C1_03CharacterizationTests.test_admission_defers_when_a_supported_family_has_no_train_or_validation_evidence
+C1_03CharacterizationTests.test_admission_rejects_any_hard_trust_or_ownership_failure
+C1_03CharacterizationTests.test_admission_admits_only_exact_bindable_teacher_owned_flat_rows
 ~~~
 
 The test for a valid admission fixture must still assert:
@@ -658,11 +726,18 @@ PRIVACY_FAILURE_COUNT
 TRUST_FAILURE_COUNT
 TEACHER_FLAT_FAILURE_COUNT
 C1_00_UNBINDABLE_FLAT_ROWS
+C1_00_AUTHORITY_FAILURE_COUNT
 ~~~
 
 It must not catch a malformed reader artifact as a row-level failure. Reader
 errors abort the run with a blocked result and no partial admission claim.
-Teacher failures on supported flat rows are counted and produce rejection.
+Only ACTION_CANDIDATES domains with nonempty candidate.requiredPayloadFields
+increment C1_00_UNBINDABLE_FLAT_ROWS. Any other InferenceError, including a
+binding mismatch, affordable-mask mismatch, invalid source ordinal, projection
+mismatch, malformed required field, or malformed folded response, increments
+C1_00_AUTHORITY_FAILURE_COUNT and TRUST_FAILURE_COUNT and produces BLOCKED.
+Teacher failures on supported exact-bindable flat rows are counted and produce
+REJECTED.
 Structured NO_LABEL is expected. C1_00-unbindable rows are counted in the
 overall useful denominator and never converted to a Teacher NO_LABEL.
 
@@ -681,7 +756,7 @@ def decide_admission(
 Return exactly one of ADMITTED_LIMITED_FLAT_REFERENCE_BOOTSTRAP, REJECTED,
 DEFERRED, or BLOCKED using this order:
 
-1. BLOCKED for missing/invalid source or derived authority, reader failure, or an unavailable required evaluation dependency.
+1. BLOCKED for missing/invalid source or derived authority, reader failure, C1_00_AUTHORITY_FAILURE, or an unavailable required evaluation dependency.
 2. REJECTED for any hard trust, privacy, candidate, selection, flat Teacher, or Action-ownership failure.
 3. DEFERRED when either supported family lacks exact-bindable evidence in TRAIN or VALIDATION, or the permitted characterization population is empty.
 4. ADMITTED_LIMITED_FLAT_REFERENCE_BOOTSTRAP when all hard gates and evidence-sufficiency conditions pass. GAMEPLAY_CHARACTERIZATION=BLOCKED alone does not enter step 2.
@@ -708,11 +783,11 @@ state tests must pass.
 Add tests that call the renderer with a small summary and assert:
 
 ~~~
-def test_json_summary_contains_exact_identity_binding(): ...
-def test_markdown_report_contains_required_raw_counts_and_status_fields(): ...
-def test_report_contains_no_local_absolute_paths(): ...
-def test_report_contains_no_teacher_labels_or_test_outcomes(): ...
-def test_report_serialization_is_deterministic(): ...
+C1_03CharacterizationTests.test_json_summary_contains_exact_identity_binding
+C1_03CharacterizationTests.test_markdown_report_contains_required_raw_counts_and_status_fields
+C1_03CharacterizationTests.test_report_contains_no_local_absolute_paths
+C1_03CharacterizationTests.test_report_contains_no_teacher_labels_or_test_outcomes
+C1_03CharacterizationTests.test_report_serialization_is_deterministic
 ~~~
 
 The deterministic test must render the same summary twice and compare bytes.
@@ -741,12 +816,10 @@ The Markdown report must contain at least:
 ~~~
 TASK=C1_03_PUBLIC_OBSERVATION_TEACHER_QUALITY_AND_ADMISSION
 BASE=<exact>
-HEAD=<exact>
-REMOTE_HEAD=<exact>
-REMOTE_HEAD_MATCH=YES/NO
 WORKTREE_CLEAN=YES/NO
 
 SOURCE_DATASET_ID=<exact>
+MEASUREMENT_HEAD=<exact implementation commit used for characterization>
 TRAIN_EPISODES=<n>
 VALIDATION_EPISODES=<n>
 TEST_EPISODES_USED_FOR_SELECTION=0
@@ -769,13 +842,18 @@ POLICY_TIE_RNG_COUNT=<n>
 PASS_SELECTION_COUNT=<n>
 NON_PASS_SELECTION_COUNT=<n>
 TRUST_FAILURE_COUNT=0/<n>
+FOCUSED_TEST_COUNT=<positive integer>
+TEACHER_POLICY_TIE_SCHEDULE_IDENTITY=argentum-ml-c1-03-teacher-policy-tie-schedule@v1
+SOURCE_POLICY_RNG_IDENTITY=explicit-seed/kotlin-policy-state-v1
+C1_03_TEACHER_POLICY_TIE_SEED=0
+C1_03_INITIAL_POLICY_TIE_CURSOR=0
+LEGACY_A9_POLICY_SEED_REUSED=NO
 ~~~
 
-The report's HEAD field is the exact source commit used for characterization;
-the later evidence commit is recorded separately as REPORT_COMMIT so the
-report does not contain a self-referential commit hash. REMOTE_HEAD is the
-branch head read back after push, and REMOTE_HEAD_MATCH states whether it is
-equal to the measurement HEAD.
+The report uses `MEASUREMENT_HEAD` for the exact implementation commit used for
+characterization. It does not attempt to embed a self-referential report
+commit. The final evidence commit and remote branch head are verified
+externally at the exact-SHA handoff.
 
 The final status block must include all required C1_03 fields, including
 STRUCTURED_BOOTSTRAP_ADMITTED=NO,
