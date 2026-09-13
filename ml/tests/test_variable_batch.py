@@ -92,6 +92,55 @@ class VariableBatchTests(unittest.TestCase):
         self.assertFalse(hasattr(VariableDomainBatch, "top_k"))
         self.assertFalse(hasattr(VariableDomainBatch, "max_candidates"))
 
+    def test_defensively_freezes_original_and_published_nested_json(self) -> None:
+        feature_view = {"nested": {"values": [1, {"kind": "original"}]}}
+        model_input = {
+            "decisionContext": {},
+            "observation": {"nested": [{"value": 1}]},
+            "domain": {"kind": "ACTION_CANDIDATES", "candidates": [feature_view]},
+        }
+        structured = {"type": "targets", "requirements": [{"candidates": ["a"]}]}
+        candidate = CandidateFeature(feature_view, 0, True, True)
+        item = VariableDomainItem(
+            model_input=model_input,
+            candidates=(candidate,),
+            structured_domain=None,
+            target_binding_ordinal=0,
+        )
+
+        feature_view["nested"]["values"].append(2)
+        model_input["domain"]["candidates"].clear()
+        structured["requirements"].append({"candidates": ["b"]})
+
+        self.assertEqual(item.candidates[0].feature_view["nested"]["values"], [1, {"kind": "original"}])
+        self.assertEqual(len(item.model_input["domain"]["candidates"]), 1)
+        with self.assertRaises(TypeError):
+            item.candidates[0].feature_view["nested"]["values"].append(3)
+        with self.assertRaises(TypeError):
+            item.model_input["domain"]["candidates"].clear()
+
+    def test_structured_domain_and_permutation_subtrees_are_immutable(self) -> None:
+        structured = {"type": "targets", "version": 2, "requirements": [{"candidates": ["a"]}]}
+        item = VariableDomainItem(
+            model_input={
+                "decisionContext": {},
+                "observation": {},
+                "domain": {"kind": "STRUCTURED_DECISION", "structuredType": structured},
+            },
+            candidates=(),
+            structured_domain=structured,
+            target_binding_ordinal=None,
+        )
+        with self.assertRaises(TypeError):
+            item.structured_domain["requirements"].append({"candidates": ["b"]})
+
+        flat = _flat_item(2, target=1)
+        permuted = flat.permute_candidates((1, 0))
+        with self.assertRaises(TypeError):
+            permuted.model_input["domain"]["candidates"][0]["kind"] = "mutated"
+        self.assertEqual(flat.candidates[0].feature_view["kind"], "kind-0")
+        self.assertEqual(permuted.candidates[0].feature_view["kind"], "kind-1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,54 @@ from typing import Any, Iterable, Sequence
 from ..contracts.canonical_json import canonical_json
 
 
+class _FrozenDict(dict[str, Any]):
+    """Dict-compatible immutable JSON object used at the public boundary."""
+
+    def __init__(self, values: dict[str, Any]) -> None:
+        dict.__init__(self, values)
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("JSON tree is immutable")
+
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _immutable
+
+    def __ior__(self, other: Any) -> "_FrozenDict":
+        self._immutable()
+        return self
+
+
+class _FrozenList(list[Any]):
+    """List-compatible immutable JSON array used at the public boundary."""
+
+    def __init__(self, values: list[Any]) -> None:
+        list.__init__(self, values)
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("JSON tree is immutable")
+
+    __setitem__ = __delitem__ = append = clear = extend = insert = pop = remove = reverse = sort = _immutable
+
+    def __iadd__(self, other: Any) -> "_FrozenList":
+        self._immutable()
+        return self
+
+    def __imul__(self, other: Any) -> "_FrozenList":
+        self._immutable()
+        return self
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _FrozenDict({key: _deep_freeze(child) for key, child in value.items()})
+    if isinstance(value, list):
+        return _FrozenList([_deep_freeze(child) for child in value])
+    if isinstance(value, tuple):
+        return tuple(_deep_freeze(child) for child in value)
+    return value
+
+
 @dataclass(frozen=True)
 class CandidateFeature:
     feature_view: dict[str, Any]
@@ -22,7 +70,9 @@ class CandidateFeature:
     def __post_init__(self) -> None:
         if not isinstance(self.feature_view, dict):
             raise ValueError("candidate feature_view must be an object")
-        canonical_json(self.feature_view)
+        frozen_feature_view = _deep_freeze(self.feature_view)
+        canonical_json(frozen_feature_view)
+        object.__setattr__(self, "feature_view", frozen_feature_view)
         if not isinstance(self.source_binding_ordinal, int) or isinstance(self.source_binding_ordinal, bool):
             raise ValueError("source_binding_ordinal must be an integer")
         if self.source_binding_ordinal < 0:
@@ -43,7 +93,9 @@ class VariableDomainItem:
     def __post_init__(self) -> None:
         if not isinstance(self.model_input, dict):
             raise ValueError("model_input must be an object")
-        canonical_json(self.model_input)
+        frozen_model_input = _deep_freeze(self.model_input)
+        canonical_json(frozen_model_input)
+        object.__setattr__(self, "model_input", frozen_model_input)
         candidates = tuple(self.candidates)
         object.__setattr__(self, "candidates", candidates)
         if any(not isinstance(candidate, CandidateFeature) for candidate in candidates):
@@ -54,7 +106,9 @@ class VariableDomainItem:
         if self.structured_domain is not None:
             if not isinstance(self.structured_domain, dict):
                 raise ValueError("structured_domain must be an object")
-            canonical_json(self.structured_domain)
+            frozen_structured_domain = _deep_freeze(self.structured_domain)
+            canonical_json(frozen_structured_domain)
+            object.__setattr__(self, "structured_domain", frozen_structured_domain)
             if candidates:
                 raise ValueError("structured items cannot carry flat candidates")
             if self.target_binding_ordinal is not None:
