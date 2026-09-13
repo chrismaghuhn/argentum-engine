@@ -95,7 +95,7 @@ domain, provenance or identity failure cannot win on gameplay or source-agreemen
 | `DeterministicExternalPolicy` / `b2-a9-deterministic-external-policy@v1` | `TrainingObservation` + `DeterministicPolicyState` -> `SemanticChoice` | `ELIGIBLE_FOR_CHARACTERIZATION` -> `REJECT_RUNTIME_ID_DEPENDENCE`, `REJECT_MISSING_PROVENANCE` | Test-only policy has no `GameState`/registry dependency (`gym/src/test/kotlin/com/wingedsheep/gym/EnvironmentV1ExternalPolicy.kt`); focused probes show raw-ID selection; no immutable Teacher configuration or label-materializer identity exists. |
 | `EngineAiPlayerController` / `AIPlayer` / `Strategist` | `GameState` -> engine `GameAction`/`DecisionResponse` | `REJECT_RAW_GAME_STATE`, `REJECT_HIDDEN_INFORMATION`, `REJECT_HIDDEN_POLICY` | `EngineAiPlayerController` requires an unmasked `GameState` provider and delegates to `AIPlayer`; `AIPlayer`/`Strategist` simulate and evaluate `GameState`, including determinization/rollouts. |
 | `PlayoutPolicy`, `PlayoutEngine`, rollout evaluators | `GameState` plus simulated candidate states -> scores/actions | `REJECT_RAW_GAME_STATE`, `REJECT_HIDDEN_INFORMATION`, `REJECT_HIDDEN_POLICY` | Rollout code is a Rules-state simulation path, not an acting-player observation-only Teacher. Perfect-information search is not authorized by C0_05. |
-| `LlmAiPlayerController` and decision handlers | `ClientGameState`, logs and LLM response -> `ActionResponse` | `REJECT_RAW_GAME_STATE`, `REJECT_HIDDEN_POLICY`, `REJECT_UNCONTROLLED_STRUCTURED_CHOICES` | `GameStateFormatter` constructs a full state prompt; the controller retries parse failures and may delegate to an engine-AI fallback or first action. It has no C0_05 label/provenance boundary. |
+| `LlmAiPlayerController` and decision handlers | `ClientGameState`, logs and LLM response -> `ActionResponse` | `REJECT_NON_C0_TEACHER_INPUT_CONTRACT`, `REJECT_DOMAIN_FILTERING`, `REJECT_UNCONTROLLED_STRUCTURED_CHOICES`, `REJECT_FALLBACK_POLICY` | It consumes `ClientGameState` rather than raw `GameState`, but formats a non-C0 teacher input, filters mana actions, auto-resolves some decisions, handles combat heuristically, retries parse failures and may fall back to engine AI, pass or the first action. It has no C0_05 label/provenance boundary. |
 | `ApprenticeArtifact` / `ApprenticeArtifactLoader` / legacy evaluation weights | legacy coefficients -> board evaluation | `REJECT_MISSING_PROVENANCE`, `REJECT_UNSUPPORTED_DECISION_COVERAGE` | Legacy set-scoped artifact has no C0 checkpoint/Teacher identity, model-facing domain binding or complete structured-response output. Its loader is explicitly a legacy fallback surface. |
 | Draft/deck-build advisors (`DraftAdvisor`, `DeckBuildAdvisor`, heuristic/draftsim advisors) | card pool/deck context -> pick/build suggestions | `REJECT_UNSUPPORTED_DECISION_COVERAGE` | These are not Environment V1 action/response policies and do not own complete legal domains or structured continuations. |
 | Focused Gym test policies (`B0HarnessTimeoutPolicy`, payment/diagnostic policies) | narrow test fixtures -> one local test decision | `REJECT_UNSUPPORTED_DECISION_COVERAGE` | Test-only witnesses characterize individual boundaries; none is a complete public-observation Teacher for the locked curriculum. |
@@ -209,8 +209,8 @@ The result below distinguishes inherited A9 source-trust evidence from C1_01 Tea
 | `TEACHER_DOMAIN_BINDING_VALID` | `YES_FOR_ADMITTED_A9_RECORDS` | A9 source evidence reports complete-domain membership and zero chosen-outside-domain records; the future label materializer is not present. |
 | `TEACHER_FAILURE_SEMANTICS_VALID` | `NO` | The policy has `SemanticChoice.Gap`, but the existing A9 harness aborts on a gap rather than emitting a versioned derived `NO_LABEL` artifact. |
 | `TEACHER_OUTPUT_IN_COMPLETE_DOMAIN` | `YES_FOR_ADMITTED_A9_RECORDS` | Accepted source records crossed A5/A6/A7 with exact chosen-input binding. |
-| `TEACHER_STRUCTURED_DECISION_OWNERSHIP_VALID` | `NO_FOR_ADMISSION` | A9's public-only harness still auto-selects policy-relevant subchoices (sorted/first targets and cards, greedy distributions, default replacement options, explicit payment construction and sorted combat edges); no separately identified Teacher owns those components. |
-| `TEACHER_NO_HIDDEN_AUTOCOMPLETION` | `NO_FOR_ADMISSION` | No hidden `GameState` or native AutoPay path is used, but A9's heuristic/first-item structured completion is still disallowed as admitted Teacher totality. |
+| `TEACHER_STRUCTURED_DECISION_OWNERSHIP_VALID` | `NOT_PROVEN_FOR_ADMISSION` | A9 directly invokes public-domain structured procedures, so ownership by the identified source policy is observed; C1_01 does not have a versioned label-producing boundary proving total coverage of every policy-relevant structured component. |
+| `TEACHER_NO_HIDDEN_AUTOCOMPLETION` | `NO_HIDDEN_ENGINE_COMPLETION_OBSERVED` | A9 does not delegate the observed structured choices to hidden `GameState`, native AutoPay or another controller. Its public heuristic choices remain a known policy bias/quality issue, not a hidden-policy finding by themselves. |
 | `TEACHER_NO_DOMAIN_TRUNCATION` | `YES_WITHIN_A9_HARNESS` | The source harness retains and audits the complete public domain; no top-K source list or hidden candidate repair was introduced. |
 | `TEACHER_NO_FIRST_LEGAL_FALLBACK` | `YES_FOR_FAILURE_PATH` | An all-unaffordable domain returns `Gap`; A9's ordinary first-after-policy-order choice is behavior policy logic, not a failure repair. Its raw-ID tie ordering is nevertheless disqualifying. |
 | `TEACHER_NO_SOURCE_SUBSTITUTION_ON_FAILURE` | `YES_FOR_FOCUSED_GAP_PATH` | Unsupported payload/incomplete structured domain produces `Gap` and no source action. No source choice is substituted. |
@@ -222,16 +222,21 @@ The result below distinguishes inherited A9 source-trust evidence from C1_01 Tea
 | `TEACHER_LABEL_MATERIALIZER_IDENTITY_COMPLETE` | `NO` | No current C1_01 label materializer identity exists. |
 | `TEACHER_CONFIGURATION_IDENTITY_COMPLETE` | `NO` | No immutable digest exists for the A9 matrix/policy configuration as a Teacher identity. |
 
-The first hard admission failures are `TEACHER_RUNTIME_ID_RENAMING_SAFETY`,
-`TEACHER_STRUCTURED_DECISION_OWNERSHIP_VALID`, `TEACHER_NO_HIDDEN_AUTOCOMPLETION`,
-`TEACHER_FAILURE_SEMANTICS_VALID`, `TEACHER_LABEL_MATERIALIZER_IDENTITY_COMPLETE` and
-`TEACHER_CONFIGURATION_IDENTITY_COMPLETE`. Quality comparison stops at that boundary.
+The decisive hard admission failures are `TEACHER_RUNTIME_ID_RENAMING_SAFETY`,
+`TEACHER_CANDIDATE_PERMUTATION_SAFETY`, `TEACHER_FAILURE_SEMANTICS_VALID`,
+`TEACHER_LABEL_MATERIALIZER_IDENTITY_COMPLETE` and `TEACHER_CONFIGURATION_IDENTITY_COMPLETE`.
+Structured ownership remains `NOT_PROVEN_FOR_ADMISSION`, while no hidden-engine completion was
+observed. Quality comparison stops at the decisive hard-gate boundary.
 
-### Structured-choice disposition
+### Structured-choice ownership characterization
 
-The A9 functions are valid source-harness mechanics for crossing the bounded A9 run, but they are
-not evidence of an admitted Teacher controlling every subsequent policy-relevant choice. The
-current implementation uses public-domain procedures including:
+The A9 functions are directly part of the identified `DeterministicExternalPolicy` and consume
+the published public domains. They therefore represent A9 policy behavior, not a separate hidden
+engine policy. The characterization does not promote that behavior to a fully admitted Teacher,
+because no versioned label-producing boundary proves total structured coverage or emits the
+corresponding derived labels.
+
+The current implementation uses public-domain procedures including:
 
 ```text
 targetRequirementChoices / public target selection -> sorted EntityId + first/minimum choices
@@ -243,11 +248,11 @@ CombatResolutionDomain -> sorted edge IDs + supplied/default amounts
 paymentPlanV3FromPublic -> public plan construction rather than a separately identified Teacher label
 ```
 
-Those procedures do not read hidden state, but they are automatic heuristic completion inside the
-source policy. C0_05 requires the admitted Teacher/model path to own the root and every subsequent
-structured component, with unsupported or incomplete components producing `NO_LABEL`. The A9
-harness instead aborts on `SemanticChoice.Gap` and has no versioned label materializer, so these
-source-harness completions remain a hard admission failure.
+Those procedures do not read hidden state or invoke native AutoPay. They are a known deterministic
+heuristic policy profile and must be retained as quality/bias evidence. Unsupported or incomplete
+inputs still require `NO_LABEL` at a future label boundary; the current A9 harness aborts on
+`SemanticChoice.Gap` and has no versioned label materializer. Accordingly, structured ownership is
+not proven for admission, but it is not independently classified as a hidden-policy violation.
 
 ## 7. Required symmetry characterization
 
@@ -303,7 +308,7 @@ not run after the hard gate failed.
 | `NO_LABEL` rate | `NOT_CHARACTERIZED` | A9 harness aborts on `Gap`; no derived label artifact exists. |
 | decision-family coverage | Serialized natural families plus A8 targeted/static closure listed above | Coverage is source-surface evidence, not proof of a total admitted Teacher. |
 | domain-size distribution | Existing A9 artifacts do not provide a Teacher-selection report by size | `NOT_RUN`; no new scan was started after the hard failure. |
-| structured-choice coverage | A9 source branches and A8 closure are present; focused target branch exercised | `NOT_ADMISSION_TOTAL`; full label materializer is absent. |
+| structured-choice coverage | A9 directly owns the observed public-domain structured choices; focused target branch exercised | `NOT_PROVEN_FOR_ADMISSION` for total derived-label coverage; full label materializer is absent. |
 | source-choice agreement | `NOT_RUN` | There is no second Teacher or independent quality reference; source choice remains factual TrajectoryV1 data. |
 | action/pass distribution | Existing serialized action/chosen-kind counts above | Diagnostic source behavior only. |
 | episode closure/game length | `5 GAME_TERMINAL`, `59 INTERRUPTED`; per-episode length not used | Closure is factual lifecycle evidence, not strategic strength. |
@@ -365,22 +370,36 @@ stopped on a public synthetic hard-gate reproducer before any natural-partition 
 ## 11. Follow-up dependency, not started
 
 The smallest generic follow-up is a separately authorized
-`PUBLIC_OBSERVATION_TEACHER_LABEL_MATERIALIZER_V1` implementation slice. It must:
+`C1_02_PUBLIC_OBSERVATION_BOOTSTRAP_TEACHER_V1` implementation slice. It must first define a
+generic public-observation Teacher/selector:
 
 ```text
-consume only ACTING_PLAYER_LEGAL_INFORMATION_SET
-retain the complete source domain and exact source binding
-own every supported structured response component
-emit NO_LABEL on unsupported/failing/incomplete cases
-carry an immutable configuration identity/digest
-carry an immutable label-materializer identity
-avoid raw runtime-ID deterministic preference
-use Selection V2 / PolicyTieRng V1-compatible symmetry handling where needed
-preserve TrajectoryV1 and the C0_02 split unchanged
+PublicObservationTeacherV1
+    ACTING_PLAYER_LEGAL_INFORMATION_SET + complete current domain
+    -> exact semantic action/response or NO_LABEL
+
+Teacher policy responsibilities:
+    own the root choice and every policy-relevant structured component
+    preserve complete public domains and exact source bindings
+    avoid raw runtime-ID deterministic preference
+    use Selection V2 / PolicyTieRng V1-compatible symmetry handling where needed
+    return NO_LABEL for unsupported/failing/incomplete choices
 ```
 
-That follow-up must have its own RED -> implementation -> independent-review boundary. It was not
-implemented, and no A9 policy identity is silently changed to claim that it already exists.
+The label materialization boundary is separate and must not choose policy values:
+
+```text
+BootstrapLabelMaterializerV1
+    admitted Teacher result
+    + exact source decision/domain
+    + Teacher/source/materializer provenance
+    -> immutable derived bootstrap label artifact
+```
+
+Whether the Teacher and materializer land in one reviewed PR or two sequential slices is a next
+design-review decision. Neither was implemented here, and no A9 policy identity is silently changed
+to claim that either already exists. The follow-up must have its own RED -> implementation ->
+independent-review boundary.
 
 ## 12. Required C1_01 status
 
@@ -406,6 +425,7 @@ P2=0
 
 C1_01_IMPLEMENTATION_PASS=YES
 C1_01_READY_FOR_ACCEPTANCE=YES
+C1_01_CODE_REVIEW_PASS=NO
 C1_01_FINAL_ACCEPTANCE_PASS=NO
 
 TRAINING_AUTHORIZED=NO
@@ -418,6 +438,7 @@ LARGE_CORPUS_GENERATION_AUTHORIZED=NO
 
 NEXT_TASK_STARTED=NO
 STOP_FOR_EXACT_SHA_REVIEW=YES
+HOSTED_CI=NOT_RUN
 ```
 
 The final acceptance field remains `NO` until the pushed exact commit is independently reviewed.

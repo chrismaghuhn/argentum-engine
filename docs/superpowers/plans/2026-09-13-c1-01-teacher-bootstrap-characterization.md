@@ -27,7 +27,7 @@
 
 - [x] Verify `origin/main` is `dfdc10c3e5f86523fb79737f57ddfee3f0e466a6`, keep `upstream/main` reference-only, and confirm the working branch starts at that SHA.
 - [x] Record the pre-existing dirty `rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/stack/StackResolver.kt` change as out of scope; do not stage, edit, stash, reset, or remove it.
-- [x] Classify the existing candidates in the eventual report before comparing quality: A9 `DeterministicExternalPolicy` is eligible for characterization; engine AI, rollout, LLM and legacy Apprentice paths are rejected for raw/hidden state or missing C0 provenance; deck/draft advisors and narrow test policies are rejected for unsupported decision coverage.
+- [x] Classify the existing candidates in the eventual report before comparing quality: A9 `DeterministicExternalPolicy` is eligible for characterization; engine AI and rollout/search are rejected for raw/hidden state, LLM control is rejected for a non-C0 input contract/domain filtering/fallback policy, and legacy Apprentice paths are rejected for missing C0 provenance; deck/draft advisors and narrow test policies are rejected for unsupported decision coverage.
 - [x] Reuse the accepted A9 source evidence (`64` trusted episodes, `125471` decisions, `5` terminal, `59` interrupted, `4/4` deterministic spot checks and the serialized decision-family inventory) as source/trust evidence only, not as Teacher-quality evidence.
 
 Run:
@@ -85,7 +85,7 @@ Report the wrapper result as `JUST_WRAPPER=BLOCKED` and the native result separa
 - [x] Include the complete candidate classification table and hard-gate table. Distinguish inherited source-trust PASS values from newly characterized Teacher-quality and Selection-V2 values; do not mark an unexecuted metric PASS.
 - [x] Record `FEATURE_IDENTICAL_SYMMETRY_COUNT`, `SOURCE_DISTINCT_SYMMETRY_COUNT`, runtime-ID rename result, candidate-permutation result, reproducibility result, structured-family coverage, failure/NO_LABEL behavior, action/pending distributions, closure distribution and the fact that no final-TEST outcome was used to select a Teacher.
 - [x] State the strategic boundary precisely: no gameplay-strength or optimality claim is made because A9 fails the hard runtime-identity/Selection-V2 compatibility gate before quality comparison. The report may still describe A9's bounded source behavior, but it must not call it expert, strong or optimal.
-- [x] End with Outcome B: `FIRST_C1_TEACHER_SELECTION=NONE`, `TEACHER_BOOTSTRAP_ADMITTED=NO`, `C1_01_CHARACTERIZATION_PASS=YES`, and the smallest follow-up: a separately authorized generic perspective-safe, complete-domain Teacher/label materializer with explicit `NO_LABEL`, immutable configuration provenance, and Selection-V2-compatible symmetry handling.
+- [x] End with Outcome B: `FIRST_C1_TEACHER_SELECTION=NONE`, `TEACHER_BOOTSTRAP_ADMITTED=NO`, `C1_01_CHARACTERIZATION_PASS=YES`, and the smallest follow-up `C1_02_PUBLIC_OBSERVATION_BOOTSTRAP_TEACHER_V1`, keeping `PublicObservationTeacherV1` selection separate from `BootstrapLabelMaterializerV1` artifact construction.
 - [x] Preserve all C1/C0 training prohibitions and state `TRAJECTORY_V1_MUTATED=NO`; do not add a new Teacher implementation or alter any source artifact.
 
 ### Task 4: Verify scope, review the final diff, and deliver the branch
@@ -98,9 +98,9 @@ Report the wrapper result as `JUST_WRAPPER=BLOCKED` and the native result separa
 - [x] Run `git diff --check` and the focused test class; keep wrapper, native fallback, test, and unrun-suite statuses separate.
 - [x] Independently inspect the final diff for raw-ID preference, candidate truncation, hidden-state access, structured auto-completion, first/legal fallback, source substitution, provenance gaps, TEST leakage, TrajectoryV1 mutation and overstated quality claims.
 - [x] Confirm the scope union with `git diff --name-only origin/main...HEAD` plus `git ls-files --others --exclude-standard`; only the plan, characterization test and C1_01 report may be present.
-- [ ] Commit the complete characterization as `c1: characterize bootstrap teacher candidates`.
-- [ ] Push only `chris/c1-01-teacher-bootstrap-characterization-20260913` to the writable `origin`; do not merge or create a PR.
-- [ ] Stop after the pushed exact SHA and report `STOP_FOR_EXACT_SHA_REVIEW=YES`, with `C1_01_FINAL_ACCEPTANCE_PASS=NO` until independent review.
+- [x] Commit the complete characterization as `c1: characterize bootstrap teacher candidates`; apply any review-only documentation correction in a follow-up commit without changing the test evidence.
+- [x] Push only `chris/c1-01-teacher-bootstrap-characterization-20260913` to the writable `origin`; do not merge or create a PR.
+- [x] Stop after the pushed exact SHA and report `STOP_FOR_EXACT_SHA_REVIEW=YES`, with `C1_01_FINAL_ACCEPTANCE_PASS=NO` until independent review.
 
 The final staged boundary also uses `git diff --cached --check` and
 `git diff --cached --name-only` before the standalone commit.
