@@ -42,6 +42,10 @@ from argentum_ml.characterization.c1_03 import (
     teacher_request,
     turn_bucket,
     run_offline,
+    decide_admission,
+    render_markdown,
+    write_report,
+    write_summary,
 )
 from argentum_ml.selection.selection_v2 import ExactSemanticSourceBinding
 from tests.test_derived_reader import _artifact, _sample, _sha
@@ -456,6 +460,8 @@ class C1_03CharacterizationTests(unittest.TestCase):
         self.assertEqual(plan.digest, C1_03PlanV1.from_dict(exported).digest)
         with self.assertRaises(dataclasses.FrozenInstanceError):
             plan.source_dataset_id = "different"
+        exported["teacherPolicyTieSeed"] = 1
+        self.assertNotEqual(plan.digest, C1_03PlanV1.from_dict(exported).digest)
 
     def test_action_candidate_with_any_required_payload_is_c1_00_unbindable(self):
         validated = self._validated(self._unbindable_action_sample())
@@ -668,6 +674,183 @@ class C1_03CharacterizationTests(unittest.TestCase):
         self.assertEqual(summary.tie_counts["DIFFERENT_KIND_MAX_TIE_COUNT"], 2)
         self.assertEqual(summary.tie_counts["LARGE_TIED_MAX_COUNT"], 1)
         self.assertGreater(summary.tie_counts["POLICY_TIE_RNG_WORDS_CONSUMED"], 0)
+
+    def _complete_admission_summary(self):
+        train_id = _episode_id_for("TRAIN", 700)
+        validation_id = _episode_id_for("VALIDATION", 800)
+        samples = [
+            _flat_sample(["PlayLand"], episode_id=train_id),
+            _flat_sample(
+                ["FoldedOption"],
+                episode_id=train_id,
+                decision_index=1,
+                folded=True,
+            ),
+            _flat_sample(["PlayLand"], episode_id=validation_id),
+            _flat_sample(
+                ["FoldedOption"],
+                episode_id=validation_id,
+                decision_index=1,
+                folded=True,
+            ),
+        ]
+        directory = tempfile.TemporaryDirectory()
+        artifact = _artifact_for_samples(Path(directory.name), samples)
+        summary = run_offline(
+            artifact,
+            plan=_fixture_plan(),
+            teacher=_c1_teacher(),
+        )
+        directory.cleanup()
+        return summary
+
+    def test_admission_is_limited_to_exact_bindable_flat_evidence(self):
+        summary = self._complete_admission_summary()
+        self.assertEqual(summary.admission_result, "ADMITTED_LIMITED_FLAT_REFERENCE_BOOTSTRAP")
+        self.assertEqual(decide_admission(summary, gameplay_status="BLOCKED"), "ADMITTED_LIMITED_FLAT_REFERENCE_BOOTSTRAP")
+
+    def test_admission_rejects_ownership_failure_and_blocks_c1_authority_failure(self):
+        summary = self._complete_admission_summary()
+        rejected_failures = dict(summary.failure_counts)
+        rejected_failures["ACTION_OWNERSHIP_FAILURE_COUNT"] = 1
+        rejected = dataclasses.replace(summary, failure_counts=rejected_failures)
+        self.assertEqual(decide_admission(rejected, gameplay_status="NOT_RUN"), "REJECTED")
+
+        blocked_failures = dict(summary.failure_counts)
+        blocked_failures["C1_00_AUTHORITY_FAILURE_COUNT"] = 1
+        blocked = dataclasses.replace(summary, failure_counts=blocked_failures)
+        self.assertEqual(decide_admission(blocked, gameplay_status="NOT_RUN"), "BLOCKED")
+
+    def test_report_is_deterministic_identity_bound_and_path_free(self):
+        summary = self._complete_admission_summary()
+        first = render_markdown(summary)
+        second = render_markdown(summary)
+        self.assertEqual(first, second)
+        self.assertIn("SOURCE_DATASET_ID=", first)
+        self.assertIn("TEACHER_POLICY_TIE_SCHEDULE_IDENTITY=", first)
+        self.assertIn("C1_03_CHARACTERIZATION_PASS=", first)
+        self.assertNotIn("C:\\", first)
+        self.assertNotIn("sourceReference", first)
+        with tempfile.TemporaryDirectory() as directory:
+            summary_path = Path(directory) / "summary.json"
+            report_path = Path(directory) / "report.md"
+            write_summary(summary, summary_path)
+            write_report(summary, report_path)
+            self.assertEqual(summary_path.read_bytes(), summary_path.read_bytes())
+            self.assertEqual(report_path.read_text(encoding="utf-8"), first)
+
+    def test_focused_test_count_is_positive_evidence(self):
+        summary = self._complete_admission_summary()
+        raw = dict(summary.raw_counts)
+        raw["FOCUSED_TEST_COUNT"] = 26
+        summary = dataclasses.replace(summary, raw_counts=raw)
+        report = render_markdown(summary)
+        self.assertIn("FOCUSED_TEST_COUNT=26", report)
+        self.assertNotEqual(summary.raw_counts["FOCUSED_TEST_COUNT"], 0)
+
+    def test_cli_requires_positive_focused_test_count(self):
+        with self.assertRaises(SystemExit):
+            from argentum_ml.characterization.c1_03 import main
+
+            main(
+                [
+                    "--artifact-root",
+                    "missing-artifact",
+                    "--summary-out",
+                    "summary.json",
+                    "--report-out",
+                    "report.md",
+                    "--measurement-head",
+                    "b" * 40,
+                ]
+            )
+
+    def test_selection_and_agreement_are_stratified_by_context(self):
+        train_id = _episode_id_for("TRAIN", 900)
+        samples = [_flat_sample(["PlayLand"], episode_id=train_id)]
+        with tempfile.TemporaryDirectory() as directory:
+            summary = run_offline(
+                _artifact_for_samples(Path(directory), samples),
+                plan=_fixture_plan(),
+                teacher=_c1_teacher(),
+            )
+        for dimension, key in (
+            ("phase", "MAIN1|selected"),
+            ("turn_bucket", "1|selected"),
+            ("seat_role", "Akiri|selected"),
+            ("deck_role", "akiri-deck|selected"),
+            ("candidate_count_bucket", "1|selected"),
+            ("executable_count_bucket", "1|selected"),
+        ):
+            self.assertEqual(summary.stratified_counts[dimension][key], 1)
+        self.assertEqual(summary.stratified_counts["phase"]["MAIN1|agreement"], 1)
+        self.assertEqual(summary.stratified_counts["turn_bucket"]["1|agreement"], 1)
+        self.assertEqual(summary.stratified_counts["seat_role"]["Akiri|agreement"], 1)
+
+    def test_structured_counts_include_partition_counts(self):
+        train_id = _episode_id_for("TRAIN", 1000)
+        validation_id = _episode_id_for("VALIDATION", 1100)
+        samples = [
+            _structured_sample_for(train_id),
+            _structured_sample_for(validation_id),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            summary = run_offline(
+                _artifact_for_samples(Path(directory), samples),
+                plan=_fixture_plan(),
+                teacher=_c1_teacher(),
+            )
+        counts = summary.structured_counts["targets@v2"]
+        self.assertEqual(counts["TRAIN_decisionCount"], 1)
+        self.assertEqual(counts["VALIDATION_decisionCount"], 1)
+        self.assertEqual(counts["TRAIN_noLabelCount"], 1)
+        self.assertEqual(counts["VALIDATION_noLabelCount"], 1)
+
+    def test_execution_ownership_audit_reports_candidate_payload_shapes(self):
+        train_id = _episode_id_for("TRAIN", 1200)
+        sample = _expected_unbindable_sample(train_id)
+        candidate = sample["binding"]["completeLegalDomain"]["candidates"][0]
+        model_candidate = sample["input"]["domain"]["candidates"][0]
+        candidate["requiresStructuredAction"] = True
+        model_candidate["requiresStructuredAction"] = True
+        with tempfile.TemporaryDirectory() as directory:
+            summary = run_offline(
+                _artifact_for_samples(Path(directory), [sample]),
+                plan=_fixture_plan(),
+                teacher=_c1_teacher(),
+            )
+        self.assertEqual(summary.raw_counts["CANDIDATES_REQUIRING_STRUCTURED_ACTION"], 1)
+        self.assertEqual(summary.raw_counts["CANDIDATES_WITH_REQUIRED_PAYLOAD_FIELDS"], 1)
+
+    def test_first_divergence_is_bounded_and_uses_existing_public_alias_projection(self):
+        train_id = _episode_id_for("TRAIN", 1300)
+        samples = [
+            _flat_sample(
+                ["PlayLand", "PassPriority"],
+                episode_id=train_id,
+                source_choice=1,
+            ),
+            _flat_sample(
+                ["PlayLand", "PassPriority"],
+                episode_id=train_id,
+                decision_index=1,
+                source_choice=1,
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            summary = run_offline(
+                _artifact_for_samples(Path(directory), samples),
+                plan=_fixture_plan(),
+                teacher=_c1_teacher(),
+            )
+        self.assertEqual(len(summary.divergences), 1)
+        serialized = json.dumps(summary.divergences[0], sort_keys=True)
+        self.assertNotIn("player-0", serialized)
+        self.assertNotIn("sourceReference", serialized)
+        self.assertNotIn("provenance", serialized)
+        self.assertIn("publicDomain", summary.divergences[0])
+        self.assertIn("sourceChoice", summary.divergences[0])
+        self.assertIn("teacherChoice", summary.divergences[0])
 
     def test_action_selection_requires_empty_payload_for_admission_ownership(self):
         from tests.test_public_observation_teacher import _flat_request, _teacher

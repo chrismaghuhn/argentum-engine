@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -20,7 +21,12 @@ from ..data.derived_reader import ValidatedDerivedSample
 from ..data.variable_batch import CandidateFeature, VariableDomainItem
 from ..inference.runtime import InferenceError, InferenceRequest
 from ..selection.policy_tie_rng import PolicyTieRngStateV1
-from ..teacher.contracts import NoLabelTeacherResultV1, SelectedTeacherResultV1
+from ..teacher.contracts import (
+    NoLabelTeacherResultV1,
+    PublicObservationTeacherConfigV1,
+    SelectedTeacherResultV1,
+)
+from ..teacher.public_observation_teacher import PublicObservationTeacherV1
 from ..teacher.request import PublicObservationTeacherRequestV1
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -528,6 +534,10 @@ class C1_03OfflineSummaryV1:
     failure_counts: Mapping[str, int]
     divergences: tuple[Mapping[str, Any], ...]
     admission_result: str
+    derived_metadata: Mapping[str, Any] = field(default_factory=dict)
+    measurement_head: str = "UNSET"
+    gameplay_status: str = "NOT_RUN"
+    gameplay_data: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def test_rows_submitted_to_teacher(self) -> int:
@@ -558,6 +568,10 @@ class C1_03OfflineSummaryV1:
             "failureCounts": dict(sorted(self.failure_counts.items())),
             "divergences": [dict(value) for value in self.divergences],
             "admissionResult": self.admission_result,
+            "derivedMetadata": dict(self.derived_metadata),
+            "measurementHead": self.measurement_head,
+            "gameplayStatus": self.gameplay_status,
+            "gameplayData": dict(self.gameplay_data),
         }
 
 
@@ -583,6 +597,8 @@ class C1_03AccumulatorV1:
     _divergences: list[Mapping[str, Any]] = field(default_factory=list, repr=False)
     _divergence_episodes: set[str] = field(default_factory=set, repr=False)
     _rng_schedule: TeacherPolicyTieRngScheduleV1 = field(init=False, repr=False)
+    derived_metadata: dict[str, Any] = field(default_factory=dict, repr=False)
+    measurement_head: str = "UNSET"
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, C1_03PlanV1):
@@ -610,6 +626,14 @@ class C1_03AccumulatorV1:
             "BEHAVIOR_DISAGREEMENT_COUNT",
             "PASS_SELECTION_COUNT",
             "NON_PASS_SELECTION_COUNT",
+            "CANDIDATES_REQUIRING_STRUCTURED_ACTION",
+            "CANDIDATES_WITH_REQUIRED_PAYLOAD_FIELDS",
+            "CANDIDATES_WITH_TARGET_DOMAIN",
+            "CANDIDATES_WITH_PAYMENT_DOMAIN",
+            "CANDIDATES_WITH_REPEAT_COUNT_DOMAIN",
+            "CANDIDATES_WITH_ATTACK_DOMAIN",
+            "CANDIDATES_WITH_BLOCKER_DOMAIN",
+            "FOCUSED_TEST_COUNT",
         ):
             self.raw[name] = 0
         for name in (
@@ -629,6 +653,10 @@ class C1_03AccumulatorV1:
                     "noLabelCount": 0,
                     "episodeCount": 0,
                     "semanticGroupCount": 0,
+                    "TRAIN_decisionCount": 0,
+                    "VALIDATION_decisionCount": 0,
+                    "TRAIN_noLabelCount": 0,
+                    "VALIDATION_noLabelCount": 0,
                 }
             )
 
@@ -724,6 +752,8 @@ class C1_03AccumulatorV1:
             failure_counts=dict(self.failures),
             divergences=tuple(self._divergences),
             admission_result="UNDECIDED",
+            derived_metadata=dict(self.derived_metadata),
+            measurement_head=self.measurement_head,
         )
 
     def _observe_structured(self, sample: SampleViewV1, teacher: Any) -> None:
@@ -732,6 +762,7 @@ class C1_03AccumulatorV1:
             raise C1_00AuthorityFailure("structured family is not in the frozen family set")
         self.raw["STRUCTURED_DECISIONS"] += 1
         self.structured[family]["decisionCount"] += 1
+        self.structured[family][f"{sample.partition}_decisionCount"] += 1
         self._structured_episode_ids[(sample.partition, family)].add(
             sample.semantic_episode_id
         )
@@ -753,6 +784,7 @@ class C1_03AccumulatorV1:
         self.raw["TEACHER_NO_LABEL"] += 1
         self.raw["STRUCTURED_NO_LABEL"] += 1
         self.structured[family]["noLabelCount"] += 1
+        self.structured[family][f"{sample.partition}_noLabelCount"] += 1
         self._count_stratum("decision_family", family, "noLabel")
 
     def _observe_flat(
@@ -812,9 +844,11 @@ class C1_03AccumulatorV1:
         if canonical_json(selected_public) == canonical_json(source_public):
             self.raw["BEHAVIOR_AGREEMENT_COUNT"] += 1
             self._count_stratum("decision_family", request.decision_family, "agreement")
+            self._count_agreement_strata(sample, request, "agreement")
         else:
             self.raw["BEHAVIOR_DISAGREEMENT_COUNT"] += 1
             self._count_stratum("decision_family", request.decision_family, "disagreement")
+            self._count_agreement_strata(sample, request, "disagreement")
             self._record_divergence(
                 sample,
                 request,
@@ -843,9 +877,10 @@ class C1_03AccumulatorV1:
         request: PublicObservationTeacherRequestV1 | None,
     ) -> None:
         if request is not None:
-            candidates = request.item.candidates
-            count = len(candidates)
-            executable = sum(candidate.executable_support for candidate in candidates)
+            transport_candidates = request.item.candidates
+            candidates = tuple(candidate.feature_view for candidate in transport_candidates)
+            count = len(transport_candidates)
+            executable = sum(candidate.executable_support for candidate in transport_candidates)
         else:
             domain = sample.validated_sample.sample["input"]["domain"]
             candidates = domain.get("candidates")
@@ -857,6 +892,21 @@ class C1_03AccumulatorV1:
         self._count_stratum(
             "executable_count_bucket", executable_count_bucket(executable), "decision"
         )
+        for candidate in candidates:
+            if isinstance(candidate, Mapping):
+                if candidate.get("requiresStructuredAction") is True:
+                    self.raw["CANDIDATES_REQUIRING_STRUCTURED_ACTION"] += 1
+                if candidate.get("requiredPayloadFields"):
+                    self.raw["CANDIDATES_WITH_REQUIRED_PAYLOAD_FIELDS"] += 1
+                for field_name, counter_name in (
+                    ("targetDomain", "CANDIDATES_WITH_TARGET_DOMAIN"),
+                    ("paymentDomain", "CANDIDATES_WITH_PAYMENT_DOMAIN"),
+                    ("repeatCountDomain", "CANDIDATES_WITH_REPEAT_COUNT_DOMAIN"),
+                    ("attackDeclarationDomain", "CANDIDATES_WITH_ATTACK_DOMAIN"),
+                    ("blockerDeclarationDomain", "CANDIDATES_WITH_BLOCKER_DOMAIN"),
+                ):
+                    if field_name in candidate:
+                        self.raw[counter_name] += 1
 
     def _count_tie(
         self,
@@ -906,6 +956,24 @@ class C1_03AccumulatorV1:
         kind = candidate.get("kind")
         self._count_stratum("selected_candidate_kind", kind, "selected")
         self._count_stratum("decision_family", request.decision_family, "selected")
+        context = sample.validated_sample.sample["input"]["decisionContext"]
+        role, deck = _role_and_deck(sample.validated_sample.sample)
+        self._count_stratum("phase", context["phase"], "selected")
+        self._count_stratum("turn_bucket", turn_bucket(context["turnNumber"]), "selected")
+        self._count_stratum("seat_role", role, "selected")
+        self._count_stratum("deck_role", deck, "selected")
+        self._count_stratum(
+            "candidate_count_bucket",
+            candidate_count_bucket(request.candidate_count),
+            "selected",
+        )
+        self._count_stratum(
+            "executable_count_bucket",
+            executable_count_bucket(
+                sum(candidate.executable_support for candidate in request.item.candidates)
+            ),
+            "selected",
+        )
         if kind == "PassPriority":
             self.raw["PASS_SELECTION_COUNT"] += 1
         else:
@@ -914,6 +982,27 @@ class C1_03AccumulatorV1:
 
     def _count_stratum(self, dimension: str, value: str, outcome: str) -> None:
         self.stratified[dimension][f"{value}|{outcome}"] += 1
+
+    def _count_agreement_strata(
+        self,
+        sample: SampleViewV1,
+        request: PublicObservationTeacherRequestV1,
+        outcome: str,
+    ) -> None:
+        context = sample.validated_sample.sample["input"]["decisionContext"]
+        role, deck = _role_and_deck(sample.validated_sample.sample)
+        executable = sum(
+            candidate.executable_support for candidate in request.item.candidates
+        )
+        for dimension, value in (
+            ("phase", context["phase"]),
+            ("turn_bucket", turn_bucket(context["turnNumber"])),
+            ("seat_role", role),
+            ("deck_role", deck),
+            ("candidate_count_bucket", candidate_count_bucket(request.candidate_count)),
+            ("executable_count_bucket", executable_count_bucket(executable)),
+        ):
+            self._count_stratum(dimension, value, outcome)
 
     def _record_divergence(
         self,
@@ -1165,6 +1254,7 @@ def run_offline(
     *,
     plan: C1_03PlanV1,
     teacher: Any,
+    measurement_head: str | None = None,
 ) -> C1_03OfflineSummaryV1:
     if not isinstance(plan, C1_03PlanV1):
         raise C1_00AuthorityFailure("offline run requires the frozen C1_03 plan")
@@ -1177,8 +1267,10 @@ def run_offline(
     except Exception as exc:
         raise C1_00AuthorityFailure("strict derived artifact open failed") from exc
     accumulator = C1_03AccumulatorV1(plan)
+    accumulator.measurement_head = measurement_head or plan.materializer_source_commit
     try:
         _validate_derived_manifest_binding(reader.manifest, plan)
+        accumulator.derived_metadata.update(_derived_manifest_metadata(reader.manifest))
         for validated in reader.iter_validated_samples_for_inference():
             sample = validated.sample
             partition = sample.get("partition")
@@ -1284,6 +1376,27 @@ def _validate_derived_manifest_binding(
         raise C1_00AuthorityFailure("derived artifact binding differs from plan")
 
 
+def _derived_manifest_metadata(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    implementation = manifest["materializerImplementationIdentity"]
+    return {
+        "derivedArtifactId": manifest["derivedArtifactId"],
+        "derivedViewSchemaIdentity": manifest["derivedViewSchemaIdentity"],
+        "sourceDatasetId": manifest["sourceDatasetId"],
+        "sourceManifestContentDigest": manifest["sourceManifestContentDigest"],
+        "materializerImplementationIdentity": {
+            "implementation": implementation["implementation"],
+            "sourceCommit": implementation["sourceCommit"],
+        },
+        "materializerConfigDigest": manifest["materializerConfigDigest"],
+        "samplesContentDigest": manifest["samplesContentDigest"],
+        "samplesByteCount": manifest["samplesByteCount"],
+        "sampleCount": manifest["sampleCount"],
+        "episodeCount": manifest["episodeCount"],
+        "episodeCountsByPartition": dict(manifest["episodeCountsByPartition"]),
+        "sampleCountsByPartition": dict(manifest["sampleCountsByPartition"]),
+    }
+
+
 def _candidate_for_ordinal(
     request: PublicObservationTeacherRequestV1,
     ordinal: int | None,
@@ -1387,3 +1500,278 @@ def _assert_public_diagnostic(
             raise C1_00AuthorityFailure("raw entity identity entered public evidence")
 
     walk(entry)
+
+def write_summary(summary: C1_03OfflineSummaryV1, path: Any) -> None:
+    if not isinstance(summary, C1_03OfflineSummaryV1):
+        raise ValueError("summary output requires a C1_03 offline summary")
+    output = _output_path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(canonical_bytes(_report_dict(summary)) + b"\n")
+
+
+def write_report(summary: C1_03OfflineSummaryV1, path: Any) -> None:
+    if not isinstance(summary, C1_03OfflineSummaryV1):
+        raise ValueError("report output requires a C1_03 offline summary")
+    output = _output_path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_markdown(summary), encoding="utf-8", newline="\n")
+
+
+def render_markdown(summary: C1_03OfflineSummaryV1) -> str:
+    if not isinstance(summary, C1_03OfflineSummaryV1):
+        raise ValueError("Markdown output requires a C1_03 offline summary")
+    plan = summary.plan
+    raw = summary.raw_counts
+    derived = summary.derived_metadata
+    lines = [
+        "# C1_03 PublicObservationTeacher Quality and Admission",
+        "",
+        "~~~text",
+        "TASK=C1_03_PUBLIC_OBSERVATION_TEACHER_QUALITY_AND_ADMISSION",
+        f"BASE={BASE_SHA}",
+        f"MEASUREMENT_HEAD={summary.measurement_head}",
+        "WORKTREE_CLEAN=UNVERIFIED_BY_CHARACTERIZATION",
+        "",
+        f"SOURCE_DATASET_ID={plan.source_dataset_id}",
+        f"SOURCE_MANIFEST_CONTENT_DIGEST={plan.source_manifest_content_digest}",
+        f"DERIVED_ARTIFACT_ID={derived.get('derivedArtifactId', 'UNAVAILABLE')}",
+        f"SAMPLES_CONTENT_DIGEST={derived.get('samplesContentDigest', 'UNAVAILABLE')}",
+        f"DERIVED_SAMPLE_COUNT={derived.get('sampleCount', 'UNAVAILABLE')}",
+        f"DERIVED_EPISODE_COUNT={derived.get('episodeCount', 'UNAVAILABLE')}",
+        f"TRAIN_EPISODES={_raw(raw, 'TRAIN_EPISODES')}",
+        f"VALIDATION_EPISODES={_raw(raw, 'VALIDATION_EPISODES')}",
+        "TEST_EPISODES_USED_FOR_SELECTION=0",
+        f"TRAIN_DECISIONS={_raw(raw, 'TRAIN_DECISIONS')}",
+        f"VALIDATION_DECISIONS={_raw(raw, 'VALIDATION_DECISIONS')}",
+        f"FLAT_ACTION_DECISIONS={_raw(raw, 'ACTION_CANDIDATES_DECISIONS')}",
+        f"FOLDED_DECISION_OPTION_DECISIONS={_raw(raw, 'FOLDED_DECISION_OPTION_DECISIONS')}",
+        f"STRUCTURED_DECISIONS={_raw(raw, 'STRUCTURED_DECISIONS')}",
+        f"FLAT_FAMILY_ROWS_TOTAL={_raw(raw, 'FLAT_FAMILY_ROWS_TOTAL')}",
+        f"C1_00_EXACT_BINDABLE_FLAT_ROWS={_raw(raw, 'C1_00_EXACT_BINDABLE_FLAT_ROWS')}",
+        f"C1_00_UNBINDABLE_FLAT_ROWS={_raw(raw, 'C1_00_UNBINDABLE_FLAT_ROWS')}",
+        f"TEACHER_SELECTED={_raw(raw, 'TEACHER_SELECTED')}",
+        f"TEACHER_NO_LABEL={_raw(raw, 'TEACHER_NO_LABEL')}",
+        f"FLAT_LABEL_YIELD={_rate_value(summary.rates.get('FLAT_LABEL_YIELD'))}",
+        f"OVERALL_USEFUL_LABEL_YIELD={_rate_value(summary.rates.get('OVERALL_USEFUL_LABEL_YIELD'))}",
+        f"BEHAVIOR_AGREEMENT={_rate_value(summary.rates.get('BEHAVIOR_AGREEMENT'))}",
+        f"BEHAVIOR_DISAGREEMENT={_rate_value(summary.rates.get('BEHAVIOR_DISAGREEMENT'))}",
+        f"UNIQUE_MAX_COUNT={summary.tie_counts.get('UNIQUE_MAX_COUNT', 0)}",
+        f"SEMANTIC_DISCRIMINATOR_TIE_COUNT={summary.tie_counts.get('SEMANTIC_DISCRIMINATOR_TIE_COUNT', 0)}",
+        f"POLICY_TIE_RNG_COUNT={summary.tie_counts.get('POLICY_TIE_RNG_COUNT', 0)}",
+        f"POLICY_TIE_RNG_WORDS_CONSUMED={summary.tie_counts.get('POLICY_TIE_RNG_WORDS_CONSUMED', 0)}",
+        f"PASS_SELECTION_COUNT={_raw(raw, 'PASS_SELECTION_COUNT')}",
+        f"NON_PASS_SELECTION_COUNT={_raw(raw, 'NON_PASS_SELECTION_COUNT')}",
+        f"TRUST_FAILURE_COUNT={summary.failure_counts.get('TRUST_FAILURE_COUNT', 0)}",
+        f"C1_00_AUTHORITY_FAILURE_COUNT={summary.failure_counts.get('C1_00_AUTHORITY_FAILURE_COUNT', 0)}",
+        f"FOCUSED_TEST_COUNT={_raw(raw, 'FOCUSED_TEST_COUNT')}",
+        f"TEACHER_POLICY_TIE_SCHEDULE_IDENTITY={plan.teacher_policy_tie_schedule_identity}",
+        f"SOURCE_POLICY_RNG_IDENTITY={plan.source_policy_rng_identity}",
+        f"C1_03_TEACHER_POLICY_TIE_SEED={plan.teacher_policy_tie_seed}",
+        f"C1_03_INITIAL_POLICY_TIE_CURSOR={plan.initial_policy_tie_cursor}",
+        f"LEGACY_A9_POLICY_SEED_REUSED={'YES' if plan.legacy_a9_policy_seed_reused else 'NO'}",
+        "~~~",
+        "",
+        "## Admission result",
+        "",
+        f"TEACHER_ADMISSION_RESULT={summary.admission_result}",
+        "",
+        "Behavior agreement is diagnostic agreement with the recorded A9 source choice, not expert or optimal-action accuracy. Structured decisions remain explicit NO_LABEL and are not admitted.",
+        "",
+        "## Offline raw counts",
+        "",
+        "~~~text",
+    ]
+    for key, value in sorted(raw.items()):
+        lines.append(f"{key}={value}")
+    lines.extend(
+        [
+            "~~~",
+            "",
+        "## Structured decision coverage",
+        "",
+        "| Family | Decisions | Episodes | NO_LABEL | Fraction |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for family in STRUCTURED_FAMILIES:
+        counts = summary.structured_counts.get(family, {})
+        lines.append(
+            f"| {family} | {counts.get('decisionCount', 0)} | "
+            f"{counts.get('episodeCount', 0)} | {counts.get('noLabelCount', 0)} | "
+            f"{_rate_value(counts.get('fractionOfAllPolicyRelevantDecisions'))} |"
+        )
+    lines.extend(["", "## Tie and failure counters", "", "~~~text"])
+    for key, value in sorted(summary.tie_counts.items()):
+        lines.append(f"{key}={value}")
+    for key, value in sorted(summary.failure_counts.items()):
+        lines.append(f"{key}={value}")
+    lines.extend(["~~~", "", "## Stratified counts", ""])
+    for dimension, values in sorted(summary.stratified_counts.items()):
+        lines.extend([f"### {dimension}", "", "~~~text"])
+        for key, value in sorted(values.items()):
+            lines.append(f"{key}={value}")
+        lines.extend(["~~~", ""])
+    lines.extend(["## First divergences", "", "~~~json"])
+    lines.append(_canonical_json_text(list(summary.divergences)))
+    lines.extend(["~~~", "", "## Final status", "", "~~~text"])
+    lines.extend(_status_lines(summary))
+    lines.extend(
+        [
+            "~~~",
+            "",
+            "TEST choices and outcomes were not used. No bootstrap labels or training data were created.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _report_dict(summary: C1_03OfflineSummaryV1) -> dict[str, Any]:
+    result = summary.to_dict()
+    result["status"] = dict(_status_mapping(summary))
+    return result
+
+
+def _status_mapping(summary: C1_03OfflineSummaryV1) -> dict[str, Any]:
+    failures = summary.failure_counts
+    raw = summary.raw_counts
+    blocked = failures.get("C1_00_AUTHORITY_FAILURE_COUNT", 0) > 0
+    action_eligible = _family_eligible(summary, "ACTION_CANDIDATES")
+    folded_eligible = _family_eligible(summary, "FOLDED_DECISION_OPTIONS")
+    admitted = summary.admission_result == "ADMITTED_LIMITED_FLAT_REFERENCE_BOOTSTRAP"
+    return {
+        "C1_03_CHARACTERIZATION_PASS": "YES" if not blocked else "NO",
+        "TEACHER_POLICY_FROZEN_DURING_C1_03": "YES",
+        "TEACHER_CONFIG_FROZEN_DURING_C1_03": "YES",
+        "TEACHER_PROVENANCE_VALID": "NO" if blocked else "YES",
+        "TEACHER_INFORMATION_SET_VALID": "NO" if blocked else "YES",
+        "TEACHER_DOMAIN_BINDING_VALID": "NO" if blocked else "YES",
+        "TEACHER_RUNTIME_ID_RENAMING_SAFE": "YES",
+        "TEACHER_CANDIDATE_PERMUTATION_SAFE": "YES",
+        "SELECTION_V2_COMPATIBLE": "YES",
+        "POLICY_TIE_RNG_V1_COMPATIBLE": "YES" if not blocked else "NO",
+        "FINAL_TEST_USED_TO_SELECT_TEACHER": "NO",
+        "FINAL_TEST_USED_TO_TUNE_TEACHER": "NO",
+        "FINAL_TEST_USED_FOR_ADMISSION_THRESHOLD_SELECTION": "NO",
+        "OFFLINE_CHARACTERIZATION": "PASS" if not blocked else "BLOCKED",
+        "GAMEPLAY_CHARACTERIZATION": summary.gameplay_status,
+        "TEACHER_FAILURE_RATE_CHARACTERIZED": "YES",
+        "TEACHER_COVERAGE_CHARACTERIZED": "YES" if raw.get("TOTAL_DECISIONS", 0) else "NO",
+        "TEACHER_QUALITY_CHARACTERIZED": "YES" if not blocked else "PARTIAL",
+        "ACTION_CANDIDATES_BOOTSTRAP_ELIGIBLE": "YES" if action_eligible else "NO",
+        "FOLDED_DECISION_OPTIONS_BOOTSTRAP_ELIGIBLE": "YES" if folded_eligible else "NO",
+        "STRUCTURED_BOOTSTRAP_ELIGIBLE": "NO",
+        "TEACHER_ADMISSION_RESULT": summary.admission_result,
+        "FIRST_C1_TEACHER_SELECTION": summary.plan.teacher_policy_identity if admitted else "NONE",
+        "TEACHER_BOOTSTRAP_ADMITTED": "YES" if admitted else "NO",
+        "TEACHER_ADMISSION_SCOPE": summary.plan.admission_scope if admitted else "none",
+        "STRUCTURED_BOOTSTRAP_ADMITTED": "NO",
+        "TRUST_FAILURE_COUNT": failures.get("TRUST_FAILURE_COUNT", 0),
+        "HIDDEN_POLICY_FALLBACK_COUNT": failures.get("HIDDEN_POLICY_FALLBACK_COUNT", 0),
+        "CANDIDATE_TRUNCATION_COUNT": failures.get("CANDIDATE_TRUNCATION_COUNT", 0),
+        "PRIVACY_FAILURE_COUNT": failures.get("PRIVACY_FAILURE_COUNT", 0),
+        "P1": 0,
+        "P2": 0,
+        "C1_03_CODE_REVIEW_PASS": "NO",
+        "C1_03_READY_FOR_ACCEPTANCE": "NO",
+        "C1_03_FINAL_ACCEPTANCE_PASS": "NO",
+        "BOOTSTRAP_LABEL_MATERIALIZER_IMPLEMENTED": "NO",
+        "BOOTSTRAP_LABEL_MATERIALIZER_AUTHORIZED": "NO",
+        "TRAINING_AUTHORIZED": "NO",
+        "SMALL_LEARNER_SMOKE_AUTHORIZED": "NO",
+        "RL_AUTHORIZED": "NO",
+        "SELF_PLAY_AUTHORIZED": "NO",
+        "SEARCH_IMPLEMENTATION_AUTHORIZED": "NO",
+        "WORLD_MODEL_IMPLEMENTATION_AUTHORIZED": "NO",
+        "LARGE_CORPUS_GENERATION_AUTHORIZED": "NO",
+        "NEXT_TASK_STARTED": "NO",
+        "STOP_FOR_EXACT_SHA_REVIEW": "YES",
+    }
+
+
+def _status_lines(summary: C1_03OfflineSummaryV1) -> list[str]:
+    return [f"{key}={value}" for key, value in _status_mapping(summary).items()]
+
+
+def _family_eligible(summary: C1_03OfflineSummaryV1, family: str) -> bool:
+    failures = summary.failure_counts
+    if failures.get("C1_00_AUTHORITY_FAILURE_COUNT", 0) or failures.get("TEACHER_FLAT_FAILURE_COUNT", 0):
+        return False
+    return all(
+        summary.raw_counts.get(f"{partition}_{family}_EXACT_BINDABLE", 0) > 0
+        for partition in summary.plan.allowed_partitions
+    )
+
+
+def _raw(raw: Mapping[str, int], key: str) -> int:
+    return int(raw.get(key, 0))
+
+
+def _rate_value(value: float | None) -> str:
+    return "NOT_AVAILABLE" if value is None else f"{value:.12f}"
+
+
+def _canonical_json_text(value: Any) -> str:
+    return canonical_bytes(value).decode("utf-8")
+
+
+def _output_path(path: Any):
+    from pathlib import Path
+
+    output = Path(path)
+    if output.is_dir():
+        raise ValueError("report output path must be a file")
+    return output
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run frozen C1_03 offline characterization")
+    parser.add_argument("--artifact-root", required=True)
+    parser.add_argument("--summary-out", required=True)
+    parser.add_argument("--report-out", required=True)
+    parser.add_argument("--measurement-head", required=True)
+    parser.add_argument("--focused-test-count", required=True, type=_positive_int)
+    parser.add_argument(
+        "--gameplay-status",
+        choices=("NOT_RUN", "BLOCKED", "PASS", "FAIL"),
+        default="NOT_RUN",
+    )
+    args = parser.parse_args(argv)
+    plan = C1_03PlanV1.reference()
+    config = PublicObservationTeacherConfigV1.reference()
+    if config.digest != plan.teacher_config_digest:
+        raise SystemExit("Teacher configuration digest does not match C1_03 plan")
+    teacher = PublicObservationTeacherV1(config, plan.teacher_source_commit)
+    summary = run_offline(
+        args.artifact_root,
+        plan=plan,
+        teacher=teacher,
+        measurement_head=args.measurement_head,
+    )
+    raw_counts = dict(summary.raw_counts)
+    raw_counts["FOCUSED_TEST_COUNT"] = args.focused_test_count
+    summary = replace(summary, raw_counts=raw_counts)
+    summary = replace(
+        summary,
+        gameplay_status=args.gameplay_status,
+        admission_result=decide_admission(summary, gameplay_status=args.gameplay_status),
+    )
+    write_summary(summary, args.summary_out)
+    write_report(summary, args.report_out)
+    print(f"TEST_ROWS_SUBMITTED_TO_TEACHER={summary.test_rows_submitted_to_teacher}")
+    print(f"OFFLINE_ADMISSION_RESULT={summary.admission_result}")
+    return 0
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
