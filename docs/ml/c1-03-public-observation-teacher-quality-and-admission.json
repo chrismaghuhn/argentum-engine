@@ -1,0 +1,98 @@
+{
+  "task": "C1_03_PUBLIC_OBSERVATION_TEACHER_QUALITY_AND_ADMISSION",
+  "base": "b9eb8da182390095d73b9c06d9bbe20049156e9b",
+  "planHead": "bf7a467b8db6de62f9dfde8d4388a84b53bcde67",
+  "priorReviewedPlanHead": "1663c13f58e65793db5f1cac4e8e0741ef2c02d0",
+  "measurementHead": "846d743efc8a58f8067d1eaaf14ef93386e591b3",
+  "status": "BLOCKED",
+  "blockReason": "C1_00_MODEL_FACING_CROSS_LANGUAGE_CONTRACT_MISMATCH",
+  "planReviewResult": "PENDING_EXACT_SHA_REVIEW_OF_EXECUTION_DOC_CORRECTION",
+  "verification": {
+    "focusedTestCount": 28,
+    "focusedTestResult": "28/28_PASS",
+    "fullMlTestCount": 130,
+    "fullMlTestResult": "130/130_PASS",
+    "justMlCheck": "PASS"
+  },
+  "materialization": {
+    "derivedViewRegenerated": true,
+    "purpose": "C1_03_CHARACTERIZATION_ONLY",
+    "sourceDatasetId": "69cfd13f7537da2a55e00ef9bdc69d09af9a7c11a7490c3b20c985b231e55d03",
+    "sourceManifestContentDigest": "de1f3a10fc6476b4db2ec3d76dbfc347f4c268005df7352ac47387442b4211d2",
+    "sourceEpisodes": 64,
+    "sourceDecisions": 125471,
+    "sourceShards": 64,
+    "sourceDatasetBytes": 6131943637,
+    "derivedViewSchemaIdentity": "argentum-ml-derived-learner-view@v1",
+    "materializerImplementation": "c1-materializer@v1",
+    "materializerSourceCommit": "b9eb8da182390095d73b9c06d9bbe20049156e9b",
+    "materializerConfigDigest": "7d5fbfd0bfe71844fefbd25d3fcce7beac3de8de281d9a2f02cf225aef27364c",
+    "derivedArtifactId": "a6fb40f09a931ceffbca5364db7b145b6c8791783ca60d8294322c271c97c19d",
+    "samplesContentDigest": "8f142ee16b2f7bb09ddc6cd5d2a9b27e547e52516b0566e886ea25a846f0f70c",
+    "samplesByteCount": 8083366132,
+    "episodeCount": 64,
+    "sampleCount": 125471,
+    "episodeCountsByPartition": {
+      "TEST": 6,
+      "TRAIN": 48,
+      "VALIDATION": 10
+    },
+    "sampleCountsByPartition": {
+      "TEST": 11458,
+      "TRAIN": 95351,
+      "VALIDATION": 18662
+    },
+    "jvmTestHeap": "4g",
+    "largeMaterializationMode": "MANUAL_CHARACTERIZATION_STEP",
+    "largeMaterializationAutoCi": false,
+    "materializerTestExit": 0,
+    "materializerTestBodySeconds": 3720.908,
+    "materializerGradleResult": "BUILD_SUCCESSFUL",
+    "stagingRemainder": "NONE"
+  },
+  "strictPythonReader": {
+    "status": "FAIL",
+    "exitCode": 1,
+    "authorityFailure": true,
+    "trustFailure": true,
+    "firstAffectedSampleLine": 129,
+    "error": "targets.requirements[0] contains unknown fields: ['candidatesAliases']",
+    "producerField": "candidatesAliases",
+    "readerExpectedField": "candidateAliases"
+  },
+  "characterization": {
+    "offlineCharacterization": "NOT_RUN",
+    "teacherRowsSubmitted": 0,
+    "testRowsSubmittedToTeacher": 0,
+    "testRowsUsedForSelection": 0,
+    "testRowsUsedForTuning": 0,
+    "gameplayCharacterization": "NOT_RUN_UPSTREAM_AUTHORITY_BLOCK",
+    "admissionResult": "BLOCKED"
+  },
+  "safety": {
+    "trajectoryV1Mutated": false,
+    "sourceDatasetMutated": false,
+    "bootstrapLabelsCreated": false,
+    "trainingDatasetCreated": false,
+    "trainingStarted": false,
+    "bootstrapLabelMaterializationAuthorized": false,
+    "trainingAuthorized": false,
+    "smallLearnerSmokeAuthorized": false,
+    "c1_04Authorized": false,
+    "newGameplayBridgeCreated": false,
+    "sourcePolicySeedReusedAsTeacherTieSeed": false,
+    "finalTestUsedForTeacherSelection": false,
+    "finalTestUsedForTeacherTuning": false
+  },
+  "frozenIdentities": {
+    "admissionPurpose": "argentum-ml-flat-reference-bootstrap@v1",
+    "admissionScope": "FLAT_REFERENCE_BOOTSTRAP",
+    "teacherPolicyIdentity": "argentum-ml-public-observation-bootstrap-teacher@v1",
+    "teacherConfigDigest": "fa358597c09ce466e1be1823de485e0accd84be622184fa1d6505806aff0d7d8",
+    "selectionContractIdentity": "argentum-ml-policy-selection@v2",
+    "policyTieRngIdentity": "argentum-ml-policy-tie-rng@v1",
+    "teacherPolicyTieSeed": 0,
+    "initialPolicyTieCursor": 0,
+    "legacyA9PolicySeedReused": false
+  }
+}
