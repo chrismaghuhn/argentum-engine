@@ -20,7 +20,7 @@ from argentum_ml.teacher import (
 )
 
 
-SOURCE_COMMIT = "4af111cad62d0f268f4d28e2548fbb23a18a9a47"
+SOURCE_COMMIT = "32e6a300a2d22e5be864bee179c8b86b05a9ba06"
 
 
 def _discriminator(value: dict) -> SemanticTieDiscriminator:
