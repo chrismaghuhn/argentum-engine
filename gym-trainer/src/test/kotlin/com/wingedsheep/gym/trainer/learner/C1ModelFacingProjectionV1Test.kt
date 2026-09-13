@@ -78,6 +78,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 class C1ModelFacingProjectionV1Test : FunSpec({
@@ -962,6 +964,56 @@ class C1ModelFacingProjectionV1Test : FunSpec({
         mana["paymentDomain"].toString() shouldContain "initialPoolBuckets"
         mana.toString() shouldNotContain "mana-source-key"
     }
+
+    test("preserves nested attack band constraint field names and aliases") {
+        val source = fixture(
+            chosenCandidateIndex = 0,
+            candidateList = listOf(
+                candidate(
+                    kind = "PlayLand",
+                    sourceEntityId = "attack-source",
+                    attackDeclarationDomain = attackDeclarationDomainWithBandConstraints(),
+                ),
+            ),
+        )
+        val sample = C1ModelFacingProjectionV1.project(
+            source.trajectory,
+            source.record,
+            C1ProjectionContext("b".repeat(64), "c".repeat(64)),
+            C1DatasetPartition.TRAIN,
+        )
+        val bindings = sample.binding.entityAliasBindings.associate { it.sourceEntityId to it.alias }
+        val bandConstraints = sample.input["domain"]!!.jsonObject
+            .getValue("candidates").jsonArray.single().jsonObject
+            .getValue("attackDeclarationDomain").jsonObject
+            .getValue("bandConstraints").jsonObject
+
+        bandConstraints.keys shouldBe setOf(
+            "bandingAttackersByDefender",
+            "nonBandingAttackersByDefender",
+        )
+        bandConstraints["bandingAttackersByDefender"]!!.jsonObject.keys shouldBe
+            setOf(bindings.getValue("defender-a"))
+        bandConstraints["bandingAttackersByDefender"]!!.jsonObject
+            .getValue(bindings.getValue("defender-a")).jsonArray
+            .map { it.jsonPrimitive.content } shouldBe listOf(bindings.getValue("attacker-c"))
+        bandConstraints["nonBandingAttackersByDefender"]!!.jsonObject.keys shouldBe
+            setOf(bindings.getValue("defender-b"))
+        bandConstraints["nonBandingAttackersByDefender"]!!.jsonObject
+            .getValue(bindings.getValue("defender-b")).jsonArray
+            .map { it.jsonPrimitive.content } shouldBe listOf(bindings.getValue("attacker-d"))
+
+        val modelText = A3SemanticJson.canonicalJson(sample.input)
+        listOf("defender-a", "defender-b", "attacker-c", "attacker-d").forEach { raw ->
+            modelText shouldNotContain raw
+        }
+        sample.binding.semanticTieDiscriminators.values.forEach { discriminator ->
+            val discriminatorText = A3SemanticJson.canonicalJson(discriminator)
+            listOf("defender-a", "defender-b", "attacker-c", "attacker-d").forEach { raw ->
+                discriminatorText shouldNotContain raw
+            }
+        }
+    }
 })
 
 private data class ProjectionFixture(
@@ -1062,6 +1114,7 @@ private fun candidate(
     sourceEntityId: String,
     actionSemantics: JsonObject = buildJsonObject { put("type", kind) },
     targetDomain: JsonObject? = null,
+    attackDeclarationDomain: JsonObject? = null,
     availableManaColors: List<String>? = null,
     targetEntityIds: List<String> = emptyList(),
     validSacrificeTargets: List<String> = emptyList(),
@@ -1090,9 +1143,34 @@ private fun candidate(
     put("actionSemantics", actionSemantics)
     put("isDecisionOption", false)
     targetDomain?.let { put("targetDomain", it) }
+    attackDeclarationDomain?.let { put("attackDeclarationDomain", it) }
     availableManaColors?.let { colors ->
         put("availableManaColors", buildJsonArray { colors.forEach { add(JsonPrimitive(it)) } })
     }
+}
+
+private fun attackDeclarationDomainWithBandConstraints(): JsonObject = buildJsonObject {
+    put("version", 2)
+    put("attackerOrder", buildJsonArray {
+        add(JsonPrimitive("attacker-c"))
+        add(JsonPrimitive("attacker-d"))
+    })
+    put("attackerToDefenders", buildJsonObject {
+        put("attacker-c", buildJsonArray { add(JsonPrimitive("defender-a")) })
+        put("attacker-d", buildJsonArray { add(JsonPrimitive("defender-b")) })
+    })
+    put("mandatoryAttackers", buildJsonArray { add(JsonPrimitive("attacker-c")) })
+    put("canDeclareZeroAttackers", false)
+    put("maxAttackers", 2)
+    put("coAttackerRequirements", buildJsonObject { })
+    put("bandConstraints", buildJsonObject {
+        put("bandingAttackersByDefender", buildJsonObject {
+            put("defender-a", buildJsonArray { add(JsonPrimitive("attacker-c")) })
+        })
+        put("nonBandingAttackersByDefender", buildJsonObject {
+            put("defender-b", buildJsonArray { add(JsonPrimitive("attacker-d")) })
+        })
+    })
 }
 
 private fun minimalTargetDomain(): JsonObject = buildJsonObject {
