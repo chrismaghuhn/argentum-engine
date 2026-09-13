@@ -856,7 +856,8 @@ object C1ModelFacingProjectionV1 {
         "bands",
         "attackerToDefenders",
         "coAttackerRequirements",
-        "bandConstraints",
+        "bandingAttackersByDefender",
+        "nonBandingAttackersByDefender",
         "blockerToAttackers",
         "coBlockerRequirements",
     )
