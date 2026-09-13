@@ -13,7 +13,7 @@ private const val ACCEPTED_SOURCE_MANIFEST_DIGEST =
 private const val ACCEPTED_SOURCE_EPISODES = 64
 private const val ACCEPTED_SOURCE_DECISIONS = 125471
 private const val ACCEPTED_MATERIALIZER_SOURCE_COMMIT =
-    "b9eb8da182390095d73b9c06d9bbe20049156e9b"
+    "4eb71de7893395c4abc965d3ce705d623bca8a92"
 private const val MATERIALIZER_IMPLEMENTATION_IDENTITY = "c1-materializer@v1"
 private const val MATERIALIZER_CONFIG_DIGEST =
     "7d5fbfd0bfe71844fefbd25d3fcce7beac3de8de281d9a2f02cf225aef27364c"

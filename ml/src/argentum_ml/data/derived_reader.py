@@ -957,16 +957,19 @@ def _validate_action_target_choice(candidate: dict[str, Any], value: Any) -> Non
     requirements = []
     for expected_index, raw in enumerate(_expect_list(domain["requirements"], "targetDomain.requirements")):
         requirement = _expect_object(raw, "target requirement")
-        _expect_keys(
-            requirement,
-            {
-                "index", "description", "minTargets", "maxTargets", "candidates", "targetZone",
-                "mustDifferFromEarlier", "sameController", "sameOwner", "sameCreatureType",
-                "sameCardType", "totalManaValueAtMost", "differentNames", "xConstrainsManaValue",
-                "xConstrainsManaValueExactly", "xConstrainsPower", "xConstrainsCount",
-            },
-            "target requirement",
-        )
+        allowed_keys = {
+            "index", "description", "minTargets", "maxTargets", "candidates", "targetZone",
+            "mustDifferFromEarlier", "sameController", "sameOwner", "sameCreatureType",
+            "sameCardType", "totalManaValueAtMost", "differentNames", "xConstrainsManaValue",
+            "xConstrainsManaValueExactly", "xConstrainsPower", "xConstrainsCount",
+        }
+        required_keys = allowed_keys - {"description"}
+        missing = sorted(required_keys - set(requirement))
+        extra = sorted(set(requirement) - allowed_keys)
+        if missing or extra:
+            raise DerivedArtifactError(
+                f"target requirement keys mismatch; missing={missing}, extra={extra}"
+            )
         if requirement["index"] != expected_index:
             raise DerivedArtifactError("action target requirements are not producer ordered")
         minimum = _expect_int(requirement["minTargets"], "target requirement minTargets", nonnegative=True)
@@ -1089,9 +1092,31 @@ def _validate_payment_strategy(candidate: dict[str, Any], value: Any, payload: d
         _validate_payment_plan(domain, plan)
 
 
+def _canonical_production_choice(value: Any) -> str:
+    """Compare Kotlin ProductionChoice values across omitted versus explicit null optionals."""
+
+    choice = _expect_object(value, "production choice")
+    normalized = {
+        key: child
+        for key, child in choice.items()
+        if key not in {"bonusChoice", "fixedOutputs"} or child is not None
+    }
+    return _canonical_element(normalized, "production choice")
+
+
 def _validate_payment_plan(domain: dict[str, Any], plan: dict[str, Any]) -> None:
     _expect_keys(plan, {"activations", "outerAllocation"}, "paymentPlan")
-    _expect_keys(domain, {"version", "requiredCost", "outerAtomicCostUnits", "initialPoolBuckets", "sourceActivationOptions", "reservedOuterLifePayment", "fixedSelfDamageBudget"}, "paymentDomain")
+    allowed_keys = {
+        "version", "requiredCost", "outerAtomicCostUnits", "initialPoolBuckets",
+        "sourceActivationOptions", "reservedOuterLifePayment", "fixedSelfDamageBudget",
+    }
+    required_keys = allowed_keys - {"fixedSelfDamageBudget"}
+    missing = sorted(required_keys - set(domain))
+    extra = sorted(set(domain) - allowed_keys)
+    if missing or extra:
+        raise DerivedArtifactError(
+            f"paymentDomain keys mismatch; missing={missing}, extra={extra}"
+        )
     if domain["version"] != 5:
         raise DerivedArtifactError("unsupported PaymentDomainV5 version")
     options = {}
@@ -1113,7 +1138,7 @@ def _validate_payment_plan(domain: dict[str, Any], plan: dict[str, Any]) -> None
             raise DerivedArtifactError("payment plan selects a source outside the source domain")
         selected_sources.add(obj["sourceId"])
         option = options[source_key]
-        if not any(_canonical_element(obj["productionChoice"], "production choice") == _canonical_element(choice, "source production choice") for choice in _expect_list(option["productionChoices"], "source production choices")):
+        if not any(_canonical_production_choice(obj["productionChoice"]) == _canonical_production_choice(choice) for choice in _expect_list(option["productionChoices"], "source production choices")):
             raise DerivedArtifactError("payment plan selects an outside production choice")
         orders = _expect_list(option["activationCostOrderOptions"], "activation cost order options")
         if not any(_canonical_element(obj["activationCostOrder"], "activation cost order") == _canonical_element(order, "source activation cost order") for order in orders):
@@ -1142,7 +1167,8 @@ def _validate_payment_plan(domain: dict[str, Any], plan: dict[str, Any]) -> None
         _expect_int(option.get("fixedSelfDamageAmount"), "fixed self-damage amount", nonnegative=True)
         for option in selected_options
     )
-    if domain["fixedSelfDamageBudget"] is not None and fixed_self_damage > _expect_int(domain["fixedSelfDamageBudget"], "fixed self-damage budget", nonnegative=True):
+    fixed_self_damage_budget = domain.get("fixedSelfDamageBudget")
+    if fixed_self_damage_budget is not None and fixed_self_damage > _expect_int(fixed_self_damage_budget, "fixed self-damage budget", nonnegative=True):
         raise DerivedArtifactError("payment plan exceeds the source fixed self-damage budget")
     used_pool: dict[str, int] = {}
     used_outputs: set[tuple[int, int]] = set()
