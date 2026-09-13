@@ -257,7 +257,7 @@ class ValidatedDerivedSample:
 _VALIDATED_SAMPLE_ISSUER = object()
 
 
-@dataclass
+@dataclass(frozen=True)
 class DerivedArtifactReader:
     root: Path
     manifest: dict[str, Any]
@@ -333,7 +333,7 @@ class DerivedArtifactReader:
     def close(self) -> None:
         if not self._closed:
             self._samples_stream.close()
-            self._closed = True
+            object.__setattr__(self, "_closed", True)
 
     def __enter__(self) -> "DerivedArtifactReader":
         return self

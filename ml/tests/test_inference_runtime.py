@@ -39,6 +39,10 @@ def _context() -> InferenceContext:
     manifest = ArgentumCheckpointManifestV1.from_path(
         Path(__file__).parent / "fixtures" / "checkpoint_manifest_v1.json"
     )
+    manifest_data = manifest.to_dict()
+    manifest_data["sourceDatasetIdentity"] = "1" * 64
+    manifest_data["checkpointId"] = manifest.recompute_checkpoint_id(manifest_data)
+    manifest = ArgentumCheckpointManifestV1.from_dict(manifest_data)
     return InferenceContext.from_checkpoint(
         manifest,
         NumericExecutionProfileIdentity(
@@ -273,6 +277,27 @@ class InferenceRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(InferenceError):
                 InferenceRuntime(_context()).select(
+                    _request(Path(directory)),
+                    provider,
+                    _rng(),
+                )
+
+    def test_checkpoint_source_dataset_must_match_validated_sample(self) -> None:
+        manifest = ArgentumCheckpointManifestV1.from_path(
+            Path(__file__).parent / "fixtures" / "checkpoint_manifest_v1.json"
+        )
+        context = InferenceContext.from_checkpoint(
+            manifest,
+            NumericExecutionProfileIdentity(
+                NUMERIC_PROFILE_CONTRACT_IDENTITY,
+                "C1_REFERENCE_NUMERIC_PROFILE",
+            ),
+        )
+        provider = _RecordingProvider([0.1, 0.2, 0.3])
+        provider.checkpoint_id = context.checkpoint_id
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(InferenceError):
+                InferenceRuntime(context).select(
                     _request(Path(directory)),
                     provider,
                     _rng(),

@@ -81,6 +81,7 @@ class InferenceContext:
     """The explicit runtime contracts required by one inference call."""
 
     checkpoint_id: str
+    source_dataset_identity: str
     numeric_profile: NumericExecutionProfileIdentity
     selection_contract_identity: str
     policy_rng_contract_identity: str
@@ -111,6 +112,7 @@ class InferenceContext:
             raise InferenceError("checkpoint is not compatible with Selection V2 and PolicyTieRng V1")
         instance = object.__new__(cls)
         object.__setattr__(instance, "checkpoint_id", manifest.checkpoint_id)
+        object.__setattr__(instance, "source_dataset_identity", data["sourceDatasetIdentity"])
         object.__setattr__(instance, "numeric_profile", numeric_profile)
         object.__setattr__(instance, "selection_contract_identity", data["selectionContractIdentity"])
         object.__setattr__(instance, "policy_rng_contract_identity", data["policyRngContractIdentity"])
@@ -247,6 +249,7 @@ class InferenceRequest:
 
     item: VariableDomainItem
     source_bindings: SourceSelectionBindings
+    source_dataset_identity: str
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         raise TypeError("InferenceRequest must be created from a validated derived sample")
@@ -309,6 +312,11 @@ class InferenceRequest:
         instance = object.__new__(cls)
         object.__setattr__(instance, "item", item)
         object.__setattr__(instance, "source_bindings", source_bindings)
+        object.__setattr__(
+            instance,
+            "source_dataset_identity",
+            sample_value["sourceReference"]["datasetId"],
+        )
         return instance
 
 
@@ -337,8 +345,9 @@ class InferenceRuntime:
             or self.context.policy_rng_contract_identity != POLICY_TIE_RNG_IDENTITY
             or self.context.numeric_profile.required_profile_class
             != self.context.required_numeric_profile_class
+            or request.source_dataset_identity != self.context.source_dataset_identity
         ):
-            raise InferenceError("inference context is not checkpoint-compatible")
+            raise InferenceError("inference context or source dataset is not checkpoint-compatible")
         if item.structured_domain is not None:
             raise InferenceError(
                 "C1_00 structured inference is non-total without approved scoreable alternatives"
