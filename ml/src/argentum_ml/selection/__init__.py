@@ -8,6 +8,7 @@ from .policy_tie_rng import (
     derive_stream_key,
     policy_seed_bits_hex,
 )
+from .selection_v2 import ExactSemanticSourceBinding, SelectionCandidate, SelectionError, SelectionResult, select_v2
 
 __all__ = [
     "POLICY_RNG_IDENTITY",
@@ -16,4 +17,9 @@ __all__ = [
     "PolicyTieRngStateV1",
     "derive_stream_key",
     "policy_seed_bits_hex",
+    "ExactSemanticSourceBinding",
+    "SelectionCandidate",
+    "SelectionError",
+    "SelectionResult",
+    "select_v2",
 ]
