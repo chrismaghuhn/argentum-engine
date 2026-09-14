@@ -6,6 +6,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.gameserver.protocol.ServerMessage
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 
 class DecisionEnricher(private val cardRegistry: CardRegistry) {
@@ -22,9 +23,13 @@ class DecisionEnricher(private val cardRegistry: CardRegistry) {
      * (`isFaceDown && controllerId != viewingPlayerId`). It intentionally does not honour
      * Lens-of-Clarity-style reveals — omitting them only ever over-masks, so it can't leak.
      */
-    private fun isHiddenFrom(state: GameState, entityId: EntityId, viewerId: EntityId): Boolean =
-        state.getEntity(entityId)?.has<FaceDownComponent>() == true &&
-            state.projectedState.getController(entityId) != viewerId
+    private fun isHiddenFrom(
+        state: GameState,
+        entityId: EntityId,
+        viewerId: EntityId?,
+        isSpectator: Boolean = false,
+    ): Boolean = state.getEntity(entityId)?.has<FaceDownComponent>() == true &&
+        (isSpectator || state.projectedState.getController(entityId) != viewerId)
 
     /**
      * The source name to display for [decision] to [viewerId]. The combat board copies the (single)
@@ -47,13 +52,68 @@ class DecisionEnricher(private val cardRegistry: CardRegistry) {
             ?: cardRegistry.getCard(cardComponent.cardDefinitionId)?.metadata?.imageUri
     }
 
-    private fun maskedSourceName(decision: PendingDecision, state: GameState, viewerId: EntityId): String? {
+    private fun maskedSourceName(decision: PendingDecision, state: GameState, viewerId: EntityId): String? =
+        maskedSourceName(decision, state, viewerId, isSpectator = false)
+
+    /**
+     * Project the source label used by the spectator status bar. A spectator
+     * controls no seat, so a face-down combat source is always private to them.
+     * This reuses the same combat/source relationship as player-facing status.
+     */
+    fun maskedSpectatorSourceName(decision: PendingDecision, state: GameState): String? =
+        maskedSourceName(decision, state, viewerId = null, isSpectator = true)
+
+    private fun maskedSourceName(
+        decision: PendingDecision,
+        state: GameState,
+        viewerId: EntityId?,
+        isSpectator: Boolean,
+    ): String? {
         val sourceName = decision.context.sourceName ?: return null
+        val sourceId = decision.context.sourceId
+        if (sourceId != null && isIdentityHiddenFrom(state, sourceId, viewerId, isSpectator)) {
+            return if (decision is CombatResolutionDecision && sourceName != "Combat damage") {
+                FACE_DOWN_CREATURE_NAME
+            } else {
+                null
+            }
+        }
         if (decision is CombatResolutionDecision) {
             val single = decision.attackers.singleOrNull() ?: return sourceName
-            if (single.name == sourceName && isHiddenFrom(state, single.id, viewerId)) return FACE_DOWN_CREATURE_NAME
+            if (single.name == sourceName && isHiddenFrom(state, single.id, viewerId, isSpectator)) {
+                return FACE_DOWN_CREATURE_NAME
+            }
         }
         return sourceName
+    }
+
+    /**
+     * Source identities are public only when the source object is public to the
+     * viewer. Hidden-zone cards and face-down public-zone cards are not.
+     */
+    private fun isIdentityHiddenFrom(
+        state: GameState,
+        entityId: EntityId,
+        viewerId: EntityId?,
+        isSpectator: Boolean,
+    ): Boolean {
+        val container = state.getEntity(entityId) ?: return false
+        if (entityId in state.stack) {
+            return container.has<FaceDownComponent>() &&
+                (isSpectator || state.projectedState.getController(entityId) != viewerId)
+        }
+        val zoneKey = state.zones.entries.firstOrNull { (_, ids) -> entityId in ids }?.key
+            ?: return false
+        val faceDown = container.has<FaceDownComponent>()
+        return when (zoneKey.zoneType) {
+            Zone.HAND,
+            Zone.LIBRARY,
+            Zone.SIDEBOARD -> isSpectator || zoneKey.ownerId != viewerId
+            Zone.BATTLEFIELD,
+            Zone.STACK,
+            Zone.EXILE -> faceDown && (isSpectator || state.projectedState.getController(entityId) != viewerId)
+            else -> false
+        }
     }
 
     fun enrich(decision: PendingDecision, state: GameState, viewerId: EntityId): PendingDecision {
