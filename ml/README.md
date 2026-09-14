@@ -40,6 +40,46 @@ datasets or runtime services. The PEP 517 build may resolve the pinned build-onl
 after installation the contract suite itself is offline. Neither command
 trains a model, contacts a dataset service, or materializes source data.
 
+The optional learner tooling is installed and tested explicitly:
+
+```powershell
+cd ml
+py -3.13 -m pip install ".[learner]"
+py -3.13 -m unittest discover -s tooling_tests -v
+```
+
+From the repository root, use `just ml-tooling-test`. This path installs only the pinned learner
+extra and runs the focused tooling suite. It does not train a model or access a dataset service.
+
+## Core and optional learner tooling
+
+The core contract layer remains dependency-free. It contains the canonical contracts, derived
+artifact reader, variable-size candidate transport, selection, checkpoint manifest, and the
+framework-independent `ScoreProvider` boundary. Importing `argentum_ml`, `contracts`, `data`,
+`inference`, or `checkpoint` does not import learner packages.
+
+The optional `learner` layer is a small physical tooling boundary:
+
+```text
+PyTorch = learner execution and runtime provenance
+Safetensors = physical tensor weight container
+Trackio = local scalar observability
+ArgentumCheckpointManifestV1 = semantic checkpoint authority
+```
+
+The learner layer has no model architecture, encoder, optimizer, loss, training loop, Teacher-label
+materialization, dataset export, RL, self-play, gameplay evaluation, or recurrent training. Its
+PyTorch and Safetensors imports are lazy, and missing optional packages fail with
+`TOOLING_UNAVAILABLE` rather than falling back to another implementation.
+
+Trackio receives only the approved scalar metrics and explicit Argentum-owned semantic references.
+Reference values retain the syntax defined by their owning contract; Trackio defines no identity
+format and its run ID is not an Argentum identity. Trackio is forced into local mode and rejects
+remote Space/server/token/webhook configuration. C1_04 does not adopt `huggingface_hub` as an
+Argentum dependency or tooling boundary. A transitive Trackio dependency does not authorize Hub
+imports, authentication, API use, uploads, or downloads, and no HF credentials are required for
+the local smoke.
+
 ## Package boundaries
 
 - `contracts/` contains A3-compatible canonical JSON, frozen identities, and model-facing validation.
@@ -47,6 +87,7 @@ trains a model, contacts a dataset service, or materializes source data.
 - `selection/` contains PolicyTieRng V1 and Selection V2 over exact semantic source bindings.
 - `checkpoint/` contains strict checkpoint identity, weight-byte integrity, and numeric-profile binding.
 - `inference/` contains the model-independent `ScoreProvider` seam and fail-closed runtime.
+- `learner/` contains optional PyTorch provenance, Safetensors weight I/O, and local Trackio metrics.
 
 The provider receives only immutable admitted model input and feature views for every real candidate.
 Presence and executable support remain separate. Structured inference is intentionally non-total in
@@ -83,8 +124,10 @@ In that case the runtime fails before provider access and consumes zero PolicyTi
 
 ## Scope and authorization
 
-This package is a foundation for later inference integration. It contains no PyTorch, CUDA, NumPy,
-Hugging Face, training loop, learner smoke, RL, self-play, search implementation, or world model.
+This package is a foundation for later inference integration. The core contract path contains no
+runtime dependency on PyTorch, CUDA, NumPy, Hugging Face, training loop, RL, self-play, search
+implementation, or world model. C1_04 adds only the optional physical tooling boundary described
+above; it still does not start training or materialize learner data.
 
 ```text
 TRAINING_AUTHORIZED=NO

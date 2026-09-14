@@ -27,6 +27,11 @@ ml-test:
 ml-check:
     cd ml && {{ml-python}} -m compileall -q src tests
 
+# Install the optional local learner tooling and run only its focused tests.
+[group: 'build']
+ml-tooling-test:
+    cd ml && {{ml-python}} -m pip install ".[learner]" && {{ml-python}} -m unittest discover -s tooling_tests -v
+
 # Card scenarios now live in the per-era `:mtg-sets:<era>:tests` modules, which `:mtg-sets:scenarioTest`
 # fans out to, so both are run here — same coverage as before the split.
 # Run the engine's own tests plus every card scenario
