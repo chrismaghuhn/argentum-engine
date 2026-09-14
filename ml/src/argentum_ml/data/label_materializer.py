@@ -7,17 +7,13 @@ from typing import Any
 
 from ..contracts.canonical_json import canonical_json
 from ..teacher.contracts import (
-    GENERIC_KIND_SCORER_ID,
-    PUBLIC_OBSERVATION_TEACHER_CONFIG_ID,
-    PUBLIC_OBSERVATION_TEACHER_ID,
-    PUBLIC_OBSERVATION_TEACHER_SOURCE_ID,
-    TEACHER_BOOTSTRAP_CONTRACT_IDENTITY,
     NoLabelReason,
     NoLabelTeacherResultV1,
     PublicObservationTeacherConfigV1,
     SelectedTeacherResultV1,
 )
 from ..teacher.execution import (
+    C1_05AdmissionBindingV1,
     TeacherExecutionBindingV1,
     TeacherExecutionError,
     TeacherTieRngScheduleV1,
@@ -167,56 +163,95 @@ def materialize_artifact(
     execution: TeacherExecutionBindingV1,
     materializer_implementation_identity: dict[str, str],
     materializer_config_digest: str,
-    expected_source_artifact_id: str,
-    expected_source_dataset_id: str,
-    expected_source_manifest_content_digest: str,
-    expected_teacher_source_commit: str,
 ) -> dict[str, Any]:
-    """Materialize a bounded source artifact without touching TEST semantically."""
+    """Materialize only the repository-authoritative C1_03 source/admission tuple."""
+
+    return _materialize_artifact(
+        source_root,
+        output_root,
+        teacher=teacher,
+        execution=execution,
+        materializer_implementation_identity=materializer_implementation_identity,
+        materializer_config_digest=materializer_config_digest,
+        authority=C1_05AdmissionBindingV1.reference(),
+    )
+
+
+def _materialize_artifact_for_test(
+    source_root: Any,
+    output_root: Any,
+    *,
+    teacher: Any,
+    execution: TeacherExecutionBindingV1,
+    materializer_implementation_identity: dict[str, str],
+    materializer_config_digest: str,
+    authority: C1_05AdmissionBindingV1,
+) -> dict[str, Any]:
+    """Private synthetic-fixture seam; never use for a production run."""
+
+    return _materialize_artifact(
+        source_root,
+        output_root,
+        teacher=teacher,
+        execution=execution,
+        materializer_implementation_identity=materializer_implementation_identity,
+        materializer_config_digest=materializer_config_digest,
+        authority=authority,
+    )
+
+
+def _materialize_artifact(
+    source_root: Any,
+    output_root: Any,
+    *,
+    teacher: Any,
+    execution: TeacherExecutionBindingV1,
+    materializer_implementation_identity: dict[str, str],
+    materializer_config_digest: str,
+    authority: C1_05AdmissionBindingV1,
+) -> dict[str, Any]:
+    """Internal implementation with an explicit, already validated authority."""
 
     if not hasattr(teacher, "select") or not hasattr(teacher, "identity") or not hasattr(teacher, "config"):
         raise LabelMaterializerError("materializer requires an admitted Teacher")
-    for value, label in (
-        (expected_source_artifact_id, "expected source artifact identity"),
-        (expected_source_dataset_id, "expected source dataset identity"),
-        (expected_source_manifest_content_digest, "expected source manifest digest"),
-        (expected_teacher_source_commit, "expected Teacher source commit"),
-    ):
-        if not isinstance(value, str) or not value:
-            raise LabelMaterializerError(f"{label} is required")
+    try:
+        authority.validate_shape()
+    except TeacherExecutionError as exc:
+        raise LabelMaterializerError(str(exc)) from exc
     try:
         execution.validate()
     except TeacherExecutionError as exc:
         raise LabelMaterializerError(str(exc)) from exc
     config = getattr(teacher, "config", None)
     identity = getattr(teacher, "identity", None)
-    reference_config = PublicObservationTeacherConfigV1.reference()
     if not isinstance(config, PublicObservationTeacherConfigV1) or identity is None:
         raise LabelMaterializerError("materializer requires the admitted Teacher contract")
-    if config.digest != reference_config.digest or config.schema_identity != PUBLIC_OBSERVATION_TEACHER_CONFIG_ID:
+    if config.digest != authority.teacher_config_digest or config.schema_identity != authority.teacher_config_schema_identity:
         raise LabelMaterializerError("Teacher configuration is not the admitted C1_05 reference")
     if (
-        identity.teacher_contract_identity != TEACHER_BOOTSTRAP_CONTRACT_IDENTITY
-        or identity.teacher_policy_identity != PUBLIC_OBSERVATION_TEACHER_ID
-        or identity.teacher_source_identity != PUBLIC_OBSERVATION_TEACHER_SOURCE_ID
-        or config.scorer_identity != GENERIC_KIND_SCORER_ID
-        or config.selection_contract_identity != "argentum-ml-policy-selection@v2"
-        or config.policy_rng_contract_identity != "argentum-ml-policy-tie-rng@v1"
+        identity.teacher_contract_identity != authority.teacher_contract_identity
+        or identity.teacher_policy_identity != authority.teacher_policy_identity
+        or identity.teacher_source_identity != authority.teacher_source_identity
+        or config.scorer_identity != authority.scorer_identity
+        or config.selection_contract_identity != authority.selection_contract_identity
+        or config.policy_rng_contract_identity != authority.policy_rng_identity
     ):
         raise LabelMaterializerError("Teacher identity is not the admitted C1_05 reference")
-    if identity.source_commit != expected_teacher_source_commit:
+    if identity.source_commit != authority.teacher_source_commit:
         raise LabelMaterializerError("Teacher source commit differs from accepted admission")
+    if execution != authority.execution:
+        raise LabelMaterializerError("Teacher execution binding differs from admission authority")
     reader = None
     try:
         from .derived_reader import DerivedArtifactReader
 
         reader = DerivedArtifactReader.open(source_root)
         source_manifest = reader.manifest
-        if source_manifest["derivedArtifactId"] != expected_source_artifact_id:
+        if source_manifest["derivedArtifactId"] != authority.source_derived_artifact_id:
             raise LabelMaterializerError("source derived artifact identity differs from expected")
-        if source_manifest["sourceDatasetId"] != expected_source_dataset_id:
+        if source_manifest["sourceDatasetId"] != authority.source_dataset_id:
             raise LabelMaterializerError("source dataset identity differs from expected")
-        if source_manifest["sourceManifestContentDigest"] != expected_source_manifest_content_digest:
+        if source_manifest["sourceManifestContentDigest"] != authority.source_manifest_content_digest:
             raise LabelMaterializerError("source manifest digest differs from expected")
         schedule = TeacherTieRngScheduleV1(
             execution,
@@ -317,16 +352,7 @@ def materialize_artifact(
             "testRowsConsumed": 0,
         }
         teacher_provenance = {
-            "teacherContractIdentity": identity.teacher_contract_identity,
-            "teacherPolicyIdentity": identity.teacher_policy_identity,
-            "teacherSourceIdentity": identity.teacher_source_identity,
-            "teacherSourceCommit": identity.source_commit,
-            "teacherConfigSchemaIdentity": config.schema_identity,
-            "teacherConfigDigest": config.digest,
-            "scorerIdentity": config.scorer_identity,
-            "selectionContractIdentity": config.selection_contract_identity,
-            "policyRngIdentity": config.policy_rng_contract_identity,
-            **execution.to_dict(),
+            **authority.to_teacher_provenance(),
         }
         artifact_identity = {
             "sourceDatasetId": source_manifest["sourceDatasetId"],

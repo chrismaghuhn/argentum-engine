@@ -148,6 +148,90 @@ class TeacherExecutionBindingV1:
         }
 
 
+@dataclass(frozen=True)
+class C1_05AdmissionBindingV1:
+    """Repository-authoritative C1_03 admission binding for public materialization."""
+
+    source_dataset_id: str
+    source_manifest_content_digest: str
+    source_derived_artifact_id: str
+    teacher_contract_identity: str
+    teacher_policy_identity: str
+    teacher_source_identity: str
+    teacher_source_commit: str
+    teacher_config_schema_identity: str
+    teacher_config_digest: str
+    scorer_identity: str
+    selection_contract_identity: str
+    policy_rng_identity: str
+    execution: TeacherExecutionBindingV1
+
+    @classmethod
+    def reference(cls) -> "C1_05AdmissionBindingV1":
+        return cls(
+            source_dataset_id="69cfd13f7537da2a55e00ef9bdc69d09af9a7c11a7490c3b20c985b231e55d03",
+            source_manifest_content_digest="de1f3a10fc6476b4db2ec3d76dbfc347f4c268005df7352ac47387442b4211d2",
+            source_derived_artifact_id="be545edcb7809a34d78ab9be03476b3cd29ab42e54e6c7f7e20b25b5bcc05a4a",
+            teacher_contract_identity="argentum-ml-teacher-bootstrap@v1",
+            teacher_policy_identity="argentum-ml-public-observation-bootstrap-teacher@v1",
+            teacher_source_identity="argentum-ml-public-observation-teacher-source@v1",
+            teacher_source_commit="8cad4845dc59192dde86849c8ba4ceacc1bb6331",
+            teacher_config_schema_identity="argentum-ml-public-observation-teacher-config@v1",
+            teacher_config_digest="fa358597c09ce466e1be1823de485e0accd84be622184fa1d6505806aff0d7d8",
+            scorer_identity="argentum-ml-public-observation-generic-kind-scorer@v1",
+            selection_contract_identity="argentum-ml-policy-selection@v2",
+            policy_rng_identity="argentum-ml-policy-tie-rng@v1",
+            execution=TeacherExecutionBindingV1.reference(),
+        )
+
+    def validate_shape(self) -> None:
+        for value, label in (
+            (self.source_dataset_id, "source dataset identity"),
+            (self.source_manifest_content_digest, "source manifest digest"),
+            (self.source_derived_artifact_id, "source derived artifact identity"),
+            (self.teacher_config_digest, "Teacher config digest"),
+        ):
+            if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+                raise TeacherExecutionError(f"{label} must be lowercase SHA-256 hex")
+        if not isinstance(self.teacher_source_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", self.teacher_source_commit):
+            raise TeacherExecutionError("Teacher source commit must be lowercase Git SHA-1")
+        for value, label in (
+            (self.teacher_contract_identity, "Teacher contract identity"),
+            (self.teacher_policy_identity, "Teacher policy identity"),
+            (self.teacher_source_identity, "Teacher source identity"),
+            (self.teacher_config_schema_identity, "Teacher config schema identity"),
+            (self.scorer_identity, "Teacher scorer identity"),
+            (self.selection_contract_identity, "Selection identity"),
+            (self.policy_rng_identity, "PolicyTieRng identity"),
+        ):
+            if not isinstance(value, str) or not value:
+                raise TeacherExecutionError(f"{label} is missing")
+        self.execution.validate()
+
+    def source_identity(self) -> dict[str, str]:
+        self.validate_shape()
+        return {
+            "sourceDatasetId": self.source_dataset_id,
+            "sourceManifestContentDigest": self.source_manifest_content_digest,
+            "sourceDerivedArtifactId": self.source_derived_artifact_id,
+        }
+
+    def to_teacher_provenance(self) -> dict[str, Any]:
+        self.validate_shape()
+        return {
+            "teacherContractIdentity": self.teacher_contract_identity,
+            "teacherPolicyIdentity": self.teacher_policy_identity,
+            "teacherSourceIdentity": self.teacher_source_identity,
+            "teacherSourceCommit": self.teacher_source_commit,
+            "teacherConfigSchemaIdentity": self.teacher_config_schema_identity,
+            "teacherConfigDigest": self.teacher_config_digest,
+            "scorerIdentity": self.scorer_identity,
+            "selectionContractIdentity": self.selection_contract_identity,
+            "policyRngIdentity": self.policy_rng_identity,
+            **self.execution.to_dict(),
+        }
+
+
 class TeacherTieRngScheduleV1:
     """Stateful C1_03-compatible PolicyTieRng ownership by episode and seat."""
 

@@ -21,6 +21,7 @@ from .contracts import (
 from .public_observation_teacher import PublicObservationTeacherV1
 from .request import PublicObservationTeacherRequestV1
 from .execution import (
+    C1_05AdmissionBindingV1,
     TeacherExecutionBindingV1,
     TeacherExecutionError,
     TeacherTieRngScheduleV1,
@@ -50,6 +51,7 @@ __all__ = [
     "PublicObservationTeacherRequestV1",
     "PublicObservationTeacherV1",
     "TeacherExecutionBindingV1",
+    "C1_05AdmissionBindingV1",
     "TeacherExecutionError",
     "TeacherTieRngScheduleV1",
     "teacher_seat_index",

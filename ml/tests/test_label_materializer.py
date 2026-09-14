@@ -1,17 +1,20 @@
 import copy
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from argentum_ml.contracts.canonical_json import canonical_bytes
 from argentum_ml.data.derived_reader import DerivedArtifactReader
 from argentum_ml.data.label_materializer import (
     LabelMaterializerError,
+    _materialize_artifact_for_test,
     materialize_selected_label,
     materialize_artifact,
 )
 from argentum_ml.data.label_artifact import LabelArtifactReader
 from argentum_ml.teacher.execution import (
+    C1_05AdmissionBindingV1,
     TeacherExecutionBindingV1,
     TeacherExecutionError,
     TeacherTieRngScheduleV1,
@@ -138,6 +141,16 @@ def _teacher_request_and_result(sample: dict, *, folded: bool = False):
     return validated, request, result
 
 
+def _fixture_authority(source_manifest: dict) -> C1_05AdmissionBindingV1:
+    reference = C1_05AdmissionBindingV1.reference()
+    return replace(
+        reference,
+        source_dataset_id=source_manifest["sourceDatasetId"],
+        source_manifest_content_digest=source_manifest["sourceManifestContentDigest"],
+        source_derived_artifact_id=source_manifest["derivedArtifactId"],
+    )
+
+
 class LabelMaterializerTests(unittest.TestCase):
     def test_teacher_schedule_rejects_unexplained_cursor_jump(self) -> None:
         schedule = TeacherTieRngScheduleV1(
@@ -174,10 +187,6 @@ class LabelMaterializerTests(unittest.TestCase):
                         "sourceCommit": "e" * 40,
                     },
                     materializer_config_digest=_sha("f"),
-                    expected_source_artifact_id=source_manifest["derivedArtifactId"],
-                    expected_source_dataset_id=source_manifest["sourceDatasetId"],
-                    expected_source_manifest_content_digest=source_manifest["sourceManifestContentDigest"],
-                    expected_teacher_source_commit="8cad4845dc59192dde86849c8ba4ceacc1bb6331",
                 )
 
     def test_small_artifact_materialization_writes_label_sidecar(self) -> None:
@@ -195,7 +204,7 @@ class LabelMaterializerTests(unittest.TestCase):
                 PublicObservationTeacherConfigV1.reference(),
                 "8cad4845dc59192dde86849c8ba4ceacc1bb6331",
             )
-            manifest = materialize_artifact(
+            manifest = _materialize_artifact_for_test(
                 source_root,
                 output_root,
                 teacher=teacher,
@@ -205,12 +214,9 @@ class LabelMaterializerTests(unittest.TestCase):
                     "sourceCommit": "e" * 40,
                 },
                 materializer_config_digest=_sha("f"),
-                expected_source_artifact_id=source_manifest["derivedArtifactId"],
-                expected_source_dataset_id=source_manifest["sourceDatasetId"],
-                expected_source_manifest_content_digest=source_manifest["sourceManifestContentDigest"],
-                expected_teacher_source_commit="8cad4845dc59192dde86849c8ba4ceacc1bb6331",
+                authority=_fixture_authority(source_manifest),
             )
-            reader = LabelArtifactReader.open(
+            reader = LabelArtifactReader._open_for_test(
                 output_root,
                 source_artifact_root=source_root,
                 expected_source_identity={
@@ -218,6 +224,7 @@ class LabelMaterializerTests(unittest.TestCase):
                     "sourceManifestContentDigest": source_manifest["sourceManifestContentDigest"],
                     "sourceDerivedArtifactId": source_manifest["derivedArtifactId"],
                 },
+                admission_binding=_fixture_authority(source_manifest),
             )
             self.assertEqual(manifest["labelCount"], 1)
             self.assertEqual(len(tuple(reader.iter_labels())), 1)
@@ -271,7 +278,7 @@ class LabelMaterializerTests(unittest.TestCase):
             source_reader = DerivedArtifactReader.open(source_root)
             source_manifest = dict(source_reader.manifest)
             source_reader.close()
-            manifest = materialize_artifact(
+            manifest = _materialize_artifact_for_test(
                 source_root,
                 root / "labels",
                 teacher=StructuredNoLabelTeacher(),
@@ -281,10 +288,7 @@ class LabelMaterializerTests(unittest.TestCase):
                     "sourceCommit": "e" * 40,
                 },
                 materializer_config_digest=_sha("f"),
-                expected_source_artifact_id=source_manifest["derivedArtifactId"],
-                expected_source_dataset_id=source_manifest["sourceDatasetId"],
-                expected_source_manifest_content_digest=source_manifest["sourceManifestContentDigest"],
-                expected_teacher_source_commit="8cad4845dc59192dde86849c8ba4ceacc1bb6331",
+                authority=_fixture_authority(source_manifest),
             )
             self.assertEqual(manifest["labelCount"], 0)
             self.assertEqual(

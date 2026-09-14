@@ -89,7 +89,7 @@ py -3.13 -m unittest tests.test_label_materializer tests.test_c1_03_characteriza
 
 - [ ] Implement LabelArtifactError, LabelArtifactManifestV1, and LabelArtifactReader with existing canonical JSON/SHA-256 helpers. Reject unknown fields/versions, noncanonical lines, symlinks, digest mismatch, duplicate keys, and TEST labels. Keep the exact selected binding in the sidecar binding channel and exclude model input.
 
-- [ ] Implement staging plus atomic publication for manifest.json and labels.ndjson. Verify bytes, digests, and counts before publication.
+- [ ] Implement staging plus atomic publication of the complete label-artifact directory containing manifest.json and labels.ndjson. Verify bytes, digests, and counts before publication.
 
 - [ ] Run:
 

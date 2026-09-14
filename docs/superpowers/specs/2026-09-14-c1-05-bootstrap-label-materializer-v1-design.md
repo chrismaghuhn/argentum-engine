@@ -244,6 +244,13 @@ dataset/manifest/derived-artifact/source-commit tuple; a synthetic fixture may
 provide a different explicit tuple only in a test-scoped fixture, never through
 a production `None` bypass.
 
+The public implementation obtains these values only from
+`C1_05AdmissionBindingV1.reference()`, which binds the accepted C1_03 dataset,
+manifest, derived artifact, Teacher identities/source commit, config/scorer,
+Selection/PolicyTieRng identities, admission plan, and execution binding.
+Synthetic values are available only through a private test seam and are not
+accepted by the public entry point.
+
 The source manifest's own content and derived-artifact digests must be verified
 using the existing canonical JSON rules. A changed source file, even when a row
 appears structurally usable, is not a valid input.
@@ -809,9 +816,12 @@ runtime EntityId, candidate slot, raw action ID, or raw decision ID
 
 ### Q13 — Verification without rerunning the Teacher
 
-Yes. The authoritative label reader requires both the exact C1_00 source
-artifact and an expected source-identity tuple
-`(sourceDatasetId, sourceManifestContentDigest, sourceDerivedArtifactId)`.
+Yes. The authoritative label reader requires the exact C1_00 source artifact
+and derives the source-identity tuple
+`(sourceDatasetId, sourceManifestContentDigest, sourceDerivedArtifactId)` from
+`C1_05AdmissionBindingV1.reference()`. A caller-supplied tuple, when retained
+as a consistency assertion, must equal that authority; only the private test
+seam may use a matching synthetic admission binding.
 It can verify a published sidecar without calling the Teacher:
 
 1. validate canonical bytes, exact schema/version and all manifest digests;
@@ -823,7 +833,8 @@ It can verify a published sidecar without calling the Teacher:
 6. resolve the source candidate/response at the ordinal, compare the label target
    exactly to `selectedExactSourceBinding`, and validate that exact binding's
    public counterpart against the complete source domain;
-7. verify exactly one semantic domain match and that the matched member is
+7. verify that the unique semantic match index equals `sourceBindingOrdinal`,
+   then verify that the matched member is
    executable; other executable candidates may exist; then verify all accounting totals; and
 8. verify that no TEST row has a label or Teacher call count.
 

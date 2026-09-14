@@ -20,7 +20,12 @@ from ..contracts.identities import (
     SUPERVISED_POLICY_TARGET_IDENTITY,
 )
 from ..teacher.contracts import NoLabelReason
-from ..teacher.execution import TeacherExecutionBindingV1, TeacherExecutionError, teacher_seat_index
+from ..teacher.execution import (
+    C1_05AdmissionBindingV1,
+    TeacherExecutionBindingV1,
+    TeacherExecutionError,
+    teacher_seat_index,
+)
 from .split import assign_partition
 from .derived_reader import DerivedArtifactReader, validate_exact_source_binding_membership
 
@@ -333,11 +338,21 @@ def _validate_row(row: dict[str, Any], manifest: dict[str, Any]) -> None:
             raise LabelArtifactError("exact response target and binding differ")
     provenance = _expect_object(row["provenance"], "provenance")
     _expect_keys(provenance, _PROVENANCE_KEYS, "provenance")
-    for key in ("teacherResultSchemaIdentity", "selectionContractIdentity", "policyRngIdentity"):
-        _expect_string(provenance[key], f"provenance.{key}")
+    if provenance["teacherResultSchemaIdentity"] != "argentum-ml-public-observation-teacher-result@v1":
+        raise LabelArtifactError("unsupported Teacher result schema identity")
+    if provenance["selectionContractIdentity"] != "argentum-ml-policy-selection@v2":
+        raise LabelArtifactError("unsupported row Selection identity")
+    if provenance["policyRngIdentity"] != "argentum-ml-policy-tie-rng@v1":
+        raise LabelArtifactError("unsupported row PolicyTieRng identity")
     _expect_sha(provenance["teacherConfigDigest"], "provenance.teacherConfigDigest")
     for key in ("teacherSeatIndex", "candidateCount", "rngDrawCount", "cursorBefore", "cursorAfter", "policyTieRngWordsConsumed"):
         _expect_int(provenance[key], f"provenance.{key}")
+    if provenance["cursorAfter"] < provenance["cursorBefore"]:
+        raise LabelArtifactError("provenance cursor moved backwards")
+    if provenance["rngDrawCount"] != provenance["cursorAfter"] - provenance["cursorBefore"]:
+        raise LabelArtifactError("provenance draw count differs from cursor delta")
+    if provenance["policyTieRngWordsConsumed"] != provenance["rngDrawCount"]:
+        raise LabelArtifactError("provenance PolicyTieRng word count differs from draw count")
     if not isinstance(provenance["tieOccurred"], bool):
         raise LabelArtifactError("provenance.tieOccurred must be boolean")
 
@@ -465,10 +480,34 @@ class LabelArtifactReader:
         source_artifact_root: Path | None = None,
         expected_source_identity: dict[str, str] | None = None,
     ) -> "LabelArtifactReader":
-        if source_artifact_root is None or expected_source_identity is None:
-            raise LabelArtifactError("authoritative label verification requires source identity and artifact")
+        if source_artifact_root is None:
+            raise LabelArtifactError("authoritative label verification requires the source artifact")
+        admission_binding = C1_05AdmissionBindingV1.reference()
+        try:
+            authority_source_identity = admission_binding.source_identity()
+        except TeacherExecutionError as exc:
+            raise LabelArtifactError("accepted C1_05 source authority is invalid") from exc
+        if expected_source_identity is not None and expected_source_identity != authority_source_identity:
+            raise LabelArtifactError("caller source identity differs from accepted C1_05 admission authority")
         reader = cls._open_structural(root)
-        reader._verify_source(source_artifact_root, expected_source_identity)
+        reader._verify_source(
+            source_artifact_root,
+            authority_source_identity,
+            admission_binding,
+        )
+        return reader
+
+    @classmethod
+    def _open_for_test(
+        cls,
+        root: Path,
+        *,
+        source_artifact_root: Path,
+        expected_source_identity: dict[str, str],
+        admission_binding: C1_05AdmissionBindingV1,
+    ) -> "LabelArtifactReader":
+        reader = cls._open_structural(root)
+        reader._verify_source(source_artifact_root, expected_source_identity, admission_binding)
         return reader
 
     @classmethod
@@ -502,13 +541,84 @@ class LabelArtifactReader:
         if len(labels) != manifest["labelCount"]:
             raise LabelArtifactError("label count mismatch")
         family_counts = {family: 0 for family in _FAMILIES}
+        partition_counts = {partition: 0 for partition in _PARTITIONS}
         for row in labels:
             family_counts[row["decisionFamily"]] += 1
+            partition_counts[row["partition"]] += 1
         if family_counts != manifest["labelCountsByDecisionFamily"]:
             raise LabelArtifactError("label family counts do not match rows")
+        if partition_counts != manifest["labelCountsByPartition"]:
+            raise LabelArtifactError("label partition counts do not match rows")
         return cls(root, manifest, tuple(labels))
 
-    def _verify_source(self, source_artifact_root: Path, expected_source_identity: dict[str, str]) -> None:
+    def _verify_label_against_source(
+        self,
+        label: dict[str, Any],
+        source: dict[str, Any],
+    ) -> None:
+        if canonical_json(source["sourceReference"]) != canonical_json(label["sourceReference"]):
+            raise LabelArtifactError("label source reference differs from source artifact")
+        if source["partition"] != label["partition"]:
+            raise LabelArtifactError("label partition differs from source artifact")
+        domain = source["binding"]["completeLegalDomain"]
+        if domain["kind"] != label["decisionFamily"]:
+            raise LabelArtifactError("label decision family differs from source domain")
+        ordinal = label["binding"]["sourceBindingOrdinal"]
+        ordinals = source["binding"]["sourceBindingOrdinals"]
+        if ordinal not in ordinals or ordinal >= len(domain["candidates"]):
+            raise LabelArtifactError("label ordinal is absent from source domain")
+        candidate = domain["candidates"][ordinal]
+        if candidate.get("affordable") is not True:
+            raise LabelArtifactError("label source member is not executable")
+        validate_exact_source_binding_membership(
+            label["target"],
+            label["binding"]["selectedExactSourceBinding"],
+            domain,
+        )
+        if label["target"]["chosenSemanticAction"] is not None:
+            selected_value = label["target"]["chosenSemanticAction"]["candidate"]
+            matches = [
+                index
+                for index, candidate_value in enumerate(domain["candidates"])
+                if canonical_json(candidate_value) == canonical_json(selected_value)
+            ]
+        else:
+            selected_value = label["target"]["chosenSemanticResponse"]["response"]
+            matches = [
+                index
+                for index, candidate_value in enumerate(domain["candidates"])
+                if canonical_json(candidate_value.get("actionSemantics")) == canonical_json(selected_value)
+            ]
+        if len(matches) != 1 or matches[0] != ordinal:
+            raise LabelArtifactError("label semantic match does not equal source binding ordinal")
+        try:
+            seat = teacher_seat_index(source)
+        except TeacherExecutionError as exc:
+            raise LabelArtifactError("source seat authority is invalid") from exc
+        if label["provenance"]["teacherSeatIndex"] != seat:
+            raise LabelArtifactError("label seat differs from source seat authority")
+        if label["provenance"]["candidateCount"] != len(domain["candidates"]):
+            raise LabelArtifactError("label candidate count differs from source domain")
+        teacher_provenance = self.manifest["teacherProvenance"]
+        if label["provenance"]["teacherConfigDigest"] != teacher_provenance["teacherConfigDigest"]:
+            raise LabelArtifactError("label Teacher config digest differs from manifest")
+        if label["provenance"]["selectionContractIdentity"] != teacher_provenance["selectionContractIdentity"]:
+            raise LabelArtifactError("label Selection identity differs from manifest")
+        if label["provenance"]["policyRngIdentity"] != teacher_provenance["policyRngIdentity"]:
+            raise LabelArtifactError("label PolicyTieRng identity differs from manifest")
+
+    def _verify_source(
+        self,
+        source_artifact_root: Path,
+        expected_source_identity: dict[str, str],
+        admission_binding: C1_05AdmissionBindingV1,
+    ) -> None:
+        try:
+            authority_source_identity = admission_binding.source_identity()
+        except TeacherExecutionError as exc:
+            raise LabelArtifactError("admission binding is invalid") from exc
+        if expected_source_identity != authority_source_identity:
+            raise LabelArtifactError("source identity differs from admission authority")
         if set(expected_source_identity) != {
             "sourceDatasetId",
             "sourceManifestContentDigest",
@@ -520,6 +630,12 @@ class LabelArtifactReader:
         for key in expected_source_identity:
             if self.manifest[key] != expected_source_identity[key]:
                 raise LabelArtifactError("label manifest differs from expected source identity")
+        try:
+            expected_teacher_provenance = admission_binding.to_teacher_provenance()
+        except TeacherExecutionError as exc:
+            raise LabelArtifactError("admission binding is invalid") from exc
+        if canonical_json(self.manifest["teacherProvenance"]) != canonical_json(expected_teacher_provenance):
+            raise LabelArtifactError("label Teacher provenance differs from accepted admission authority")
         source_reader = DerivedArtifactReader.open(source_artifact_root)
         try:
             source_manifest = source_reader.manifest
@@ -536,51 +652,18 @@ class LabelArtifactReader:
                     raise LabelArtifactError("processed rows do not cover source partition")
             if self.manifest["processedRowsByPartition"]["TEST"] != 0:
                 raise LabelArtifactError("TEST rows were semantically processed")
-            source_rows = {
-                _source_key(row): row
-                for row in source_reader.iter_samples()
+            labels_by_source_key = {
+                _source_key(label): label
+                for label in self._labels
             }
+            for source in source_reader.iter_samples():
+                label = labels_by_source_key.pop(_source_key(source), None)
+                if label is not None:
+                    self._verify_label_against_source(label, source)
         finally:
             source_reader.close()
-        for label in self._labels:
-            key = _source_key(label)
-            source = source_rows.get(key)
-            if source is None:
-                raise LabelArtifactError("label source decision is absent from source artifact")
-            if canonical_json(source["sourceReference"]) != canonical_json(label["sourceReference"]):
-                raise LabelArtifactError("label source reference differs from source artifact")
-            if source["partition"] != label["partition"]:
-                raise LabelArtifactError("label partition differs from source artifact")
-            domain = source["binding"]["completeLegalDomain"]
-            if domain["kind"] != label["decisionFamily"]:
-                raise LabelArtifactError("label decision family differs from source domain")
-            ordinal = label["binding"]["sourceBindingOrdinal"]
-            ordinals = source["binding"]["sourceBindingOrdinals"]
-            if ordinal not in ordinals or ordinal >= len(domain["candidates"]):
-                raise LabelArtifactError("label ordinal is absent from source domain")
-            candidate = domain["candidates"][ordinal]
-            if candidate.get("affordable") is not True:
-                raise LabelArtifactError("label source member is not executable")
-            validate_exact_source_binding_membership(
-                label["target"],
-                label["binding"]["selectedExactSourceBinding"],
-                domain,
-            )
-            try:
-                seat = teacher_seat_index(source)
-            except TeacherExecutionError as exc:
-                raise LabelArtifactError("source seat authority is invalid") from exc
-            if label["provenance"]["teacherSeatIndex"] != seat:
-                raise LabelArtifactError("label seat differs from source seat authority")
-            if label["provenance"]["candidateCount"] != len(domain["candidates"]):
-                raise LabelArtifactError("label candidate count differs from source domain")
-            teacher_provenance = self.manifest["teacherProvenance"]
-            if label["provenance"]["teacherConfigDigest"] != teacher_provenance["teacherConfigDigest"]:
-                raise LabelArtifactError("label Teacher config digest differs from manifest")
-            if label["provenance"]["selectionContractIdentity"] != teacher_provenance["selectionContractIdentity"]:
-                raise LabelArtifactError("label Selection identity differs from manifest")
-            if label["provenance"]["policyRngIdentity"] != teacher_provenance["policyRngIdentity"]:
-                raise LabelArtifactError("label PolicyTieRng identity differs from manifest")
+        if labels_by_source_key:
+            raise LabelArtifactError("label source decision is absent from source artifact")
 
     def iter_labels(self) -> Iterable[dict[str, Any]]:
         return iter(self._labels)
