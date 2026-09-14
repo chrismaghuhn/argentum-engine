@@ -9,5 +9,12 @@ description = "Argentum C1 derived learner contracts"
 requires-python = ">=3.13,<3.14"
 dependencies = []
 
+[project.optional-dependencies]
+learner = [
+    "torch==2.14.0",
+    "safetensors==0.8.0",
+    "trackio==0.37.1",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
