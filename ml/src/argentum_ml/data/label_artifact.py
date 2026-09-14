@@ -19,7 +19,10 @@ from ..contracts.identities import (
     SPLIT_CONTRACT_IDENTITY,
     SUPERVISED_POLICY_TARGET_IDENTITY,
 )
+from ..teacher.contracts import NoLabelReason
+from ..teacher.execution import TeacherExecutionBindingV1, TeacherExecutionError, teacher_seat_index
 from .split import assign_partition
+from .derived_reader import DerivedArtifactReader, validate_exact_source_binding_membership
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
@@ -55,6 +58,7 @@ _MANIFEST_KEYS = {
     "labelCountsByDecisionFamily",
     "expectedNoLabelByPartitionAndReason",
     "rejectedInvalidSourceBindingByPartition",
+    "rejectedInvalidSelectedLabelByPartition",
     "rejectedSplitByPartition",
     "rejectedProvenanceByPartition",
     "duplicateDecisionKeyCount",
@@ -193,7 +197,7 @@ def _accounting_partition_counts(value: Any, label: str) -> dict[str, int]:
 
 def _identity_payload(manifest: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schema": manifest["labelArtifactIdentitySchema"],
+        "labelArtifactIdentitySchema": manifest["labelArtifactIdentitySchema"],
         "labelArtifactSchemaIdentity": manifest["labelArtifactSchemaIdentity"],
         "supervisedPolicyTargetContractIdentity": manifest["supervisedPolicyTargetContractIdentity"],
         "sourceDatasetId": manifest["sourceDatasetId"],
@@ -216,6 +220,7 @@ def _identity_payload(manifest: dict[str, Any]) -> dict[str, Any]:
         "labelCountsByDecisionFamily": manifest["labelCountsByDecisionFamily"],
         "expectedNoLabelByPartitionAndReason": manifest["expectedNoLabelByPartitionAndReason"],
         "rejectedInvalidSourceBindingByPartition": manifest["rejectedInvalidSourceBindingByPartition"],
+        "rejectedInvalidSelectedLabelByPartition": manifest["rejectedInvalidSelectedLabelByPartition"],
         "rejectedSplitByPartition": manifest["rejectedSplitByPartition"],
         "rejectedProvenanceByPartition": manifest["rejectedProvenanceByPartition"],
         "duplicateDecisionKeyCount": manifest["duplicateDecisionKeyCount"],
@@ -268,6 +273,24 @@ def _validate_teacher_provenance(value: Any) -> None:
         _expect_int(obj[key], f"teacherProvenance.{key}")
     if obj["legacyA9PolicySeedReused"] is not False:
         raise LabelArtifactError("legacy A9 policy seed reuse is forbidden")
+    try:
+        execution = TeacherExecutionBindingV1(
+            teacher_policy_tie_schedule_identity=obj["teacherPolicyTieScheduleIdentity"],
+            teacher_policy_tie_seed=obj["teacherPolicyTieSeed"],
+            initial_policy_tie_cursor=obj["initialPolicyTieCursor"],
+            teacher_tie_state_scope=obj["teacherTieStateScope"],
+            legacy_a9_policy_seed_reused=obj["legacyA9PolicySeedReused"],
+            teacher_admission_purpose_identity=obj["teacherAdmissionPurposeIdentity"],
+            teacher_admission_result=obj["teacherAdmissionResult"],
+            teacher_admission_plan_identity=obj["teacherAdmissionPlanIdentity"],
+            teacher_admission_plan_digest=obj["teacherAdmissionPlanDigest"],
+        )
+        if obj["teacherExecutionConfigDigest"] != execution.config_digest:
+            raise LabelArtifactError("Teacher execution config digest mismatch")
+    except (TeacherExecutionError, TypeError, ValueError) as exc:
+        if isinstance(exc, LabelArtifactError):
+            raise
+        raise LabelArtifactError("Teacher execution provenance is invalid") from exc
 
 
 def _validate_row(row: dict[str, Any], manifest: dict[str, Any]) -> None:
@@ -364,16 +387,53 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         "teacherCallsByPartition",
         "labelCountsByPartition",
         "rejectedInvalidSourceBindingByPartition",
+        "rejectedInvalidSelectedLabelByPartition",
         "rejectedSplitByPartition",
         "rejectedProvenanceByPartition",
     ):
         _accounting_partition_counts(manifest[key], key)
     _family_counts(manifest["labelCountsByDecisionFamily"])
-    _expect_object(manifest["expectedNoLabelByPartitionAndReason"], "expectedNoLabelByPartitionAndReason")
+    no_label = _expect_object(manifest["expectedNoLabelByPartitionAndReason"], "expectedNoLabelByPartitionAndReason")
+    _expect_keys(no_label, set(_PARTITIONS), "expectedNoLabelByPartitionAndReason")
+    for partition in _PARTITIONS:
+        reasons = _expect_object(no_label[partition], f"expectedNoLabelByPartitionAndReason.{partition}")
+        _expect_keys(reasons, {reason.value for reason in NoLabelReason}, f"expectedNoLabelByPartitionAndReason.{partition}")
+        for reason in NoLabelReason:
+            _expect_int(reasons[reason.value], f"expectedNoLabelByPartitionAndReason.{partition}.{reason.value}")
     for key in ("duplicateDecisionKeyCount", "conflictingLabelCount", "otherFailClosedMaterializerErrorCount", "testRowsConsumed", "labelsByteCount", "labelCount"):
         _expect_int(manifest[key], key)
     if sum(manifest["labelCountsByPartition"].values()) != manifest["labelCount"]:
         raise LabelArtifactError("label partition counts do not total labelCount")
+    for partition in ("TRAIN", "VALIDATION"):
+        no_labels = sum(no_label[partition].values())
+        expected_processed = (
+            manifest["labelCountsByPartition"][partition]
+            + no_labels
+            + manifest["rejectedInvalidSourceBindingByPartition"][partition]
+            + manifest["rejectedInvalidSelectedLabelByPartition"][partition]
+        )
+        if manifest["processedRowsByPartition"][partition] != expected_processed:
+            raise LabelArtifactError("processed-row accounting does not reconcile")
+        expected_teacher_calls = manifest["labelCountsByPartition"][partition] + no_labels + manifest["rejectedInvalidSelectedLabelByPartition"][partition]
+        if manifest["teacherCallsByPartition"][partition] != expected_teacher_calls:
+            raise LabelArtifactError("Teacher-call accounting does not reconcile")
+    if any(
+        manifest[key]["TEST"] != 0
+        for key in (
+            "processedRowsByPartition",
+            "teacherCallsByPartition",
+            "labelCountsByPartition",
+            "rejectedInvalidSourceBindingByPartition",
+            "rejectedInvalidSelectedLabelByPartition",
+            "rejectedSplitByPartition",
+            "rejectedProvenanceByPartition",
+        )
+    ) or manifest["testRowsConsumed"] != 0:
+        raise LabelArtifactError("TEST accounting is not untouched")
+    if any(manifest[key] != 0 for key in ("duplicateDecisionKeyCount", "conflictingLabelCount", "otherFailClosedMaterializerErrorCount")):
+        raise LabelArtifactError("published artifact contains global failure counters")
+    if sum(manifest["labelCountsByDecisionFamily"].values()) != manifest["labelCount"]:
+        raise LabelArtifactError("label family counts do not total labelCount")
     content = dict(manifest)
     content.pop("manifestContentDigest")
     if sha256_hex(canonical_bytes(content)) != manifest["manifestContentDigest"]:
@@ -398,7 +458,21 @@ class LabelArtifactReader:
         self._labels = labels
 
     @classmethod
-    def open(cls, root: Path) -> "LabelArtifactReader":
+    def open(
+        cls,
+        root: Path,
+        *,
+        source_artifact_root: Path | None = None,
+        expected_source_identity: dict[str, str] | None = None,
+    ) -> "LabelArtifactReader":
+        if source_artifact_root is None or expected_source_identity is None:
+            raise LabelArtifactError("authoritative label verification requires source identity and artifact")
+        reader = cls._open_structural(root)
+        reader._verify_source(source_artifact_root, expected_source_identity)
+        return reader
+
+    @classmethod
+    def _open_structural(cls, root: Path) -> "LabelArtifactReader":
         root = Path(root)
         manifest_path = root / "manifest.json"
         labels_path = root / "labels.ndjson"
@@ -427,7 +501,86 @@ class LabelArtifactReader:
             labels.append(row)
         if len(labels) != manifest["labelCount"]:
             raise LabelArtifactError("label count mismatch")
+        family_counts = {family: 0 for family in _FAMILIES}
+        for row in labels:
+            family_counts[row["decisionFamily"]] += 1
+        if family_counts != manifest["labelCountsByDecisionFamily"]:
+            raise LabelArtifactError("label family counts do not match rows")
         return cls(root, manifest, tuple(labels))
+
+    def _verify_source(self, source_artifact_root: Path, expected_source_identity: dict[str, str]) -> None:
+        if set(expected_source_identity) != {
+            "sourceDatasetId",
+            "sourceManifestContentDigest",
+            "sourceDerivedArtifactId",
+        }:
+            raise LabelArtifactError("expected source identity fields are not exact")
+        for key in expected_source_identity:
+            _expect_sha(expected_source_identity[key], f"expectedSourceIdentity.{key}")
+        for key in expected_source_identity:
+            if self.manifest[key] != expected_source_identity[key]:
+                raise LabelArtifactError("label manifest differs from expected source identity")
+        source_reader = DerivedArtifactReader.open(source_artifact_root)
+        try:
+            source_manifest = source_reader.manifest
+            if source_manifest["derivedArtifactId"] != self.manifest["sourceDerivedArtifactId"]:
+                raise LabelArtifactError("source derived artifact identity mismatch")
+            if source_manifest["sourceDatasetId"] != self.manifest["sourceDatasetId"]:
+                raise LabelArtifactError("source dataset identity mismatch")
+            if source_manifest["sourceManifestContentDigest"] != self.manifest["sourceManifestContentDigest"]:
+                raise LabelArtifactError("source manifest digest mismatch")
+            if source_manifest["sampleCountsByPartition"] != self.manifest["sourceRowsByPartition"]:
+                raise LabelArtifactError("source partition counts mismatch")
+            for partition in ("TRAIN", "VALIDATION"):
+                if self.manifest["processedRowsByPartition"][partition] != source_manifest["sampleCountsByPartition"][partition]:
+                    raise LabelArtifactError("processed rows do not cover source partition")
+            if self.manifest["processedRowsByPartition"]["TEST"] != 0:
+                raise LabelArtifactError("TEST rows were semantically processed")
+            source_rows = {
+                _source_key(row): row
+                for row in source_reader.iter_samples()
+            }
+        finally:
+            source_reader.close()
+        for label in self._labels:
+            key = _source_key(label)
+            source = source_rows.get(key)
+            if source is None:
+                raise LabelArtifactError("label source decision is absent from source artifact")
+            if canonical_json(source["sourceReference"]) != canonical_json(label["sourceReference"]):
+                raise LabelArtifactError("label source reference differs from source artifact")
+            if source["partition"] != label["partition"]:
+                raise LabelArtifactError("label partition differs from source artifact")
+            domain = source["binding"]["completeLegalDomain"]
+            if domain["kind"] != label["decisionFamily"]:
+                raise LabelArtifactError("label decision family differs from source domain")
+            ordinal = label["binding"]["sourceBindingOrdinal"]
+            ordinals = source["binding"]["sourceBindingOrdinals"]
+            if ordinal not in ordinals or ordinal >= len(domain["candidates"]):
+                raise LabelArtifactError("label ordinal is absent from source domain")
+            candidate = domain["candidates"][ordinal]
+            if candidate.get("affordable") is not True:
+                raise LabelArtifactError("label source member is not executable")
+            validate_exact_source_binding_membership(
+                label["target"],
+                label["binding"]["selectedExactSourceBinding"],
+                domain,
+            )
+            try:
+                seat = teacher_seat_index(source)
+            except TeacherExecutionError as exc:
+                raise LabelArtifactError("source seat authority is invalid") from exc
+            if label["provenance"]["teacherSeatIndex"] != seat:
+                raise LabelArtifactError("label seat differs from source seat authority")
+            if label["provenance"]["candidateCount"] != len(domain["candidates"]):
+                raise LabelArtifactError("label candidate count differs from source domain")
+            teacher_provenance = self.manifest["teacherProvenance"]
+            if label["provenance"]["teacherConfigDigest"] != teacher_provenance["teacherConfigDigest"]:
+                raise LabelArtifactError("label Teacher config digest differs from manifest")
+            if label["provenance"]["selectionContractIdentity"] != teacher_provenance["selectionContractIdentity"]:
+                raise LabelArtifactError("label Selection identity differs from manifest")
+            if label["provenance"]["policyRngIdentity"] != teacher_provenance["policyRngIdentity"]:
+                raise LabelArtifactError("label PolicyTieRng identity differs from manifest")
 
     def iter_labels(self) -> Iterable[dict[str, Any]]:
         return iter(self._labels)
@@ -441,11 +594,9 @@ def write_label_artifact(
     accounting: dict[str, Any],
 ) -> dict[str, Any]:
     root = Path(root)
-    root.mkdir(parents=True, exist_ok=True)
-    manifest_path = root / "manifest.json"
-    labels_path = root / "labels.ndjson"
-    if manifest_path.exists() or labels_path.exists():
-        raise LabelArtifactError("label artifact output already exists")
+    if root.exists():
+        raise LabelArtifactError("label artifact output directory already exists")
+    root.parent.mkdir(parents=True, exist_ok=True)
     raw_rows = [dict(row) for row in rows]
     if any(row.get("partition") == "TEST" for row in raw_rows):
         raise LabelArtifactError("TEST label is forbidden")
@@ -477,15 +628,15 @@ def write_label_artifact(
     manifest["manifestContentDigest"] = sha256_hex(canonical_bytes({key: value for key, value in manifest.items() if key != "manifestContentDigest"}))
     _validate_manifest(manifest)
     manifest_bytes = canonical_bytes(manifest)
-    staging = Path(tempfile.mkdtemp(prefix=".c1-05-label-", dir=root))
+    staging = Path(tempfile.mkdtemp(prefix=".c1-05-label-", dir=root.parent))
     try:
         (staging / "labels.ndjson").write_bytes(labels_bytes)
         (staging / "manifest.json").write_bytes(manifest_bytes)
-        LabelArtifactReader.open(staging)
-        os.replace(staging / "labels.ndjson", labels_path)
-        os.replace(staging / "manifest.json", manifest_path)
+        LabelArtifactReader._open_structural(staging)
+        os.replace(staging, root)
     finally:
-        for child in staging.iterdir():
-            child.unlink(missing_ok=True)
-        staging.rmdir()
+        if staging.exists():
+            for child in staging.iterdir():
+                child.unlink(missing_ok=True)
+            staging.rmdir()
     return manifest

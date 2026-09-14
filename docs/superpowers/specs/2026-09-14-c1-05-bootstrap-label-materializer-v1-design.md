@@ -236,6 +236,14 @@ modelFacingContractIdentity=argentum-ml-model-facing-decision-sample@v1
 splitContractIdentity=argentum-ml-dataset-split@v1
 ```
 
+The authoritative C1_05 entry point requires non-optional expected values for
+`sourceDatasetId`, `sourceManifestContentDigest`, `sourceDerivedArtifactId`,
+and the admitted Teacher source commit. A null or omitted expected identity is
+not a valid V1 invocation. The historical C1_03 admission supplies the exact
+dataset/manifest/derived-artifact/source-commit tuple; a synthetic fixture may
+provide a different explicit tuple only in a test-scoped fixture, never through
+a production `None` bypass.
+
 The source manifest's own content and derived-artifact digests must be verified
 using the existing canonical JSON rules. A changed source file, even when a row
 appears structurally usable, is not a valid input.
@@ -419,6 +427,7 @@ materializedLabelsByPartition
 materializedLabelsByDecisionFamily
 expectedNoLabelByPartitionAndReason
 rejectedInvalidSourceBindingByPartition
+rejectedInvalidSelectedLabelByPartition
 rejectedSplitByPartition
 rejectedProvenanceByPartition
 duplicateDecisionKeyCount
@@ -434,6 +443,7 @@ processed rows
 = materialized labels
  + expected NO_LABEL rows
  + rejected invalid source-binding rows
+ + rejected invalid selected-label rows
 ```
 
 Global provenance, duplicate, conflict, digest and schema failures do not get
@@ -599,6 +609,7 @@ labelCountsByPartition { TRAIN, VALIDATION, TEST }
 labelCountsByDecisionFamily { ACTION_CANDIDATES, FOLDED_DECISION_OPTIONS }
 expectedNoLabelByPartitionAndReason
 rejectedInvalidSourceBindingByPartition
+rejectedInvalidSelectedLabelByPartition
 rejectedSplitByPartition
 rejectedProvenanceByPartition
 duplicateDecisionKeyCount
@@ -665,6 +676,7 @@ labelCountsByPartition
 labelCountsByDecisionFamily
 expectedNoLabelByPartitionAndReason
 rejectedInvalidSourceBindingByPartition
+rejectedInvalidSelectedLabelByPartition
 rejectedSplitByPartition
 rejectedProvenanceByPartition
 duplicateDecisionKeyCount
@@ -797,8 +809,10 @@ runtime EntityId, candidate slot, raw action ID, or raw decision ID
 
 ### Q13 — Verification without rerunning the Teacher
 
-Yes. A strict label reader can verify a published sidecar without calling the
-Teacher:
+Yes. The authoritative label reader requires both the exact C1_00 source
+artifact and an expected source-identity tuple
+`(sourceDatasetId, sourceManifestContentDigest, sourceDerivedArtifactId)`.
+It can verify a published sidecar without calling the Teacher:
 
 1. validate canonical bytes, exact schema/version and all manifest digests;
 2. recompute `labelArtifactId` and `manifestContentDigest`;
@@ -1012,8 +1026,9 @@ The implementation must never silently turn a selected result into `NO_LABEL`.
 
 At the end, verify all accounting equations, compute the label digest, compute the
 non-self-referential artifact ID and manifest digest, verify the staged bytes, and
-atomically publish both files. A partial or non-canonical sidecar is never an
-accepted artifact.
+atomically rename the complete staging directory into a previously absent output
+path. An existing output directory is rejected, so a crash cannot expose one
+file without the other and a retry cannot silently reuse a partial publication.
 
 ## 13. Failure semantics
 

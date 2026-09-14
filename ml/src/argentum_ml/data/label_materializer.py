@@ -22,6 +22,7 @@ from ..teacher.execution import (
     TeacherExecutionError,
     TeacherTieRngScheduleV1,
     teacher_seat_index,
+    validate_teacher_result_rng_evidence,
 )
 from ..teacher.request import PublicObservationTeacherRequestV1
 from ..teacher.request_factory import ExpectedC1_00Unbindable, teacher_request_from_validated_sample
@@ -166,12 +167,23 @@ def materialize_artifact(
     execution: TeacherExecutionBindingV1,
     materializer_implementation_identity: dict[str, str],
     materializer_config_digest: str,
-    expected_source_artifact_id: str | None,
+    expected_source_artifact_id: str,
+    expected_source_dataset_id: str,
+    expected_source_manifest_content_digest: str,
+    expected_teacher_source_commit: str,
 ) -> dict[str, Any]:
     """Materialize a bounded source artifact without touching TEST semantically."""
 
     if not hasattr(teacher, "select") or not hasattr(teacher, "identity") or not hasattr(teacher, "config"):
         raise LabelMaterializerError("materializer requires an admitted Teacher")
+    for value, label in (
+        (expected_source_artifact_id, "expected source artifact identity"),
+        (expected_source_dataset_id, "expected source dataset identity"),
+        (expected_source_manifest_content_digest, "expected source manifest digest"),
+        (expected_teacher_source_commit, "expected Teacher source commit"),
+    ):
+        if not isinstance(value, str) or not value:
+            raise LabelMaterializerError(f"{label} is required")
     try:
         execution.validate()
     except TeacherExecutionError as exc:
@@ -192,14 +204,20 @@ def materialize_artifact(
         or config.policy_rng_contract_identity != "argentum-ml-policy-tie-rng@v1"
     ):
         raise LabelMaterializerError("Teacher identity is not the admitted C1_05 reference")
+    if identity.source_commit != expected_teacher_source_commit:
+        raise LabelMaterializerError("Teacher source commit differs from accepted admission")
     reader = None
     try:
         from .derived_reader import DerivedArtifactReader
 
         reader = DerivedArtifactReader.open(source_root)
         source_manifest = reader.manifest
-        if expected_source_artifact_id is not None and source_manifest["derivedArtifactId"] != expected_source_artifact_id:
+        if source_manifest["derivedArtifactId"] != expected_source_artifact_id:
             raise LabelMaterializerError("source derived artifact identity differs from expected")
+        if source_manifest["sourceDatasetId"] != expected_source_dataset_id:
+            raise LabelMaterializerError("source dataset identity differs from expected")
+        if source_manifest["sourceManifestContentDigest"] != expected_source_manifest_content_digest:
+            raise LabelMaterializerError("source manifest digest differs from expected")
         schedule = TeacherTieRngScheduleV1(
             execution,
             teacher_policy_identity=identity.teacher_policy_identity,
@@ -215,6 +233,7 @@ def materialize_artifact(
             for partition in partitions
         }
         invalid_binding = {partition: 0 for partition in partitions}
+        invalid_selected = {partition: 0 for partition in partitions}
         rejected_split = {partition: 0 for partition in partitions}
         rejected_provenance = {partition: 0 for partition in partitions}
         rows: list[dict[str, Any]] = []
@@ -240,13 +259,33 @@ def materialize_artifact(
             result = teacher.select(request, state)
             teacher_calls[partition] += 1
             if isinstance(result, NoLabelTeacherResultV1):
+                if result.diagnostics.config_digest != config.digest:
+                    raise LabelMaterializerError("NO_LABEL result config digest differs from admitted config")
+                if result.diagnostics.decision_family != request.decision_family:
+                    raise LabelMaterializerError("NO_LABEL result family differs from request")
+                if result.diagnostics.candidate_count != request.candidate_count:
+                    raise LabelMaterializerError("NO_LABEL result candidate count differs from request")
+                if (
+                    result.diagnostics.support != "NO_LABEL"
+                    or result.reason is None
+                    or result.diagnostics.no_label_reason != result.reason
+                ):
+                    raise LabelMaterializerError("NO_LABEL result diagnostics are invalid")
+                try:
+                    validate_teacher_result_rng_evidence(state, result)
+                except TeacherExecutionError as exc:
+                    raise LabelMaterializerError(str(exc)) from exc
                 reason = result.reason.value
                 expected_no_label[partition][reason] += 1
-                schedule.commit(episode_id, seat, result.rng_state or state)
+                schedule.commit(episode_id, seat, result.rng_state or state, allow_cursor_advance=True)
                 continue
             if not isinstance(result, SelectedTeacherResultV1):
                 raise LabelMaterializerError("Teacher returned an unknown result type")
-            schedule.commit(episode_id, seat, result.rng_state)
+            try:
+                validate_teacher_result_rng_evidence(state, result)
+            except TeacherExecutionError as exc:
+                raise LabelMaterializerError(str(exc)) from exc
+            schedule.commit(episode_id, seat, result.rng_state, allow_cursor_advance=True)
             try:
                 row = materialize_selected_label(
                     validated,
@@ -256,7 +295,7 @@ def materialize_artifact(
                     teacher_config_digest=config.digest,
                 )
             except LabelMaterializerError:
-                rejected_provenance[partition] += 1
+                invalid_selected[partition] += 1
                 continue
             rows.append(row)
             labels[partition] += 1
@@ -269,6 +308,7 @@ def materialize_artifact(
             "labelCountsByDecisionFamily": labels_by_family,
             "expectedNoLabelByPartitionAndReason": expected_no_label,
             "rejectedInvalidSourceBindingByPartition": invalid_binding,
+            "rejectedInvalidSelectedLabelByPartition": invalid_selected,
             "rejectedSplitByPartition": rejected_split,
             "rejectedProvenanceByPartition": rejected_provenance,
             "duplicateDecisionKeyCount": 0,

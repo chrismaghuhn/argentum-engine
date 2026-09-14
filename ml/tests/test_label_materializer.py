@@ -14,13 +14,14 @@ from argentum_ml.data.label_artifact import LabelArtifactReader
 from argentum_ml.teacher.execution import (
     TeacherExecutionBindingV1,
     TeacherExecutionError,
+    TeacherTieRngScheduleV1,
     teacher_seat_index,
 )
 from argentum_ml.teacher.request_factory import teacher_request_from_validated_sample
 from argentum_ml.teacher import PublicObservationTeacherConfigV1, PublicObservationTeacherV1
 from argentum_ml.selection.policy_tie_rng import PolicyTieRngStateV1
 
-from tests.test_derived_reader import _artifact, _sample, _sha
+from tests.test_derived_reader import _artifact, _sample, _sha, _structured_sample
 
 
 def _source_fixture(*, candidate_count: int = 1, folded: bool = False) -> dict:
@@ -138,6 +139,47 @@ def _teacher_request_and_result(sample: dict, *, folded: bool = False):
 
 
 class LabelMaterializerTests(unittest.TestCase):
+    def test_teacher_schedule_rejects_unexplained_cursor_jump(self) -> None:
+        schedule = TeacherTieRngScheduleV1(
+            TeacherExecutionBindingV1.reference(),
+            teacher_policy_identity="argentum-ml-public-observation-bootstrap-teacher@v1",
+            policy_rng_identity="argentum-ml-policy-tie-rng@v1",
+        )
+        state = schedule.current("a" * 64, 0)
+        jumped = type(state)(state.stream_key, state.cursor + 2)
+        with self.assertRaises(TeacherExecutionError):
+            schedule.commit("a" * 64, 0, jumped)
+
+    def test_materialize_artifact_requires_exact_source_and_teacher_admission(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_root = root / "source"
+            source_root.mkdir()
+            _artifact(source_root, sample=_source_fixture())
+            source_reader = DerivedArtifactReader.open(source_root)
+            source_manifest = dict(source_reader.manifest)
+            source_reader.close()
+            teacher = PublicObservationTeacherV1(
+                PublicObservationTeacherConfigV1.reference(),
+                "a" * 40,
+            )
+            with self.assertRaises(LabelMaterializerError):
+                materialize_artifact(
+                    source_root,
+                    root / "labels",
+                    teacher=teacher,
+                    execution=TeacherExecutionBindingV1.reference(),
+                    materializer_implementation_identity={
+                        "implementation": "argentum-ml-label-materializer@v1",
+                        "sourceCommit": "e" * 40,
+                    },
+                    materializer_config_digest=_sha("f"),
+                    expected_source_artifact_id=source_manifest["derivedArtifactId"],
+                    expected_source_dataset_id=source_manifest["sourceDatasetId"],
+                    expected_source_manifest_content_digest=source_manifest["sourceManifestContentDigest"],
+                    expected_teacher_source_commit="8cad4845dc59192dde86849c8ba4ceacc1bb6331",
+                )
+
     def test_small_artifact_materialization_writes_label_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -146,9 +188,12 @@ class LabelMaterializerTests(unittest.TestCase):
             source_root.mkdir()
             source = _source_fixture()
             _artifact(source_root, sample=source)
+            source_reader = DerivedArtifactReader.open(source_root)
+            source_manifest = dict(source_reader.manifest)
+            source_reader.close()
             teacher = PublicObservationTeacherV1(
                 PublicObservationTeacherConfigV1.reference(),
-                "a" * 40,
+                "8cad4845dc59192dde86849c8ba4ceacc1bb6331",
             )
             manifest = materialize_artifact(
                 source_root,
@@ -160,11 +205,92 @@ class LabelMaterializerTests(unittest.TestCase):
                     "sourceCommit": "e" * 40,
                 },
                 materializer_config_digest=_sha("f"),
-                expected_source_artifact_id=None,
+                expected_source_artifact_id=source_manifest["derivedArtifactId"],
+                expected_source_dataset_id=source_manifest["sourceDatasetId"],
+                expected_source_manifest_content_digest=source_manifest["sourceManifestContentDigest"],
+                expected_teacher_source_commit="8cad4845dc59192dde86849c8ba4ceacc1bb6331",
             )
-            reader = LabelArtifactReader.open(output_root)
+            reader = LabelArtifactReader.open(
+                output_root,
+                source_artifact_root=source_root,
+                expected_source_identity={
+                    "sourceDatasetId": source_manifest["sourceDatasetId"],
+                    "sourceManifestContentDigest": source_manifest["sourceManifestContentDigest"],
+                    "sourceDerivedArtifactId": source_manifest["derivedArtifactId"],
+                },
+            )
             self.assertEqual(manifest["labelCount"], 1)
             self.assertEqual(len(tuple(reader.iter_labels())), 1)
+
+    def test_structured_no_label_is_accounted_by_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_root = root / "source"
+            source_root.mkdir()
+            sample = _structured_sample()
+            sample["provenance"] = {
+                "environmentIdentity": {
+                    "roster": [
+                        {"playerId": "player-0", "seatIndex": 0},
+                        {"playerId": "player-1", "seatIndex": 1},
+                    ]
+                }
+            }
+            _artifact(source_root, sample=sample)
+            admitted = PublicObservationTeacherV1(
+                PublicObservationTeacherConfigV1.reference(),
+                "8cad4845dc59192dde86849c8ba4ceacc1bb6331",
+            )
+
+            class StructuredNoLabelTeacher:
+                config = admitted.config
+                identity = admitted.identity
+
+                @staticmethod
+                def select(request, rng_state):
+                    from argentum_ml.teacher.contracts import (
+                        NoLabelReason,
+                        NoLabelTeacherResultV1,
+                        TeacherDiagnosticsV1,
+                    )
+
+                    return NoLabelTeacherResultV1(
+                        reason=NoLabelReason.STRUCTURED_DOMAIN_NOT_SCOREABLE,
+                        rng_state=rng_state,
+                        diagnostics=TeacherDiagnosticsV1(
+                            config_digest=admitted.config.digest,
+                            decision_family="STRUCTURED_DECISION",
+                            candidate_count=0,
+                            support="NO_LABEL",
+                            no_label_reason=NoLabelReason.STRUCTURED_DOMAIN_NOT_SCOREABLE,
+                            tie_occurred=False,
+                            policy_tie_rng_words_consumed=0,
+                        ),
+                    )
+
+            source_reader = DerivedArtifactReader.open(source_root)
+            source_manifest = dict(source_reader.manifest)
+            source_reader.close()
+            manifest = materialize_artifact(
+                source_root,
+                root / "labels",
+                teacher=StructuredNoLabelTeacher(),
+                execution=TeacherExecutionBindingV1.reference(),
+                materializer_implementation_identity={
+                    "implementation": "argentum-ml-label-materializer@v1",
+                    "sourceCommit": "e" * 40,
+                },
+                materializer_config_digest=_sha("f"),
+                expected_source_artifact_id=source_manifest["derivedArtifactId"],
+                expected_source_dataset_id=source_manifest["sourceDatasetId"],
+                expected_source_manifest_content_digest=source_manifest["sourceManifestContentDigest"],
+                expected_teacher_source_commit="8cad4845dc59192dde86849c8ba4ceacc1bb6331",
+            )
+            self.assertEqual(manifest["labelCount"], 0)
+            self.assertEqual(
+                manifest["expectedNoLabelByPartitionAndReason"]["TRAIN"]["STRUCTURED_DOMAIN_NOT_SCOREABLE"],
+                1,
+            )
 
     def test_action_target_is_exact_teacher_binding_not_feature_view(self) -> None:
         validated, request, result = _teacher_request_and_result(_source_fixture())

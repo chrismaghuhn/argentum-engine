@@ -186,10 +186,58 @@ class TeacherTieRngScheduleV1:
             self._states[key] = state
         return state
 
-    def commit(self, semantic_episode_id: str, seat_index: int, state: PolicyTieRngStateV1) -> None:
+    def commit(
+        self,
+        semantic_episode_id: str,
+        seat_index: int,
+        state: PolicyTieRngStateV1,
+        *,
+        allow_cursor_advance: bool = False,
+    ) -> None:
         if not isinstance(state, PolicyTieRngStateV1):
             raise TeacherExecutionError("Teacher tie schedule received invalid state")
         expected = self.current(semantic_episode_id, seat_index)
-        if state.stream_key != expected.stream_key or state.cursor < expected.cursor:
+        if state.stream_key != expected.stream_key:
             raise TeacherExecutionError("Teacher tie schedule state belongs to another stream")
+        if allow_cursor_advance:
+            if state.cursor < expected.cursor:
+                raise TeacherExecutionError("Teacher tie schedule cursor moved backwards")
+        elif state.cursor != expected.cursor:
+            raise TeacherExecutionError("Teacher tie schedule commit requires validated result evidence")
         self._states[(semantic_episode_id, self.teacher_policy_identity, seat_index)] = state
+
+
+def validate_teacher_result_rng_evidence(
+    previous_state: PolicyTieRngStateV1,
+    result: Any,
+) -> None:
+    """Require result cursor/draw evidence to match the stateful stream."""
+
+    if not isinstance(previous_state, PolicyTieRngStateV1):
+        raise TeacherExecutionError("previous Teacher RNG state is invalid")
+    result_state = getattr(result, "rng_state", None)
+    if not isinstance(result_state, PolicyTieRngStateV1):
+        raise TeacherExecutionError("Teacher result has no valid RNG state")
+    if result_state.stream_key != previous_state.stream_key:
+        raise TeacherExecutionError("Teacher result belongs to another RNG stream")
+    diagnostics = getattr(result, "diagnostics", None)
+    if diagnostics is None:
+        raise TeacherExecutionError("Teacher result diagnostics are missing")
+    if hasattr(result, "cursor_before"):
+        cursor_before = result.cursor_before
+        cursor_after = result.cursor_after
+        draw_count = result.rng_draw_count
+        words_consumed = diagnostics.policy_tie_rng_words_consumed
+        if cursor_before != previous_state.cursor:
+            raise TeacherExecutionError("Teacher result cursorBefore differs from state")
+        if cursor_after != result_state.cursor:
+            raise TeacherExecutionError("Teacher result cursorAfter differs from RNG state")
+        if draw_count != cursor_after - cursor_before:
+            raise TeacherExecutionError("Teacher result draw count differs from cursor delta")
+        if words_consumed != draw_count:
+            raise TeacherExecutionError("Teacher diagnostics draw count differs from result")
+    else:
+        if result_state.cursor != previous_state.cursor:
+            raise TeacherExecutionError("NO_LABEL result advanced PolicyTieRng state")
+        if diagnostics.policy_tie_rng_words_consumed != 0:
+            raise TeacherExecutionError("NO_LABEL result consumed PolicyTieRng words")
