@@ -167,4 +167,3 @@ git push origin chris/c1-05-bootstrap-label-materializer-design-20260914
 - [ ] No scores, RNG stream keys, raw GameState, hidden data, or Teacher metadata enter model input.
 - [ ] Duplicate/conflicting source keys fail closed.
 - [ ] No Historical artifact, training run, learner smoke, RL, self-play, HF/Arrow/Accelerate, or PR was started.
-
