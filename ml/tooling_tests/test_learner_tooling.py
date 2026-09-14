@@ -38,11 +38,15 @@ class TinyModule(torch.nn.Module):
         self.register_buffer("scale", torch.tensor([1, 2], dtype=torch.int64))
 
 
-def _manifest_bound_to(digest: str) -> ArgentumCheckpointManifestV1:
+def _manifest_bound_to(
+    digest: str,
+    *,
+    container: str = SAFETENSORS_CONTAINER_IDENTITY,
+) -> ArgentumCheckpointManifestV1:
     manifest = ArgentumCheckpointManifestV1.from_path(FIXTURE)
     data = manifest.to_dict()
     data["weightArtifactIdentity"] = {
-        "container": SAFETENSORS_CONTAINER_IDENTITY,
+        "container": container,
         "artifact": "weights.safetensors",
     }
     data["weightContentDigest"] = digest
@@ -57,11 +61,17 @@ class LearnerToolingTests(unittest.TestCase):
         self.assertEqual(provenance.framework, "pytorch")
         self.assertEqual(
             provenance.torch_version,
-            torch.__version__.split("+", 1)[0],
+            torch.__version__,
         )
         self.assertEqual(provenance.python_version, "3.13.15")
         self.assertIsInstance(provenance.cuda_available, bool)
         self.assertTrue(TinyModule().state_dict())
+
+    def test_pytorch_provenance_preserves_build_suffix(self) -> None:
+        with patch.object(torch, "__version__", "2.14.0+cpu"):
+            provenance = torch_runtime_provenance()
+
+        self.assertEqual(provenance.torch_version, "2.14.0+cpu")
 
     def test_safetensors_round_trip_preserves_tensor_contract(self) -> None:
         state = TinyModule().state_dict()
@@ -120,6 +130,29 @@ class LearnerToolingTests(unittest.TestCase):
                 side_effect=AssertionError("decode must not run"),
             ) as decoder:
                 with self.assertRaises(CheckpointManifestError):
+                    load_state_dict(path, manifest)
+
+            decoder.assert_not_called()
+
+    def test_wrong_container_identity_is_rejected_before_safetensors_decode(self) -> None:
+        state = TinyModule().state_dict()
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "weights.safetensors"
+            artifact = save_state_dict(state, path)
+            manifest = _manifest_bound_to(
+                artifact.content_digest,
+                container="other-container@v1",
+            )
+
+            import safetensors.torch as safetensors_torch
+
+            with patch.object(
+                safetensors_torch,
+                "load",
+                side_effect=AssertionError("decode must not run"),
+            ) as decoder:
+                with self.assertRaises(WeightArtifactError):
                     load_state_dict(path, manifest)
 
             decoder.assert_not_called()

@@ -23,7 +23,7 @@ def torch_runtime_provenance() -> TorchRuntimeProvenance:
     torch = require_optional_module("torch", "torch")
     return TorchRuntimeProvenance(
         framework="pytorch",
-        torch_version=str(torch.__version__).split("+", 1)[0],
+        torch_version=str(torch.__version__),
         python_version=platform.python_version(),
         cuda_available=bool(torch.cuda.is_available()),
     )

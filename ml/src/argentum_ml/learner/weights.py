@@ -61,6 +61,12 @@ def load_state_dict(
     """Validate manifest-bound file bytes before decoding them as Safetensors."""
     if not isinstance(manifest, ArgentumCheckpointManifestV1):
         raise WeightArtifactError("weight loading requires a validated checkpoint manifest")
+    manifest_data = manifest.to_dict()
+    weight_identity = manifest_data["weightArtifactIdentity"]
+    if weight_identity["container"] != SAFETENSORS_CONTAINER_IDENTITY:
+        raise WeightArtifactError(
+            "checkpoint weight container is not bound to the Safetensors adapter"
+        )
     source = _require_regular_file(path, "weight artifact")
     try:
         weight_bytes = source.read_bytes()
