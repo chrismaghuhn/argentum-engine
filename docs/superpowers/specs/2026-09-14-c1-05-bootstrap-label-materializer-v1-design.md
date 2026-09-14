@@ -243,7 +243,8 @@ appears structurally usable, is not a valid input.
 
 ### Q1 — What is the canonical target?
 
-The canonical target is the existing C0 target object:
+The canonical target is the existing C0 target object in its exact
+source-binding representation:
 
 ```json
 {
@@ -252,10 +253,20 @@ The canonical target is the existing C0 target object:
 }
 ```
 
-Exactly one field is non-null. The object is the admitted Teacher-selected
-semantic action/response, represented in the same public alias form used by the
-C1_00 model-facing sample. `decisionFamily` is a separate row field used to
-dispatch validation; it is not a second target meaning.
+Exactly one field is non-null. The object is copied from
+`result.exact_source_binding.exact_action` or
+`result.exact_source_binding.exact_response` only after the result has been
+proved equal to `request.source_bindings.exact_binding_for(ordinal)`.
+`decisionFamily` is a separate row field used to dispatch validation; it is not a
+second target meaning.
+
+The public feature view remains in the source artifact's `input.domain` channel.
+It is used to locate and validate the exact source candidate, but it is not the
+canonical C1_05 target:
+
+```text
+RAW/EXACT SOURCE-BINDING TARGET != PUBLIC MODEL-FACING FEATURE VIEW
+```
 
 The label row is therefore a derived version of the C0 target semantics, not a
 new `TeacherScoreTarget`, dense score vector, confidence target, value target or
@@ -271,7 +282,7 @@ For an admitted `ACTION_CANDIDATES` result:
   "target": {
     "chosenSemanticAction": {
       "type": "chosen-action",
-      "candidate": <request.item.candidates[ordinal].feature_view>,
+      "candidate": <result.exact_source_binding.exact_action.candidate>,
       "choicePayload": <the exact source-authorized payload>
     },
     "chosenSemanticResponse": null
@@ -282,13 +293,15 @@ For an admitted `ACTION_CANDIDATES` result:
 }
 ```
 
-The candidate is copied from the request's public model-facing candidate at the
-validated source ordinal. The materializer never constructively maps a raw
-runtime action ID to a candidate. The payload is copied only if it is already
-source-authorized and passes the existing C0/S7 validation; an absent required
-payload is a rejected source binding, not an invitation to fill defaults. The
-accepted C1_03 flat bootstrap scope has empty action payloads for its admitted
-selected roots.
+The exact action is copied from the Teacher result after the materializer proves
+that it equals the request's original source binding at the validated ordinal.
+The public model-facing candidate at that ordinal is used only as the
+source-authorized transport counterpart for membership and executable-support
+checks. The materializer never maps a raw runtime action ID by parsing or
+guessing. The payload is copied only if it is already source-authorized and
+passes the existing C0/S7 validation; an absent required payload is a rejected
+source binding, not an invitation to fill defaults. The accepted C1_03 flat
+bootstrap scope has empty action payloads for its admitted selected roots.
 
 ### FOLDED_DECISION_OPTIONS
 
@@ -301,7 +314,7 @@ For an admitted `FOLDED_DECISION_OPTIONS` result:
     "chosenSemanticAction": null,
     "chosenSemanticResponse": {
       "type": "chosen-response",
-      "response": <request.item.candidates[ordinal].feature_view.actionSemantics>
+      "response": <result.exact_source_binding.exact_response.response>
     }
   },
   "binding": {
@@ -310,17 +323,21 @@ For an admitted `FOLDED_DECISION_OPTIONS` result:
 }
 ```
 
-The complete response-local semantics, including source-authorized optional
-metadata, are retained exactly. A folded response is not converted into a live
-action, an action index, or a guessed structured subdecision.
+The exact response is copied from the Teacher result after equality with the
+request's original source binding has been proved. The public folded candidate
+at that ordinal is used only to prove complete-domain membership. The complete
+response-local semantics, including source-authorized optional metadata, are
+retained exactly. A folded response is not converted into a live action, an
+action index, or a guessed structured subdecision.
 
 ### Q2/Q3 — Exact binding and membership
 
 The target is bound to one exact source decision through the row's full
-`sourceReference` and the `sourceBindingOrdinal`. The ordinal is only an audit
-address. Membership is proven by resolving that ordinal through the exact request
-source binding and public candidate tuple, then validating the target against the
-complete source domain. The verifier must establish:
+`sourceReference`, the exact `selectedExactSourceBinding`, and the
+`sourceBindingOrdinal`. The ordinal is only an audit address. Membership is
+proven by resolving that ordinal through the exact request source binding and
+public candidate tuple, then validating the exact target against the complete
+source domain. The verifier must establish:
 
 ```text
 source key matches the source sample
@@ -328,14 +345,20 @@ decision family matches the source domain and request
 complete domain was retained without truncation
 ordinal is a valid source ordinal
 Teacher exact binding == request exact binding at that ordinal
-target public value == request candidate/response at that ordinal
+target exact value == Teacher result exact value
+Teacher result exact value == request exact binding at that ordinal
+target's public counterpart == request candidate/response at that ordinal
 candidate is present and executable
 target has exactly one unique domain match
 ```
 
 The existing `DerivedArtifactReader` target-membership rules remain the semantic
-membership authority. C1_05 must call/reuse them or an exact shared helper; it
-must not implement a weaker parallel membership algorithm.
+membership authority for the source-domain check. C1_05 must call/reuse their
+exact shared membership helper with the Teacher exact binding as the selected
+binding, or make that helper accept an explicit selected binding without changing
+its semantics. It must not pass the C1_00 factual source target as the Teacher
+selected binding, and it must not implement a weaker parallel membership
+algorithm.
 
 ### Q4 — Representation of the two flat families
 
@@ -487,6 +510,7 @@ Every row has exactly these top-level fields:
     "chosenSemanticResponse": "... or null"
   },
   "binding": {
+    "selectedExactSourceBinding": <exact Teacher result binding>,
     "sourceBindingOrdinal": 0
   },
   "provenance": {
@@ -506,9 +530,12 @@ Every row has exactly these top-level fields:
 
 The example is schematic for values, but the field set is closed in the future
 reader. The actual `sourceReference` is copied from the validated C1_00 sample;
-the target is the public Teacher-selected semantic value described in Section 6.
-No raw `completeLegalDomain`, raw inverse binding map, score vector, source
-factual target, raw engine ID, or private provenance is duplicated in a label row.
+the target and `selectedExactSourceBinding` are the exact public-source semantic
+objects described in Section 6. The row does not duplicate the complete legal
+domain or the raw inverse binding map. It does retain the one exact selected
+binding required to prove `target == selectedExactSourceBinding` without using
+the C1_00 factual source target. Score vectors, source factual target, private
+provenance, and unrelated raw engine data are not copied.
 
 `provenance` is audit-only. It is never passed to a model provider. The row does
 not store `rng_state.stream_key`, raw score values, internal object references,
@@ -543,8 +570,16 @@ teacherProvenance {
   scorerIdentity
   selectionContractIdentity
   policyRngIdentity
-  teacherExecutionIdentity when an external tie schedule/execution plan is used
-  teacherExecutionConfigDigest when an external tie schedule/execution plan is used
+  teacherPolicyTieScheduleIdentity
+  teacherPolicyTieSeed
+  initialPolicyTieCursor
+  teacherTieStateScope
+  legacyA9PolicySeedReused
+  teacherExecutionConfigDigest
+  teacherAdmissionPurposeIdentity
+  teacherAdmissionResult
+  teacherAdmissionPlanIdentity
+  teacherAdmissionPlanDigest
 }
 
 labelMaterializerImplementationIdentity { implementation, sourceCommit }
@@ -615,7 +650,8 @@ trajectorySchemaIdentity
 modelFacingContractIdentity
 splitContractIdentity
 sourceDecisionKeyIdentity
-teacherProvenance (all fields, including config/source/selection/RNG identities)
+teacherProvenance (all fields, including config/source/selection/RNG,
+                    execution-schedule and admission identities)
 labelMaterializerImplementationIdentity
 labelMaterializerConfigDigest
 allowedPartitions
@@ -662,13 +698,68 @@ Teacher configuration digest
 Teacher scorer identity
 Selection V2 identity
 PolicyTieRng V1 identity
-Teacher execution/tie-schedule identity and config digest when used
+teacherPolicyTieScheduleIdentity
+teacherPolicyTieSeed
+initialPolicyTieCursor
+teacherTieStateScope
+legacyA9PolicySeedReused
+teacherExecutionConfigDigest
+teacherAdmissionPurposeIdentity
+teacherAdmissionResult
+teacherAdmissionPlanIdentity
+teacherAdmissionPlanDigest
 
 supervised policy target contract identity
 source-decision-key identity
 label materializer implementation identity/source commit
 label materializer configuration digest
 ```
+
+For C1_05 V1 these execution and admission fields are mandatory, not optional.
+The accepted flat-bootstrap Teacher execution binding is:
+
+```text
+teacherPolicyTieScheduleIdentity=argentum-ml-c1-03-teacher-policy-tie-schedule@v1
+teacherPolicyTieSeed=0
+initialPolicyTieCursor=0
+teacherTieStateScope=semanticEpisodeId|teacherPolicyIdentity|seatIndex
+legacyA9PolicySeedReused=false
+
+teacherAdmissionPurposeIdentity=argentum-ml-flat-reference-bootstrap@v1
+teacherAdmissionResult=ADMITTED_LIMITED_FLAT_REFERENCE_BOOTSTRAP
+teacherAdmissionPlanIdentity=argentum-ml-c1-03-teacher-quality-and-admission@v1
+teacherAdmissionPlanDigest=bc186eb4df9830039fb1b0e474700afdb82e1cca033483afcad6bfd8d24fee79
+```
+
+The execution configuration digest is not a free-form label. Its exact V1
+preimage is:
+
+```json
+{
+  "initialPolicyTieCursor": 0,
+  "legacyA9PolicySeedReused": false,
+  "schema": "argentum-ml-c1-05-teacher-execution-config@v1",
+  "teacherPolicyTieScheduleIdentity": "argentum-ml-c1-03-teacher-policy-tie-schedule@v1",
+  "teacherPolicyTieSeed": 0,
+  "teacherTieStateScope": "semanticEpisodeId|teacherPolicyIdentity|seatIndex",
+  "version": 1
+}
+```
+
+`teacherExecutionConfigDigest` is SHA-256 over the UTF-8 A3 canonical JSON of
+that preimage. The state is created once per
+`semanticEpisodeId|teacherPolicyIdentity|seatIndex` at the declared initial
+cursor and is carried across that instance's decisions. It is never recreated
+per row. The per-result `cursorBefore`, `cursorAfter`, and draw-count evidence
+must agree with this stateful execution. A different schedule, seed, cursor,
+scope, legacy-seed policy, admission purpose/result, or plan digest produces a
+different provenance identity and is not C1_05 V1.
+
+The admission fields bind the purpose and accepted result, not only the existence
+of a Teacher configuration. `TEACHER_PROVENANCE_VALID` and
+`TEACHER_BOOTSTRAP_ADMITTED` remain separate claims; the sidecar records both
+the exact admitted purpose/result and the immutable plan identity/digest that
+established the admission.
 
 The following are explicitly forbidden as semantic identity:
 
@@ -689,8 +780,9 @@ Teacher:
    reader;
 4. join each label by the source decision key;
 5. verify source reference, partition, family, complete-domain count and ordinal;
-6. resolve the source candidate/response at the ordinal and compare the label
-   target exactly;
+6. resolve the source candidate/response at the ordinal, compare the label target
+   exactly to `selectedExactSourceBinding`, and validate that exact binding's
+   public counterpart against the complete source domain;
 7. verify unique executable membership and all accounting totals; and
 8. verify that no TEST row has a label or Teacher call count.
 
@@ -795,7 +887,9 @@ it prevents a malformed result from being normalized into a label.
 2. Require the exact source dataset, source manifest digest, source derived
    artifact ID, source/view/model/split identities and target contract identity.
 3. Validate the admitted Teacher identity, source commit, config schema, config
-   digest, scorer, Selection V2 and PolicyTieRng V1 identities.
+   digest, scorer, Selection V2 and PolicyTieRng V1 identities, plus the exact
+   C1_03 tie schedule, seed, initial cursor, state scope, legacy-seed policy,
+   admission purpose/result, and accepted admission plan identity/digest.
 4. Validate the C1_05 materializer implementation identity and configuration
    digest. Unknown materializer versions fail closed.
 5. Validate that `allowedPartitions` is exactly `[TRAIN, VALIDATION]` in canonical
@@ -845,14 +939,18 @@ For `SelectedTeacherResultV1`:
 4. Require the result's ordinal audit, when present, to equal the result ordinal.
 5. Resolve the request candidate at that ordinal. Require `present=true` and
    `executable_support=true`.
-6. Require the exact public candidate/response at that ordinal to produce one
-   unique target object under the C0 target contract.
-7. For an action, validate the full choice payload against the existing source
+6. Set the canonical target to the exact action/response from
+   `result.exact_source_binding`; do not replace it with `feature_view`.
+7. Validate that exact target and selected binding against the complete source
+   domain using the shared C0 membership helper, with the Teacher exact binding
+   as the selected binding. The public candidate/response at that ordinal is the
+   alias/projection counterpart used for executable-support and uniqueness checks.
+8. For an action, validate the full choice payload against the existing source
    domain. For a folded response, preserve the complete source-authorized
    response-local semantics.
-8. Do not read or use `scoreVector`; no such field is accepted by the result
+9. Do not read or use `scoreVector`; no such field is accepted by the result
    materialization schema.
-9. Copy only the bounded Teacher result evidence listed in the row schema; do
+10. Copy only the bounded Teacher result evidence listed in the row schema; do
    not copy the raw RNG stream key or any private/debug value.
 
 Any selected-result failure is `INVALID_SELECTED_LABEL` and is counted as a
@@ -863,9 +961,11 @@ The implementation must never silently turn a selected result into `NO_LABEL`.
 ### Phase D — Build and publish a label row
 
 1. Copy the source reference exactly from the validated C1_00 sample.
-2. Build the C0 target from the request's public candidate at the validated
-   ordinal, not by serializing raw result internals.
-3. Store the source ordinal only under the binding/audit channel.
+2. Copy the exact action/response from `result.exact_source_binding` into the
+   C0 target channel. Do not serialize the public `feature_view` as the target.
+3. Store the same exact Teacher binding under
+   `binding.selectedExactSourceBinding` and retain the source ordinal only as a
+   binding/audit address.
 4. Store bounded result provenance only under the provenance channel.
 5. Canonicalize the row and append it to a staging `labels.ndjson`.
 6. Record counters without consulting map iteration order or worker completion
@@ -895,6 +995,9 @@ conditions are mandatory fail-closed cases:
 | Wrong Teacher contract/policy/source/source commit | Abort; no label |
 | Wrong Teacher config schema or digest | Abort; no label |
 | Wrong scorer, Selection V2 or PolicyTieRng identity | Abort; no label |
+| Wrong Teacher tie schedule, seed, initial cursor or state scope | Abort; no label |
+| Legacy A9 seed reuse is not exactly `false` | Abort; no label |
+| Wrong Teacher admission purpose/result/plan identity/digest | Abort; no label |
 | Result family/candidate-count/config mismatch | Reject selected row or abort if envelope-wide |
 | Invalid source-binding ordinal | Reject selected row; count explicitly |
 | Exact source binding differs from request binding | Reject selected row; count explicitly |
@@ -943,8 +1046,10 @@ outcome, closure, replay tail or future record
 ```
 
 The label sidecar must not add any new information to the learner's observation
-set. It may retain only the public semantic target and bounded provenance needed
-for validation/audit. It must never add:
+set. It may retain the exact source-bound semantic target and its exact selected
+binding, because both are already admitted source-binding channels; it may also
+retain the bounded provenance needed for validation/audit. These channels remain
+outside model input. The sidecar must never add:
 
 ```text
 raw GameState
@@ -955,9 +1060,10 @@ internal object references
 unstable engine IDs as features
 ```
 
-Source IDs may appear in the provenance/join channel because C1_00 already
-defines that channel, but they are not model features. The C1_05 target channel
-is not an input channel.
+Source IDs may appear in the exact target, binding, and provenance/join channels
+because C1_00 already defines those source-authority channels, but they are not
+model features. C1_05 does not add hidden IDs or private facts. The C1_05 target
+and binding channels are never passed to the model as input.
 
 ## 15. Determinism and permutation requirements
 
@@ -997,14 +1103,15 @@ For semantically identical supplied candidate sets in different physical order:
 canonical semantic target = unchanged
 sourceBindingOrdinal       = unchanged audit address
 batch-local candidate slot  = may change
-label bytes                 = unchanged when the source key and semantic
-                               candidate representation are unchanged
+exact selected binding      = unchanged
+label bytes                 = unchanged when the source key and exact source
+                               binding are unchanged
 ```
 
 The request permutation transports candidate features and ordinals together. The
-materializer never computes a target from the post-permutation index. A candidate
-permutation that drops, duplicates or changes a source candidate is a transport
-failure, not a new label.
+materializer never computes a target from the post-permutation index or rewrites
+the exact target from a feature projection. A candidate permutation that drops,
+duplicates or changes a source candidate is a transport failure, not a new label.
 
 ## 16. Planned implementation tests (RED before implementation)
 
@@ -1021,6 +1128,7 @@ with these focused RED cases before production code is written:
 | `test_partition_is_skipped_before_teacher` | split-aware materializer boundary is absent | No request, Teacher call, target inspection or label for TEST; `testRowsConsumed=0` |
 | `wrong_teacher_config_digest_rejects` | provenance validator is absent | Exact digest mismatch aborts/rejects fail closed |
 | `wrong_teacher_policy_identity_rejects` | policy identity gate is absent | Policy mismatch is not accepted as the same Teacher |
+| `wrong_teacher_execution_schedule_or_admission_rejects` | execution/admission provenance gate is absent | Schedule, seed, cursor, scope, admission purpose/result or plan digest mismatch fails closed |
 | `wrong_materializer_identity_or_version_rejects` | label manifest version gate is absent | Unknown/mismatched materializer identity fails closed |
 | `wrong_source_binding_ordinal_rejects` | ordinal membership gate is absent | Negative, unknown or mismatched ordinal is rejected |
 | `exact_source_action_mismatch_rejects` | exact binding comparison is absent | A different action at the same-looking slot is rejected |
@@ -1059,6 +1167,14 @@ TEACHER_CONTRACT_IDENTITY=argentum-ml-teacher-bootstrap@v1
 TEACHER_CONFIG_DIGEST=fa358597c09ce466e1be1823de485e0accd84be622184fa1d6505806aff0d7d8
 SELECTION_CONTRACT_IDENTITY=argentum-ml-policy-selection@v2
 POLICY_RNG_IDENTITY=argentum-ml-policy-tie-rng@v1
+TEACHER_POLICY_TIE_SCHEDULE_IDENTITY=argentum-ml-c1-03-teacher-policy-tie-schedule@v1
+TEACHER_POLICY_TIE_SEED=0
+INITIAL_POLICY_TIE_CURSOR=0
+TEACHER_TIE_STATE_SCOPE=semanticEpisodeId|teacherPolicyIdentity|seatIndex
+LEGACY_A9_POLICY_SEED_REUSED=false
+TEACHER_ADMISSION_PURPOSE_IDENTITY=argentum-ml-flat-reference-bootstrap@v1
+TEACHER_ADMISSION_PLAN_IDENTITY=argentum-ml-c1-03-teacher-quality-and-admission@v1
+TEACHER_ADMISSION_PLAN_DIGEST=bc186eb4df9830039fb1b0e474700afdb82e1cca033483afcad6bfd8d24fee79
 ```
 
 If any source or accepted Teacher identity differs, the run must stop and declare
@@ -1188,30 +1304,32 @@ Implementation is blocked if any of these conditions holds:
    identity.
 3. C0 target semantics, source-key meaning, split membership, Selection V2,
    PolicyTieRng or model-facing privacy rules are contradictory or missing.
-4. A result cannot be coupled to its exact request and exact source binding
+4. The exact C1_03 tie schedule/seed/cursor/scope or the admitted purpose/result/
+   plan identity/digest is missing or contradictory.
+5. A result cannot be coupled to its exact request and exact source binding
    without changing the frozen Teacher result contract.
-5. The implementation would need to choose or repair a structured subdecision,
+6. The implementation would need to choose or repair a structured subdecision,
    infer a missing payload, truncate a domain, use a candidate slot as identity,
    or consult hidden engine state.
-6. The source reader cannot verify the source artifact and report the TEST
+7. The source reader cannot verify the source artifact and report the TEST
    semantic boundary honestly.
-7. A digest, canonical-byte, duplicate, conflict, privacy or unknown-version
+8. A digest, canonical-byte, duplicate, conflict, privacy or unknown-version
    failure is handled best-effort rather than fail-closed.
-8. A P1 or P2 independent review finding remains unresolved.
+9. A P1 or P2 independent review finding remains unresolved.
 
 ## 20. Explicit question matrix
 
 | Question | Answer |
 | --- | --- |
-| Q1 canonical target | Existing C0 `chosenSemanticAction XOR chosenSemanticResponse` target object |
-| Q2 exact source binding | Source key + request ordinal + exact `ExactSemanticSourceBinding` equality |
-| Q3 domain membership | Existing strict complete-domain/source-membership validation, unique executable match |
+| Q1 canonical target | Exact Teacher `ExactSemanticSourceBinding` action/response, not the public feature view |
+| Q2 exact source binding | Source key + request ordinal + exact `ExactSemanticSourceBinding` equality, retained in the sidecar binding channel |
+| Q3 domain membership | Existing strict complete-domain/source-membership validation applied to the Teacher exact binding and its public counterpart |
 | Q4 flat families | Action target for `ACTION_CANDIDATES`; response target for `FOLDED_DECISION_OPTIONS` |
 | Q5 structured outcomes | Typed `NO_LABEL`, counted by reason, no fabricated row |
 | Q6 candidate index | Forbidden as canonical identity; ordinal is binding/audit only |
 | Q7 permutation | Semantic target unchanged; only a derived batch slot may change |
 | Q8 artifact identity | Content-addressed label sidecar `labelArtifactId` |
-| Q9 identity inputs | Exact source, target, Teacher, selection/RNG, materializer, configuration, content and accounting identities |
+| Q9 identity inputs | Exact source, target, Teacher, Selection/RNG, C1_03 execution schedule, admission purpose/result/plan, materializer, configuration, content and accounting identities |
 | Q10 split | Inherit episode-level C0 split; materialize TRAIN and VALIDATION only |
 | Q11 TEST | No semantic row consumption, Teacher call or label; integrity I/O reported separately if unavoidable |
 | Q12 duplicates | Duplicate/conflicting source key aborts; different config means different artifact |
@@ -1236,6 +1354,8 @@ TEACHER_AUTHORITY_DRIFT=NO
 BEHAVIOR_POLICY_LEAKAGE=NO
 STRUCTURED_LABEL_INVENTION=NO
 SOURCE_BINDING_WEAKNESS=NO
+EXACT_TARGET_IS_SOURCE_BINDING=YES
+TEACHER_EXECUTION_AND_ADMISSION_PROVENANCE_COMPLETE=YES
 UNSTABLE_IDENTITY_USE=NO
 DUPLICATE_HANDLING_MISSING=NO
 PROVENANCE_MISSING=NO
