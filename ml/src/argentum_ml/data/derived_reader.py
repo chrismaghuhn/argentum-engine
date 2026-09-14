@@ -258,10 +258,19 @@ _VALIDATED_SAMPLE_ISSUER = object()
 
 
 @dataclass(frozen=True)
+class _ValidatedSampleFileState:
+    samples_content_digest: str
+    samples_byte_count: int
+    sample_count: int
+    row_digests: tuple[bytes, ...]
+
+
+@dataclass(frozen=True)
 class DerivedArtifactReader:
     root: Path
     manifest: dict[str, Any]
     _samples_stream: BinaryIO = field(repr=False)
+    _validated_sample_file: _ValidatedSampleFileState = field(repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _inference_token: object = field(default_factory=object, init=False, repr=False)
 
@@ -283,9 +292,14 @@ class DerivedArtifactReader:
         _require_regular_file(samples_path, "samples.ndjson")
         samples_stream = samples_path.open("rb")
         try:
-            _validate_sample_file(samples_stream, manifest)
+            validated_sample_file = _validate_sample_file(samples_stream, manifest)
             samples_stream.seek(0)
-            return cls(root=root, manifest=manifest, _samples_stream=samples_stream)
+            return cls(
+                root=root,
+                manifest=manifest,
+                _samples_stream=samples_stream,
+                _validated_sample_file=validated_sample_file,
+            )
         except Exception:
             samples_stream.close()
             raise
@@ -296,7 +310,11 @@ class DerivedArtifactReader:
         try:
             if os.fstat(self._samples_stream.fileno()).st_size != self.manifest["samplesByteCount"]:
                 raise DerivedArtifactError("samples.ndjson changed after artifact validation")
-            _validate_sample_file(self._samples_stream, self.manifest)
+            _validate_sample_file(
+                self._samples_stream,
+                self.manifest,
+                capture_row_digests=False,
+            )
             self._samples_stream.seek(0)
             for raw_line in self._samples_stream:
                 sample = _parse_sample_line(raw_line)
@@ -306,21 +324,31 @@ class DerivedArtifactReader:
             self.close()
 
     def iter_validated_samples_for_inference(self) -> Iterator[ValidatedDerivedSample]:
-        """Yield reader-issued tokens only for rows in the digest-validated shard."""
+        """Yield reader-issued tokens only for rows in the trusted open lifetime."""
 
         if self._closed:
             raise DerivedArtifactError("derived artifact reader is closed")
         try:
-            _validate_sample_file(self._samples_stream, self.manifest)
+            _verify_validated_sample_file(self._samples_stream, self._validated_sample_file)
             self._samples_stream.seek(0)
+            consumed_rows = 0
             for raw_line in self._samples_stream:
+                if consumed_rows >= self._validated_sample_file.sample_count:
+                    raise DerivedArtifactError("samples.ndjson gained rows after artifact validation")
+                if (
+                    hashlib.sha256(raw_line).digest()
+                    != self._validated_sample_file.row_digests[consumed_rows]
+                ):
+                    raise DerivedArtifactError("sample row changed after artifact validation")
                 sample = _parse_sample_line(raw_line)
-                _validate_sample(sample, self.manifest)
+                consumed_rows += 1
                 yield ValidatedDerivedSample._issue(
                     sample,
                     self._inference_token,
                     _VALIDATED_SAMPLE_ISSUER,
                 )
+            if consumed_rows != self._validated_sample_file.sample_count:
+                raise DerivedArtifactError("samples.ndjson lost rows after artifact validation")
         finally:
             self.close()
 
@@ -425,13 +453,19 @@ def _parse_sample_line(raw_line: bytes) -> dict[str, Any]:
     return sample
 
 
-def _validate_sample_file(stream: BinaryIO, manifest: dict[str, Any]) -> None:
+def _validate_sample_file(
+    stream: BinaryIO,
+    manifest: dict[str, Any],
+    *,
+    capture_row_digests: bool = True,
+) -> _ValidatedSampleFileState:
     digest = hashlib.sha256()
     byte_count = 0
     sample_count = 0
     partition_counts = {key: 0 for key in _PARTITIONS}
     episode_ids_by_partition = {key: set[str]() for key in _PARTITIONS}
     seen_references: set[tuple[str, int]] = set()
+    row_digests: list[bytes] = []
     stream.seek(0)
     for raw_line in stream:
         sample = _parse_sample_line(raw_line)
@@ -442,6 +476,8 @@ def _validate_sample_file(stream: BinaryIO, manifest: dict[str, Any]) -> None:
             raise DerivedArtifactError("duplicate sample source reference")
         seen_references.add(reference)
         digest.update(raw_line)
+        if capture_row_digests:
+            row_digests.append(hashlib.sha256(raw_line).digest())
         byte_count += len(raw_line)
         sample_count += 1
         partition_counts[sample["partition"]] += 1
@@ -457,6 +493,32 @@ def _validate_sample_file(stream: BinaryIO, manifest: dict[str, Any]) -> None:
     for partition, episode_ids in episode_ids_by_partition.items():
         if len(episode_ids) > manifest["episodeCountsByPartition"][partition]:
             raise DerivedArtifactError("observed episode count exceeds manifest episode count")
+    return _ValidatedSampleFileState(
+        samples_content_digest=digest.hexdigest(),
+        samples_byte_count=byte_count,
+        sample_count=sample_count,
+        row_digests=tuple(row_digests),
+    )
+
+
+def _verify_validated_sample_file(
+    stream: BinaryIO,
+    validated: _ValidatedSampleFileState,
+) -> None:
+    digest = hashlib.sha256()
+    byte_count = 0
+    sample_count = 0
+    stream.seek(0)
+    for raw_line in stream:
+        digest.update(raw_line)
+        byte_count += len(raw_line)
+        sample_count += 1
+    if (
+        byte_count != validated.samples_byte_count
+        or sample_count != validated.sample_count
+        or digest.hexdigest() != validated.samples_content_digest
+    ):
+        raise DerivedArtifactError("samples.ndjson changed after artifact validation")
 
 
 def _validate_sample(sample: dict[str, Any], manifest: dict[str, Any]) -> None:
