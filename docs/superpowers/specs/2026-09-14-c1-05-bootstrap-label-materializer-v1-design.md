@@ -212,8 +212,9 @@ boundary, without changing the frozen Teacher result contract:
 - the result configuration digest must equal the admitted configuration digest;
 - the result ordinal must resolve in that request's source bindings;
 - the result's exact binding must equal the request binding at that ordinal; and
-- the selected candidate/response must be the unique executable member of the
-  request's complete domain.
+- the selected semantic value must resolve to exactly one member of the
+  request's complete domain, and that resolved member must be executable.
+  Other executable candidates may exist.
 
 A future transport wrapper may carry the source decision key next to the result,
 but it is an invocation envelope, not a second semantic binding model and not a
@@ -518,6 +519,7 @@ Every row has exactly these top-level fields:
     "teacherConfigDigest": "...",
     "selectionContractIdentity": "argentum-ml-policy-selection@v2",
     "policyRngIdentity": "argentum-ml-policy-tie-rng@v1",
+    "teacherSeatIndex": 0,
     "candidateCount": 1,
     "rngDrawCount": 0,
     "cursorBefore": 0,
@@ -761,6 +763,30 @@ of a Teacher configuration. `TEACHER_PROVENANCE_VALID` and
 the exact admitted purpose/result and the immutable plan identity/digest that
 established the admission.
 
+### Teacher execution seat authority
+
+`seatIndex` is derived exclusively from the validated source sample. The exact
+rule is:
+
+```text
+sourceReference.perspectivePlayerId
+    -> exactly one provenance.environmentIdentity.roster[].playerId match
+    -> use that roster entry's seatIndex
+```
+
+The matching roster entry's `seatIndex` is the only PolicyTieRng seat index. The
+materializer must reuse the existing C1_03 seat-authority helper or extract that
+same logic into a generic shared helper; it must not invent a second roster
+mapping. The derived value is recorded as row-level `provenance.teacherSeatIndex`
+and is used to obtain the stateful schedule entry keyed by
+`semanticEpisodeId|teacherPolicyIdentity|seatIndex`.
+
+Missing, duplicate, malformed, or inconsistent roster ownership fails closed.
+The matched `seatIndex` must be a nonnegative integer. Physical row order, player
+role text, batch index, candidate ordinal, and caller-supplied seat values are
+forbidden substitutes. A row cannot consume Teacher RNG or a precomputed Teacher
+result until this seat authority has passed.
+
 The following are explicitly forbidden as semantic identity:
 
 ```text
@@ -783,7 +809,8 @@ Teacher:
 6. resolve the source candidate/response at the ordinal, compare the label target
    exactly to `selectedExactSourceBinding`, and validate that exact binding's
    public counterpart against the complete source domain;
-7. verify unique executable membership and all accounting totals; and
+7. verify exactly one semantic domain match and that the matched member is
+   executable; other executable candidates may exist; then verify all accounting totals; and
 8. verify that no TEST row has a label or Teacher call count.
 
 The verifier must not recompute Teacher scores or rerun Selection V2. The
@@ -907,14 +934,19 @@ For each reader-issued source sample:
 2. Recompute the frozen split from `semanticEpisodeId` and require exact
    partition equality.
 3. If the partition is TEST, execute only the TEST skip branch in Section 11.
-4. For TRAIN/VALIDATION, issue the exact `InferenceRequest` from the
+4. For TRAIN/VALIDATION, derive `seatIndex` exclusively by matching
+   `sourceReference.perspectivePlayerId` to exactly one
+   `provenance.environmentIdentity.roster[].playerId`, as specified in the
+   Teacher execution seat authority. Require the matched `seatIndex` to be a
+   nonnegative integer. Use no caller-supplied or physical-order substitute.
+5. Issue the exact `InferenceRequest` from the
    `ValidatedDerivedSample`. Do not construct an input from a raw dictionary.
-5. Issue `PublicObservationTeacherRequestV1` from that request with no
+6. Issue `PublicObservationTeacherRequestV1` from that request with no
    permutation for the canonical run. A test-only permutation may be used to
    prove equivariance, but it must retain all candidates and source ordinals.
-6. Require a flat family. A structured request is allowed to proceed only to the
+7. Require a flat family. A structured request is allowed to proceed only to the
    admitted Teacher's typed `NO_LABEL` path; it is never flattened.
-7. If the request cannot be issued because the source flat binding is not
+8. If the request cannot be issued because the source flat binding is not
    complete, increment `rejectedInvalidSourceBindingByPartition` and emit no
    label. Do not call the Teacher for that row.
 
@@ -924,14 +956,18 @@ For `NoLabelTeacherResultV1`:
 
 1. Require the result diagnostics config digest, family and candidate count to
    match the request/configuration.
-2. Require `support=NO_LABEL` and an explicit `NoLabelReason`.
-3. Increment the exact partition/reason counter.
-4. Emit no label row. Structured reasons are expected; they are not failures.
+2. Require that the stateful Teacher execution context used the derived
+   `seatIndex` and the declared schedule key for this source episode/policy
+   instance.
+3. Require `support=NO_LABEL` and an explicit `NoLabelReason`.
+4. Increment the exact partition/reason counter.
+5. Emit no label row. Structured reasons are expected; they are not failures.
 
 For `SelectedTeacherResultV1`:
 
 1. Require `support=SUPPORTED`, no `no_label_reason`, matching config digest,
-   matching decision family and matching candidate count.
+   matching decision family and matching candidate count. Require the execution
+   context's derived `seatIndex` to be the seat used by the stateful schedule.
 2. Require `source_binding_ordinal` to be a non-negative integer in the request's
    complete source ordinal set.
 3. Resolve `request.source_bindings.exact_binding_for(ordinal)` and compare its
@@ -944,7 +980,9 @@ For `SelectedTeacherResultV1`:
 7. Validate that exact target and selected binding against the complete source
    domain using the shared C0 membership helper, with the Teacher exact binding
    as the selected binding. The public candidate/response at that ordinal is the
-   alias/projection counterpart used for executable-support and uniqueness checks.
+   alias/projection counterpart used for executable-support and semantic-match
+   checks. Exactly one semantic domain match is required; only that matched
+   member must be executable. Other executable candidates may exist.
 8. For an action, validate the full choice payload against the existing source
    domain. For a folded response, preserve the complete source-authorized
    response-local semantics.
@@ -966,7 +1004,8 @@ The implementation must never silently turn a selected result into `NO_LABEL`.
 3. Store the same exact Teacher binding under
    `binding.selectedExactSourceBinding` and retain the source ordinal only as a
    binding/audit address.
-4. Store bounded result provenance only under the provenance channel.
+4. Store the derived `teacherSeatIndex` and bounded result provenance only under
+   the provenance channel.
 5. Canonicalize the row and append it to a staging `labels.ndjson`.
 6. Record counters without consulting map iteration order or worker completion
    order.
@@ -998,6 +1037,7 @@ conditions are mandatory fail-closed cases:
 | Wrong Teacher tie schedule, seed, initial cursor or state scope | Abort; no label |
 | Legacy A9 seed reuse is not exactly `false` | Abort; no label |
 | Wrong Teacher admission purpose/result/plan identity/digest | Abort; no label |
+| Missing, duplicate, malformed or inconsistent roster seat authority | Abort; no label |
 | Result family/candidate-count/config mismatch | Reject selected row or abort if envelope-wide |
 | Invalid source-binding ordinal | Reject selected row; count explicitly |
 | Exact source binding differs from request binding | Reject selected row; count explicitly |
@@ -1129,6 +1169,7 @@ with these focused RED cases before production code is written:
 | `wrong_teacher_config_digest_rejects` | provenance validator is absent | Exact digest mismatch aborts/rejects fail closed |
 | `wrong_teacher_policy_identity_rejects` | policy identity gate is absent | Policy mismatch is not accepted as the same Teacher |
 | `wrong_teacher_execution_schedule_or_admission_rejects` | execution/admission provenance gate is absent | Schedule, seed, cursor, scope, admission purpose/result or plan digest mismatch fails closed |
+| `missing_or_ambiguous_perspective_roster_seat_rejects` | source-seat authority gate is absent | Missing, duplicate, malformed or inconsistent `perspectivePlayerId` roster ownership fails before Teacher RNG/result use |
 | `wrong_materializer_identity_or_version_rejects` | label manifest version gate is absent | Unknown/mismatched materializer identity fails closed |
 | `wrong_source_binding_ordinal_rejects` | ordinal membership gate is absent | Negative, unknown or mismatched ordinal is rejected |
 | `exact_source_action_mismatch_rejects` | exact binding comparison is absent | A different action at the same-looking slot is rejected |
@@ -1184,8 +1225,9 @@ artifact or rebless the historical count.
 ### Required future checks
 
 1. Verify the exact source artifact manifest and all source digests.
-2. Verify the admitted Teacher/configuration and its execution/tie-schedule
-   binding without changing the Teacher.
+2. Verify the admitted Teacher/configuration, its execution/tie-schedule
+   binding, and the source-derived roster seat authority without changing the
+   Teacher.
 3. Run only the C1_05 materialization boundary; do not train or create a model.
 4. Verify the sidecar without rerunning the Teacher and join every label back to
    its source sample.
@@ -1197,6 +1239,7 @@ EXPECTED_ACTION_LABELS=57062
 EXPECTED_FOLDED_LABELS=2149
 OWNERSHIP_FAILURES=0
 TRUST_FAILURES=0
+SEAT_AUTHORITY_FAILURES=0
 TEST_ROWS_CONSUMED=0
 TEST_TEACHER_CALLS=0
 TEST_LABELS_MATERIALIZED=0
@@ -1304,8 +1347,9 @@ Implementation is blocked if any of these conditions holds:
    identity.
 3. C0 target semantics, source-key meaning, split membership, Selection V2,
    PolicyTieRng or model-facing privacy rules are contradictory or missing.
-4. The exact C1_03 tie schedule/seed/cursor/scope or the admitted purpose/result/
-   plan identity/digest is missing or contradictory.
+4. The exact C1_03 tie schedule/seed/cursor/scope, the source-derived roster
+   seat authority, or the admitted purpose/result/plan identity/digest is missing
+   or contradictory.
 5. A result cannot be coupled to its exact request and exact source binding
    without changing the frozen Teacher result contract.
 6. The implementation would need to choose or repair a structured subdecision,
@@ -1323,7 +1367,7 @@ Implementation is blocked if any of these conditions holds:
 | --- | --- |
 | Q1 canonical target | Exact Teacher `ExactSemanticSourceBinding` action/response, not the public feature view |
 | Q2 exact source binding | Source key + request ordinal + exact `ExactSemanticSourceBinding` equality, retained in the sidecar binding channel |
-| Q3 domain membership | Existing strict complete-domain/source-membership validation applied to the Teacher exact binding and its public counterpart |
+| Q3 domain membership | Existing strict validation: exactly one semantic complete-domain match, and that matched member is executable; other executable members may exist |
 | Q4 flat families | Action target for `ACTION_CANDIDATES`; response target for `FOLDED_DECISION_OPTIONS` |
 | Q5 structured outcomes | Typed `NO_LABEL`, counted by reason, no fabricated row |
 | Q6 candidate index | Forbidden as canonical identity; ordinal is binding/audit only |
