@@ -14,7 +14,8 @@ import org.springframework.web.socket.WebSocketSession
 
 @Component
 class SpectatingHandler(
-    private val ctx: LobbySharedContext
+    private val ctx: LobbySharedContext,
+    private val admissionPolicy: SpectatorAdmissionPolicy,
 ) {
     private val logger = LoggerFactory.getLogger(SpectatingHandler::class.java)
 
@@ -34,6 +35,13 @@ class SpectatingHandler(
 
         val gameSession = ctx.gameRepository.findById(message.gameSessionId)
         if (gameSession == null) {
+            ctx.sender.sendError(session, ErrorCode.GAME_NOT_FOUND, "Game not found")
+            return
+        }
+
+        if (!admissionPolicy.canSpectate(identity, gameSession)) {
+            // Collapse private-game existence and authorization failures into
+            // the repository's existing not-found response.
             ctx.sender.sendError(session, ErrorCode.GAME_NOT_FOUND, "Game not found")
             return
         }
@@ -96,7 +104,7 @@ class SpectatingHandler(
         gameSessionId: String
     ) {
         val gameSession = ctx.gameRepository.findById(gameSessionId)
-        if (gameSession == null || gameSession.isGameOver()) {
+        if (gameSession == null || gameSession.isGameOver() || !admissionPolicy.canSpectate(identity, gameSession)) {
             identity.currentSpectatingGameId = null
             sendActiveMatchesToPlayer(identity, session)
             return

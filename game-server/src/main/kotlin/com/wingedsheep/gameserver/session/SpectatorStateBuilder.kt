@@ -36,6 +36,8 @@ class SpectatorStateBuilder(
     private val cardRegistry: CardRegistry,
     private val stateTransformer: ClientStateTransformer
 ) {
+    private val decisionEnricher = DecisionEnricher(cardRegistry)
+
     /**
      * Build a spectator view of an N-player game. [seats] is every seated player in turn order;
      * [seatRoster] is the lightweight seat list echoed to the client. The heavy per-player board
@@ -59,7 +61,7 @@ class SpectatorStateBuilder(
         // Build decision status if there's a pending decision
         val decisionStatus = state.pendingDecision?.let { decision ->
             val decidingPlayer = seats.firstOrNull { it.playerId == decision.playerId } ?: p1
-            createDecisionStatus(decision, decidingPlayer.playerName)
+            createDecisionStatus(state, decision, decidingPlayer.playerName)
         }
 
         return ServerMessage.SpectatorStateUpdate(
@@ -81,7 +83,11 @@ class SpectatorStateBuilder(
         )
     }
 
-    private fun createDecisionStatus(decision: PendingDecision, playerName: String): ServerMessage.SpectatorDecisionStatus {
+    private fun createDecisionStatus(
+        state: GameState,
+        decision: PendingDecision,
+        playerName: String,
+    ): ServerMessage.SpectatorDecisionStatus {
         val displayText = when (decision) {
             is SelectCardsDecision -> "Selecting cards"
             is ChooseTargetsDecision -> "Choosing targets"
@@ -107,7 +113,7 @@ class SpectatorStateBuilder(
             playerId = decision.playerId.value,
             decisionType = decision::class.simpleName ?: "Unknown",
             displayText = displayText,
-            sourceName = decision.context.sourceName
+            sourceName = decisionEnricher.maskedSpectatorSourceName(decision, state)
         )
     }
 
