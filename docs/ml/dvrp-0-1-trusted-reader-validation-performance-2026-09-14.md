@@ -53,9 +53,10 @@ RUNTIME=Windows-11-10.0.26200-SP0 / AMD64 Family 25 Model 33 Stepping 2
 
 BASELINE_FULL_FILE_DEEP_VALIDATION_PASSES=2
 BASELINE_DEEP_VALIDATION_PASSES_PER_ROW=3
+BASELINE_JSON_PARSE_PASSES_PER_ROW=3
 BASELINE_PARSE_CALLS=1536
 BASELINE_DEEP_VALIDATION_CALLS=1536
-BASELINE_FULL_BYTE_PASSES=2
+BASELINE_FULL_RAW_BYTE_PASSES=3
 ```
 
 The baseline timings were the mean of three fresh synthetic artifacts:
@@ -125,9 +126,13 @@ The same bounded fixture and three-repetition method produced:
 ```text
 OPTIMIZED_FULL_FILE_DEEP_VALIDATION_PASSES=1
 OPTIMIZED_DEEP_VALIDATION_PASSES_PER_ROW=1
+OPTIMIZED_JSON_PARSE_PASSES_PER_ROW=2
 OPTIMIZED_PARSE_CALLS=1024
 OPTIMIZED_DEEP_VALIDATION_CALLS=512
-OPTIMIZED_FULL_BYTE_PASSES=2
+OPTIMIZED_FULL_RAW_BYTE_PASSES=3
+
+RAW_IO_PASS_REDUCTION=NO
+SEMANTIC_VALIDATION_REDUCTION=YES
 
 OPTIMIZED_OPEN_SECONDS=0.345182
 OPTIMIZED_CONSUMPTION_SECONDS=0.256366
@@ -138,6 +143,8 @@ SPEEDUP_CONSUMPTION=2.66x
 ```
 
 These are local bounded measurements, not universal hardware guarantees. Peak RSS was not measured. The transient validation state stores one 32-byte SHA-256 digest per validated row plus normal Python tuple/object overhead; no persistent state is written.
+
+The speedup comes from removing repeated semantic validation and one repeated JSON/canonical parse per row, not from reducing complete raw-byte passes. The fully consumed inference path still performs three sequential raw-byte passes in both variants: strict open validation, whole-file identity preflight, and row consumption.
 
 ## Verification
 
