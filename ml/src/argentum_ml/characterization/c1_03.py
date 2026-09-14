@@ -1594,7 +1594,9 @@ def render_markdown(summary: C1_03OfflineSummaryV1) -> str:
         f"TRUST_FAILURE_COUNT={summary.failure_counts.get('TRUST_FAILURE_COUNT', 0)}",
         f"C1_00_AUTHORITY_FAILURE_COUNT={summary.failure_counts.get('C1_00_AUTHORITY_FAILURE_COUNT', 0)}",
         f"TEACHER_FLAT_FAILURE_COUNT={summary.failure_counts.get('TEACHER_FLAT_FAILURE_COUNT', 0)}",
-        f"OWNERSHIP_FAILURE_COUNT={summary.failure_counts.get('ACTION_OWNERSHIP_FAILURE_COUNT', 0)}",
+        f"OWNERSHIP_FAILURE_COUNT={sum(summary.failure_counts.get(key, 0) for key in ('ACTION_OWNERSHIP_FAILURE_COUNT', 'FOLDED_OWNERSHIP_FAILURE_COUNT'))}",
+        f"ACTION_OWNERSHIP_FAILURE_COUNT={summary.failure_counts.get('ACTION_OWNERSHIP_FAILURE_COUNT', 0)}",
+        f"FOLDED_OWNERSHIP_FAILURE_COUNT={summary.failure_counts.get('FOLDED_OWNERSHIP_FAILURE_COUNT', 0)}",
         f"FOCUSED_TEST_COUNT={_raw(raw, 'FOCUSED_TEST_COUNT')}",
         f"TEACHER_POLICY_TIE_SCHEDULE_IDENTITY={plan.teacher_policy_tie_schedule_identity}",
         f"SOURCE_POLICY_RNG_IDENTITY={plan.source_policy_rng_identity}",
@@ -1690,6 +1692,9 @@ def _status_mapping(summary: C1_03OfflineSummaryV1) -> dict[str, Any]:
     action_eligible = _family_eligible(summary, "ACTION_CANDIDATES")
     folded_eligible = _family_eligible(summary, "FOLDED_DECISION_OPTIONS")
     admitted = summary.admission_result == "ADMITTED_LIMITED_FLAT_REFERENCE_BOOTSTRAP"
+    action_ownership_failures = failures.get("ACTION_OWNERSHIP_FAILURE_COUNT", 0)
+    folded_ownership_failures = failures.get("FOLDED_OWNERSHIP_FAILURE_COUNT", 0)
+    ownership_failures = action_ownership_failures + folded_ownership_failures
     gameplay_block_reason = (
         "MISSING_EXISTING_PUBLIC_EXECUTION_SEAM"
         if summary.gameplay_status == "BLOCKED"
@@ -1731,8 +1736,9 @@ def _status_mapping(summary: C1_03OfflineSummaryV1) -> dict[str, Any]:
         "STRUCTURED_BOOTSTRAP_ADMITTED": "NO",
         "TRUST_FAILURE_COUNT": failures.get("TRUST_FAILURE_COUNT", 0),
         "TEACHER_FLAT_FAILURE_COUNT": failures.get("TEACHER_FLAT_FAILURE_COUNT", 0),
-        "OWNERSHIP_FAILURE_COUNT": failures.get("ACTION_OWNERSHIP_FAILURE_COUNT", 0),
-        "FOLDED_OWNERSHIP_FAILURE_COUNT": failures.get("FOLDED_OWNERSHIP_FAILURE_COUNT", 0),
+        "OWNERSHIP_FAILURE_COUNT": ownership_failures,
+        "ACTION_OWNERSHIP_FAILURE_COUNT": action_ownership_failures,
+        "FOLDED_OWNERSHIP_FAILURE_COUNT": folded_ownership_failures,
         "HIDDEN_POLICY_FALLBACK_COUNT": failures.get("HIDDEN_POLICY_FALLBACK_COUNT", 0),
         "CANDIDATE_TRUNCATION_COUNT": failures.get("CANDIDATE_TRUNCATION_COUNT", 0),
         "PRIVACY_FAILURE_COUNT": failures.get("PRIVACY_FAILURE_COUNT", 0),
