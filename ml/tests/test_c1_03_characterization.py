@@ -43,6 +43,7 @@ from argentum_ml.characterization.c1_03 import (
     turn_bucket,
     run_offline,
     decide_admission,
+    _family_eligible,
     render_markdown,
     write_report,
     write_summary,
@@ -721,6 +722,64 @@ class C1_03CharacterizationTests(unittest.TestCase):
         blocked = dataclasses.replace(summary, failure_counts=blocked_failures)
         self.assertEqual(decide_admission(blocked, gameplay_status="NOT_RUN"), "BLOCKED")
 
+    def test_family_eligibility_is_scoped_to_family_ownership(self):
+        summary = self._complete_admission_summary()
+        failures = dict(summary.failure_counts)
+        failures["ACTION_OWNERSHIP_FAILURE_COUNT"] = 1
+        failures["FOLDED_OWNERSHIP_FAILURE_COUNT"] = 0
+        summary = dataclasses.replace(summary, failure_counts=failures)
+        self.assertFalse(_family_eligible(summary, "ACTION_CANDIDATES"))
+        self.assertTrue(_family_eligible(summary, "FOLDED_DECISION_OPTIONS"))
+
+    def test_folded_ownership_failure_has_a_separate_counter(self):
+        sample = _flat_sample(
+            ["FoldedOption"],
+            episode_id=_episode_id_for("TRAIN", 1400),
+            folded=True,
+        )
+        teacher = _c1_teacher()
+
+        class UnownedFoldedTeacher:
+            config = teacher.config
+            identity = teacher.identity
+
+            @staticmethod
+            def score_vector(request):
+                return teacher.score_vector(request)
+
+            @staticmethod
+            def select(request, state):
+                result = teacher.select(request, state)
+                unowned = ExactSemanticSourceBinding(
+                    exact_action=None,
+                    exact_response={
+                        "response": {
+                            "optionIndex": 999,
+                            "type": "OptionChosenResponse",
+                        },
+                        "type": "chosen-response",
+                    },
+                    source_binding_ordinal_audit=result.source_binding_ordinal,
+                )
+                return dataclasses.replace(result, exact_source_binding=unowned)
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary = run_offline(
+                _artifact_for_samples(Path(directory), [sample]),
+                plan=_fixture_plan(),
+                teacher=UnownedFoldedTeacher(),
+            )
+        self.assertEqual(summary.failure_counts["ACTION_OWNERSHIP_FAILURE_COUNT"], 0)
+        self.assertEqual(summary.failure_counts["FOLDED_OWNERSHIP_FAILURE_COUNT"], 1)
+        self.assertEqual(summary.failure_counts["TRUST_FAILURE_COUNT"], 1)
+        self.assertEqual(summary.admission_result, "REJECTED")
+
+    def test_expected_unbindability_is_not_a_failure_counter(self):
+        summary = C1_03AccumulatorV1(C1_03PlanV1.reference()).finalize()
+        self.assertNotIn("C1_00_UNBINDABLE_FLAT_ROWS", summary.failure_counts)
+        self.assertEqual(summary.failure_counts["ACTION_OWNERSHIP_FAILURE_COUNT"], 0)
+        self.assertEqual(summary.failure_counts["FOLDED_OWNERSHIP_FAILURE_COUNT"], 0)
+
     def test_report_is_deterministic_identity_bound_and_path_free(self):
         summary = self._complete_admission_summary()
         first = render_markdown(summary)
@@ -792,6 +851,11 @@ class C1_03CharacterizationTests(unittest.TestCase):
         self.assertEqual(summary.stratified_counts["phase"]["MAIN1|agreement"], 1)
         self.assertEqual(summary.stratified_counts["turn_bucket"]["1|agreement"], 1)
         self.assertEqual(summary.stratified_counts["seat_role"]["Akiri|agreement"], 1)
+        self.assertEqual(summary.stratified_counts["partition"]["TRAIN|agreement"], 1)
+        self.assertEqual(
+            summary.stratified_counts["selected_candidate_kind"]["PlayLand|agreement"],
+            1,
+        )
 
     def test_structured_counts_include_partition_counts(self):
         train_id = _episode_id_for("TRAIN", 1000)
@@ -811,6 +875,10 @@ class C1_03CharacterizationTests(unittest.TestCase):
         self.assertEqual(counts["VALIDATION_decisionCount"], 1)
         self.assertEqual(counts["TRAIN_noLabelCount"], 1)
         self.assertEqual(counts["VALIDATION_noLabelCount"], 1)
+        self.assertEqual(counts["TRAIN_episodeCount"], 1)
+        self.assertEqual(counts["VALIDATION_episodeCount"], 1)
+        self.assertEqual(counts["TRAIN_semanticGroupCount"], 1)
+        self.assertEqual(counts["VALIDATION_semanticGroupCount"], 1)
 
     def test_execution_ownership_audit_reports_candidate_payload_shapes(self):
         train_id = _episode_id_for("TRAIN", 1200)

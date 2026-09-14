@@ -613,8 +613,9 @@ class C1_03AccumulatorV1:
             "PRIVACY_FAILURE_COUNT",
             "TRUST_FAILURE_COUNT",
             "TEACHER_FLAT_FAILURE_COUNT",
-            "C1_00_UNBINDABLE_FLAT_ROWS",
             "C1_00_AUTHORITY_FAILURE_COUNT",
+            "ACTION_OWNERSHIP_FAILURE_COUNT",
+            "FOLDED_OWNERSHIP_FAILURE_COUNT",
         ):
             self.failures[name] = 0
         for name in (
@@ -659,6 +660,10 @@ class C1_03AccumulatorV1:
                     "VALIDATION_decisionCount": 0,
                     "TRAIN_noLabelCount": 0,
                     "VALIDATION_noLabelCount": 0,
+                    "TRAIN_episodeCount": 0,
+                    "VALIDATION_episodeCount": 0,
+                    "TRAIN_semanticGroupCount": 0,
+                    "VALIDATION_semanticGroupCount": 0,
                 }
             )
 
@@ -744,6 +749,10 @@ class C1_03AccumulatorV1:
                 | self._structured_episode_ids[("VALIDATION", family)]
             )
             family_counts["semanticGroupCount"] = family_counts["episodeCount"]
+            for partition in self.plan.allowed_partitions:
+                partition_count = len(self._structured_episode_ids[(partition, family)])
+                family_counts[f"{partition}_episodeCount"] = partition_count
+                family_counts[f"{partition}_semanticGroupCount"] = partition_count
         return C1_03OfflineSummaryV1(
             plan=self.plan,
             raw_counts=dict(self.raw),
@@ -833,7 +842,12 @@ class C1_03AccumulatorV1:
             owned = folded_selection_is_teacher_owned(request, result)
         if not owned:
             self.raw["UNOWNED_SELECTION_COUNT"] += 1
-            self.failures["ACTION_OWNERSHIP_FAILURE_COUNT"] += 1
+            ownership_key = (
+                "ACTION_OWNERSHIP_FAILURE_COUNT"
+                if request.decision_family == "ACTION_CANDIDATES"
+                else "FOLDED_OWNERSHIP_FAILURE_COUNT"
+            )
+            self.failures[ownership_key] += 1
             self.failures["TRUST_FAILURE_COUNT"] += 1
         self.raw["TEACHER_SELECTED"] += 1
         self._count_selection_strata(sample, request, result)
@@ -846,11 +860,11 @@ class C1_03AccumulatorV1:
         if canonical_json(selected_public) == canonical_json(source_public):
             self.raw["BEHAVIOR_AGREEMENT_COUNT"] += 1
             self._count_stratum("decision_family", request.decision_family, "agreement")
-            self._count_agreement_strata(sample, request, "agreement")
+            self._count_agreement_strata(sample, request, result, "agreement")
         else:
             self.raw["BEHAVIOR_DISAGREEMENT_COUNT"] += 1
             self._count_stratum("decision_family", request.decision_family, "disagreement")
-            self._count_agreement_strata(sample, request, "disagreement")
+            self._count_agreement_strata(sample, request, result, "disagreement")
             self._record_divergence(
                 sample,
                 request,
@@ -989,14 +1003,20 @@ class C1_03AccumulatorV1:
         self,
         sample: SampleViewV1,
         request: PublicObservationTeacherRequestV1,
+        result: SelectedTeacherResultV1,
         outcome: str,
     ) -> None:
         context = sample.validated_sample.sample["input"]["decisionContext"]
         role, deck = _role_and_deck(sample.validated_sample.sample)
+        selected = _candidate_for_ordinal(request, result.source_binding_ordinal)
+        if selected is None or not isinstance(selected.get("kind"), str):
+            raise C1_00AuthorityFailure("selected candidate kind is absent from public domain")
         executable = sum(
             candidate.executable_support for candidate in request.item.candidates
         )
         for dimension, value in (
+            ("partition", sample.partition),
+            ("selected_candidate_kind", selected["kind"]),
             ("phase", context["phase"]),
             ("turn_bucket", turn_bucket(context["turnNumber"])),
             ("seat_role", role),
@@ -1322,6 +1342,7 @@ def decide_admission(
         "PRIVACY_FAILURE_COUNT",
         "TEACHER_FLAT_FAILURE_COUNT",
         "ACTION_OWNERSHIP_FAILURE_COUNT",
+        "FOLDED_OWNERSHIP_FAILURE_COUNT",
     ):
         if summary.failure_counts.get(key, 0) > 0:
             return "REJECTED"
@@ -1600,14 +1621,19 @@ def render_markdown(summary: C1_03OfflineSummaryV1) -> str:
             "",
         "## Structured decision coverage",
         "",
-        "| Family | Decisions | Episodes | NO_LABEL | Fraction |",
-        "| --- | ---: | ---: | ---: | ---: |",
+            "| Family | TRAIN decisions | TRAIN episodes | TRAIN NO_LABEL | VALIDATION decisions | VALIDATION episodes | VALIDATION NO_LABEL | Total decisions | Total episodes | Total NO_LABEL | Fraction |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for family in STRUCTURED_FAMILIES:
         counts = summary.structured_counts.get(family, {})
         lines.append(
-            f"| {family} | {counts.get('decisionCount', 0)} | "
+            f"| {family} | {counts.get('TRAIN_decisionCount', 0)} | "
+            f"{counts.get('TRAIN_episodeCount', 0)} | {counts.get('TRAIN_noLabelCount', 0)} | "
+            f"{counts.get('VALIDATION_decisionCount', 0)} | "
+            f"{counts.get('VALIDATION_episodeCount', 0)} | "
+            f"{counts.get('VALIDATION_noLabelCount', 0)} | "
+            f"{counts.get('decisionCount', 0)} | "
             f"{counts.get('episodeCount', 0)} | {counts.get('noLabelCount', 0)} | "
             f"{_rate_value(counts.get('fractionOfAllPolicyRelevantDecisions'))} |"
         )
@@ -1706,6 +1732,7 @@ def _status_mapping(summary: C1_03OfflineSummaryV1) -> dict[str, Any]:
         "TRUST_FAILURE_COUNT": failures.get("TRUST_FAILURE_COUNT", 0),
         "TEACHER_FLAT_FAILURE_COUNT": failures.get("TEACHER_FLAT_FAILURE_COUNT", 0),
         "OWNERSHIP_FAILURE_COUNT": failures.get("ACTION_OWNERSHIP_FAILURE_COUNT", 0),
+        "FOLDED_OWNERSHIP_FAILURE_COUNT": failures.get("FOLDED_OWNERSHIP_FAILURE_COUNT", 0),
         "HIDDEN_POLICY_FALLBACK_COUNT": failures.get("HIDDEN_POLICY_FALLBACK_COUNT", 0),
         "CANDIDATE_TRUNCATION_COUNT": failures.get("CANDIDATE_TRUNCATION_COUNT", 0),
         "PRIVACY_FAILURE_COUNT": failures.get("PRIVACY_FAILURE_COUNT", 0),
@@ -1736,6 +1763,12 @@ def _status_lines(summary: C1_03OfflineSummaryV1) -> list[str]:
 def _family_eligible(summary: C1_03OfflineSummaryV1, family: str) -> bool:
     failures = summary.failure_counts
     if failures.get("C1_00_AUTHORITY_FAILURE_COUNT", 0) or failures.get("TEACHER_FLAT_FAILURE_COUNT", 0):
+        return False
+    ownership_failure = {
+        "ACTION_CANDIDATES": "ACTION_OWNERSHIP_FAILURE_COUNT",
+        "FOLDED_DECISION_OPTIONS": "FOLDED_OWNERSHIP_FAILURE_COUNT",
+    }.get(family)
+    if ownership_failure is None or failures.get(ownership_failure, 0):
         return False
     return all(
         summary.raw_counts.get(f"{partition}_{family}_EXACT_BINDABLE", 0) > 0
