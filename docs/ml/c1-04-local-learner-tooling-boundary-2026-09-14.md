@@ -14,7 +14,8 @@ REMOTE_HEAD=54b7de5a272265f2d413a158c94f3e30fdd650a6
 IMPLEMENTATION_WORKTREE_CLEAN=YES
 IMPLEMENTATION_AHEAD_BY=3
 IMPLEMENTATION_BEHIND_BY=0
-IMPLEMENTATION_CHANGED_FILES=11
+IMPLEMENTATION_CHANGED_FILES=12
+FUNCTIONAL_IMPLEMENTATION_CHANGED_FILES=11
 
 PYTHON_VERSION=3.13.15
 TORCH_VERSION=2.14.0
@@ -77,4 +78,3 @@ The direct optional dependency group contains only PyTorch, Safetensors, and Tra
 contract path remains dependency-free. Trackio ran against temporary local storage with remote
 Space, server, write-token, and webhook configuration rejected. No credentials, tokens, private
 paths, raw game state, Teacher labels, dataset export, or gameplay data were recorded.
-
