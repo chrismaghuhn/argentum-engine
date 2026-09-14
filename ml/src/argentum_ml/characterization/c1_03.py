@@ -21,6 +21,7 @@ from ..data.derived_reader import ValidatedDerivedSample
 from ..data.variable_batch import CandidateFeature, VariableDomainItem
 from ..inference.runtime import InferenceError, InferenceRequest
 from ..selection.policy_tie_rng import PolicyTieRngStateV1
+from ..selection.selection_v2 import ExactSemanticSourceBinding
 from ..teacher.contracts import (
     NoLabelTeacherResultV1,
     PublicObservationTeacherConfigV1,
@@ -513,15 +514,31 @@ def folded_selection_is_teacher_owned(
         return False
     if request.decision_family != "FOLDED_DECISION_OPTIONS":
         return False
-    candidate = _candidate_for_ordinal(request, result.source_binding_ordinal)
+    ordinal = result.source_binding_ordinal
+    if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+        return False
+    candidate = _candidate_for_ordinal(request, ordinal)
     if candidate is None:
         return False
-    response = result.exact_source_binding.exact_response
+    public_semantics = candidate.get("actionSemantics")
+    if not isinstance(public_semantics, Mapping):
+        return False
+    try:
+        expected_binding = request.source_bindings.exact_binding_for(ordinal)
+    except InferenceError:
+        return False
+    if not isinstance(result.exact_source_binding, ExactSemanticSourceBinding):
+        return False
+    if result.exact_source_binding != expected_binding:
+        return False
+    if expected_binding.exact_action is not None:
+        return False
+    response = expected_binding.exact_response
     return (
         isinstance(response, Mapping)
         and response.get("type") == "chosen-response"
-        and canonical_json(response.get("response"))
-        == canonical_json(candidate.get("actionSemantics"))
+        and isinstance(response.get("response"), Mapping)
+        and expected_binding.source_binding_ordinal_audit == ordinal
     )
 
 

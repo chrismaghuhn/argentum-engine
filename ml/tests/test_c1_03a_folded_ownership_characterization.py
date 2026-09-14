@@ -162,7 +162,7 @@ class C1_03AFoldedOwnershipCharacterizationTests(unittest.TestCase):
         )
         self.assertTrue(folded_selection_is_teacher_owned(request, result))
 
-    def test_identity_bearing_folded_response_reproduces_representation_mismatch(self) -> None:
+    def test_identity_bearing_folded_response_is_owned_by_factory_binding_authority(self) -> None:
         source_entity_id = "synthetic-folded-card"
         source_response = {
             "selectedCards": [source_entity_id],
@@ -203,14 +203,14 @@ class C1_03AFoldedOwnershipCharacterizationTests(unittest.TestCase):
         self.assertEqual(projected, public_response)
         self.assertEqual(alias_to_source[projected["selectedCards"][0]], source_entity_id)
 
-        # The RED finding: A/B/C are valid, but the current predicate crosses the layers.
+        # The source/public representations remain different by contract.
         self.assertNotEqual(
             canonical_json(source_response),
             canonical_json(projected),
         )
-        self.assertFalse(folded_selection_is_teacher_owned(request, result))
+        self.assertTrue(folded_selection_is_teacher_owned(request, result))
 
-    def test_current_ownership_predicate_does_not_verify_factory_binding_identity(self) -> None:
+    def test_current_ownership_predicate_rejects_non_factory_binding_identity(self) -> None:
         source_entity_id = "synthetic-folded-card"
         source_response = {
             "selectedCards": [source_entity_id],
@@ -240,7 +240,7 @@ class C1_03AFoldedOwnershipCharacterizationTests(unittest.TestCase):
             substituted_result.exact_source_binding,
             request.source_bindings.exact_binding_for(result.source_binding_ordinal),
         )
-        self.assertTrue(folded_selection_is_teacher_owned(request, substituted_result))
+        self.assertFalse(folded_selection_is_teacher_owned(request, substituted_result))
 
 
 if __name__ == "__main__":
