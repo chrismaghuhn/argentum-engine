@@ -4,8 +4,13 @@ from .canonical_json import canonical_bytes, canonical_json, sha256_hex
 from .identities import (
     ARTIFACT_IDENTITY_SCHEMA,
     DERIVED_VIEW_SCHEMA_IDENTITY,
+    LABEL_ARTIFACT_IDENTITY_SCHEMA,
+    LABEL_ARTIFACT_SCHEMA_IDENTITY,
     MODEL_FACING_CONTRACT_IDENTITY,
+    SOURCE_DECISION_KEY_IDENTITY,
     SPLIT_CONTRACT_IDENTITY,
+    SUPERVISED_POLICY_TARGET_IDENTITY,
+    TEACHER_EXECUTION_CONFIG_IDENTITY,
 )
 from .model_facing import ModelFacingContractError, require_model_input, validate_model_input
 from .tie_discriminator import (
@@ -19,8 +24,13 @@ from .tie_discriminator import (
 __all__ = [
     "ARTIFACT_IDENTITY_SCHEMA",
     "DERIVED_VIEW_SCHEMA_IDENTITY",
+    "LABEL_ARTIFACT_IDENTITY_SCHEMA",
+    "LABEL_ARTIFACT_SCHEMA_IDENTITY",
     "MODEL_FACING_CONTRACT_IDENTITY",
+    "SOURCE_DECISION_KEY_IDENTITY",
     "SPLIT_CONTRACT_IDENTITY",
+    "SUPERVISED_POLICY_TARGET_IDENTITY",
+    "TEACHER_EXECUTION_CONFIG_IDENTITY",
     "canonical_bytes",
     "canonical_json",
     "sha256_hex",

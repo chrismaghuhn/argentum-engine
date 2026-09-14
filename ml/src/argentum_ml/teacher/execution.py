@@ -1,0 +1,195 @@
+"""Shared C1 Teacher execution provenance and source-seat authority."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from ..contracts.canonical_json import canonical_bytes, sha256_hex
+from ..selection.policy_tie_rng import PolicyTieRngStateV1, UINT64_MAX
+
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_EXECUTION_CONFIG_SCHEMA = "argentum-ml-c1-05-teacher-execution-config@v1"
+_SCHEDULE_IDENTITY = "argentum-ml-c1-03-teacher-policy-tie-schedule@v1"
+_STATE_SCOPE = "semanticEpisodeId|teacherPolicyIdentity|seatIndex"
+_ADMISSION_PURPOSE = "argentum-ml-flat-reference-bootstrap@v1"
+_ADMISSION_RESULT = "ADMITTED_LIMITED_FLAT_REFERENCE_BOOTSTRAP"
+_ADMISSION_PLAN = "argentum-ml-c1-03-teacher-quality-and-admission@v1"
+_ADMISSION_PLAN_DIGEST = "bc186eb4df9830039fb1b0e474700afdb82e1cca033483afcad6bfd8d24fee79"
+
+
+class TeacherExecutionError(ValueError):
+    """Raised for invalid Teacher execution provenance or seat authority."""
+
+
+def _identity_value(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping) and isinstance(value.get("value"), str):
+        return value["value"]
+    return None
+
+
+def teacher_seat_index(sample: Mapping[str, Any]) -> int:
+    """Derive the PolicyTieRng seat from the validated source provenance."""
+
+    if not isinstance(sample, Mapping):
+        raise TeacherExecutionError("sample must be an object")
+    source = sample.get("sourceReference")
+    provenance = sample.get("provenance")
+    if not isinstance(source, Mapping) or not isinstance(provenance, Mapping):
+        raise TeacherExecutionError("sample provenance is missing")
+    perspective = source.get("perspectivePlayerId")
+    environment = provenance.get("environmentIdentity")
+    roster = environment.get("roster") if isinstance(environment, Mapping) else None
+    if not isinstance(perspective, str) or not isinstance(roster, list):
+        raise TeacherExecutionError("sample roster provenance is malformed")
+    matches = [
+        entry
+        for entry in roster
+        if isinstance(entry, Mapping)
+        and _identity_value(entry.get("playerId")) == perspective
+    ]
+    if len(matches) != 1:
+        raise TeacherExecutionError("perspective does not map to exactly one roster seat")
+    seat = matches[0].get("seatIndex")
+    if isinstance(seat, bool) or not isinstance(seat, int) or seat < 0:
+        raise TeacherExecutionError("roster seat index is malformed")
+    return seat
+
+
+@dataclass(frozen=True)
+class TeacherExecutionBindingV1:
+    teacher_policy_tie_schedule_identity: str
+    teacher_policy_tie_seed: int
+    initial_policy_tie_cursor: int
+    teacher_tie_state_scope: str
+    legacy_a9_policy_seed_reused: bool
+    teacher_admission_purpose_identity: str
+    teacher_admission_result: str
+    teacher_admission_plan_identity: str
+    teacher_admission_plan_digest: str
+
+    @classmethod
+    def reference(cls) -> "TeacherExecutionBindingV1":
+        return cls(
+            teacher_policy_tie_schedule_identity=_SCHEDULE_IDENTITY,
+            teacher_policy_tie_seed=0,
+            initial_policy_tie_cursor=0,
+            teacher_tie_state_scope=_STATE_SCOPE,
+            legacy_a9_policy_seed_reused=False,
+            teacher_admission_purpose_identity=_ADMISSION_PURPOSE,
+            teacher_admission_result=_ADMISSION_RESULT,
+            teacher_admission_plan_identity=_ADMISSION_PLAN,
+            teacher_admission_plan_digest=_ADMISSION_PLAN_DIGEST,
+        )
+
+    def validate(self) -> None:
+        if self.teacher_policy_tie_schedule_identity != _SCHEDULE_IDENTITY:
+            raise TeacherExecutionError("unsupported Teacher tie schedule identity")
+        if isinstance(self.teacher_policy_tie_seed, bool) or not isinstance(self.teacher_policy_tie_seed, int):
+            raise TeacherExecutionError("Teacher tie seed must be an integer")
+        if self.teacher_policy_tie_seed != 0:
+            raise TeacherExecutionError("Teacher tie seed differs from accepted C1_03 execution")
+        if isinstance(self.initial_policy_tie_cursor, bool) or not isinstance(self.initial_policy_tie_cursor, int):
+            raise TeacherExecutionError("initial PolicyTieRng cursor must be an integer")
+        if self.initial_policy_tie_cursor < 0 or self.initial_policy_tie_cursor > UINT64_MAX:
+            raise TeacherExecutionError("initial PolicyTieRng cursor is outside the unsigned 64-bit range")
+        if self.initial_policy_tie_cursor != 0:
+            raise TeacherExecutionError("initial PolicyTieRng cursor differs from accepted C1_03 execution")
+        if self.teacher_tie_state_scope != _STATE_SCOPE:
+            raise TeacherExecutionError("unsupported Teacher tie state scope")
+        if self.legacy_a9_policy_seed_reused is not False:
+            raise TeacherExecutionError("legacy A9 policy seed reuse is forbidden")
+        if self.teacher_admission_purpose_identity != _ADMISSION_PURPOSE:
+            raise TeacherExecutionError("unsupported Teacher admission purpose")
+        if self.teacher_admission_result != _ADMISSION_RESULT:
+            raise TeacherExecutionError("Teacher admission result is not the accepted flat bootstrap")
+        if self.teacher_admission_plan_identity != _ADMISSION_PLAN:
+            raise TeacherExecutionError("unsupported Teacher admission plan identity")
+        if not isinstance(self.teacher_admission_plan_digest, str) or _SHA256.fullmatch(
+            self.teacher_admission_plan_digest
+        ) is None:
+            raise TeacherExecutionError("Teacher admission plan digest must be lowercase SHA-256 hex")
+        if self.teacher_admission_plan_digest != _ADMISSION_PLAN_DIGEST:
+            raise TeacherExecutionError("Teacher admission plan digest differs from accepted evidence")
+
+    def execution_config_preimage(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "initialPolicyTieCursor": self.initial_policy_tie_cursor,
+            "legacyA9PolicySeedReused": self.legacy_a9_policy_seed_reused,
+            "schema": _EXECUTION_CONFIG_SCHEMA,
+            "teacherPolicyTieScheduleIdentity": self.teacher_policy_tie_schedule_identity,
+            "teacherPolicyTieSeed": self.teacher_policy_tie_seed,
+            "teacherTieStateScope": self.teacher_tie_state_scope,
+            "version": 1,
+        }
+
+    @property
+    def config_digest(self) -> str:
+        return sha256_hex(canonical_bytes(self.execution_config_preimage()))
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "teacherPolicyTieScheduleIdentity": self.teacher_policy_tie_schedule_identity,
+            "teacherPolicyTieSeed": self.teacher_policy_tie_seed,
+            "initialPolicyTieCursor": self.initial_policy_tie_cursor,
+            "teacherTieStateScope": self.teacher_tie_state_scope,
+            "legacyA9PolicySeedReused": self.legacy_a9_policy_seed_reused,
+            "teacherExecutionConfigDigest": self.config_digest,
+            "teacherAdmissionPurposeIdentity": self.teacher_admission_purpose_identity,
+            "teacherAdmissionResult": self.teacher_admission_result,
+            "teacherAdmissionPlanIdentity": self.teacher_admission_plan_identity,
+            "teacherAdmissionPlanDigest": self.teacher_admission_plan_digest,
+        }
+
+
+class TeacherTieRngScheduleV1:
+    """Stateful C1_03-compatible PolicyTieRng ownership by episode and seat."""
+
+    def __init__(
+        self,
+        execution: TeacherExecutionBindingV1,
+        *,
+        teacher_policy_identity: str,
+        policy_rng_identity: str,
+    ) -> None:
+        execution.validate()
+        if not isinstance(teacher_policy_identity, str) or not teacher_policy_identity:
+            raise TeacherExecutionError("Teacher policy identity is missing")
+        if not isinstance(policy_rng_identity, str) or not policy_rng_identity:
+            raise TeacherExecutionError("PolicyTieRng identity is missing")
+        self.execution = execution
+        self.teacher_policy_identity = teacher_policy_identity
+        self.policy_rng_identity = policy_rng_identity
+        self._states: dict[tuple[str, str, int], PolicyTieRngStateV1] = {}
+
+    def current(self, semantic_episode_id: str, seat_index: int) -> PolicyTieRngStateV1:
+        if not isinstance(semantic_episode_id, str) or _SHA256.fullmatch(semantic_episode_id) is None:
+            raise TeacherExecutionError("semantic episode identity is malformed")
+        if isinstance(seat_index, bool) or not isinstance(seat_index, int) or seat_index < 0:
+            raise TeacherExecutionError("roster seat index is malformed")
+        key = (semantic_episode_id, self.teacher_policy_identity, seat_index)
+        state = self._states.get(key)
+        if state is None:
+            state = PolicyTieRngStateV1.from_policy_seed(
+                self.execution.teacher_policy_tie_seed,
+                seat_index,
+                policy_rng_identity=self.policy_rng_identity,
+            )
+            if state.cursor != self.execution.initial_policy_tie_cursor:
+                raise TeacherExecutionError("Teacher tie schedule initial cursor mismatch")
+            self._states[key] = state
+        return state
+
+    def commit(self, semantic_episode_id: str, seat_index: int, state: PolicyTieRngStateV1) -> None:
+        if not isinstance(state, PolicyTieRngStateV1):
+            raise TeacherExecutionError("Teacher tie schedule received invalid state")
+        expected = self.current(semantic_episode_id, seat_index)
+        if state.stream_key != expected.stream_key or state.cursor < expected.cursor:
+            raise TeacherExecutionError("Teacher tie schedule state belongs to another stream")
+        self._states[(semantic_episode_id, self.teacher_policy_identity, seat_index)] = state
