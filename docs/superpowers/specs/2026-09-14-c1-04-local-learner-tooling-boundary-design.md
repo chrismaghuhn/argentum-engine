@@ -27,15 +27,16 @@ learner = [
     "torch==2.14.0",
     "safetensors==0.8.0",
     "trackio==0.37.1",
-    "huggingface-hub==1.31.0",
 ]
 ```
 
 These versions are the current official Python-package releases checked on 2026-09-14. All
-declare Python 3.13 compatibility through the package metadata or official documentation. The
-Hub package is a direct, pinned dependency because the accepted boundary now requires the
-authenticated Hugging Face installation to be present; no code in this slice performs a Hub
-download, upload, repository mutation, or dashboard publication.
+declare Python 3.13 compatibility through the package metadata or official documentation.
+
+C1_04 does not adopt `huggingface_hub` as an Argentum learner dependency or tooling boundary. If
+Trackio installs `huggingface_hub` transitively as an internal package dependency, that does not
+authorize Argentum code to import, authenticate, upload, download, publish, or use Hub APIs. No
+HF credentials are required for the C1_04 local smoke.
 
 The core package initializer and core subpackage initializers do not import `torch`,
 `safetensors`, `trackio`, or `huggingface_hub`. Learner modules import those packages lazily and
@@ -91,16 +92,18 @@ Add a thin `argentum_ml.learner.trackio` wrapper around the public Trackio API:
 - `finish()` closes the run exactly once.
 
 The wrapper validates finite numeric values, rejects booleans and unsupported metric names, and
-permits only hash-like Argentum references such as `checkpointId`, `weightContentDigest`,
-`sourceDatasetIdentity`, and `trainingRunIdentity` in telemetry metadata. It never accepts or
-logs raw `GameState`, hidden opponent information, private binding channels, Teacher labels,
-credentials, tokens, or secrets. The wrapper exposes no Trackio run ID as an Argentum identity.
+permits only an explicit whitelist of Argentum-owned semantic reference fields such as
+`checkpointId`, `weightContentDigest`, `sourceDatasetIdentity`, and `trainingRunIdentity` in
+telemetry metadata. Each value retains the syntax defined by its owning Argentum contract; the
+Trackio wrapper introduces no new identity format. It never accepts or logs raw `GameState`, hidden
+opponent information, private binding channels, Teacher labels, credentials, tokens, or secrets.
+The wrapper exposes no Trackio run ID as an Argentum identity.
 
 Before initialization it rejects non-empty `TRACKIO_SPACE_ID`, `TRACKIO_SERVER_URL`,
 `TRACKIO_WRITE_TOKEN`, and webhook configuration. It passes the documented local-safe settings
 `auto_log_gpu=False`, `auto_log_cpu=False`, and `embed=False`, and lets tests point `TRACKIO_DIR`
-to a temporary directory. HF authentication may exist for package/CLI use, but the local smoke
-does not use it and does not contact the Hub.
+to a temporary directory. The local smoke does not use HF authentication and does not contact the
+Hub.
 
 Trackio metadata is an output of the semantic identities, never an input to checkpoint ID,
 weight digest, dataset identity, candidate legality, promotion, or evaluation.
