@@ -457,6 +457,10 @@ Global provenance, duplicate, conflict, digest and schema failures do not get
 silently turned into rows. They abort publication and leave no authoritative
 partial artifact; their deterministic error code is returned by the run. The
 manifest counters for these classes must be zero in every published artifact.
+The same strict zero rule applies to every `rejectedSplitByPartition` and
+`rejectedProvenanceByPartition` value. `expectedNoLabelByPartitionAndReason`
+must be all-zero for TEST: TEST has no Teacher request and therefore cannot
+have a consumed Teacher result, including a NO_LABEL result.
 
 This preserves the distinction:
 
@@ -637,6 +641,50 @@ claim that TEST rows were semantically consumed. `testRowsConsumed` and
 The new `labelArtifactSchemaIdentity` and `labelArtifactIdentitySchema` describe
 only the physical derived sidecar. They do not introduce a second target
 semantics. The semantic target identity remains the C0 identity above.
+
+C1_05 V1 freezes the materializer authority itself. The public production
+entry point accepts no caller-supplied materializer identity or configuration
+digest. It uses:
+
+```text
+labelMaterializerImplementationIdentity.implementation=
+  argentum-ml-label-materializer@v1
+
+labelMaterializerImplementationIdentity.sourceCommit=
+  lowercase Git HEAD resolved by the production materializer
+
+labelMaterializerConfigDigest=
+  SHA-256(UTF-8(A3CanonicalJson(LabelMaterializerConfigV1.reference().to_dict())))
+```
+
+The exact V1 configuration preimage is:
+
+```json
+{
+  "version": 1,
+  "schemaIdentity": "argentum-ml-label-materializer-config@v1",
+  "allowedPartitions": ["TRAIN", "VALIDATION"],
+  "supportedDecisionFamilies": ["ACTION_CANDIDATES", "FOLDED_DECISION_OPTIONS"],
+  "unsupportedDecisionPolicy": "NO_LABEL",
+  "structuredDecisionPolicy": "NO_LABEL",
+  "targetSource": "SelectedTeacherResultV1.exact_source_binding",
+  "sourceBindingOrdinalRole": "binding_audit_only",
+  "sourceJoinKeyIdentity": "argentum-ml-source-decision-key@v1",
+  "teacherResultSchemaIdentity": "argentum-ml-public-observation-teacher-result@v1",
+  "selectionContractIdentity": "argentum-ml-policy-selection@v2",
+  "policyRngIdentity": "argentum-ml-policy-tie-rng@v1",
+  "supervisedPolicyTargetContractIdentity": "argentum-ml-supervised-policy-target@v1",
+  "labelArtifactSchemaIdentity": "argentum-ml-supervised-policy-label-artifact@v1",
+  "testPartitionPolicy": "NO_TEACHER_CALL_NO_RESULT_NO_LABEL"
+}
+```
+
+Its current canonical digest is
+`4c841b335fae60565d78adecbacc3a60bfa7d5c7637408923fee417a692d2ce6`.
+Unknown implementation identities or configuration digests fail closed. A
+private fixture-only seam may provide synthetic identity/configuration values;
+it is not the production entry point and cannot publish an authoritative V1
+artifact.
 
 ## 9. Artifact identity and provenance
 
@@ -942,8 +990,10 @@ it prevents a malformed result from being normalized into a label.
    digest, scorer, Selection V2 and PolicyTieRng V1 identities, plus the exact
    C1_03 tie schedule, seed, initial cursor, state scope, legacy-seed policy,
    admission purpose/result, and accepted admission plan identity/digest.
-4. Validate the C1_05 materializer implementation identity and configuration
-   digest. Unknown materializer versions fail closed.
+4. Resolve and validate the exact C1_05 materializer implementation identity
+   and `LabelMaterializerConfigV1.reference()` digest internally. Unknown
+   materializer versions/configurations fail closed; caller-supplied values are
+   not accepted on the production path.
 5. Validate that `allowedPartitions` is exactly `[TRAIN, VALIDATION]` in canonical
    order. A caller may not opt into TEST in V1.
 

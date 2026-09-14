@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
+import subprocess
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from ..contracts.canonical_json import canonical_json
@@ -27,12 +30,47 @@ from .derived_reader import (
     ValidatedDerivedSample,
     validate_exact_source_binding_membership,
 )
-from .label_contracts import SupervisedPolicyTargetV1
-from .label_artifact import write_label_artifact
+from .label_contracts import (
+    LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY,
+    LabelMaterializerConfigV1,
+    SupervisedPolicyTargetV1,
+)
+from .label_artifact import _write_label_artifact_for_test, write_label_artifact
 
 
 class LabelMaterializerError(ValueError):
     """Raised when a selected Teacher result cannot become a C1_05 label."""
+
+
+_GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _production_materializer_implementation_identity() -> dict[str, str]:
+    """Resolve the code commit internally; callers cannot choose provenance."""
+
+    try:
+        repository_root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=Path.cwd(),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        source_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise LabelMaterializerError("cannot resolve the materializer source commit") from exc
+    if _GIT_SHA1.fullmatch(source_commit) is None:
+        raise LabelMaterializerError("resolved materializer source commit is malformed")
+    return {
+        "implementation": LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY,
+        "sourceCommit": source_commit,
+    }
 
 
 def _binding_key(binding: Any) -> tuple[str | None, str | None]:
@@ -161,8 +199,6 @@ def materialize_artifact(
     *,
     teacher: Any,
     execution: TeacherExecutionBindingV1,
-    materializer_implementation_identity: dict[str, str],
-    materializer_config_digest: str,
 ) -> dict[str, Any]:
     """Materialize only the repository-authoritative C1_03 source/admission tuple."""
 
@@ -171,8 +207,8 @@ def materialize_artifact(
         output_root,
         teacher=teacher,
         execution=execution,
-        materializer_implementation_identity=materializer_implementation_identity,
-        materializer_config_digest=materializer_config_digest,
+        materializer_implementation_identity=_production_materializer_implementation_identity(),
+        materializer_config_digest=LabelMaterializerConfigV1.reference().digest,
         authority=C1_05AdmissionBindingV1.reference(),
     )
 
@@ -197,6 +233,7 @@ def _materialize_artifact_for_test(
         materializer_implementation_identity=materializer_implementation_identity,
         materializer_config_digest=materializer_config_digest,
         authority=authority,
+        require_reference_materializer=False,
     )
 
 
@@ -209,6 +246,7 @@ def _materialize_artifact(
     materializer_implementation_identity: dict[str, str],
     materializer_config_digest: str,
     authority: C1_05AdmissionBindingV1,
+    require_reference_materializer: bool = True,
 ) -> dict[str, Any]:
     """Internal implementation with an explicit, already validated authority."""
 
@@ -368,7 +406,8 @@ def _materialize_artifact(
             "allowedPartitions": ["TRAIN", "VALIDATION"],
             "sourceDecisionKeyIdentity": "argentum-ml-source-decision-key@v1",
         }
-        return write_label_artifact(
+        writer = write_label_artifact if require_reference_materializer else _write_label_artifact_for_test
+        return writer(
             output_root,
             rows=rows,
             identity=artifact_identity,

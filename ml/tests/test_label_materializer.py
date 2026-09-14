@@ -13,6 +13,10 @@ from argentum_ml.data.label_materializer import (
     materialize_artifact,
 )
 from argentum_ml.data.label_artifact import LabelArtifactReader
+from argentum_ml.data.label_contracts import (
+    LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY,
+    LabelMaterializerConfigV1,
+)
 from argentum_ml.teacher.execution import (
     C1_05AdmissionBindingV1,
     TeacherExecutionBindingV1,
@@ -152,6 +156,21 @@ def _fixture_authority(source_manifest: dict) -> C1_05AdmissionBindingV1:
 
 
 class LabelMaterializerTests(unittest.TestCase):
+    def test_public_materializer_does_not_accept_caller_materializer_identity_or_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(TypeError):
+                materialize_artifact(
+                    Path(directory) / "source",
+                    Path(directory) / "labels",
+                    teacher=object(),
+                    execution=TeacherExecutionBindingV1.reference(),
+                    materializer_implementation_identity={
+                        "implementation": "future-label-materializer@v2",
+                        "sourceCommit": "e" * 40,
+                    },
+                    materializer_config_digest=_sha("f"),
+                )
+
     def test_teacher_schedule_rejects_unexplained_cursor_jump(self) -> None:
         schedule = TeacherTieRngScheduleV1(
             TeacherExecutionBindingV1.reference(),
@@ -182,11 +201,6 @@ class LabelMaterializerTests(unittest.TestCase):
                     root / "labels",
                     teacher=teacher,
                     execution=TeacherExecutionBindingV1.reference(),
-                    materializer_implementation_identity={
-                        "implementation": "argentum-ml-label-materializer@v1",
-                        "sourceCommit": "e" * 40,
-                    },
-                    materializer_config_digest=_sha("f"),
                 )
 
     def test_small_artifact_materialization_writes_label_sidecar(self) -> None:
@@ -210,10 +224,10 @@ class LabelMaterializerTests(unittest.TestCase):
                 teacher=teacher,
                 execution=TeacherExecutionBindingV1.reference(),
                 materializer_implementation_identity={
-                    "implementation": "argentum-ml-label-materializer@v1",
+                    "implementation": LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY,
                     "sourceCommit": "e" * 40,
                 },
-                materializer_config_digest=_sha("f"),
+                materializer_config_digest=LabelMaterializerConfigV1.reference().digest,
                 authority=_fixture_authority(source_manifest),
             )
             reader = LabelArtifactReader._open_for_test(
@@ -284,10 +298,10 @@ class LabelMaterializerTests(unittest.TestCase):
                 teacher=StructuredNoLabelTeacher(),
                 execution=TeacherExecutionBindingV1.reference(),
                 materializer_implementation_identity={
-                    "implementation": "argentum-ml-label-materializer@v1",
+                    "implementation": LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY,
                     "sourceCommit": "e" * 40,
                 },
-                materializer_config_digest=_sha("f"),
+                materializer_config_digest=LabelMaterializerConfigV1.reference().digest,
                 authority=_fixture_authority(source_manifest),
             )
             self.assertEqual(manifest["labelCount"], 0)

@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 from ..contracts.canonical_json import _RawJsonNumber, canonical_bytes, canonical_json, sha256_hex
 from ..contracts.identities import (
+    DERIVED_VIEW_SCHEMA_IDENTITY,
     LABEL_ARTIFACT_IDENTITY_SCHEMA,
     LABEL_ARTIFACT_SCHEMA_IDENTITY,
     MODEL_FACING_CONTRACT_IDENTITY,
@@ -28,6 +29,10 @@ from ..teacher.execution import (
 )
 from .split import assign_partition
 from .derived_reader import DerivedArtifactReader, validate_exact_source_binding_membership
+from .label_contracts import (
+    LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY,
+    LabelMaterializerConfigV1,
+)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
@@ -357,7 +362,11 @@ def _validate_row(row: dict[str, Any], manifest: dict[str, Any]) -> None:
         raise LabelArtifactError("provenance.tieOccurred must be boolean")
 
 
-def _validate_manifest(manifest: dict[str, Any]) -> None:
+def _validate_manifest(
+    manifest: dict[str, Any],
+    *,
+    require_reference_materializer: bool = True,
+) -> None:
     _expect_keys(manifest, _MANIFEST_KEYS, "label manifest")
     if manifest["version"] != 1:
         raise LabelArtifactError("unsupported label manifest version")
@@ -385,6 +394,10 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         _expect_sha(manifest[key], key)
     for key in ("sourceDerivedViewSchemaIdentity", "trajectorySchemaIdentity", "labelsContentReference"):
         _expect_string(manifest[key], key)
+    if manifest["sourceDerivedViewSchemaIdentity"] != DERIVED_VIEW_SCHEMA_IDENTITY:
+        raise LabelArtifactError("unsupported source derived-view schema identity")
+    if manifest["trajectorySchemaIdentity"] != "argentum-trajectory@v1":
+        raise LabelArtifactError("unsupported source trajectory schema identity")
     if manifest["labelsContentReference"] != "labels.ndjson":
         raise LabelArtifactError("unsupported label content reference")
     allowed = manifest["allowedPartitions"]
@@ -393,9 +406,12 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
     _validate_teacher_provenance(manifest["teacherProvenance"])
     implementation = _expect_object(manifest["labelMaterializerImplementationIdentity"], "materializer identity")
     _expect_keys(implementation, _IMPLEMENTATION_KEYS, "materializer identity")
-    _expect_string(implementation["implementation"], "materializer implementation")
+    if require_reference_materializer and implementation["implementation"] != LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY:
+        raise LabelArtifactError("unsupported label materializer implementation identity")
     if _GIT_SHA1.fullmatch(_expect_string(implementation["sourceCommit"], "materializer sourceCommit")) is None:
         raise LabelArtifactError("materializer sourceCommit must be a Git SHA-1")
+    if require_reference_materializer and manifest["labelMaterializerConfigDigest"] != LabelMaterializerConfigV1.reference().digest:
+        raise LabelArtifactError("unsupported label materializer configuration digest")
     for key in (
         "sourceRowsByPartition",
         "processedRowsByPartition",
@@ -445,6 +461,14 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         )
     ) or manifest["testRowsConsumed"] != 0:
         raise LabelArtifactError("TEST accounting is not untouched")
+    if any(
+        value != 0
+        for key in ("rejectedSplitByPartition", "rejectedProvenanceByPartition")
+        for value in manifest[key].values()
+    ):
+        raise LabelArtifactError("published artifact contains split or provenance rejections")
+    if any(no_label["TEST"].values()):
+        raise LabelArtifactError("TEST accounting contains a Teacher NO_LABEL result")
     if any(manifest[key] != 0 for key in ("duplicateDecisionKeyCount", "conflictingLabelCount", "otherFailClosedMaterializerErrorCount")):
         raise LabelArtifactError("published artifact contains global failure counters")
     if sum(manifest["labelCountsByDecisionFamily"].values()) != manifest["labelCount"]:
@@ -506,12 +530,17 @@ class LabelArtifactReader:
         expected_source_identity: dict[str, str],
         admission_binding: C1_05AdmissionBindingV1,
     ) -> "LabelArtifactReader":
-        reader = cls._open_structural(root)
+        reader = cls._open_structural(root, require_reference_materializer=False)
         reader._verify_source(source_artifact_root, expected_source_identity, admission_binding)
         return reader
 
     @classmethod
-    def _open_structural(cls, root: Path) -> "LabelArtifactReader":
+    def _open_structural(
+        cls,
+        root: Path,
+        *,
+        require_reference_materializer: bool = True,
+    ) -> "LabelArtifactReader":
         root = Path(root)
         manifest_path = root / "manifest.json"
         labels_path = root / "labels.ndjson"
@@ -523,7 +552,10 @@ class LabelArtifactReader:
         manifest = _expect_object(_parse_json(manifest_raw, "manifest.json"), "manifest.json")
         if canonical_bytes(manifest) != manifest_raw:
             raise LabelArtifactError("manifest.json is not canonical UTF-8")
-        _validate_manifest(manifest)
+        _validate_manifest(
+            manifest,
+            require_reference_materializer=require_reference_materializer,
+        )
         labels_raw = labels_path.read_bytes()
         digest = hashlib.sha256(labels_raw).hexdigest()
         if digest != manifest["labelsContentDigest"] or len(labels_raw) != manifest["labelsByteCount"]:
@@ -645,6 +677,14 @@ class LabelArtifactReader:
                 raise LabelArtifactError("source dataset identity mismatch")
             if source_manifest["sourceManifestContentDigest"] != self.manifest["sourceManifestContentDigest"]:
                 raise LabelArtifactError("source manifest digest mismatch")
+            if source_manifest["derivedViewSchemaIdentity"] != self.manifest["sourceDerivedViewSchemaIdentity"]:
+                raise LabelArtifactError("source derived-view schema identity mismatch")
+            if source_manifest["trajectorySchemaIdentity"] != self.manifest["trajectorySchemaIdentity"]:
+                raise LabelArtifactError("source trajectory schema identity mismatch")
+            if source_manifest["derivedViewSchemaIdentity"] != DERIVED_VIEW_SCHEMA_IDENTITY:
+                raise LabelArtifactError("source derived-view schema is not the accepted V1 schema")
+            if source_manifest["trajectorySchemaIdentity"] != "argentum-trajectory@v1":
+                raise LabelArtifactError("source trajectory schema is not the accepted V1 schema")
             if source_manifest["sampleCountsByPartition"] != self.manifest["sourceRowsByPartition"]:
                 raise LabelArtifactError("source partition counts mismatch")
             for partition in ("TRAIN", "VALIDATION"):
@@ -675,6 +715,41 @@ def write_label_artifact(
     rows: Iterable[dict[str, Any]],
     identity: dict[str, Any],
     accounting: dict[str, Any],
+) -> dict[str, Any]:
+    return _write_label_artifact(
+        root,
+        rows=rows,
+        identity=identity,
+        accounting=accounting,
+        require_reference_materializer=True,
+    )
+
+
+def _write_label_artifact_for_test(
+    root: Path,
+    *,
+    rows: Iterable[dict[str, Any]],
+    identity: dict[str, Any],
+    accounting: dict[str, Any],
+) -> dict[str, Any]:
+    """Private fixture seam; synthetic materializer provenance is not authoritative."""
+
+    return _write_label_artifact(
+        root,
+        rows=rows,
+        identity=identity,
+        accounting=accounting,
+        require_reference_materializer=False,
+    )
+
+
+def _write_label_artifact(
+    root: Path,
+    *,
+    rows: Iterable[dict[str, Any]],
+    identity: dict[str, Any],
+    accounting: dict[str, Any],
+    require_reference_materializer: bool,
 ) -> dict[str, Any]:
     root = Path(root)
     if root.exists():
@@ -709,13 +784,16 @@ def write_label_artifact(
     }
     manifest["labelArtifactId"] = sha256_hex(canonical_bytes(_identity_payload(manifest)))
     manifest["manifestContentDigest"] = sha256_hex(canonical_bytes({key: value for key, value in manifest.items() if key != "manifestContentDigest"}))
-    _validate_manifest(manifest)
+    _validate_manifest(manifest, require_reference_materializer=require_reference_materializer)
     manifest_bytes = canonical_bytes(manifest)
     staging = Path(tempfile.mkdtemp(prefix=".c1-05-label-", dir=root.parent))
     try:
         (staging / "labels.ndjson").write_bytes(labels_bytes)
         (staging / "manifest.json").write_bytes(manifest_bytes)
-        LabelArtifactReader._open_structural(staging)
+        LabelArtifactReader._open_structural(
+            staging,
+            require_reference_materializer=require_reference_materializer,
+        )
         os.replace(staging, root)
     finally:
         if staging.exists():

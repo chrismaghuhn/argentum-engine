@@ -16,6 +16,10 @@ from argentum_ml.data.label_artifact import (
     _identity_payload,
     write_label_artifact,
 )
+from argentum_ml.data.label_contracts import (
+    LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY,
+    LabelMaterializerConfigV1,
+)
 from tests.test_derived_reader import _artifact, _sample, _sha
 from tests.test_label_materializer import _source_fixture
 
@@ -75,10 +79,10 @@ def _identity(source_manifest: dict | None = None) -> dict:
             **TeacherExecutionBindingV1.reference().to_dict(),
         },
         "labelMaterializerImplementationIdentity": {
-            "implementation": "argentum-ml-label-materializer@v1",
+            "implementation": LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY,
             "sourceCommit": "e" * 40,
         },
-        "labelMaterializerConfigDigest": _sha("f"),
+        "labelMaterializerConfigDigest": LabelMaterializerConfigV1.reference().digest,
         "allowedPartitions": ["TRAIN", "VALIDATION"],
         "sourceDecisionKeyIdentity": "argentum-ml-source-decision-key@v1",
     }
@@ -120,6 +124,62 @@ def _accounting() -> dict:
 
 
 class LabelArtifactTests(unittest.TestCase):
+    def test_materializer_config_reference_has_canonical_digest(self) -> None:
+        config = LabelMaterializerConfigV1.reference()
+        self.assertEqual(config.digest, sha256_hex(canonical_bytes(config.to_dict())))
+        self.assertEqual(config.to_dict()["schemaIdentity"], "argentum-ml-label-materializer-config@v1")
+
+    def test_writer_rejects_unknown_materializer_identity(self) -> None:
+        identity = _identity()
+        identity["labelMaterializerImplementationIdentity"] = {
+            "implementation": "future-label-materializer@v2",
+            "sourceCommit": "e" * 40,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(LabelArtifactError):
+                write_label_artifact(
+                    Path(directory) / "labels",
+                    rows=[_row()],
+                    identity=identity,
+                    accounting=_accounting(),
+                )
+
+    def test_writer_rejects_unknown_materializer_config_digest(self) -> None:
+        identity = _identity()
+        identity["labelMaterializerConfigDigest"] = _sha("f")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(LabelArtifactError):
+                write_label_artifact(
+                    Path(directory) / "labels",
+                    rows=[_row()],
+                    identity=identity,
+                    accounting=_accounting(),
+                )
+
+    def test_writer_rejects_wrong_source_derived_view_schema_identity(self) -> None:
+        identity = _identity()
+        identity["sourceDerivedViewSchemaIdentity"] = "future-derived-view@v2"
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(LabelArtifactError):
+                write_label_artifact(
+                    Path(directory) / "labels",
+                    rows=[_row()],
+                    identity=identity,
+                    accounting=_accounting(),
+                )
+
+    def test_writer_rejects_wrong_trajectory_schema_identity(self) -> None:
+        identity = _identity()
+        identity["trajectorySchemaIdentity"] = "future-trajectory@v2"
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(LabelArtifactError):
+                write_label_artifact(
+                    Path(directory) / "labels",
+                    rows=[_row()],
+                    identity=identity,
+                    accounting=_accounting(),
+                )
+
     def test_label_artifact_id_uses_reviewed_identity_field_preimage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -334,6 +394,42 @@ class LabelArtifactTests(unittest.TestCase):
     def test_writer_rejects_wrong_actual_partition_counts(self) -> None:
         accounting = _accounting()
         accounting["labelCountsByPartition"] = {"TEST": 0, "TRAIN": 0, "VALIDATION": 1}
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(LabelArtifactError):
+                write_label_artifact(
+                    Path(directory) / "labels",
+                    rows=[_row()],
+                    identity=_identity(),
+                    accounting=accounting,
+                )
+
+    def test_writer_rejects_nonzero_split_rejections(self) -> None:
+        accounting = _accounting()
+        accounting["rejectedSplitByPartition"]["TRAIN"] = 1
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(LabelArtifactError):
+                write_label_artifact(
+                    Path(directory) / "labels",
+                    rows=[_row()],
+                    identity=_identity(),
+                    accounting=accounting,
+                )
+
+    def test_writer_rejects_nonzero_provenance_rejections(self) -> None:
+        accounting = _accounting()
+        accounting["rejectedProvenanceByPartition"]["VALIDATION"] = 1
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(LabelArtifactError):
+                write_label_artifact(
+                    Path(directory) / "labels",
+                    rows=[_row()],
+                    identity=_identity(),
+                    accounting=accounting,
+                )
+
+    def test_writer_rejects_test_no_label_accounting(self) -> None:
+        accounting = _accounting()
+        accounting["expectedNoLabelByPartitionAndReason"]["TEST"][NoLabelReason.STRUCTURED_DOMAIN_NOT_SCOREABLE.value] = 1
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(LabelArtifactError):
                 write_label_artifact(

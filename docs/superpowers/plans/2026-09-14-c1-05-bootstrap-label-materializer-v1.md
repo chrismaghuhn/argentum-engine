@@ -161,6 +161,9 @@ git push origin chris/c1-05-bootstrap-label-materializer-design-20260914
 - [ ] Seat index comes only from the exact source perspective/roster match.
 - [ ] Schedule state carries across decisions and never resets per row.
 - [ ] Execution/admission provenance is exact and content-addressed.
+- [ ] Materializer implementation identity/config digest are internally derived and exact V1 values.
+- [ ] Source derived-view/Trajectory schemas are bound to the exact C1_00 source manifest.
+- [ ] Published split/provenance counters and TEST NO_LABEL accounting are zero.
 - [ ] TEST receives no semantic Teacher request/result/label.
 - [ ] Structured decisions remain typed NO_LABEL.
 - [ ] Candidate slots never become target identity.
