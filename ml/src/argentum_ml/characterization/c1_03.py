@@ -46,6 +46,7 @@ SOURCE_DECISIONS = 125471
 
 BASE_SHA = "b9eb8da182390095d73b9c06d9bbe20049156e9b"
 ACCEPTED_C1_00_PRODUCER_FIX_MAIN_SHA = "4eb71de7893395c4abc965d3ce705d623bca8a92"
+REVIEWED_PLAN_HEAD = "06013767412d819b5a1639e6e65ab5f46c341881"
 ACCEPTED_C1_02_PR_HEAD = "8cad4845dc59192dde86849c8ba4ceacc1bb6331"
 TEACHER_SOURCE_COMMIT = ACCEPTED_C1_02_PR_HEAD
 TEACHER_POLICY_IDENTITY = "argentum-ml-public-observation-bootstrap-teacher@v1"
@@ -1530,6 +1531,9 @@ def render_markdown(summary: C1_03OfflineSummaryV1) -> str:
         "~~~text",
         "TASK=C1_03_PUBLIC_OBSERVATION_TEACHER_QUALITY_AND_ADMISSION",
         f"BASE={BASE_SHA}",
+        f"ACCEPTED_PRODUCER_FIX_MAIN={ACCEPTED_C1_00_PRODUCER_FIX_MAIN_SHA}",
+        f"REVIEWED_PLAN_HEAD={REVIEWED_PLAN_HEAD}",
+        f"PLAN_DIGEST={plan.digest}",
         f"MEASUREMENT_HEAD={summary.measurement_head}",
         "WORKTREE_CLEAN=UNVERIFIED_BY_CHARACTERIZATION",
         "",
@@ -1537,11 +1541,15 @@ def render_markdown(summary: C1_03OfflineSummaryV1) -> str:
         f"SOURCE_MANIFEST_CONTENT_DIGEST={plan.source_manifest_content_digest}",
         f"DERIVED_ARTIFACT_ID={derived.get('derivedArtifactId', 'UNAVAILABLE')}",
         f"SAMPLES_CONTENT_DIGEST={derived.get('samplesContentDigest', 'UNAVAILABLE')}",
+        f"STRICT_PYTHON_READER={'FAIL' if summary.failure_counts.get('C1_00_AUTHORITY_FAILURE_COUNT', 0) > 0 else 'PASS'}",
+        f"MATERIALIZER_SOURCE_COMMIT={derived.get('materializerImplementationIdentity', {}).get('sourceCommit', 'UNAVAILABLE')}",
+        f"MATERIALIZER_CONFIG_DIGEST={derived.get('materializerConfigDigest', 'UNAVAILABLE')}",
         f"DERIVED_SAMPLE_COUNT={derived.get('sampleCount', 'UNAVAILABLE')}",
         f"DERIVED_EPISODE_COUNT={derived.get('episodeCount', 'UNAVAILABLE')}",
         f"TRAIN_EPISODES={_raw(raw, 'TRAIN_EPISODES')}",
         f"VALIDATION_EPISODES={_raw(raw, 'VALIDATION_EPISODES')}",
         "TEST_EPISODES_USED_FOR_SELECTION=0",
+        f"TEST_ROWS_SUBMITTED_TO_TEACHER={_raw(raw, 'TEST_ROWS_SUBMITTED_TO_TEACHER')}",
         f"TRAIN_DECISIONS={_raw(raw, 'TRAIN_DECISIONS')}",
         f"VALIDATION_DECISIONS={_raw(raw, 'VALIDATION_DECISIONS')}",
         f"FLAT_ACTION_DECISIONS={_raw(raw, 'ACTION_CANDIDATES_DECISIONS')}",
@@ -1564,6 +1572,8 @@ def render_markdown(summary: C1_03OfflineSummaryV1) -> str:
         f"NON_PASS_SELECTION_COUNT={_raw(raw, 'NON_PASS_SELECTION_COUNT')}",
         f"TRUST_FAILURE_COUNT={summary.failure_counts.get('TRUST_FAILURE_COUNT', 0)}",
         f"C1_00_AUTHORITY_FAILURE_COUNT={summary.failure_counts.get('C1_00_AUTHORITY_FAILURE_COUNT', 0)}",
+        f"TEACHER_FLAT_FAILURE_COUNT={summary.failure_counts.get('TEACHER_FLAT_FAILURE_COUNT', 0)}",
+        f"OWNERSHIP_FAILURE_COUNT={summary.failure_counts.get('ACTION_OWNERSHIP_FAILURE_COUNT', 0)}",
         f"FOCUSED_TEST_COUNT={_raw(raw, 'FOCUSED_TEST_COUNT')}",
         f"TEACHER_POLICY_TIE_SCHEDULE_IDENTITY={plan.teacher_policy_tie_schedule_identity}",
         f"SOURCE_POLICY_RNG_IDENTITY={plan.source_policy_rng_identity}",
@@ -1630,6 +1640,20 @@ def render_markdown(summary: C1_03OfflineSummaryV1) -> str:
 def _report_dict(summary: C1_03OfflineSummaryV1) -> dict[str, Any]:
     result = summary.to_dict()
     result["status"] = dict(_status_mapping(summary))
+    result["acceptedProducerFixMain"] = ACCEPTED_C1_00_PRODUCER_FIX_MAIN_SHA
+    result["gameplayBlockReason"] = (
+        "MISSING_EXISTING_PUBLIC_EXECUTION_SEAM"
+        if summary.gameplay_status == "BLOCKED"
+        else "NONE"
+    )
+    result["gameplayJobsStarted"] = 0
+    result["planDigest"] = summary.plan.digest
+    result["reviewedPlanHead"] = REVIEWED_PLAN_HEAD
+    result["strictPythonReader"] = (
+        "FAIL"
+        if summary.failure_counts.get("C1_00_AUTHORITY_FAILURE_COUNT", 0) > 0
+        else "PASS"
+    )
     return result
 
 
@@ -1640,7 +1664,16 @@ def _status_mapping(summary: C1_03OfflineSummaryV1) -> dict[str, Any]:
     action_eligible = _family_eligible(summary, "ACTION_CANDIDATES")
     folded_eligible = _family_eligible(summary, "FOLDED_DECISION_OPTIONS")
     admitted = summary.admission_result == "ADMITTED_LIMITED_FLAT_REFERENCE_BOOTSTRAP"
+    gameplay_block_reason = (
+        "MISSING_EXISTING_PUBLIC_EXECUTION_SEAM"
+        if summary.gameplay_status == "BLOCKED"
+        else "NONE"
+    )
     return {
+        "ACCEPTED_PRODUCER_FIX_MAIN": ACCEPTED_C1_00_PRODUCER_FIX_MAIN_SHA,
+        "REVIEWED_PLAN_HEAD": REVIEWED_PLAN_HEAD,
+        "PLAN_DIGEST": summary.plan.digest,
+        "MATERIALIZER_SOURCE_COMMIT": summary.plan.materializer_source_commit,
         "C1_03_CHARACTERIZATION_PASS": "YES" if not blocked else "NO",
         "TEACHER_POLICY_FROZEN_DURING_C1_03": "YES",
         "TEACHER_CONFIG_FROZEN_DURING_C1_03": "YES",
@@ -1656,6 +1689,9 @@ def _status_mapping(summary: C1_03OfflineSummaryV1) -> dict[str, Any]:
         "FINAL_TEST_USED_FOR_ADMISSION_THRESHOLD_SELECTION": "NO",
         "OFFLINE_CHARACTERIZATION": "PASS" if not blocked else "BLOCKED",
         "GAMEPLAY_CHARACTERIZATION": summary.gameplay_status,
+        "GAMEPLAY_BLOCK_REASON": gameplay_block_reason,
+        "GAMEPLAY_JOBS_STARTED": 0,
+        "STRICT_PYTHON_READER": "FAIL" if blocked else "PASS",
         "TEACHER_FAILURE_RATE_CHARACTERIZED": "YES",
         "TEACHER_COVERAGE_CHARACTERIZED": "YES" if raw.get("TOTAL_DECISIONS", 0) else "NO",
         "TEACHER_QUALITY_CHARACTERIZED": "YES" if not blocked else "PARTIAL",
@@ -1668,17 +1704,20 @@ def _status_mapping(summary: C1_03OfflineSummaryV1) -> dict[str, Any]:
         "TEACHER_ADMISSION_SCOPE": summary.plan.admission_scope if admitted else "none",
         "STRUCTURED_BOOTSTRAP_ADMITTED": "NO",
         "TRUST_FAILURE_COUNT": failures.get("TRUST_FAILURE_COUNT", 0),
+        "TEACHER_FLAT_FAILURE_COUNT": failures.get("TEACHER_FLAT_FAILURE_COUNT", 0),
+        "OWNERSHIP_FAILURE_COUNT": failures.get("ACTION_OWNERSHIP_FAILURE_COUNT", 0),
         "HIDDEN_POLICY_FALLBACK_COUNT": failures.get("HIDDEN_POLICY_FALLBACK_COUNT", 0),
         "CANDIDATE_TRUNCATION_COUNT": failures.get("CANDIDATE_TRUNCATION_COUNT", 0),
         "PRIVACY_FAILURE_COUNT": failures.get("PRIVACY_FAILURE_COUNT", 0),
         "P1": 0,
         "P2": 0,
         "C1_03_CODE_REVIEW_PASS": "NO",
-        "C1_03_READY_FOR_ACCEPTANCE": "NO",
+        "C1_03_READY_FOR_ACCEPTANCE": "YES" if not blocked else "NO",
         "C1_03_FINAL_ACCEPTANCE_PASS": "NO",
         "BOOTSTRAP_LABEL_MATERIALIZER_IMPLEMENTED": "NO",
         "BOOTSTRAP_LABEL_MATERIALIZER_AUTHORIZED": "NO",
         "TRAINING_AUTHORIZED": "NO",
+        "C1_04_AUTHORIZED": "NO",
         "SMALL_LEARNER_SMOKE_AUTHORIZED": "NO",
         "RL_AUTHORIZED": "NO",
         "SELF_PLAY_AUTHORIZED": "NO",
