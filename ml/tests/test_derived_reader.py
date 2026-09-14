@@ -16,6 +16,8 @@ from argentum_ml.data.derived_reader import (
     DerivedArtifactReader,
     _count_fixed_sacrifice_nodes,
     _count_source_bound_tap_nodes,
+    _validate_payment_plan,
+    _validate_action_target_choice,
 )
 
 
@@ -225,7 +227,7 @@ def _structured_sample() -> dict:
         structured_type={
             "canCancel": False,
             "requirements": [{
-                "candidateAliases": ["entity-2"],
+                "candidatesAliases": ["entity-2"],
                 "differentNames": False,
                 "index": 0,
                 "maxTargets": 1,
@@ -248,6 +250,141 @@ def _structured_sample() -> dict:
     )
     sample["target"] = {"chosenSemanticAction": None, "chosenSemanticResponse": chosen}
     return sample
+
+
+def _with_embedded_action_target_domain(sample: dict, alias_key: str) -> dict:
+    sample["input"]["domain"]["candidates"][0]["targetDomain"] = {
+        "composition": "FIXED",
+        "requirements": [{
+            "candidateCount": 1,
+            alias_key: ["entity-0"],
+            "differentNames": False,
+            "index": 0,
+            "maxTargets": 1,
+            "minTargets": 1,
+            "mustDifferFromEarlier": False,
+            "sameCardType": False,
+            "sameController": False,
+            "sameCreatureType": False,
+            "sameOwner": False,
+            "targetZone": None,
+            "totalManaValueAtMost": None,
+            "xConstrainsCount": False,
+            "xConstrainsManaValue": False,
+            "xConstrainsManaValueExactly": False,
+            "xConstrainsPower": False,
+        }],
+        "version": 1,
+    }
+    return sample
+
+
+def _with_payment_domain(
+    sample: dict,
+    *,
+    include_budget: bool = False,
+    unknown_field: bool = False,
+    omit_required_field: str | None = None,
+) -> dict:
+    payment_domain = {
+        "initialPoolBuckets": [],
+        "outerAtomicCostUnits": [],
+        "requiredCost": "",
+        "reservedOuterLifePayment": 0,
+        "sourceActivationOptions": [],
+        "version": 5,
+    }
+    if include_budget:
+        payment_domain["fixedSelfDamageBudget"] = 0
+    if unknown_field:
+        payment_domain["futureField"] = False
+    if omit_required_field is not None:
+        payment_domain.pop(omit_required_field)
+    sample["input"]["domain"]["candidates"][0]["paymentDomain"] = payment_domain
+    return sample
+
+
+def _action_target_candidate(
+    *,
+    include_description: bool = False,
+    unknown_field: bool = False,
+    omit_required_field: str | None = None,
+) -> tuple[dict, list[dict]]:
+    requirement = {
+        "index": 0,
+        "minTargets": 1,
+        "maxTargets": 1,
+        "candidates": ["target-raw"],
+        "targetZone": "BATTLEFIELD",
+        "mustDifferFromEarlier": False,
+        "sameController": False,
+        "sameOwner": False,
+        "sameCreatureType": False,
+        "sameCardType": False,
+        "totalManaValueAtMost": None,
+        "differentNames": False,
+        "xConstrainsManaValue": False,
+        "xConstrainsManaValueExactly": False,
+        "xConstrainsPower": False,
+        "xConstrainsCount": False,
+    }
+    if include_description:
+        requirement["description"] = "choose a target"
+    if unknown_field:
+        requirement["futureField"] = False
+    if omit_required_field is not None:
+        requirement.pop(omit_required_field)
+    return (
+        {"targetDomain": {"version": 1, "composition": "FIXED", "requirements": [requirement]}},
+        [{"type": "Permanent", "entityId": "target-raw"}],
+    )
+
+
+def _source_payment_domain(
+    *,
+    include_budget: bool = False,
+    unknown_field: bool = False,
+    omit_required_field: str | None = None,
+) -> tuple[dict, dict]:
+    domain = {
+        "initialPoolBuckets": [],
+        "outerAtomicCostUnits": [],
+        "requiredCost": "",
+        "reservedOuterLifePayment": 0,
+        "sourceActivationOptions": [],
+        "version": 5,
+    }
+    if include_budget:
+        domain["fixedSelfDamageBudget"] = 0
+    if unknown_field:
+        domain["futureField"] = False
+    if omit_required_field is not None:
+        domain.pop(omit_required_field)
+    return domain, {"activations": [], "outerAllocation": []}
+
+
+def _source_payment_plan_with_production_choice(
+    domain_choice: dict,
+    activation_choice: dict,
+) -> tuple[dict, dict]:
+    domain, plan = _source_payment_domain()
+    domain["sourceActivationOptions"] = [{
+        "activationCostOrderOptions": [{}],
+        "atomicActivationManaCostUnits": [],
+        "fixedSelfDamageAmount": 0,
+        "manaAbilityKey": "mana-0",
+        "productionChoices": [domain_choice],
+        "sourceId": "source-0",
+        "sourceName": "Source",
+    }]
+    plan["activations"] = [{
+        "activationCostAllocation": [],
+        "activationCostOrder": {},
+        "manaAbilityKey": "mana-0",
+        "productionChoice": activation_choice,
+        "sourceId": "source-0",
+    }]
+    return domain, plan
 
 
 def _artifact(root: Path, *, sample: dict | None = None) -> Path:
@@ -683,6 +820,107 @@ class DerivedReaderTests(unittest.TestCase):
             response["selectedTargets"]["0"] = ["entity-outside-domain"]
             with self.assertRaises(DerivedArtifactError):
                 DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_accepts_producer_structured_target_candidates_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _structured_sample()
+            reader = DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+            list(reader.iter_samples())
+
+    def test_rejects_singular_alias_key_on_structured_target_requirements(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _structured_sample()
+            requirement = sample["input"]["domain"]["structuredType"]["requirements"][0]
+            requirement["candidateAliases"] = requirement.pop("candidatesAliases")
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_accepts_singular_alias_key_on_embedded_action_target_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _with_embedded_action_target_domain(_sample(), "candidateAliases")
+            reader = DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+            list(reader.iter_samples())
+
+    def test_rejects_plural_alias_key_on_embedded_action_target_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _with_embedded_action_target_domain(_sample(), "candidatesAliases")
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_accepts_payment_domain_without_optional_fixed_self_damage_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _with_payment_domain(_sample())
+            reader = DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+            list(reader.iter_samples())
+
+    def test_accepts_payment_domain_with_optional_fixed_self_damage_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _with_payment_domain(_sample(), include_budget=True)
+            reader = DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+            list(reader.iter_samples())
+
+    def test_rejects_unknown_payment_domain_field(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _with_payment_domain(_sample(), unknown_field=True)
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_rejects_missing_required_payment_domain_field(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sample = _with_payment_domain(_sample(), omit_required_field="requiredCost")
+            with self.assertRaises(DerivedArtifactError):
+                DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_accepts_action_target_requirement_without_optional_description(self) -> None:
+        candidate, chosen_targets = _action_target_candidate()
+        _validate_action_target_choice(candidate, chosen_targets)
+
+    def test_accepts_action_target_requirement_with_description(self) -> None:
+        candidate, chosen_targets = _action_target_candidate(include_description=True)
+        _validate_action_target_choice(candidate, chosen_targets)
+
+    def test_rejects_unknown_action_target_requirement_field(self) -> None:
+        candidate, chosen_targets = _action_target_candidate(unknown_field=True)
+        with self.assertRaises(DerivedArtifactError):
+            _validate_action_target_choice(candidate, chosen_targets)
+
+    def test_rejects_missing_required_action_target_requirement_field(self) -> None:
+        candidate, chosen_targets = _action_target_candidate(omit_required_field="candidates")
+        with self.assertRaises(DerivedArtifactError):
+            _validate_action_target_choice(candidate, chosen_targets)
+
+    def test_accepts_source_payment_domain_without_optional_fixed_self_damage_budget(self) -> None:
+        domain, plan = _source_payment_domain()
+        _validate_payment_plan(domain, plan)
+
+    def test_accepts_source_payment_domain_with_optional_fixed_self_damage_budget(self) -> None:
+        domain, plan = _source_payment_domain(include_budget=True)
+        _validate_payment_plan(domain, plan)
+
+    def test_rejects_unknown_source_payment_domain_field(self) -> None:
+        domain, plan = _source_payment_domain(unknown_field=True)
+        with self.assertRaises(DerivedArtifactError):
+            _validate_payment_plan(domain, plan)
+
+    def test_rejects_missing_required_source_payment_domain_field(self) -> None:
+        domain, plan = _source_payment_domain(omit_required_field="requiredCost")
+        with self.assertRaises(DerivedArtifactError):
+            _validate_payment_plan(domain, plan)
+
+    def test_accepts_payment_plan_with_omitted_and_explicit_null_production_fields(self) -> None:
+        domain, plan = _source_payment_plan_with_production_choice(
+            {"amount": 1, "producedColor": "GREEN"},
+            {"amount": 1, "bonusChoice": None, "fixedOutputs": None, "producedColor": "GREEN"},
+        )
+        _validate_payment_plan(domain, plan)
+
+    def test_rejects_unknown_payment_plan_production_field(self) -> None:
+        domain, plan = _source_payment_plan_with_production_choice(
+            {"amount": 1, "producedColor": "GREEN"},
+            {"amount": 1, "producedColor": "GREEN", "futureField": False},
+        )
+        with self.assertRaises(DerivedArtifactError):
+            _validate_payment_plan(domain, plan)
 
 
 if __name__ == "__main__":

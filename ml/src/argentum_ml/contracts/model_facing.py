@@ -425,7 +425,7 @@ def _validate_candidate_nested_domains(obj: dict[str, Any], aliases: dict[str, s
 def _validate_projected_payment_domain(value: Any, aliases: dict[str, str], label: str) -> None:
     domain = _object(value, label)
     allowed = {"version", "requiredCost", "outerAtomicCostUnits", "initialPoolBuckets", "sourceActivationOptions", "reservedOuterLifePayment", "fixedSelfDamageBudget"}
-    _keys(domain, allowed, label, allowed)
+    _keys(domain, allowed, label, allowed - {"fixedSelfDamageBudget"})
     if domain["version"] != 5:
         raise ModelFacingContractError(f"{label} has an unsupported version")
     _validate_feature_tree(domain, aliases, label)
@@ -573,18 +573,18 @@ def _validate_targets(value: dict[str, Any], aliases: dict[str, str]) -> None:
     allowed = {"type", "version", "requirements", "canCancel"}
     _validate_structured_keys(value, allowed, allowed, "targets")
     _boolean(value["canCancel"], "targets.canCancel")
-    req_allowed = {"index", "minTargets", "maxTargets", "candidateAliases", "targetZone", "mustDifferFromEarlier", "sameController", "sameOwner", "sameCreatureType", "sameCardType", "totalManaValueAtMost", "differentNames", "xConstrainsManaValue", "xConstrainsManaValueExactly", "xConstrainsPower", "xConstrainsCount"}
+    req_allowed = {"index", "minTargets", "maxTargets", "candidatesAliases", "targetZone", "mustDifferFromEarlier", "sameController", "sameOwner", "sameCreatureType", "sameCardType", "totalManaValueAtMost", "differentNames", "xConstrainsManaValue", "xConstrainsManaValueExactly", "xConstrainsPower", "xConstrainsCount"}
     for index, requirement in enumerate(_list(value["requirements"], "targets.requirements")):
         obj = _object(requirement, f"targets.requirements[{index}]")
         _keys(obj, req_allowed, f"targets.requirements[{index}]", req_allowed)
         for key in ("index", "minTargets", "maxTargets"):
             _integer(obj[key], f"targets.requirements[{index}].{key}")
-        _alias_list(obj["candidateAliases"], aliases, f"targets.requirements[{index}].candidateAliases")
+        _alias_list(obj["candidatesAliases"], aliases, f"targets.requirements[{index}].candidatesAliases")
         if obj["targetZone"] is not None:
             _string(obj["targetZone"], f"targets.requirements[{index}].targetZone")
         if obj["totalManaValueAtMost"] is not None:
             _integer(obj["totalManaValueAtMost"], f"targets.requirements[{index}].totalManaValueAtMost")
-        for key in req_allowed - {"index", "minTargets", "maxTargets", "candidateAliases", "targetZone", "totalManaValueAtMost"}:
+        for key in req_allowed - {"index", "minTargets", "maxTargets", "candidatesAliases", "targetZone", "totalManaValueAtMost"}:
             _boolean(obj[key], f"targets.requirements[{index}].{key}")
 
 
