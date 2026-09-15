@@ -178,9 +178,24 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
             request,
         )
 
+    def test_request_owns_a_copy_of_validated_model_input(self) -> None:
+        encoded = _request().to_dict()
+        request = LivePolicyDecisionRequestV1.from_dict(encoded)
+        encoded["modelInput"]["observation"]["mutatedAfterValidation"] = True
+        self.assertNotIn("mutatedAfterValidation", request.model_input["observation"])
+
+    def test_request_constructor_is_parser_only(self) -> None:
+        with self.assertRaisesRegex(TypeError, "must be parsed from a versioned payload"):
+            LivePolicyDecisionRequestV1()
+
     def test_request_rejects_binding_digest_and_raw_exact_binding(self) -> None:
         encoded = _request().to_dict()
         encoded["bindingDigest"] = "c" * 64
+        with self.assertRaises(LivePolicyProtocolError):
+            LivePolicyDecisionRequestV1.from_dict(encoded)
+
+        encoded = _request().to_dict()
+        encoded["candidateFeatureViews"][0]["binding"] = {"action": "raw"}
         with self.assertRaises(LivePolicyProtocolError):
             LivePolicyDecisionRequestV1.from_dict(encoded)
 
@@ -202,10 +217,23 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
         with self.assertRaises(LivePolicyProtocolError):
             LivePolicyRequestEnvelopeV1.from_dict(request_envelope, C1_07B_POLICY_PROFILE)
 
-        encoded = _request().to_dict()
-        encoded["candidateFeatureViews"][0]["exactSourceBinding"] = {"action": "raw"}
-        with self.assertRaises(LivePolicyProtocolError):
-            LivePolicyDecisionRequestV1.from_dict(encoded)
+    def test_request_rejects_wrong_checkpoint_contract_or_numeric_profile(self) -> None:
+        for field in (
+            "checkpointId",
+            "inferenceContractIdentity",
+            "selectionContractIdentity",
+            "numericProfileClass",
+        ):
+            envelope = {
+                "protocolVersion": 1,
+                "messageType": "REQUEST",
+                **C1_07B_POLICY_PROFILE.envelope_fields(),
+                "requestId": "request-1",
+                "request": _request().to_dict(),
+            }
+            envelope[field] = "wrong@v1"
+            with self.assertRaises(LivePolicyProtocolError):
+                LivePolicyRequestEnvelopeV1.from_dict(envelope, C1_07B_POLICY_PROFILE)
 
     def test_framing_round_trip_and_partial_frame_rejection(self) -> None:
         payload = {"messageType": "HEALTH", "status": "READY"}
@@ -215,6 +243,8 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
         self.assertEqual(read_frame(stream), payload)
         with self.assertRaises(FramedProtocolError):
             read_frame(io.BytesIO(framed[:-1]))
+        with self.assertRaises(FramedProtocolError):
+            read_frame(io.BytesIO(framed[:2]))
 
         output = io.BytesIO()
         write_frame(output, payload)

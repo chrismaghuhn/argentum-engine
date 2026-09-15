@@ -73,8 +73,15 @@ _PROFILE_FIELDS = {
 }
 _RAW_OR_EXACT_KEYS = {
     "bindingDigest",
+    "binding",
+    "exactBinding",
     "exactSourceBinding",
     "exact_source_binding",
+    "sourceBinding",
+    "exactAction",
+    "exactResponse",
+    "completeLegalDomain",
+    "playerObservation",
     "GameState",
     "LegalAction",
     "DecisionResponse",
@@ -98,7 +105,7 @@ _RAW_OR_EXACT_KEYS = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class LivePolicyDecisionRequestV1:
     """The C1_07A inner semantic payload; it contains no exact JVM binding or binding digest."""
 
@@ -115,6 +122,9 @@ class LivePolicyDecisionRequestV1:
     semantic_tie_discriminators: tuple[SemanticTieDiscriminator | None, ...]
     policy_rng_state: PolicyTieRngStateV1
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("LivePolicyDecisionRequestV1 must be parsed from a versioned payload")
+
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "LivePolicyDecisionRequestV1":
         obj = _object(value, "live policy request")
@@ -126,7 +136,7 @@ class LivePolicyDecisionRequestV1:
         request_id = _nonempty_string(obj["requestId"], "requestId")
         observation_digest = _sha256(obj["observationDigest"], "observationDigest")
         candidate_domain_digest = _parse_candidate_domain_digest(obj["candidateDomainDigest"])
-        model_input = _object(obj["modelInput"], "modelInput")
+        model_input = _copy_object(obj["modelInput"], "modelInput")
         if set(model_input) != {"decisionContext", "observation", "domain"}:
             raise LivePolicyProtocolError("modelInput wrapper shape is not C1_07A", code="MODEL_INPUT_INVALID")
         _reject_raw_or_exact(model_input, "modelInput")
@@ -157,20 +167,23 @@ class LivePolicyDecisionRequestV1:
         discriminators = _parse_discriminators(channel["semanticTieDiscriminators"], ordinals)
         rng = _parse_rng(obj["policyRngState"])
         _require_flat_projection_alignment(model_input, candidate_features)
-        return cls(
-            version=LIVE_PROTOCOL_VERSION,
-            schema_identity=LIVE_DECISION_REQUEST_SCHEMA_IDENTITY,
-            request_id=request_id,
-            observation_digest=observation_digest,
-            candidate_domain_digest=candidate_domain_digest,
-            model_input=model_input,
-            candidate_feature_views=candidate_features,
-            source_binding_ordinals=ordinals,
-            present_mask=present,
-            executable_support_mask=executable,
-            semantic_tie_discriminators=discriminators,
-            policy_rng_state=rng,
-        )
+        instance = object.__new__(cls)
+        for name, parsed in {
+            "version": LIVE_PROTOCOL_VERSION,
+            "schema_identity": LIVE_DECISION_REQUEST_SCHEMA_IDENTITY,
+            "request_id": request_id,
+            "observation_digest": observation_digest,
+            "candidate_domain_digest": candidate_domain_digest,
+            "model_input": model_input,
+            "candidate_feature_views": candidate_features,
+            "source_binding_ordinals": ordinals,
+            "present_mask": present,
+            "executable_support_mask": executable,
+            "semantic_tie_discriminators": discriminators,
+            "policy_rng_state": rng,
+        }.items():
+            object.__setattr__(instance, name, parsed)
+        return instance
 
     def to_dict(self) -> dict[str, Any]:
         discriminators = {

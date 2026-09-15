@@ -90,7 +90,7 @@ def _read_exact(
         if not chunk:
             if allow_clean_eof and not chunks:
                 return None
-            return None
+            raise FramedProtocolError("framed payload is truncated", code="FRAME_TRUNCATED")
         chunks.append(chunk)
         remaining -= len(chunk)
     return b"".join(chunks)
