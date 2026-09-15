@@ -563,10 +563,10 @@ def _recommend_next_slice(result: Mapping[str, Any]) -> str:
     rows_after = int(result["ROWS_SCANNED_AFTER_LAST_NEEDED_MATCH"])
     source_iteration = float(result["SOURCE_ITERATION_WALL_SECONDS"])
     source_open = float(result["SOURCE_READER_OPEN_WALL_SECONDS"])
+    if source_open >= source_iteration and source_open > 0.0:
+        return "DVRP_2A_REPEAT_OPEN_TRUST_ATTESTATION_CHARACTERIZATION"
     if source_rows and rows_after / source_rows >= 0.10 and source_iteration > 0.0:
         return "DVRP_2A_EARLY_TERMINATION_AFTER_LAST_REQUESTED_SOURCE_KEY_CHARACTERIZATION"
-    if source_open > source_iteration and source_open > 0.0:
-        return "DVRP_2B_REPEAT_OPEN_TRUST_ATTESTATION_CHARACTERIZATION"
     return "DVRP_2C_DETERMINISTIC_SOURCE_KEY_INDEX_CHARACTERIZATION"
 
 
@@ -662,6 +662,15 @@ def characterize_c1_06_preparation(
         key: value / measured_pipeline_denominator * 100.0 if measured_pipeline_denominator > 0 else 0.0
         for key, value in stage_walls.items()
     }
+    dominant_percent_key = max(shares, key=shares.get)
+    dominant_stage = {
+        "LABEL_PREP": "LABEL_PREP",
+        "SOURCE_OPEN": "SOURCE_READER_OPEN",
+        "SOURCE_ITERATION": "SOURCE_ITERATION",
+        "JOIN_SAMPLE_BUILD": "JOIN_SAMPLE_BUILD",
+        "TENSORIZATION": "TENSORIZATION",
+        "GPU_OPTIMIZER_REFERENCE": "GPU_OPTIMIZER_REFERENCE",
+    }[dominant_percent_key]
     selected_by_partition = Counter(str(row.get("partition")) for row in state.selected_rows)
     selected_by_family = Counter(str(row.get("decisionFamily")) for row in state.selected_rows)
     selected_by_candidate_count = Counter(
@@ -704,6 +713,7 @@ def characterize_c1_06_preparation(
         "SYNTHETIC_FIXTURE_CHARACTERIZATION_RUNS": 0 if real_artifact_run else 1,
         "TOTAL_PREPARATION_WALL_SECONDS": total_wall_seconds,
         "TOTAL_PREPARATION_CPU_SECONDS": total_cpu_seconds,
+        "PREPARATION_CPU_TO_WALL_RATIO": total_cpu_seconds / total_wall_seconds if total_wall_seconds > 0 else None,
         "LABEL_STRUCTURAL_OPEN_WALL_SECONDS": label_open_stage.wall_seconds,
         "LABEL_STRUCTURAL_OPEN_CPU_SECONDS": label_open_stage.cpu_seconds,
         "LABEL_ITERATION_WALL_SECONDS": label_iteration_stage.wall_seconds,
@@ -715,12 +725,14 @@ def characterize_c1_06_preparation(
         "LABEL_ROWS_SELECTED_VALIDATION": int(selected_by_partition.get("VALIDATION", 0)),
         "SOURCE_READER_OPEN_WALL_SECONDS": source_open_stage.wall_seconds,
         "SOURCE_READER_OPEN_CPU_SECONDS": source_open_stage.cpu_seconds,
+        "SOURCE_OPEN_CPU_TO_WALL_RATIO": source_open_stage.cpu_seconds / source_open_stage.wall_seconds if source_open_stage.wall_seconds > 0 else None,
         "SOURCE_MANIFEST_VALIDATION_WALL_SECONDS": state.stage("source_manifest_validation").wall_seconds,
         "SOURCE_STRICT_SAMPLE_FILE_VALIDATION_WALL_SECONDS": state.stage("source_strict_sample_file_validation").wall_seconds,
         "SOURCE_OPEN_JSON_CANONICAL_PARSE_WALL_SECONDS": state.stage("source_open_json_canonical_parse").wall_seconds,
         "SOURCE_OPEN_SEMANTIC_VALIDATION_WALL_SECONDS": state.stage("source_open_semantic_sample_validation").wall_seconds,
         "SOURCE_ITERATION_WALL_SECONDS": source_iteration_stage.wall_seconds,
         "SOURCE_ITERATION_CPU_SECONDS": source_iteration_stage.cpu_seconds,
+        "SOURCE_ITERATION_CPU_TO_WALL_RATIO": source_iteration_stage.cpu_seconds / source_iteration_stage.wall_seconds if source_iteration_stage.wall_seconds > 0 else None,
         "SOURCE_WHOLE_FILE_INTEGRITY_PREFLIGHT_WALL_SECONDS": state.stage("source_whole_file_integrity_preflight").wall_seconds,
         "SOURCE_ITERATION_JSON_CANONICAL_PARSE_WALL_SECONDS": state.stage("source_iteration_json_canonical_parse").wall_seconds,
         "SOURCE_ROWS_VISITED": source_rows,
@@ -775,6 +787,8 @@ def characterize_c1_06_preparation(
         "JOIN_SAMPLE_BUILD_PERCENT": shares["JOIN_SAMPLE_BUILD"],
         "TENSORIZATION_PERCENT": shares["TENSORIZATION"],
         "GPU_OPTIMIZER_REFERENCE_PERCENT": shares["GPU_OPTIMIZER_REFERENCE"],
+        "DOMINANT_STAGE": dominant_stage,
+        "DOMINANT_STAGE_PERCENT": shares[dominant_percent_key],
         "MEASURED_PIPELINE_SHARE_DENOMINATOR_SECONDS": measured_pipeline_denominator,
         "TRUST_ESTABLISHMENT_WALL_SECONDS": label_open_stage.wall_seconds + source_open_stage.wall_seconds,
         "HOT_CONSUMPTION_WALL_SECONDS": label_iteration_stage.wall_seconds + source_iteration_stage.wall_seconds,
@@ -879,6 +893,16 @@ def _render_scaling(result: Mapping[str, Any]) -> list[dict[str, Any]]:
 def render_report(result: Mapping[str, Any]) -> str:
     scaling = _render_scaling(result)
     source_json = json.dumps(scaling, ensure_ascii=False, indent=2, sort_keys=True)
+    label_prep_wall = (
+        float(result["LABEL_STRUCTURAL_OPEN_WALL_SECONDS"])
+        + float(result["LABEL_ITERATION_WALL_SECONDS"])
+        + float(result["BOUNDED_LABEL_SELECTION_WALL_SECONDS"])
+    )
+    label_prep_cpu = (
+        float(result["LABEL_STRUCTURAL_OPEN_CPU_SECONDS"])
+        + float(result["LABEL_ITERATION_CPU_SECONDS"])
+        + float(result["BOUNDED_LABEL_SELECTION_CPU_SECONDS"])
+    )
     stage_walls = {
         "LABEL_PREP": float(result["LABEL_PREP_PERCENT"]),
         "SOURCE_OPEN": float(result["SOURCE_OPEN_PERCENT"]),
@@ -1030,6 +1054,11 @@ SOURCE_ITERATION_JSON_CANONICAL_PARSE_WALL_SECONDS={_json_value(result['SOURCE_I
 SOURCE_ROWS_VISITED={result['SOURCE_ROWS_VISITED']}
 SOURCE_BYTES_IF_RELIABLY_AVAILABLE={_json_value(result['SOURCE_BYTES_IF_RELIABLY_AVAILABLE'])}
 SOURCE_ITERATION_RAW_BYTES_VISITED={_json_value(result['SOURCE_ITERATION_RAW_BYTES_VISITED'])}
+SOURCE_TOTAL_RAW_BYTES_VISITED={_json_value(result['SOURCE_TOTAL_RAW_BYTES_VISITED'])}
+SOURCE_RAW_IO_PASSES={result['SOURCE_RAW_IO_PASSES']}
+SOURCE_JSON_PARSE_PASSES={result['SOURCE_JSON_PARSE_PASSES']}
+SOURCE_SEMANTIC_VALIDATION_PASSES={result['SOURCE_SEMANTIC_VALIDATION_PASSES']}
+SOURCE_ROW_ITERATION_PASSES={result['SOURCE_ROW_ITERATION_PASSES']}
 SOURCE_KEY_EXTRACTION_WALL_SECONDS={_json_value(result['SOURCE_KEY_EXTRACTION_WALL_SECONDS'])}
 HASH_DICT_LOOKUP_DERIVED_WALL_SECONDS={_json_value(result['HASH_DICT_LOOKUP_DERIVED_WALL_SECONDS'])}
 SOURCE_LABEL_JOIN_WALL_SECONDS={_json_value(result['SOURCE_LABEL_JOIN_WALL_SECONDS'])}
@@ -1045,12 +1074,31 @@ TENSORIZED_BATCHES={result['TENSORIZED_BATCHES']}
 TENSORIZED_SAMPLES={result['TENSORIZED_SAMPLES']}
 ```
 
+| Stage boundary | Wall seconds | Process CPU seconds | Share of preparation + GPU reference |
+|---|---:|---:|---:|
+| label preparation (open + tuple iteration + bounded selection) | {_json_value(label_prep_wall)} | {_json_value(label_prep_cpu)} | {_json_value(result['LABEL_PREP_PERCENT'])}% |
+| source reader open (strict trust establishment) | {_json_value(result['SOURCE_READER_OPEN_WALL_SECONDS'])} | {_json_value(result['SOURCE_READER_OPEN_CPU_SECONDS'])} | {_json_value(result['SOURCE_OPEN_PERCENT'])}% |
+| source inference iteration (integrity preflight + token parse) | {_json_value(result['SOURCE_ITERATION_WALL_SECONDS'])} | {_json_value(result['SOURCE_ITERATION_CPU_SECONDS'])} | {_json_value(result['SOURCE_ITERATION_PERCENT'])}% |
+| source-label join + sample construction consumer loop | {_json_value(result['JOIN_SAMPLE_CONSTRUCTION_WALL_SECONDS'])} | {_json_value(result['JOIN_SAMPLE_CONSTRUCTION_CPU_SECONDS'])} | {_json_value(result['JOIN_SAMPLE_BUILD_PERCENT'])}% |
+| tensorization / batch construction | {_json_value(result['TENSORIZATION_WALL_SECONDS'])} | {_json_value(result['TENSORIZE_CPU_SECONDS'])} | {_json_value(result['TENSORIZATION_PERCENT'])}% |
+| accepted C1_06 GPU optimizer reference | {_json_value(result['ACCEPTED_C1_06_GPU_REFERENCE_WALL_SECONDS'])} | NOT_MEASURED | {_json_value(result['GPU_OPTIMIZER_REFERENCE_PERCENT'])}% |
+
+The preparation CPU-to-wall ratio was `{_json_value(result['PREPARATION_CPU_TO_WALL_RATIO'])}`;
+the source-open ratio was `{_json_value(result['SOURCE_OPEN_CPU_TO_WALL_RATIO'])}` and the source-
+iteration ratio was `{_json_value(result['SOURCE_ITERATION_CPU_TO_WALL_RATIO'])}`. This is consistent
+with a CPU-bound parse/validation path rather than a primarily I/O-waiting path on this host.
+
 `JOIN_SAMPLE_CONSTRUCTION_WALL_SECONDS` is the non-overlapping consumer gap between successive
 reader `next()` calls; it includes the outer source-key lookup, dict pop, selected-row conversion,
 and append. The per-function `TRAINING_SAMPLE_CONSTRUCTION_*` value is nested within that stage and
 is not added again. The dict-lookup value is a derived residual after subtracting the measured outer
 key extraction and sample-construction calls; it includes Python loop overhead and is not a hardware-
 independent microbenchmark.
+
+The label structural-open timing is intentionally a combined boundary: the current private
+`LabelArtifactReader._open_structural()` performs manifest parsing/validation, labels byte digest,
+label-row parsing, and label-row semantic validation in one call. Splitting those subcategories would
+require another real artifact pass or a production hook; this task does neither.
 
 ## 6. Join, bounded distribution, and last-needed position
 
