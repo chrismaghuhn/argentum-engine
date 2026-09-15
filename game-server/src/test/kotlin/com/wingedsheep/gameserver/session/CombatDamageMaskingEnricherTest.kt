@@ -12,6 +12,10 @@ import com.wingedsheep.sdk.scripting.effects.FaceDownMode
 import com.wingedsheep.engine.state.components.identity.MorphDataComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.YesNoDecision
+import com.wingedsheep.engine.view.ClientStateTransformer
+import com.wingedsheep.gameserver.protocol.ServerMessage
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
@@ -114,5 +118,64 @@ class CombatDamageMaskingEnricherTest : FunSpec({
         // The opponent-decision status shown to the defender also masks the attacker's real name.
         val status = enricher.createOpponentDecisionStatus(decision, driver.state, defender)
         (status.sourceName ?: "") shouldNotContain "Centaur Courser"
+    }
+
+    test("spectator decision status masks a face-down combat source name") {
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all)
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40))
+        val attacker = driver.activePlayer!!
+        val defender = if (attacker == driver.player1) driver.player2 else driver.player1
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val morphAttacker = driver.putCreatureOnBattlefield(attacker, "Centaur Courser")
+        driver.morphFaceDown(morphAttacker)
+        driver.removeSummoningSickness(morphAttacker)
+        val blocker = driver.putCreatureOnBattlefield(defender, "Trample Beast")
+        val blocker2 = driver.putCreatureOnBattlefield(defender, "Savannah Lions")
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attacker, listOf(morphAttacker), defender)
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareBlockers(
+            defender,
+            mapOf(blocker to listOf(morphAttacker), blocker2 to listOf(morphAttacker)),
+        )
+        advanceUntilDecision(driver)
+
+        val builder = SpectatorStateBuilder(driver.cardRegistry, ClientStateTransformer(driver.cardRegistry))
+        val seats = listOf(
+            SpectatorSeat(attacker, "Attacker"),
+            SpectatorSeat(defender, "Defender"),
+        )
+        val roster = seats.mapIndexed { index, seat ->
+            ServerMessage.PlayerSeatInfo(seat.playerId.value, seat.playerName, index)
+        }
+
+        builder.buildState(driver.state, seats, roster, "game").decisionStatus?.sourceName shouldBe
+            "Face-down creature"
+    }
+
+    test("spectator decision status preserves a face-up public source name") {
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all)
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40))
+        val p1 = driver.player1
+        val p2 = driver.player2
+        val faceUpSource = driver.putCreatureOnBattlefield(p1, "Trample Beast")
+        val decision = YesNoDecision(
+            id = "decision",
+            playerId = p1,
+            prompt = "Choose",
+            context = DecisionContext(sourceId = faceUpSource, sourceName = "Trample Beast"),
+        )
+        val state = driver.state.copy(pendingDecision = decision)
+        val builder = SpectatorStateBuilder(driver.cardRegistry, ClientStateTransformer(driver.cardRegistry))
+        val seats = listOf(SpectatorSeat(p1, "P1"), SpectatorSeat(p2, "P2"))
+        val roster = seats.mapIndexed { index, seat ->
+            ServerMessage.PlayerSeatInfo(seat.playerId.value, seat.playerName, index)
+        }
+
+        builder.buildState(state, seats, roster, "game").decisionStatus?.sourceName shouldBe "Trample Beast"
     }
 })

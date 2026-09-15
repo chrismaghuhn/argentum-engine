@@ -1,1 +1,2 @@
 ml/tests/fixtures/derived_artifact_v1/samples.ndjson text eol=lf
+docs/ml/curriculum/*.txt text eol=crlf

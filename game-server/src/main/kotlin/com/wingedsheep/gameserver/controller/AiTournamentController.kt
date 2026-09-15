@@ -1,6 +1,8 @@
 package com.wingedsheep.gameserver.controller
 
 import com.wingedsheep.gameserver.handler.LobbyHandler
+import com.wingedsheep.gameserver.curriculum.CurriculumAiTournamentPreset
+import com.wingedsheep.gameserver.curriculum.CurriculumSourceProvenanceV1
 import com.wingedsheep.gameserver.lobby.LobbyState
 import com.wingedsheep.gameserver.repository.GameRepository
 import com.wingedsheep.gameserver.repository.LobbyRepository
@@ -11,7 +13,8 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 
 /**
- * Development-only endpoint to create a sealed tournament with AI-only players.
+ * Development-only endpoint to create AI-only tournaments, including the server-owned locked
+ * Commander curriculum preset and the legacy sealed/fixed-deck modes.
  *
  * After creation, open /tournament/{lobbyId} in the browser to spectate, or poll
  * `GET /api/dev/ai-tournament/{lobbyId}` for the live game id and jump straight to
@@ -32,6 +35,8 @@ class AiTournamentController(
     private val logger = LoggerFactory.getLogger(AiTournamentController::class.java)
 
     data class AiTournamentRequest(
+        /** Optional server-owned fixed matchup identity. Mutually exclusive with legacy options. */
+        val preset: String? = null,
         val setCodes: List<String>? = null,
         val playerCount: Int? = null,
         /** Optional per-player model overrides. Index 0 = player 1, index 1 = player 2, etc.
@@ -55,13 +60,71 @@ class AiTournamentController(
     data class AiTournamentResponse(
         val lobbyId: String,
         val spectateUrl: String,
-        val message: String
+        val message: String,
+        val presetIdentity: String? = null,
+        val curriculumSources: List<CurriculumSourceProvenanceV1> = emptyList(),
     )
 
     @PostMapping
     fun createAiTournament(
         @RequestBody request: AiTournamentRequest?
     ): ResponseEntity<AiTournamentResponse> {
+        val requestedPreset = if (request?.preset == null) {
+            null
+        } else {
+            try {
+                CurriculumAiTournamentPreset.fromRequest(request.preset)
+            } catch (e: IllegalArgumentException) {
+                return ResponseEntity.badRequest().body(AiTournamentResponse(
+                    lobbyId = "",
+                    spectateUrl = "",
+                    message = e.message ?: "Unknown AI tournament preset",
+                ))
+            }
+        }
+
+        if (requestedPreset != null) {
+            val hasCallerOverrides = request?.let {
+                it.decks != null ||
+                    it.setCodes != null ||
+                    it.models != null ||
+                    it.heuristicDeckbuilding != null ||
+                    it.gamesPerMatch != null ||
+                    (it.playerCount != null && it.playerCount != 2)
+            } == true
+            if (hasCallerOverrides) {
+                return ResponseEntity.badRequest().body(AiTournamentResponse(
+                    lobbyId = "",
+                    spectateUrl = "",
+                    message = "The locked curriculum preset cannot be combined with caller overrides",
+                ))
+            }
+
+            return try {
+                val lobbyId = lobbyHandler.createAiTournamentFromCurriculumPreset(requestedPreset)
+                val provenance = lobbyRepository.findLobbyById(lobbyId)?.curriculumProvenance
+                logger.info(
+                    "AI tournament created via REST: lobbyId={}, mode=curriculum-preset, preset={}",
+                    lobbyId,
+                    requestedPreset.identity,
+                )
+                ResponseEntity.ok(AiTournamentResponse(
+                    lobbyId = lobbyId,
+                    spectateUrl = "/tournament/$lobbyId",
+                    message = "Locked Commander curriculum match created. Open /tournament/$lobbyId to spectate.",
+                    presetIdentity = provenance?.presetIdentity ?: requestedPreset.identity,
+                    curriculumSources = provenance?.sources.orEmpty(),
+                ))
+            } catch (e: Exception) {
+                logger.error("Failed to create curriculum AI tournament: ${e.message}", e)
+                ResponseEntity.badRequest().body(AiTournamentResponse(
+                    lobbyId = "",
+                    spectateUrl = "",
+                    message = "Failed to create AI tournament: ${e.message}",
+                ))
+            }
+        }
+
         val decks = request?.decks?.takeIf { it.isNotEmpty() }
         val playerCount = decks?.size
             ?: request?.playerCount?.coerceIn(2, 8) ?: 2
@@ -133,14 +196,17 @@ class AiTournamentController(
         val round: Int,
         val totalRounds: Int,
         val complete: Boolean,
-        val liveGames: List<AiLiveGame>
+        val liveGames: List<AiLiveGame>,
+        val presetIdentity: String? = null,
+        val curriculumSources: List<CurriculumSourceProvenanceV1> = emptyList(),
     )
 
     /**
      * Poll target for the AI Sandbox page: where the lobby is in its lifecycle and which game
-     * sessions are running right now. Unlike `/api/tournaments/live` this doesn't require the
-     * lobby to be public — AI lobbies are created private, and putting a bot-only sandbox on the
-     * home screen's public list would be noise for everyone else.
+     * sessions are running right now. Unlike `/api/tournaments/live` this works for the existing
+     * private AI Sandbox lobbies too; the locked curriculum preset is the deliberate exception and
+     * marks its own lobby public-spectatable so a normal spectator can attach through the hardened
+     * admission gate.
      */
     @GetMapping("/{lobbyId}")
     fun status(@PathVariable lobbyId: String): ResponseEntity<AiTournamentStatus> {
@@ -172,7 +238,9 @@ class AiTournamentController(
             round = tournament?.currentRound?.roundNumber ?: 0,
             totalRounds = tournament?.totalRounds ?: 0,
             complete = lobby.state == LobbyState.TOURNAMENT_COMPLETE,
-            liveGames = liveGames
+            liveGames = liveGames,
+            presetIdentity = lobby.curriculumProvenance?.presetIdentity,
+            curriculumSources = lobby.curriculumProvenance?.sources.orEmpty(),
         ))
     }
 

@@ -1,5 +1,6 @@
 package com.wingedsheep.gameserver.persistence.dto
 
+import com.wingedsheep.gameserver.curriculum.CurriculumMatchProvenanceV1
 import kotlinx.serialization.Serializable
 
 /**
@@ -67,7 +68,13 @@ data class PersistentTournamentLobby(
     /** FFA mode: session id of the game currently in progress, or null between games. */
     val ffaGameSessionId: String? = null,
     /** FFA mode: completed games in this lobby's play-again loop. */
-    val ffaGamesPlayed: Int = 0
+    val ffaGamesPlayed: Int = 0,
+    /** Server-owned locked-deck marker; prevents match-start mutations such as Easter eggs. */
+    val immutableFixedDeckSource: Boolean = false,
+    /** Repository-relative provenance for the locked source, without persisting a deck map. */
+    val curriculumProvenance: CurriculumMatchProvenanceV1? = null,
+    /** Forces the locked preset through the built-in Engine AI controller. */
+    val engineAiOnly: Boolean = false
 )
 
 /**
@@ -87,6 +94,10 @@ data class PersistentLobbyPlayer(
     val isAi: Boolean = false,
     val aiModelOverride: String? = null,
     val submittedSideboard: Map<String, Int> = emptyMap(),  // cardName -> count (outside the game)
+    /** Designated Commander retained for restart/reconnect of a Commander lobby. */
+    val commander: String? = null,
+    /** True when the recovered AI identity must use the built-in Engine AI. */
+    val forceEngine: Boolean = false,
 )
 
 /**
