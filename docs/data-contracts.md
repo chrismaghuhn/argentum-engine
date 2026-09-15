@@ -1293,3 +1293,25 @@ closed. Responses carry the exact RNG cursor
 before/after/draw-count relation and cannot move to another stream. In particular,
 AssignDamageDecision without a typed domain, partial mana-source domains, and BatchYesNoResponse
 are not silently reduced to ordinary choices; they emit their typed unsupported diagnostic.
+
+### C1_07B checkpoint-backed local policy runtime
+
+`C1_07BPolicyProfile` is a server-owned immutable profile for the accepted C1_06 feed-forward
+checkpoint. It pins the checkpoint, canonical manifest digest, Safetensors digest, source/training
+provenance, architecture/config digest, inference/selection/RNG identities, and
+`C1_REFERENCE_NUMERIC_PROFILE`. The local worker accepts only the regular `manifest.json` and
+`weights.safetensors` below the configured artifact directory, verifies their bytes and semantic
+identity, loads the exact C1_06 model on `cuda:0`, and has no CPU fallback.
+
+`LocalPythonPolicyRuntime` launches one long-lived worker with a fixed argument vector and no shell.
+The stdin/stdout protocol uses a bounded four-byte length-prefixed canonical JSON frame. Startup
+must return a `READY` health envelope before any decision request is sent; each response is bound to
+the outer and inner `requestId`, fixed profile identities, the selected ordinal, and the exact
+PolicyTieRng cursor accounting. Timeout, crash, malformed frame, profile/checkpoint drift,
+non-finite or wrong-count scores, and stream/cursor mismatch fail the runtime closed.
+
+The outer request envelope carries only server-owned profile/checkpoint/contract identities and the
+C1_07A `LivePolicyDecisionRequestV1` inner payload. Python receives model-facing feature JSON,
+ordinal/mask/tie control data, and PolicyTieRng state. It never receives `GameState`, exact
+`LegalAction`/`DecisionResponse` bindings, or the JVM-internal `bindingDigest`. A runtime failure
+does not enter Engine AI, random/first-choice, auto-pass, or any other fallback path.

@@ -204,6 +204,14 @@ class C1_06TensorBatch:
 
 
 @dataclass(frozen=True)
+class C1_06InferenceTensorBatch:
+    """C1_06 model inputs for live scoring without a training target or label channel."""
+
+    observation: Any
+    candidates: Any
+
+
+@dataclass(frozen=True)
 class C1_06DataView:
     samples: tuple[C1_06TrainingSample, ...]
     label_manifest: Mapping[str, Any]
@@ -374,6 +382,42 @@ def tensorize_samples(
         if not bool(candidate_mask[item_index, target_index].item()):
             raise ValueError("selected target is not executable in the supplied candidate batch")
     return C1_06TensorBatch(observation, candidates, candidate_mask, target_indices)
+
+
+def tensorize_live_input(
+    model_input: Mapping[str, Any],
+    candidate_feature_views: Sequence[Mapping[str, Any]],
+    *,
+    torch_module: Any,
+    device: Any,
+    config: C1_06ModelConfigV1,
+) -> C1_06InferenceTensorBatch:
+    """Use the exact C1_06 feature encoding for live candidates without inventing labels."""
+
+    if not isinstance(model_input, Mapping):
+        raise ValueError("C1_06 live model input must be an object")
+    if (
+        isinstance(candidate_feature_views, (str, bytes, bytearray))
+        or not isinstance(candidate_feature_views, Sequence)
+        or not candidate_feature_views
+    ):
+        raise ValueError("C1_06 live candidate features must be a non-empty sequence")
+    if any(not isinstance(candidate, Mapping) for candidate in candidate_feature_views):
+        raise ValueError("C1_06 live candidate features must be objects")
+    observation = torch_module.tensor(
+        [_feature_vector(_observation_payload(model_input), config.observation_width)],
+        dtype=torch_module.float32,
+        device=device,
+    )
+    candidates = torch_module.tensor(
+        [
+            _feature_vector(candidate, config.candidate_width)
+            for candidate in candidate_feature_views
+        ],
+        dtype=torch_module.float32,
+        device=device,
+    ).unsqueeze(0)
+    return C1_06InferenceTensorBatch(observation=observation, candidates=candidates)
 
 
 class FeedForwardCandidateScorer:
