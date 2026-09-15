@@ -161,7 +161,6 @@ export function ResearchArenaPage() {
     phase === 'COMPLETE' ||
     (phase === 'ERROR' && error?.kind !== 'STATUS_ERROR')
   )
-  const showNewMatchAction = !launching && lobbyId !== null && phase !== 'STARTING' && !canStartNewMatch
 
   return (
     <div style={styles.page}>
@@ -196,11 +195,6 @@ export function ResearchArenaPage() {
             {phase === 'ERROR' && error?.kind === 'STATUS_ERROR' && (
               <button type="button" style={styles.primaryButton} onClick={retryStatus}>
                 Retry status
-              </button>
-            )}
-            {showNewMatchAction && (
-              <button type="button" style={styles.secondaryButton} disabled={launching} onClick={() => void startNewMatch()}>
-                Start new match
               </button>
             )}
           </div>

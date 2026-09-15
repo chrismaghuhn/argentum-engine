@@ -146,6 +146,42 @@ test.describe('Research Arena', () => {
     expect(status.getStatusCount()).toBe(2)
   })
 
+  test('shows only Retry status during STATUS_ERROR', async ({ page }) => {
+    await stubStatus(page, [{ status: 503, body: { message: 'temporary status failure' } }])
+
+    await page.goto('/dev/research-arena/lobby-1')
+
+    await expect(page.getByRole('button', { name: 'Retry status' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start new match' })).toHaveCount(0)
+  })
+
+  test('does not offer a new match while waiting or live', async ({ page }) => {
+    await stubStatus(page, [{ body: waitingStatus() }])
+    await page.goto('/dev/research-arena/lobby-1')
+    await expect(page.getByText('Waiting for match…')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start new match' })).toHaveCount(0)
+
+    await page.addInitScript(() => {
+      sessionStorage.setItem('argentum-research-arena-watched:game-1', '1')
+    })
+    await page.unroute('**/api/dev/ai-tournament/lobby-1')
+    await stubStatus(page, [{ body: liveStatus() }])
+    await page.goto('/dev/research-arena/lobby-1')
+    await expect(page.getByText('Live — Turn 3')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start new match' })).toHaveCount(0)
+  })
+
+  test('offers a new match after LOST_LOBBY', async ({ page }) => {
+    await page.route('**/api/dev/ai-tournament/lobby-1', async (route) => {
+      await route.fulfill({ status: 404, body: 'Not Found' })
+    })
+
+    await page.goto('/dev/research-arena/lobby-1')
+
+    await expect(page.getByText('Lobby unavailable')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start new match' })).toBeVisible()
+  })
+
   test('handles a disabled create endpoint without starting status polling', async ({ page }) => {
     let statusCount = 0
     await page.route('**/api/dev/ai-tournament/lobby-1', async (route) => {
