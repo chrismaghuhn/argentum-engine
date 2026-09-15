@@ -36,11 +36,18 @@ from .protocol import (
 )
 from .provider import C1_06LiveScoreProvider
 from .runtime import LocalPythonPolicyRuntime
+from .numeric_profile import (
+    C1_REFERENCE_NUMERIC_PROFILE,
+    C1ReferenceNumericExecutionProfileV1,
+    NumericProfileError,
+)
 
 __all__ = [
     "C1_07B_POLICY_PROFILE",
     "C1_07BPolicyProfile",
     "C1_06LiveScoreProvider",
+    "C1_REFERENCE_NUMERIC_PROFILE",
+    "C1ReferenceNumericExecutionProfileV1",
     "FramedProtocolError",
     "LivePolicyCheckpointError",
     "LivePolicyDecisionEngine",
@@ -55,6 +62,7 @@ __all__ = [
     "LivePolicyTimeoutError",
     "LivePolicyWorkerCrashedError",
     "LocalPythonPolicyRuntime",
+    "NumericProfileError",
     "ValidatedCheckpointArtifact",
     "build_decision_envelope",
     "build_response_envelope",

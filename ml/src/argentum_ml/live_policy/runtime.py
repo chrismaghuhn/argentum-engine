@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from .contracts import (
     LivePolicyDecisionRequestV1,
@@ -65,22 +65,19 @@ class LocalPythonPolicyRuntime:
         profile: C1_07BPolicyProfile | None = None,
         startup_timeout_seconds: float = 30.0,
         inference_timeout_seconds: float = 5.0,
-        _worker_command: Sequence[str] | None = None,
     ) -> "LocalPythonPolicyRuntime":
         selected_profile = profile or C1_07B_POLICY_PROFILE
         if not isinstance(selected_profile, C1_07BPolicyProfile):
             raise LivePolicyStartupError("runtime requires the server-owned C1_07B profile", code="PROFILE_INVALID")
         if startup_timeout_seconds <= 0 or inference_timeout_seconds <= 0:
             raise LivePolicyStartupError("runtime timeouts must be positive", code="RUNTIME_TIMEOUT_INVALID")
-        command = list(_worker_command) if _worker_command is not None else [
+        command = [
             sys.executable,
             "-m",
             WORKER_MODULE,
             "--checkpoint-dir",
             str(checkpoint_dir),
         ]
-        if not command or any(not isinstance(item, str) or not item for item in command):
-            raise LivePolicyStartupError("worker command is invalid", code="WORKER_COMMAND_INVALID")
         try:
             process = subprocess.Popen(
                 command,

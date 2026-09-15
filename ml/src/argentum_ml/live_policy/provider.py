@@ -9,7 +9,7 @@ from ..learner.c1_06 import (
     C1_06DataGateError,
     C1_06GpuGateError,
     FeedForwardCandidateScorer,
-    load_c1_06_checkpoint,
+    load_c1_06_checkpoint_from_verified_bytes,
     require_cuda_device,
     tensorize_live_input,
 )
@@ -17,6 +17,7 @@ from ..contracts.model_facing import ModelFacingContractError, validate_live_mod
 from ..learner.optional import LearnerToolingUnavailable, require_optional_module
 from ..learner.weights import WeightArtifactError
 from .errors import LivePolicyCheckpointError, LivePolicyInferenceError
+from .numeric_profile import NumericProfileError
 from .profile import C1_07BPolicyProfile
 
 
@@ -38,20 +39,25 @@ class C1_06LiveScoreProvider:
         try:
             torch = require_optional_module("torch", "torch")
             device = cls.require_cuda(torch)
+            numeric_profile = profile.numeric_execution_profile
+            numeric_profile.configure_and_validate(torch, device)
             config = profile.model_config
             model = FeedForwardCandidateScorer(config, device=device)
-            load_c1_06_checkpoint(
+            load_c1_06_checkpoint_from_verified_bytes(
                 model,
-                artifact.manifest_path,
-                artifact.weight_path,
+                artifact.manifest_bytes,
+                artifact.weight_bytes,
+                expected_checkpoint_manifest_content_digest=profile.expected_manifest_content_digest,
                 expected_source_dataset_identity=profile.expected_source_dataset_identity,
                 expected_label_artifact_id=profile.expected_label_artifact_id,
                 expected_labels_content_digest=profile.expected_labels_content_digest,
-                expected_manifest_content_digest=profile.expected_source_manifest_content_digest,
+                expected_source_manifest_content_digest=profile.expected_source_manifest_content_digest,
                 expected_source_commit=profile.expected_source_commit,
                 config=config,
             )
             _require_model_on_device(model, device)
+            numeric_profile.validate_effective(torch, device)
+            numeric_profile.validate_model(torch, model, device)
         except LivePolicyCheckpointError:
             raise
         except LearnerToolingUnavailable as exc:
@@ -64,6 +70,11 @@ class C1_06LiveScoreProvider:
                 "C1_07B requires CUDA device cuda:0 and has no CPU fallback",
                 code="CUDA_PROFILE_UNAVAILABLE",
             ) from exc
+        except NumericProfileError as exc:
+            raise LivePolicyCheckpointError(
+                "C1 reference numeric execution profile is unavailable",
+                code="NUMERIC_PROFILE_UNAVAILABLE",
+            ) from exc
         except (C1_06DataGateError, WeightArtifactError, OSError, RuntimeError, ValueError) as exc:
             raise LivePolicyCheckpointError(
                 "C1_06 checkpoint could not be loaded under the fixed profile",
@@ -75,6 +86,7 @@ class C1_06LiveScoreProvider:
         object.__setattr__(instance, "_device", device)
         object.__setattr__(instance, "_config", config)
         object.__setattr__(instance, "_artifact", artifact)
+        object.__setattr__(instance, "_numeric_profile", numeric_profile)
         object.__setattr__(instance, "checkpoint_id", profile.expected_checkpoint_id)
         object.__setattr__(instance, "numeric_profile_class", profile.expected_numeric_profile_class)
         return instance
@@ -107,6 +119,8 @@ class C1_06LiveScoreProvider:
                 code="MODEL_INPUT_INVALID",
             ) from exc
         try:
+            self._numeric_profile.validate_effective(self._torch, self._device)
+            self._numeric_profile.validate_model(self._torch, self._model, self._device)
             batch = tensorize_live_input(
                 model_input,
                 candidates,
@@ -121,6 +135,11 @@ class C1_06LiveScoreProvider:
                     "C1_06 scores did not remain on cuda:0",
                     code="CUDA_PROFILE_VIOLATION",
                 )
+            if str(getattr(scores, "dtype", "")).removeprefix("torch.") != self._numeric_profile.dtype:
+                raise LivePolicyInferenceError(
+                    "C1_06 scores did not remain in the C1 reference dtype",
+                    code="NUMERIC_PROFILE_VIOLATION",
+                )
             if scores.ndim != 2 or scores.shape[0] != 1 or scores.shape[1] != len(candidates):
                 raise LivePolicyInferenceError(
                     "C1_06 score tensor shape does not match candidates",
@@ -134,6 +153,11 @@ class C1_06LiveScoreProvider:
             return tuple(float(score) for score in scores[0].detach().cpu().tolist())
         except LivePolicyInferenceError:
             raise
+        except NumericProfileError as exc:
+            raise LivePolicyInferenceError(
+                "C1 reference numeric execution profile changed during inference",
+                code="NUMERIC_PROFILE_VIOLATION",
+            ) from exc
         except (RuntimeError, ValueError, TypeError) as exc:
             raise LivePolicyInferenceError(
                 "C1_06 live scoring failed",

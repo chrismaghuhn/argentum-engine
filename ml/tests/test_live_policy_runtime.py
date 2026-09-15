@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 import json
 import math
 import os
@@ -9,8 +10,10 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Sequence
+from unittest.mock import patch
 
 
 from argentum_ml.contracts.identities import POLICY_TIE_RNG_IDENTITY
@@ -206,7 +209,41 @@ def _test_worker_command(mode: str) -> list[str]:
     return [sys.executable, "-c", script]
 
 
+@contextmanager
+def _patched_test_worker(mode: str):
+    import argentum_ml.live_policy.runtime as runtime_module
+
+    real_popen = runtime_module.subprocess.Popen
+
+    def start_test_worker(command: Sequence[str], **kwargs: Any):
+        expected = [
+            sys.executable,
+            "-m",
+            runtime_module.WORKER_MODULE,
+            "--checkpoint-dir",
+            "unused-test-artifact",
+        ]
+        if list(command) != expected:
+            raise AssertionError(f"production worker command drifted: {list(command)!r}")
+        return real_popen(_test_worker_command(mode), **kwargs)
+
+    with patch.object(runtime_module.subprocess, "Popen", start_test_worker):
+        yield
+
+
 class LivePolicyRuntimeContractTests(unittest.TestCase):
+    def test_runtime_start_has_no_caller_worker_override(self) -> None:
+        self.assertNotIn("_worker_command", inspect.signature(LocalPythonPolicyRuntime.start).parameters)
+
+    def test_runtime_start_uses_only_the_fixed_worker_command(self) -> None:
+        with _patched_test_worker("round-trip"):
+            runtime = LocalPythonPolicyRuntime.start(Path("unused-test-artifact"))
+        try:
+            response = runtime.decide(_request())
+            self.assertEqual(response.selected_source_binding_ordinal, 0)
+        finally:
+            runtime.close()
+
     def test_reference_profile_binds_accepted_c1_06_checkpoint_and_wire_identities(self) -> None:
         profile = C1_07B_POLICY_PROFILE
         self.assertEqual(
@@ -405,10 +442,8 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
             )
 
     def test_runtime_process_rejects_wrong_request_id(self) -> None:
-        runtime = LocalPythonPolicyRuntime.start(
-            Path("unused-test-artifact"),
-            _worker_command=_test_worker_command("wrong-request-id"),
-        )
+        with _patched_test_worker("wrong-request-id"):
+            runtime = LocalPythonPolicyRuntime.start(Path("unused-test-artifact"))
         try:
             with self.assertRaises(LivePolicyProtocolError):
                 runtime.decide(_request())
@@ -416,10 +451,8 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
             runtime.close()
 
     def test_runtime_worker_crash_fails_closed(self) -> None:
-        runtime = LocalPythonPolicyRuntime.start(
-            Path("unused-test-artifact"),
-            _worker_command=_test_worker_command("crash"),
-        )
+        with _patched_test_worker("crash"):
+            runtime = LocalPythonPolicyRuntime.start(Path("unused-test-artifact"))
         with self.assertRaises(LivePolicyWorkerCrashedError):
             runtime.decide(_request())
         self.assertTrue(runtime._closed)
@@ -427,10 +460,8 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
         runtime.close()
 
     def test_runtime_pre_inference_crash_closes_before_request_write(self) -> None:
-        runtime = LocalPythonPolicyRuntime.start(
-            Path("unused-test-artifact"),
-            _worker_command=_test_worker_command("crash-before-request"),
-        )
+        with _patched_test_worker("crash-before-request"):
+            runtime = LocalPythonPolicyRuntime.start(Path("unused-test-artifact"))
         runtime._process.wait(timeout=2.0)
         with self.assertRaises(LivePolicyWorkerCrashedError):
             runtime.decide(_request())
@@ -438,21 +469,19 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
         runtime.close()
 
     def test_inference_error_requires_request_id(self) -> None:
-        runtime = LocalPythonPolicyRuntime.start(
-            Path("unused-test-artifact"),
-            _worker_command=_test_worker_command("inference-error-no-request-id"),
-        )
+        with _patched_test_worker("inference-error-no-request-id"):
+            runtime = LocalPythonPolicyRuntime.start(Path("unused-test-artifact"))
         with self.assertRaises(LivePolicyProtocolError):
             runtime.decide(_request())
         self.assertTrue(runtime._closed)
         runtime.close()
 
     def test_runtime_timeout_fails_closed(self) -> None:
-        runtime = LocalPythonPolicyRuntime.start(
-            Path("unused-test-artifact"),
-            inference_timeout_seconds=0.1,
-            _worker_command=_test_worker_command("timeout"),
-        )
+        with _patched_test_worker("timeout"):
+            runtime = LocalPythonPolicyRuntime.start(
+                Path("unused-test-artifact"),
+                inference_timeout_seconds=0.1,
+            )
         with self.assertRaises(LivePolicyTimeoutError):
             runtime.decide(_request())
         runtime.close()
@@ -528,8 +557,137 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
         self.assertIn(response.selected_source_binding_ordinal, {0, 1})
         self.assertEqual(response.request_id, "request-1")
 
+    @unittest.skipUnless(
+        ACCEPTED_CHECKPOINT_DIR.is_dir(),
+        "accepted C1_06 checkpoint artifact is not provisioned on this host",
+    )
+    def test_provider_loads_the_verified_snapshot_after_path_replacement(self) -> None:
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("PyTorch is not installed")
+        if not torch.cuda.is_available():
+            self.skipTest("CUDA is unavailable on this host")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copyfile(ACCEPTED_CHECKPOINT_DIR / "manifest.json", root / "manifest.json")
+            shutil.copyfile(ACCEPTED_CHECKPOINT_DIR / "weights.safetensors", root / "weights.safetensors")
+            original_validate = C1_07B_POLICY_PROFILE.validate_checkpoint_artifact
+
+            def validate_then_replace(profile: Any, checkpoint_dir: Path | str):
+                artifact = original_validate(checkpoint_dir)
+                Path(checkpoint_dir, "manifest.json").write_bytes(b"replacement-manifest")
+                Path(checkpoint_dir, "weights.safetensors").write_bytes(b"replacement-weights")
+                return artifact
+
+            with patch.object(
+                type(C1_07B_POLICY_PROFILE),
+                "validate_checkpoint_artifact",
+                validate_then_replace,
+            ):
+                provider = C1_06LiveScoreProvider.from_checkpoint(
+                    C1_07B_POLICY_PROFILE,
+                    root,
+                )
+            self.assertEqual(provider.checkpoint_id, C1_07B_POLICY_PROFILE.expected_checkpoint_id)
+
 
 class C1_06LiveScoreProviderTests(unittest.TestCase):
+    def test_reference_numeric_profile_is_configured_and_verified(self) -> None:
+        profile = C1_07B_POLICY_PROFILE.numeric_execution_profile
+
+        class FakeDevice:
+            type = "cuda"
+            index = 0
+
+            def __str__(self) -> str:
+                return "cuda:0"
+
+        class FakeCuda:
+            def __init__(self) -> None:
+                self._available = True
+                self._device_count = 1
+
+            def is_available(self) -> bool:
+                return self._available
+
+            def device_count(self) -> int:
+                return self._device_count
+
+            def get_device_capability(self, index: int) -> tuple[int, int]:
+                return (8, 9)
+
+        class FakeBackends:
+            class cuda:
+                class matmul:
+                    allow_tf32 = True
+
+            class cudnn:
+                allow_tf32 = True
+
+        class FakeVersion:
+            cuda = "12.0"
+
+        class FakeTorch:
+            __version__ = "2.14.0+cu130"
+            cuda = FakeCuda()
+            backends = FakeBackends()
+            version = FakeVersion()
+            deterministic = False
+            autocast = True
+            precision = "high"
+            default_dtype = "torch.float32"
+
+            @staticmethod
+            def device(name: str) -> FakeDevice:
+                return FakeDevice()
+
+            @classmethod
+            def use_deterministic_algorithms(cls, enabled: bool) -> None:
+                cls.deterministic = enabled
+
+            @classmethod
+            def are_deterministic_algorithms_enabled(cls) -> bool:
+                return cls.deterministic
+
+            @classmethod
+            def set_autocast_enabled(cls, device_type: str, enabled: bool) -> None:
+                cls.autocast = enabled
+
+            @classmethod
+            def is_autocast_enabled(cls, device_type: str) -> bool:
+                return cls.autocast
+
+            @classmethod
+            def set_float32_matmul_precision(cls, value: str) -> None:
+                cls.precision = value
+
+            @classmethod
+            def get_float32_matmul_precision(cls) -> str:
+                return cls.precision
+
+            @classmethod
+            def get_default_dtype(cls) -> str:
+                return cls.default_dtype
+
+        FakeTorch.version.cuda = "13.0"
+        device = FakeTorch.device("cuda:0")
+        profile.configure_and_validate(FakeTorch, device)
+        self.assertTrue(FakeTorch.deterministic)
+        self.assertFalse(FakeTorch.autocast)
+        self.assertEqual(FakeTorch.precision, "highest")
+        self.assertFalse(FakeTorch.backends.cuda.matmul.allow_tf32)
+        self.assertTrue(FakeTorch.backends.cudnn.allow_tf32)
+
+    def test_reference_numeric_profile_rejects_wrong_framework_runtime(self) -> None:
+        profile = C1_07B_POLICY_PROFILE.numeric_execution_profile
+
+        class WrongTorch:
+            __version__ = "2.14.0+cpu"
+
+        with self.assertRaises(ValueError):
+            profile.configure_and_validate(WrongTorch, object())
+
     def test_provider_rejects_raw_model_surface_before_model_access(self) -> None:
         provider = object.__new__(C1_06LiveScoreProvider)
         payload = _request().to_dict()

@@ -1301,9 +1301,17 @@ checkpoint. It pins the checkpoint, canonical manifest digest, Safetensors diges
 provenance, architecture/config digest, inference/selection/RNG identities, and
 `C1_REFERENCE_NUMERIC_PROFILE`. The local worker accepts only the regular `manifest.json` and
 `weights.safetensors` below the configured artifact directory, verifies their bytes and semantic
-identity, loads the exact C1_06 model on `cuda:0`, and has no CPU fallback.
+identity, retains those exact verified manifest/weight bytes, and loads the exact C1_06 model from
+that in-memory snapshot on `cuda:0`; model construction never reopens the authority paths. It has
+no CPU fallback. The code-owned numeric profile requires PyTorch `2.14.0+cu130`, CUDA `13.0`,
+device capability `(8,9)`, `float32`, disabled CUDA autocast, `highest` float32 matmul precision,
+matmul TF32 disabled, the accepted cuDNN TF32 setting, deterministic algorithms enabled, and
+cuDNN TF32 enabled, deterministic algorithms enabled, and evaluation mode. The worker configures and verifies those effective settings before `READY` and
+rejects an unqualified runtime.
 
 `LocalPythonPolicyRuntime` launches one long-lived worker with a fixed argument vector and no shell.
+The production start API has no caller-supplied command override; test workers are reached only by
+patching the process seam while the production command remains fixed.
 The stdin/stdout protocol uses a bounded four-byte length-prefixed canonical JSON frame. Startup
 must return a `READY` health envelope before any decision request is sent; each response is bound to
 the outer and inner `requestId`, fixed profile identities, the selected ordinal, and the exact

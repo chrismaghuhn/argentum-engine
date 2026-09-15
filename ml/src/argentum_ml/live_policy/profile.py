@@ -24,6 +24,7 @@ from ..learner.c1_06 import (
 )
 from ..learner.weights import SAFETENSORS_CONTAINER_IDENTITY
 from .errors import LivePolicyCheckpointError
+from .numeric_profile import C1_REFERENCE_NUMERIC_PROFILE, C1ReferenceNumericExecutionProfileV1
 
 
 LIVE_PROTOCOL_VERSION = 1
@@ -41,12 +42,14 @@ LIVE_SHUTDOWN_ACK_MESSAGE_TYPE = "SHUTDOWN_ACK"
 
 @dataclass(frozen=True)
 class ValidatedCheckpointArtifact:
-    """Regular, canonical, profile-bound checkpoint files ready for model loading."""
+    """The exact validated checkpoint snapshot used for model loading."""
 
     root: Path
     manifest_path: Path
     weight_path: Path
     manifest: ArgentumCheckpointManifestV1
+    manifest_bytes: bytes
+    weight_bytes: bytes
 
 
 @dataclass(frozen=True, init=False)
@@ -129,6 +132,10 @@ class C1_07BPolicyProfile:
             "policyRngContractIdentity": self.expected_policy_rng_contract_identity,
             "numericProfileClass": self.expected_numeric_profile_class,
         }
+
+    @property
+    def numeric_execution_profile(self) -> C1ReferenceNumericExecutionProfileV1:
+        return C1_REFERENCE_NUMERIC_PROFILE
 
     def health_envelope(self) -> dict[str, Any]:
         return {
@@ -224,13 +231,21 @@ class C1_07BPolicyProfile:
             )
         self.require_manifest_identity(manifest)
         try:
-            self._require_weight_digest(weight_path, manifest)
+            raw_weights = weight_path.read_bytes()
+            self._require_weight_digest(raw_weights, manifest)
         except OSError as exc:
             raise LivePolicyCheckpointError(
                 "checkpoint weights could not be read",
                 code="CHECKPOINT_WEIGHT_READ_FAILURE",
             ) from exc
-        return ValidatedCheckpointArtifact(root, manifest_path, weight_path, manifest)
+        return ValidatedCheckpointArtifact(
+            root,
+            manifest_path,
+            weight_path,
+            manifest,
+            raw_manifest,
+            raw_weights,
+        )
 
     def require_manifest_identity(self, manifest: ArgentumCheckpointManifestV1) -> None:
         if not isinstance(manifest, ArgentumCheckpointManifestV1):
@@ -277,10 +292,9 @@ class C1_07BPolicyProfile:
 
     def _require_weight_digest(
         self,
-        weight_path: Path,
+        raw_weights: bytes,
         manifest: ArgentumCheckpointManifestV1,
     ) -> None:
-        raw_weights = weight_path.read_bytes()
         if hashlib.sha256(raw_weights).hexdigest() != self.expected_weight_content_digest:
             raise LivePolicyCheckpointError(
                 "checkpoint weight content digest differs from the fixed profile",
