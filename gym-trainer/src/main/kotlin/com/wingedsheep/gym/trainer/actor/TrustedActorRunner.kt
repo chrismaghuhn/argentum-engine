@@ -162,6 +162,7 @@ data class ActorRunResult(
 class TrustedActorRunner(
     private val assignment: WorkAssignmentV1,
     private val executionAttemptIdentity: ExecutionAttemptIdentityV1,
+    private val actualRuntimeSourceCommit: String?,
     private val preflight: () -> StoragePreflightResultV1,
     private val episodeExecutor: ActorEpisodeExecutor,
     private val sinkFactory: () -> B2TrajectorySink,
@@ -171,6 +172,9 @@ class TrustedActorRunner(
     private val actualConcurrency: Int = 1,
 ) {
     init {
+        require(actualRuntimeSourceCommit == null || actualRuntimeSourceCommit.isNotBlank()) {
+            "Actual runtime source commit must be null when unavailable"
+        }
         require(requestedConcurrency > 0) { "Requested concurrency must be positive" }
         require(actualConcurrency > 0) { "Actual concurrency must be positive" }
     }
@@ -191,12 +195,17 @@ class TrustedActorRunner(
         val diagnostics = mutableListOf<ActorDiagnosticV1>()
         var preflightResult: StoragePreflightResultV1? = null
         var sink: B2TrajectorySink? = null
+        val expectedSourceCommit = assignment.items.first().environmentIdentity.engineCommit
+        val sourceRevisionVerified = actualRuntimeSourceCommit != null &&
+            actualRuntimeSourceCommit == expectedSourceCommit
 
         fun report(): RunReportV1 = RunReportV1(
             assignmentIdentity = assignment.assignmentIdentity,
             executionAttemptIdentity = executionAttemptIdentity,
             finalState = tracker.snapshot().state,
-            sourceCommit = assignment.items.first().environmentIdentity.engineCommit,
+            expectedSourceCommit = expectedSourceCommit,
+            actualRuntimeSourceCommit = actualRuntimeSourceCommit,
+            sourceRevisionVerified = sourceRevisionVerified,
             actorStartTime = tracker.snapshot().actorStartTime,
             actorEndTime = clock.utcNow(),
             plannedJobOrdinals = planned,
@@ -212,6 +221,16 @@ class TrustedActorRunner(
         )
 
         try {
+            if (!sourceRevisionVerified) {
+                val diagnostic = ActorDiagnosticV1(
+                    code = ActorDiagnosticCodeV1.SOURCE_REVISION_UNVERIFIED,
+                    severity = ActorDiagnosticSeverityV1.FATAL,
+                )
+                diagnostics += diagnostic
+                tracker.fail(ActorStateV1.FAILED, diagnostic)
+                return ActorRunResult(tracker.snapshot(), report(), null)
+            }
+
             val evaluatedPreflight = preflight()
             preflightResult = evaluatedPreflight
             if (evaluatedPreflight.status != StoragePreflightStatus.PASS) {

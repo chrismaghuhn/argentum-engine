@@ -17,35 +17,6 @@ import java.time.Instant
 import java.util.Locale
 import kotlin.math.min
 
-private val unsafeOperationalDetailPattern = Regex(
-    """(?i)([a-z]:[\\/]|/(?:home|root|users)/)""",
-)
-
-private fun requireSafeOperationalDetail(value: String?, label: String) {
-    if (value == null) return
-    require(value.length <= 512) { "$label is too long" }
-    require(value.none { it == '\r' || it == '\n' }) {
-        "$label must be single-line"
-    }
-    val lower = value.lowercase(Locale.ROOT)
-    require(
-        listOf(
-            "token=",
-            "password=",
-            "secret=",
-            "credential=",
-            "api_key=",
-            "api-key=",
-            "authorization=",
-        ).none(lower::contains),
-    ) {
-        "$label contains credential-like content"
-    }
-    require(!unsafeOperationalDetailPattern.containsMatchIn(value)) {
-        "$label contains a private filesystem path"
-    }
-}
-
 const val ACTOR_OPERATIONAL_V1_VERSION: Int = 1
 const val ACTOR_STATUS_V1_SCHEMA_IDENTITY: String = "argentum-ml-actor-status@v1"
 const val RUN_REPORT_V1_SCHEMA_IDENTITY: String = "argentum-ml-run-report@v1"
@@ -107,6 +78,7 @@ enum class ActorDiagnosticCodeV1 {
     RUNTIME_STORAGE_RESERVE_BREACH,
     IDENTICAL_DUPLICATE,
     CONFLICTING_DUPLICATE,
+    SOURCE_REVISION_UNVERIFIED,
 }
 
 @Serializable
@@ -117,7 +89,6 @@ data class ActorDiagnosticV1(
     val severity: ActorDiagnosticSeverityV1,
     val jobOrdinal: Int? = null,
     val semanticJobIdentity: String? = null,
-    val detail: String? = null,
 ) {
     init {
         require(version == ACTOR_OPERATIONAL_V1_VERSION) {
@@ -132,7 +103,6 @@ data class ActorDiagnosticV1(
         semanticJobIdentity?.let {
             A3SemanticJson.requireSha256(it, "Actor diagnostic semantic job identity")
         }
-        requireSafeOperationalDetail(detail, "Actor diagnostic detail")
     }
 }
 
@@ -164,7 +134,6 @@ data class ActorStatusV1(
     val lastFinalizedShardDigest: String? = null,
     val diagnostics: List<ActorDiagnosticV1> = emptyList(),
     val fatalErrorCode: ActorDiagnosticCodeV1? = null,
-    val fatalErrorMessage: String? = null,
 ) {
     init {
         require(version == ACTOR_OPERATIONAL_V1_VERSION) {
@@ -210,7 +179,6 @@ data class ActorStatusV1(
             A3SemanticJson.requireSha256(it, "Last finalized shard digest")
         }
         require(diagnostics.size <= 1024) { "Actor status contains too many diagnostics" }
-        requireSafeOperationalDetail(fatalErrorMessage, "Fatal actor error message")
     }
 }
 
@@ -221,7 +189,9 @@ data class RunReportV1(
     val assignmentIdentity: String,
     val executionAttemptIdentity: ExecutionAttemptIdentityV1,
     val finalState: ActorStateV1,
-    val sourceCommit: String,
+    val expectedSourceCommit: String,
+    val actualRuntimeSourceCommit: String?,
+    val sourceRevisionVerified: Boolean,
     val actorStartTime: String,
     val actorEndTime: String,
     val plannedJobOrdinals: List<Int>,
@@ -243,7 +213,18 @@ data class RunReportV1(
             "Unsupported run-report schema identity: $schemaIdentity"
         }
         A3SemanticJson.requireSha256(assignmentIdentity, "Run report assignment identity")
-        require(sourceCommit.isNotBlank()) { "Run report source commit is required" }
+        require(expectedSourceCommit.isNotBlank()) {
+            "Run report expected source commit is required"
+        }
+        require(actualRuntimeSourceCommit == null || actualRuntimeSourceCommit.isNotBlank()) {
+            "Run report actual runtime source commit must not be blank"
+        }
+        require(
+            sourceRevisionVerified ==
+                (actualRuntimeSourceCommit != null && actualRuntimeSourceCommit == expectedSourceCommit),
+        ) {
+            "Run report source revision verification disagrees with revisions"
+        }
         require(actorStartTime.isNotBlank()) { "Run report start time is required" }
         require(actorEndTime.isNotBlank()) { "Run report end time is required" }
         listOf(
@@ -434,13 +415,20 @@ data class StoragePreflightResultV1(
 
 object StoragePreflight {
     fun evaluate(request: StoragePreflightRequestV1): StoragePreflightResultV1 {
-        val workingBudget = request.measuredWorkingFreeBytes -
-            request.workingSafetyReserveBytes -
-            request.publicationOverheadBytes
+        val workingBudget = saturatingSubtract(
+            saturatingSubtract(
+                request.measuredWorkingFreeBytes,
+                request.workingSafetyReserveBytes,
+            ),
+            request.publicationOverheadBytes,
+        )
+        val configuredProviderCapExceeded = request.configuredProviderOutputCapBytes?.let {
+            request.providerExistingOrPlannedOutputBytes > it
+        } == true
         val providerBudgetBeforeReserve = request.providerOutputBudgetRemainingBytes
-            ?: request.configuredProviderOutputCapBytes?.minus(
-                request.providerExistingOrPlannedOutputBytes,
-            )
+            ?: request.configuredProviderOutputCapBytes?.let {
+                saturatingSubtract(it, request.providerExistingOrPlannedOutputBytes)
+            }
 
         if (providerBudgetBeforeReserve == null) {
             return rejected(
@@ -452,8 +440,20 @@ object StoragePreflight {
             )
         }
 
-        val providerBudget = providerBudgetBeforeReserve - request.providerSafetyReserveBytes
+        val providerBudget = saturatingSubtract(
+            providerBudgetBeforeReserve,
+            request.providerSafetyReserveBytes,
+        )
         val publishBudget = min(workingBudget, providerBudget)
+        if (configuredProviderCapExceeded) {
+            return rejected(
+                request = request,
+                workingBudget = workingBudget,
+                providerBudget = providerBudget,
+                publishBudget = publishBudget,
+                failureCode = StoragePreflightFailureCode.INSUFFICIENT_PUBLISH_BUDGET,
+            )
+        }
         if (request.measuredScratchFreeBytes < request.requiredAdditionalScratchBytes) {
             return rejected(
                 request = request,
@@ -486,6 +486,9 @@ object StoragePreflight {
             requiredAdditionalScratchBytes = request.requiredAdditionalScratchBytes,
         )
     }
+
+    private fun saturatingSubtract(value: Long, amount: Long): Long =
+        if (amount >= value) 0 else value - amount
 
     private fun rejected(
         request: StoragePreflightRequestV1,
@@ -677,7 +680,6 @@ class ActorStatusTracker(
     private var lastFinalizedShardDigest: String? = null
     private val diagnostics = mutableListOf<ActorDiagnosticV1>()
     private var fatalErrorCode: ActorDiagnosticCodeV1? = null
-    private var fatalErrorMessage: String? = null
 
     init {
         A3SemanticJson.requireSha256(assignmentIdentity, "Actor tracker assignment identity")
@@ -746,7 +748,6 @@ class ActorStatusTracker(
     fun fail(
         terminalState: ActorStateV1,
         diagnostic: ActorDiagnosticV1,
-        message: String? = null,
     ) {
         require(
             terminalState == ActorStateV1.FAILED ||
@@ -760,7 +761,6 @@ class ActorStatusTracker(
         }
         diagnostics += diagnostic
         fatalErrorCode = diagnostic.code
-        fatalErrorMessage = message?.take(512)
         state = terminalState
         persistHeartbeat(force = true)
     }
@@ -803,7 +803,6 @@ class ActorStatusTracker(
             lastFinalizedShardDigest = lastFinalizedShardDigest,
             diagnostics = diagnostics.toList(),
             fatalErrorCode = fatalErrorCode,
-            fatalErrorMessage = fatalErrorMessage,
         )
     }
 
