@@ -926,6 +926,7 @@ class GameSession(
             controllerId = playerId,
             expectedControllerKind = controllerKind,
             controlledPlayerId = action.playerId,
+            state = gameState,
         )?.let { return@synchronized ActionResult.Failure(it) }
         executeActionLocked(playerId, action, messageId)
     }
@@ -944,6 +945,7 @@ class GameSession(
             controllerId = playerId,
             expectedControllerKind = controllerKind,
             controlledPlayerId = action.playerId,
+            state = gameState,
         )?.let { return@synchronized ActionResult.Failure(it) }
         executeActionLocked(playerId, action, messageId)
     }
@@ -1218,24 +1220,24 @@ class GameSession(
     /**
      * Enforce the controller origin at the session mutation boundary. A missing authority is
      * treated as the historical human default for test/scenario sessions, while every explicit
-     * authority must match the caller's origin. A controller may not use a hotseat/control link
-     * to mutate an explicitly ML-owned seat through another path.
+     * authority must match the caller's origin. For action submissions, [state] resolves the
+     * effective input controller through [GameState.actorFor] before checking that controller's
+     * persisted authority; resource ownership remains with [controlledPlayerId].
      */
     private fun controllerAuthorityFailureLocked(
         controllerId: EntityId,
         expectedControllerKind: ControllerKindV1,
         controlledPlayerId: EntityId = controllerId,
+        state: GameState? = null,
     ): String? {
-        val actualControllerKind = controllerAuthorities[controllerId]?.controllerKind
+        val effectiveControllerId = state?.actorFor(controlledPlayerId) ?: controlledPlayerId
+        if (effectiveControllerId != controllerId) {
+            return "Controller ${controllerId.value} is not the current actor for seat ${controlledPlayerId.value}"
+        }
+        val actualControllerKind = controllerAuthorities[effectiveControllerId]?.controllerKind
             ?: ControllerKindV1.HUMAN
         if (actualControllerKind != expectedControllerKind) {
-            return "Controller $expectedControllerKind is not authoritative for seat ${controllerId.value}"
-        }
-        if (
-            controlledPlayerId != controllerId &&
-            controllerAuthorities[controlledPlayerId]?.isMlPolicy == true
-        ) {
-            return "An explicitly ML_POLICY-owned seat cannot be mutated through another controller"
+            return "Controller $expectedControllerKind is not authoritative for seat ${effectiveControllerId.value}"
         }
         return null
     }
@@ -1432,6 +1434,9 @@ class GameSession(
         identity: com.wingedsheep.sdk.scripting.AbilityIdentity,
         kind: com.wingedsheep.engine.state.YieldKind
     ) = synchronized(stateLock) {
+        if (controllerAuthorityFailureLocked(playerId, ControllerKindV1.HUMAN) != null) {
+            return@synchronized
+        }
         gameState = gameState?.withYield(playerId, identity, kind)
         recordYield(com.wingedsheep.gameserver.replay.ReplayYieldOp.SET, playerId, identity, kind)
     }
@@ -1441,12 +1446,18 @@ class GameSession(
         playerId: EntityId,
         identity: com.wingedsheep.sdk.scripting.AbilityIdentity
     ) = synchronized(stateLock) {
+        if (controllerAuthorityFailureLocked(playerId, ControllerKindV1.HUMAN) != null) {
+            return@synchronized
+        }
         gameState = gameState?.withoutYield(playerId, identity)
         recordYield(com.wingedsheep.gameserver.replay.ReplayYieldOp.CLEAR_ABILITY, playerId, identity, null)
     }
 
     /** Drop all of [playerId]'s yields. */
     fun clearAllYields(playerId: EntityId) = synchronized(stateLock) {
+        if (controllerAuthorityFailureLocked(playerId, ControllerKindV1.HUMAN) != null) {
+            return@synchronized
+        }
         gameState = gameState?.withoutYields(playerId)
         recordYield(com.wingedsheep.gameserver.replay.ReplayYieldOp.CLEAR_ALL, playerId, null, null)
     }
@@ -1535,6 +1546,9 @@ class GameSession(
      * Only the player who took the undoable action can undo.
      */
     fun executeUndo(playerId: EntityId): ActionResult = synchronized(stateLock) {
+        controllerAuthorityFailureLocked(playerId, ControllerKindV1.HUMAN)?.let {
+            return@synchronized ActionResult.Failure(it)
+        }
         val checkpoint = undoCheckpoint ?: return ActionResult.Failure("No undo available")
 
         if (checkpoint.priorityPlayerId != playerId) {

@@ -4,9 +4,11 @@ import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.YieldKind
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.identity.PlayerComponent
+import com.wingedsheep.engine.state.components.player.HotseatControlComponent
 import com.wingedsheep.engine.state.components.player.LandDropsComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.player.MulliganStateComponent
@@ -19,6 +21,8 @@ import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.AbilityIdentity
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -133,6 +137,66 @@ class LivePolicySessionBoundaryTest : FunSpec({
         session.executeActionFromController(P1, PassPriority(P1), ControllerKindV1.ML_POLICY)
             .shouldBeTypeOf<GameSession.ActionResult.Failure>()
         session.getRecordedActions().size shouldBe 0
+    }
+
+    test("controller authority follows GameState.actorFor for legitimate turn control") {
+        val session = session()
+        session.setControllerAuthority(P1, ControllerAuthorityV1.human(0))
+        session.setControllerAuthority(P2, ControllerAuthorityV1.mlPolicy(1, 42L))
+        session.resetStateForDevScenario(
+            session.getStateForTesting()!!
+                .copy(priorityPlayerId = P2)
+                .updateEntity(P2) { it.with(HotseatControlComponent(controllerId = P1)) },
+        )
+
+        session.getStateForTesting()!!.actorFor(P2) shouldBe P1
+        session.executeActionFromController(P1, PassPriority(P2), ControllerKindV1.HUMAN)
+            .shouldBeTypeOf<GameSession.ActionResult.Success>()
+    }
+
+    test("ML policy cannot mutate undo state or replay history") {
+        val session = session()
+        session.executeAction(P1, PassPriority(P1))
+            .shouldBeTypeOf<GameSession.ActionResult.Success>()
+        session.isUndoAvailable(P1) shouldBe true
+        val stateBeforeUnauthorizedUndo = session.getStateForTesting()
+        val actionsBeforeUnauthorizedUndo = session.getRecordedActions()
+
+        session.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        session.executeUndo(P1).shouldBeTypeOf<GameSession.ActionResult.Failure>()
+
+        session.getStateForTesting() shouldBe stateBeforeUnauthorizedUndo
+        session.getRecordedActions() shouldBe actionsBeforeUnauthorizedUndo
+    }
+
+    test("ML policy cannot set or clear persistent yields") {
+        val identity = AbilityIdentity("test-card", AbilityId("test-ability"))
+
+        val setSession = session()
+        val stateBeforeSet = setSession.getStateForTesting()
+        val yieldsBeforeSet = setSession.getReplayYields()
+        setSession.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        setSession.setAbilityYield(P1, identity, YieldKind.ALWAYS_ANSWER_YES)
+        setSession.getStateForTesting() shouldBe stateBeforeSet
+        setSession.getReplayYields() shouldBe yieldsBeforeSet
+
+        val clearSession = session()
+        clearSession.setAbilityYield(P1, identity, YieldKind.YIELD_WHOLE_GAME)
+        val stateBeforeClear = clearSession.getStateForTesting()
+        val yieldsBeforeClear = clearSession.getReplayYields()
+        clearSession.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        clearSession.clearAbilityYield(P1, identity)
+        clearSession.getStateForTesting() shouldBe stateBeforeClear
+        clearSession.getReplayYields() shouldBe yieldsBeforeClear
+
+        val clearAllSession = session()
+        clearAllSession.setAbilityYield(P1, identity, YieldKind.YIELD_WHOLE_GAME)
+        val stateBeforeClearAll = clearAllSession.getStateForTesting()
+        val yieldsBeforeClearAll = clearAllSession.getReplayYields()
+        clearAllSession.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        clearAllSession.clearAllYields(P1)
+        clearAllSession.getStateForTesting() shouldBe stateBeforeClearAll
+        clearAllSession.getReplayYields() shouldBe yieldsBeforeClearAll
     }
 
     test("ML policy fails closed for mulligan and bottom-card decisions") {
