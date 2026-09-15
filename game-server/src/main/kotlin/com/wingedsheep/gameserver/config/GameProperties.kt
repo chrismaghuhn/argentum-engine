@@ -8,6 +8,7 @@ data class GameProperties(
     val sets: SetsProperties = SetsProperties(),
     val admin: AdminProperties = AdminProperties(),
     val ai: AiProperties = AiProperties(),
+    val mlPolicy: MlPolicyProperties = MlPolicyProperties(),
     val easterEggs: EasterEggProperties = EasterEggProperties(),
     val debugMode: Boolean = false
 )
@@ -100,4 +101,19 @@ data class AiProperties(
 
     /** Whether we're using the LLM-based AI. */
     val isLlmMode: Boolean get() = !isEngineMode
+}
+
+/** Server-owned operational locator/settings for the C1_07B worker; never client-selectable. */
+data class MlPolicyProperties(
+    val enabled: Boolean = false,
+    val pythonExecutable: String = "py",
+    val checkpointDirectory: String = "",
+    val startupTimeoutMs: Long = 30_000L,
+    val inferenceTimeoutMs: Long = 5_000L,
+) {
+    init {
+        require(pythonExecutable.isNotBlank()) { "ML policy Python executable must not be blank" }
+        require(startupTimeoutMs > 0) { "ML policy startup timeout must be positive" }
+        require(inferenceTimeoutMs > 0) { "ML policy inference timeout must be positive" }
+    }
 }

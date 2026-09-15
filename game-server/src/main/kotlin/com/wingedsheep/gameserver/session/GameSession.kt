@@ -11,6 +11,7 @@ import com.wingedsheep.engine.view.LegalActionInfo
 import com.wingedsheep.gameserver.protocol.ServerMessage
 import com.wingedsheep.gameserver.priority.AutoPassManager
 import com.wingedsheep.engine.core.*
+import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.LegalActionEnumerator
 import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
 import com.wingedsheep.engine.registry.CardRegistry
@@ -28,6 +29,16 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.CardEntry
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gameserver.policy.ControllerAuthorityV1
+import com.wingedsheep.gameserver.policy.ControllerKindV1
+import com.wingedsheep.gameserver.policy.LivePolicySourceAdapter
+import com.wingedsheep.gameserver.policy.LivePolicySourceSnapshot
+import com.wingedsheep.gameserver.policy.PolicySeatDecisionResult
+import com.wingedsheep.gameserver.policy.PolicySeatFailure
+import com.wingedsheep.gameserver.policy.PolicySeatFailureCode
+import com.wingedsheep.gameserver.policy.PolicySeatInferenceCapture
+import com.wingedsheep.gameserver.policy.PolicySeatStateV1
 import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.util.UUID
@@ -228,6 +239,8 @@ class GameSession(
         val isAi: Boolean = false,
         val aiModelOverride: String? = null,
         val forceEngine: Boolean = false,
+        val controllerAuthority: ControllerAuthorityV1? = null,
+        val policySeatState: PolicySeatStateV1? = null,
     )
 
     private val actionProcessor = ActionProcessor(services)
@@ -240,6 +253,14 @@ class GameSession(
         services.predicateEvaluator, services.conditionEvaluator, services.turnManager
     )
     private val legalActionEnricher = LegalActionEnricher(services.manaSolver, cardRegistry)
+    /** Shared C1 projection seam; it never sees a client state or invents model features. */
+    private val liveObservationBuilder = ObservationBuilder(cardRegistry = cardRegistry)
+
+    /** Explicit server-owned controller authority, separate from WebSocket and legacy AI state. */
+    private val controllerAuthorities = mutableMapOf<EntityId, ControllerAuthorityV1>()
+    private val policySeatStates = mutableMapOf<EntityId, PolicySeatStateV1>()
+    @Volatile
+    private var policyRuntimeCloseHook: (() -> Unit)? = null
 
     /** Tracks the last processed messageId per player for idempotency */
     private val lastProcessedMessageId = java.util.concurrent.ConcurrentHashMap<EntityId, String>()
@@ -346,6 +367,10 @@ class GameSession(
 
         val playerId = playerSession.playerId
         players[playerId] = playerSession
+        controllerAuthorities.putIfAbsent(
+            playerId,
+            ControllerAuthorityV1.human(seatIndex = players.keys.indexOf(playerId)),
+        )
 
         // Convert deck list map to flat list of card names
         val cards = deckList.flatMap { (cardName, count) ->
@@ -376,6 +401,8 @@ class GameSession(
     fun removePlayer(playerId: EntityId) {
         players[playerId]?.currentGameSessionId = null
         players.remove(playerId)
+        controllerAuthorities.remove(playerId)
+        policySeatStates.remove(playerId)
         if (!isStarted) {
             deckLists.remove(playerId)
             sideboards.remove(playerId)
@@ -871,14 +898,21 @@ class GameSession(
     fun getLegalActions(playerId: EntityId): List<LegalActionInfo> {
         val state = gameState ?: return emptyList()
 
+        val actions = enumerateLegalActions(state, playerId)
+        val enrichmentViewer = ManaPaymentWindow.openFor(state, playerId)?.playerId ?: playerId
+        return legalActionEnricher.enrich(actions, state, enrichmentViewer)
+    }
+
+    /** Enumerate the raw Rules domain used by both client presentation and C1 live projection. */
+    private fun enumerateLegalActions(state: GameState, playerId: EntityId): List<LegalAction> {
+
         // CR 605.3a — while a rule or effect is asking this seat for a mana payment (ward, "you may
         // pay {B}", an attack tax) they hold no priority, but they may still activate mana
         // abilities. Offer exactly those: the pre-computed source menu on the decision only covers
         // {T}-shaped abilities, so without this a cost payable only with, say, Ashnod's Altar is
         // unreachable. See [ManaPaymentWindow].
         ManaPaymentWindow.openFor(state, playerId)?.let { window ->
-            val manaActions = legalActionEnumerator.enumerateManaAbilities(state, window.playerId)
-            return legalActionEnricher.enrich(manaActions, state, window.playerId)
+            return legalActionEnumerator.enumerateManaAbilities(state, window.playerId)
         }
 
         val priorityPlayer = state.priorityPlayerId ?: return emptyList()
@@ -887,8 +921,172 @@ class GameSession(
         // player (whose mana, cards, and turn this is).
         if (state.actorFor(priorityPlayer) != playerId) return emptyList()
         if (state.pendingDecision != null) return emptyList()
-        val engineActions = legalActionEnumerator.enumerate(state, priorityPlayer)
-        return legalActionEnricher.enrich(engineActions, state, priorityPlayer)
+        return legalActionEnumerator.enumerate(state, priorityPlayer)
+    }
+
+    /** Capture one C1_07A source snapshot and its persisted policy RNG under the session lock. */
+    internal fun captureLivePolicyDecision(playerId: EntityId): PolicySeatInferenceCapture =
+        synchronized(stateLock) {
+            val authority = controllerAuthorities[playerId]
+            if (authority?.isMlPolicy != true) {
+                throw PolicySeatFailure(
+                    PolicySeatFailureCode.CONTROLLER_AUTHORITY_INVALID,
+                    "seat is not explicitly owned by ML_POLICY",
+                )
+            }
+            val state = gameState
+                ?: throw PolicySeatFailure(
+                    PolicySeatFailureCode.SESSION_NOT_READY,
+                    "cannot infer before the GameSession has a current GameState",
+                )
+            if (state.gameOver || isMulliganPhase) {
+                throw PolicySeatFailure(
+                    PolicySeatFailureCode.SESSION_NOT_READY,
+                    "ML policy inference is unavailable during mulligan or after game end",
+                )
+            }
+            val policyState = policySeatStates[playerId]
+                ?: throw PolicySeatFailure(
+                    PolicySeatFailureCode.CONTROLLER_AUTHORITY_INVALID,
+                    "ML policy seat has no persisted PolicyTieRng state",
+                )
+            policyState.requireMatches(authority)
+            PolicySeatInferenceCapture(
+                playerId = playerId,
+                source = captureLivePolicySourceLocked(playerId, state),
+                policyState = policyState,
+            )
+        }
+
+    /** Accept a worker result only after fresh snapshot, exact binding, and Rules execution pass. */
+    internal fun acceptLivePolicyDecision(
+        capture: PolicySeatInferenceCapture,
+        request: com.wingedsheep.gym.contract.LivePolicyDecisionRequestV1,
+        response: com.wingedsheep.gym.contract.LivePolicyDecisionResponseV1,
+    ): PolicySeatDecisionResult = synchronized(stateLock) {
+        val playerId = capture.playerId
+        val authority = controllerAuthorities[playerId]
+        if (authority?.isMlPolicy != true) {
+            return@synchronized PolicySeatDecisionResult.Rejected(
+                PolicySeatFailure(
+                    PolicySeatFailureCode.CONTROLLER_AUTHORITY_INVALID,
+                    "ML policy authority was removed before execution",
+                ),
+            )
+        }
+        try {
+            response.requireCompatible(request)
+            val persistedState = policySeatStates[playerId]
+                ?: throw PolicySeatFailure(
+                    PolicySeatFailureCode.CONTROLLER_AUTHORITY_INVALID,
+                    "ML policy seat has no persisted PolicyTieRng state",
+                )
+            if (persistedState.toLiveState() != request.policyRngState) {
+                throw PolicySeatFailure(
+                    PolicySeatFailureCode.STALE_INFERENCE,
+                    "policy RNG state changed while inference was in flight",
+                )
+            }
+            val state = gameState
+                ?: throw PolicySeatFailure(
+                    PolicySeatFailureCode.SESSION_NOT_READY,
+                    "GameSession has no current GameState",
+                )
+            val current = captureLivePolicySourceLocked(playerId, state)
+            capture.source.requireCurrent(current)
+            val binding = current.exactSourceBindings.exactBindingFor(
+                response.selectedSourceBindingOrdinal,
+            )
+            val actionResult = when (binding) {
+                is com.wingedsheep.gameserver.policy.PolicySeatExactBinding.LegalActionBinding ->
+                    executeAction(playerId, binding.legalAction.action)
+
+                is com.wingedsheep.gameserver.policy.PolicySeatExactBinding.DecisionResponseBinding ->
+                    executeAction(
+                        playerId,
+                        SubmitDecision(playerId, binding.response),
+                    )
+            }
+            if (actionResult is ActionResult.Failure) {
+                return@synchronized PolicySeatDecisionResult.Rejected(
+                    PolicySeatFailure(
+                        PolicySeatFailureCode.EXECUTION_REJECTED,
+                        "authoritative Rules execution rejected the selected binding",
+                    ),
+                )
+            }
+            val nextPolicyState = PolicySeatStateV1.fromLiveState(response.policyRngState)
+            nextPolicyState.requireMatches(authority)
+            policySeatStates[playerId] = nextPolicyState
+            PolicySeatDecisionResult.Accepted(
+                actionResult = actionResult,
+                selectedSourceBindingOrdinal = response.selectedSourceBindingOrdinal,
+            )
+        } catch (failure: PolicySeatFailure) {
+            PolicySeatDecisionResult.Rejected(failure)
+        } catch (failure: IllegalArgumentException) {
+            PolicySeatDecisionResult.Rejected(
+                PolicySeatFailure(
+                    PolicySeatFailureCode.INVALID_RESPONSE,
+                    "worker response was not compatible with the current policy request",
+                    failure,
+                ),
+            )
+        } catch (failure: RuntimeException) {
+            PolicySeatDecisionResult.Rejected(
+                PolicySeatFailure(
+                    PolicySeatFailureCode.EXECUTION_REJECTED,
+                    "ML policy execution failed closed",
+                    failure,
+                ),
+            )
+        }
+    }
+
+    private fun captureLivePolicySourceLocked(
+        playerId: EntityId,
+        state: GameState,
+    ): LivePolicySourceSnapshot {
+        val decisionOwner = state.pendingDecision?.playerId ?: state.priorityPlayerId
+        if (decisionOwner == null || state.actorFor(decisionOwner) != playerId) {
+            throw PolicySeatFailure(
+                PolicySeatFailureCode.SESSION_NOT_READY,
+                "ML policy seat is not the current authoritative actor",
+            )
+        }
+        val result = liveObservationBuilder.build(
+            state = state,
+            perspectivePlayerId = playerId,
+            legalActions = enumerateLegalActions(state, playerId),
+            truncated = false,
+        )
+        return LivePolicySourceAdapter.fromObservationResult(result)
+    }
+
+    /** The explicit ML seat currently owning the live decision boundary, if any. */
+    internal fun policySeatToAct(): EntityId? = synchronized(stateLock) {
+        val state = gameState ?: return@synchronized null
+        if (state.gameOver || isMulliganPhase) return@synchronized null
+        val decisionOwner = state.pendingDecision?.playerId ?: state.priorityPlayerId
+            ?: return@synchronized null
+        val controller = state.actorFor(decisionOwner)
+        controller.takeIf { controllerAuthorities[it]?.isMlPolicy == true }
+    }
+
+    internal fun isPolicySeat(playerId: EntityId): Boolean = synchronized(stateLock) {
+        controllerAuthorities[playerId]?.isMlPolicy == true
+    }
+
+    /** Register the ephemeral runtime owner so every repository/session disposal closes workers. */
+    internal fun installPolicyRuntimeCloseHook(closeHook: () -> Unit) {
+        policyRuntimeCloseHook = closeHook
+    }
+
+    /** Close all ephemeral ML resources without changing persisted controller state or replay. */
+    internal fun closePolicySeatRuntimes() {
+        val closeHook = policyRuntimeCloseHook
+        policyRuntimeCloseHook = null
+        closeHook?.invoke()
     }
 
 
@@ -1772,25 +1970,109 @@ class GameSession(
         aiModelOverride: String? = null,
         forceEngine: Boolean = false,
     ) {
-        playerPersistenceInfo[playerId] = PlayerPersistenceInfo(
-            playerName,
-            token,
-            isAi,
-            aiModelOverride,
-            forceEngine,
-        )
+        synchronized(stateLock) {
+            val existingAuthority = controllerAuthorities[playerId]
+            if (existingAuthority?.isMlPolicy != true) {
+                val seatIndex = players.keys.indexOf(playerId)
+                if (seatIndex >= 0) {
+                    controllerAuthorities[playerId] = when {
+                        !isAi -> ControllerAuthorityV1.human(seatIndex)
+                        forceEngine -> ControllerAuthorityV1.engineAi(seatIndex)
+                        else -> ControllerAuthorityV1.legacyAi(seatIndex)
+                    }
+                    policySeatStates.remove(playerId)
+                }
+            }
+            playerPersistenceInfo[playerId] = PlayerPersistenceInfo(
+                playerName,
+                token,
+                isAi,
+                aiModelOverride,
+                forceEngine,
+            )
+        }
     }
 
     /**
      * Get all stored player info for persistence.
      */
-    fun getPlayerPersistenceInfo(): Map<EntityId, PlayerPersistenceInfo> = playerPersistenceInfo.toMap()
+    fun getPlayerPersistenceInfo(): Map<EntityId, PlayerPersistenceInfo> = synchronized(stateLock) {
+        playerPersistenceInfo.mapValues { (playerId, info) ->
+            info.copy(
+                controllerAuthority = controllerAuthorities[playerId],
+                policySeatState = policySeatStates[playerId],
+            )
+        }
+    }
+
+    /** Install an explicit server-owned controller authority for an existing seat. */
+    internal fun setControllerAuthority(
+        playerId: EntityId,
+        authority: ControllerAuthorityV1,
+    ) {
+        var closeRuntime = false
+        synchronized(stateLock) {
+            require(players.containsKey(playerId)) { "Controller authority seat is not present" }
+            val seatIndex = players.keys.indexOf(playerId)
+            require(authority.seatIndex == seatIndex) {
+                "Controller authority seat index does not match the session roster"
+            }
+            val previous = controllerAuthorities[playerId]
+            closeRuntime = previous?.isMlPolicy == true && previous != authority
+            controllerAuthorities[playerId] = authority
+            if (authority.isMlPolicy) {
+                if (previous != authority) {
+                    policySeatStates[playerId] = PolicySeatStateV1.fromAuthority(authority)
+                } else {
+                    val state = policySeatStates[playerId]
+                        ?: PolicySeatStateV1.fromAuthority(authority)
+                    state.requireMatches(authority)
+                    policySeatStates[playerId] = state
+                }
+            } else {
+                policySeatStates.remove(playerId)
+            }
+        }
+        if (closeRuntime) closePolicySeatRuntimes()
+    }
+
+    internal fun getControllerAuthority(playerId: EntityId): ControllerAuthorityV1? =
+        synchronized(stateLock) { controllerAuthorities[playerId] }
+
+    internal fun getPolicySeatState(playerId: EntityId): PolicySeatStateV1? =
+        synchronized(stateLock) { policySeatStates[playerId] }
 
     /**
      * Restore player info from persistence.
      */
     internal fun restorePlayerPersistenceInfo(info: Map<EntityId, PlayerPersistenceInfo>) {
-        playerPersistenceInfo.clear()
-        playerPersistenceInfo.putAll(info)
+        synchronized(stateLock) {
+            playerPersistenceInfo.clear()
+            playerPersistenceInfo.putAll(info)
+            controllerAuthorities.clear()
+            policySeatStates.clear()
+            info.entries.forEachIndexed { index, (playerId, playerInfo) ->
+                val authority = playerInfo.controllerAuthority ?: when {
+                    !playerInfo.isAi -> ControllerAuthorityV1.human(index)
+                    playerInfo.forceEngine -> ControllerAuthorityV1.engineAi(index)
+                    else -> ControllerAuthorityV1.legacyAi(index)
+                }
+                require(authority.seatIndex == index) {
+                    "Persisted controller authority seat index does not match roster order"
+                }
+                controllerAuthorities[playerId] = authority
+                if (authority.isMlPolicy) {
+                    val policyState = requireNotNull(playerInfo.policySeatState) {
+                        "Persisted ML policy seat has no PolicySeatStateV1"
+                    }
+                    policyState.requireMatches(authority)
+                    policySeatStates[playerId] = policyState
+                } else {
+                    require(playerInfo.policySeatState == null) {
+                        "Non-ML persisted seat cannot carry PolicySeatStateV1"
+                    }
+                }
+            }
+        }
     }
 }

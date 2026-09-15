@@ -99,6 +99,7 @@ class RedisGameRepository(
 
     override fun remove(sessionId: String): GameSession? {
         val session = sessionCache.remove(sessionId)
+        session?.closePolicySeatRuntimes()
         gameToLobby.remove(sessionId)
 
         try {

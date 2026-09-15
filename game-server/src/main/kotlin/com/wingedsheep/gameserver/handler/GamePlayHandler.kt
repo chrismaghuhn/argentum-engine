@@ -17,6 +17,10 @@ import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
 import com.wingedsheep.gameserver.session.SessionRegistry
 import com.wingedsheep.gameserver.config.GameProperties
+import com.wingedsheep.gameserver.policy.PolicySeatDecisionResult
+import com.wingedsheep.gameserver.policy.PolicySeatFailure
+import com.wingedsheep.gameserver.policy.PolicySeatFailureCode
+import com.wingedsheep.gameserver.policy.PolicySeatRuntimeManager
 import com.wingedsheep.gameserver.deck.EasterEggDeckInjector
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.PlayerLostEvent
@@ -47,6 +51,7 @@ class GamePlayHandler(
     private val replayCheckpointFlusher: com.wingedsheep.gameserver.replay.ReplayCheckpointFlusher,
     private val engineVersion: com.wingedsheep.gameserver.replay.EngineVersion,
     private val aiGameManager: AiGameManager,
+    private val policySeatRuntimeManager: PolicySeatRuntimeManager,
     private val matchResultSink: com.wingedsheep.gameserver.stats.MatchResultSink,
     private val rankedResultSink: com.wingedsheep.gameserver.ranking.RankedResultSink,
     private val deckProfiler: com.wingedsheep.gameserver.stats.DeckProfiler
@@ -228,6 +233,7 @@ class GamePlayHandler(
         }
 
         // Remove the game
+        policySeatRuntimeManager.closeGame(gameSessionId)
         gameRepository.remove(gameSessionId)
 
         // Notify the player
@@ -845,6 +851,7 @@ class GamePlayHandler(
             callback(gameSessionId, winnerId, winnerLife)
         }
 
+        policySeatRuntimeManager.closeGame(gameSessionId)
         gameRepository.remove(gameSessionId)
         mulliganBroadcastSent.remove(gameSessionId)
         aiGameManager.cleanupGame(gameSessionId)
@@ -917,6 +924,8 @@ class GamePlayHandler(
         } catch (e: Exception) {
             logger.error("Error broadcasting state update", e)
         }
+
+        dispatchPolicyDecision(gameSession)
     }
 
     private fun processAutoPassLoop(gameSession: GameSession, initialEvents: List<GameEvent>): List<GameEvent> {
@@ -927,6 +936,11 @@ class GamePlayHandler(
         while (loopCount < maxLoops) {
             if (gameSession.isGameOver()) break
             val autoPassPlayer = gameSession.getAutoPassPlayer() ?: break
+
+            if (gameSession.isPolicySeat(autoPassPlayer)) {
+                logger.debug("Skipping auto-pass for ML policy seat {}", autoPassPlayer.value)
+                break
+            }
 
             // Never auto-pass combat declarations for AI players — the AI controller
             // needs to decide which creatures to attack/block with. executeAutoPass would
@@ -1273,9 +1287,77 @@ class GamePlayHandler(
         if (rewired > 0) logger.info("Re-wired AI for {} recovered game session(s)", rewired)
     }
 
+    /** Recreate the ephemeral ML worker for a recovered session at its current policy boundary. */
+    @EventListener(ApplicationReadyEvent::class)
+    fun resumePolicyGamesOnStartup() {
+        if (!gameProperties.mlPolicy.enabled) return
+        val games = gameRepository.findAll()
+        var resumed = 0
+        for (game in games) {
+            if (game.policySeatToAct() == null) continue
+            dispatchPolicyDecision(game)
+            resumed++
+        }
+        if (resumed > 0) logger.info("Resumed ML policy runtime(s) for {} recovered game session(s)", resumed)
+    }
+
     // =========================================================================
     // AI opponent callbacks (invoked async from AiWebSocketSession coroutine)
     // =========================================================================
+
+    /** Dispatches only the explicit ML_POLICY controller; no legacy AI or fallback path is used. */
+    private fun dispatchPolicyDecision(gameSession: GameSession) {
+        try {
+            policySeatRuntimeManager.dispatchIfNeeded(gameSession) { result ->
+                handlePolicyDecisionResult(gameSession, result)
+            }
+        } catch (failure: PolicySeatFailure) {
+            logger.error(
+                "ML policy runtime could not be created for game {}: {}",
+                gameSession.sessionId,
+                failure.message,
+            )
+        }
+    }
+
+    private fun handlePolicyDecisionResult(
+        gameSession: GameSession,
+        result: PolicySeatDecisionResult,
+    ) {
+        when (result) {
+            is PolicySeatDecisionResult.Accepted -> when (val actionResult = result.actionResult) {
+                is GameSession.ActionResult.Success -> {
+                    broadcastStateUpdate(gameSession, actionResult.events)
+                    if (gameSession.isGameOver()) handleGameOver(gameSession, events = actionResult.events)
+                }
+
+                is GameSession.ActionResult.PausedForDecision -> {
+                    broadcastStateUpdate(gameSession, actionResult.events)
+                    if (gameSession.isGameOver()) handleGameOver(gameSession, events = actionResult.events)
+                }
+
+                is GameSession.ActionResult.Failure -> logger.error(
+                    "ML policy selected binding but authoritative execution rejected it in game {}: {}",
+                    gameSession.sessionId,
+                    actionResult.reason,
+                )
+            }
+
+            is PolicySeatDecisionResult.Rejected -> {
+                logger.error(
+                    "ML policy decision failed closed in game {}: {} ({})",
+                    gameSession.sessionId,
+                    result.failure.code,
+                    result.failure.message,
+                )
+                // A stale request describes a new authoritative boundary. Re-capture that new
+                // boundary once; worker/protocol failures remain closed and are never retried.
+                if (result.failure.code == PolicySeatFailureCode.STALE_INFERENCE) {
+                    dispatchPolicyDecision(gameSession)
+                }
+            }
+        }
+    }
 
     fun handleAiAction(gameSession: GameSession, aiPlayerId: EntityId, action: com.wingedsheep.engine.core.GameAction) {
         try {

@@ -9,6 +9,7 @@ import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.registry.PrintingRegistry
 import com.wingedsheep.engine.registry.TokenArtRegistry
 import com.wingedsheep.gameserver.coverage.SetCoverageService
+import com.wingedsheep.gameserver.policy.PolicySeatRuntimeManager
 import com.wingedsheep.mtg.sets.tokens.TokenArtData
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.mtg.sets.definitions.custom.JustOneGlassToken
@@ -160,6 +161,10 @@ class GameBeansConfig(
             setCodes = active.map { it.code },
         )
     }
+
+    @Bean
+    fun policySeatRuntimeManager(): PolicySeatRuntimeManager =
+        PolicySeatRuntimeManager(gameProperties)
 }
 
 /**

@@ -33,6 +33,8 @@ fun GameSession.toPersistent(
                 isAi = info.isAi,
                 aiModelOverride = info.aiModelOverride,
                 forceEngine = info.forceEngine,
+                controllerAuthority = info.controllerAuthority,
+                policySeatState = info.policySeatState,
             )
         },
         lobbyId = lobbyId,
@@ -93,6 +95,8 @@ fun restoreGameSession(
             isAi = info.isAi,
             aiModelOverride = info.aiModelOverride,
             forceEngine = info.forceEngine,
+            controllerAuthority = info.controllerAuthority,
+            policySeatState = info.policySeatState,
         )
     }
     session.restorePlayerPersistenceInfo(playerInfo)
