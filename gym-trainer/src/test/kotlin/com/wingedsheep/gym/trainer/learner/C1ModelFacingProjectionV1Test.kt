@@ -11,6 +11,7 @@ import com.wingedsheep.gym.EpisodeClosureV1
 import com.wingedsheep.gym.EpisodeInterruptionReason
 import com.wingedsheep.gym.contract.A3SemanticJson
 import com.wingedsheep.gym.contract.CandidateDomainDigestV1
+import com.wingedsheep.gym.contract.C1_MODEL_FACING_CONTRACT_IDENTITY
 import com.wingedsheep.gym.contract.ChosenSemanticActionV1
 import com.wingedsheep.gym.contract.CardSelectionDomain
 import com.wingedsheep.gym.contract.CombatAttackerDomain

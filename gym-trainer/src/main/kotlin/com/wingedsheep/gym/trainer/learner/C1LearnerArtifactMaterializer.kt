@@ -1,6 +1,7 @@
 package com.wingedsheep.gym.trainer.learner
 
 import com.wingedsheep.gym.contract.A3SemanticJson
+import com.wingedsheep.gym.contract.C1_MODEL_FACING_CONTRACT_IDENTITY
 import com.wingedsheep.gym.trainer.trajectory.TRAJECTORY_V1_SCHEMA_IDENTITY
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryV1Reader
 import java.io.BufferedOutputStream

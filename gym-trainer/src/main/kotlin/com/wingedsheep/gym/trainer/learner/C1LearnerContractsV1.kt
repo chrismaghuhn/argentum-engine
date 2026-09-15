@@ -1,6 +1,8 @@
 package com.wingedsheep.gym.trainer.learner
 
 import com.wingedsheep.gym.contract.A3SemanticJson
+import com.wingedsheep.gym.contract.C1EntityAliasBindingV1
+import com.wingedsheep.gym.contract.C1_MODEL_FACING_CONTRACT_IDENTITY
 import java.nio.charset.StandardCharsets
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -16,8 +18,6 @@ const val C1_DERIVED_ARTIFACT_IDENTITY_SCHEMA: String =
     "argentum-ml-derived-artifact-id@v1"
 const val C1_SPLIT_CONTRACT_IDENTITY: String =
     "argentum-ml-dataset-split@v1"
-const val C1_MODEL_FACING_CONTRACT_IDENTITY: String =
-    "argentum-ml-model-facing-decision-sample@v1"
 const val C1_DERIVED_MANIFEST_VERSION: Int = 1
 const val C1_DERIVED_SAMPLE_VERSION: Int = 1
 
@@ -85,12 +85,6 @@ data class C1DerivedTargetChannel(
         }
     }
 }
-
-@Serializable
-data class C1EntityAliasBindingV1(
-    val alias: String,
-    val sourceEntityId: String,
-)
 
 @Serializable
 data class C1DerivedBindingChannel(

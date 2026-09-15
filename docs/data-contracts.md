@@ -1260,3 +1260,66 @@ relation drift; nested V5 or required-cost drift; a plan from another target bin
 ExplicitV3 data; or any failed V3 preflight is rejected atomically before Rules execution, events,
 step advancement, or replay recording. The trusted path never falls back to AutoPay, FromPool,
 legacy Explicit source lists, or a different target binding.
+
+### C1_07A live policy snapshot and ordinal selection
+
+LivePolicyDecisionSnapshotV1 is a JVM-owned, lock-coherent composition of one
+PlayerObservationV1, one CompleteLegalDomainV1, the shared C1 model-facing projection, and
+the exact binding digest for that domain. The observation digest, complete-domain digest, model
+input, candidate feature views, and ordinal-only selection channel are cross-validated when the
+snapshot is constructed and again against a fresh current snapshot before execution. The JVM
+binding table is built by a source-owned factory: each exact LegalAction/DecisionResponse is
+mapped to an authoritative semantic binding and checked against the exact current domain entry;
+ordinal-set equality alone is not sufficient.
+
+LivePolicyDecisionRequestV1 is the inner semantic decision payload for the future worker envelope.
+It contains only the model input, feature views, source-binding ordinals, presence/executable
+masks, validated semantic tie discriminators, PolicyTieRng state, observation digest, and
+candidate-domain digest. The exact binding digest remains JVM-internal and is not sent to Python.
+The request contains no GameState, LegalAction, DecisionResponse, raw entity ID, or exact
+source-binding value. C1_07B may add server-owned profile/checkpoint/contract/numeric-profile
+identity fields in an outer envelope; it must not redefine this V1 payload. The JVM retains the
+non-serializable LiveExactSourceBindingTable and maps the returned ordinal back to the exact
+current binding.
+
+Flat exact-bindable Selection V2 and the live ordinal-selection core share the same maximum,
+semantic-discriminator, mask, permutation, and PolicyTieRng semantics. Structured alternatives
+must be explicitly enumerated by the authoritative source, provide an independent completeness
+witness containing the complete injective semantic binding set, have unique ordinals, and be paired
+with a table whose digest is derived from the actual exact JVM values. Model-facing alternative
+features and tie discriminators are checked through the shared alias/identity validator, including
+raw values from both the current domain and observation. Missing or incomplete alternatives fail
+closed. Responses carry the exact RNG cursor
+before/after/draw-count relation and cannot move to another stream. In particular,
+AssignDamageDecision without a typed domain, partial mana-source domains, and BatchYesNoResponse
+are not silently reduced to ordinary choices; they emit their typed unsupported diagnostic.
+
+### C1_07B checkpoint-backed local policy runtime
+
+`C1_07BPolicyProfile` is a server-owned immutable profile for the accepted C1_06 feed-forward
+checkpoint. It pins the checkpoint, canonical manifest digest, Safetensors digest, source/training
+provenance, architecture/config digest, inference/selection/RNG identities, and
+`C1_REFERENCE_NUMERIC_PROFILE`. The local worker accepts only the regular `manifest.json` and
+`weights.safetensors` below the configured artifact directory, verifies their bytes and semantic
+identity, retains those exact verified manifest/weight bytes, and loads the exact C1_06 model from
+that in-memory snapshot on `cuda:0`; model construction never reopens the authority paths. It has
+no CPU fallback. The code-owned numeric profile requires PyTorch `2.14.0+cu130`, CUDA `13.0`,
+device capability `(8,9)`, `float32`, disabled CUDA autocast, `highest` float32 matmul precision,
+matmul TF32 disabled, the accepted cuDNN TF32 setting, deterministic algorithms enabled, and
+cuDNN TF32 enabled, deterministic algorithms enabled, and evaluation mode. The worker configures and verifies those effective settings before `READY` and
+rejects an unqualified runtime.
+
+`LocalPythonPolicyRuntime` launches one long-lived worker with a fixed argument vector and no shell.
+The production start API has no caller-supplied command override; test workers are reached only by
+patching the process seam while the production command remains fixed.
+The stdin/stdout protocol uses a bounded four-byte length-prefixed canonical JSON frame. Startup
+must return a `READY` health envelope before any decision request is sent; each response is bound to
+the outer and inner `requestId`, fixed profile identities, the selected ordinal, and the exact
+PolicyTieRng cursor accounting. Timeout, crash, malformed frame, profile/checkpoint drift,
+non-finite or wrong-count scores, and stream/cursor mismatch fail the runtime closed.
+
+The outer request envelope carries only server-owned profile/checkpoint/contract identities and the
+C1_07A `LivePolicyDecisionRequestV1` inner payload. Python receives model-facing feature JSON,
+ordinal/mask/tie control data, and PolicyTieRng state. It never receives `GameState`, exact
+`LegalAction`/`DecisionResponse` bindings, or the JVM-internal `bindingDigest`. A runtime failure
+does not enter Engine AI, random/first-choice, auto-pass, or any other fallback path.

@@ -14,7 +14,12 @@ from typing import Any, Mapping, Sequence
 
 from ..contracts.canonical_json import canonical_bytes, canonical_json, sha256_hex
 from ..checkpoint.manifest import ArgentumCheckpointManifestV1
-from .weights import SAFETENSORS_CONTAINER_IDENTITY, load_state_dict, save_state_dict
+from .weights import (
+    SAFETENSORS_CONTAINER_IDENTITY,
+    load_state_dict,
+    load_state_dict_from_bytes,
+    save_state_dict,
+)
 
 
 class C1_06GpuGateError(RuntimeError):
@@ -204,6 +209,14 @@ class C1_06TensorBatch:
 
 
 @dataclass(frozen=True)
+class C1_06InferenceTensorBatch:
+    """C1_06 model inputs for live scoring without a training target or label channel."""
+
+    observation: Any
+    candidates: Any
+
+
+@dataclass(frozen=True)
 class C1_06DataView:
     samples: tuple[C1_06TrainingSample, ...]
     label_manifest: Mapping[str, Any]
@@ -374,6 +387,42 @@ def tensorize_samples(
         if not bool(candidate_mask[item_index, target_index].item()):
             raise ValueError("selected target is not executable in the supplied candidate batch")
     return C1_06TensorBatch(observation, candidates, candidate_mask, target_indices)
+
+
+def tensorize_live_input(
+    model_input: Mapping[str, Any],
+    candidate_feature_views: Sequence[Mapping[str, Any]],
+    *,
+    torch_module: Any,
+    device: Any,
+    config: C1_06ModelConfigV1,
+) -> C1_06InferenceTensorBatch:
+    """Use the exact C1_06 feature encoding for live candidates without inventing labels."""
+
+    if not isinstance(model_input, Mapping):
+        raise ValueError("C1_06 live model input must be an object")
+    if (
+        isinstance(candidate_feature_views, (str, bytes, bytearray))
+        or not isinstance(candidate_feature_views, Sequence)
+        or not candidate_feature_views
+    ):
+        raise ValueError("C1_06 live candidate features must be a non-empty sequence")
+    if any(not isinstance(candidate, Mapping) for candidate in candidate_feature_views):
+        raise ValueError("C1_06 live candidate features must be objects")
+    observation = torch_module.tensor(
+        [_feature_vector(_observation_payload(model_input), config.observation_width)],
+        dtype=torch_module.float32,
+        device=device,
+    )
+    candidates = torch_module.tensor(
+        [
+            _feature_vector(candidate, config.candidate_width)
+            for candidate in candidate_feature_views
+        ],
+        dtype=torch_module.float32,
+        device=device,
+    ).unsqueeze(0)
+    return C1_06InferenceTensorBatch(observation=observation, candidates=candidates)
 
 
 class FeedForwardCandidateScorer:
@@ -704,15 +753,79 @@ def load_c1_06_checkpoint(
     config: C1_06ModelConfigV1,
 ) -> ArgentumCheckpointManifestV1:
     manifest = ArgentumCheckpointManifestV1.from_path(Path(manifest_path))
-    manifest_data = manifest.to_dict()
-    implementation = manifest_data["modelImplementationIdentity"]
-    if manifest_data["sourceDatasetIdentity"] != expected_source_dataset_identity:
+    _validate_c1_06_checkpoint_manifest(
+        manifest,
+        expected_source_dataset_identity=expected_source_dataset_identity,
+        expected_label_artifact_id=expected_label_artifact_id,
+        expected_labels_content_digest=expected_labels_content_digest,
+        expected_source_manifest_content_digest=expected_manifest_content_digest,
+        expected_source_commit=expected_source_commit,
+        config=config,
+    )
+    state_dict = load_state_dict(Path(weight_path), manifest)
+    model.load_state_dict(state_dict, strict=True)
+    model.eval()
+    return manifest
+
+
+def load_c1_06_checkpoint_from_verified_bytes(
+    model: Any,
+    manifest_bytes: bytes,
+    weight_bytes: bytes,
+    *,
+    expected_checkpoint_manifest_content_digest: str,
+    expected_source_dataset_identity: str,
+    expected_label_artifact_id: str,
+    expected_labels_content_digest: str,
+    expected_source_manifest_content_digest: str,
+    expected_source_commit: str,
+    config: C1_06ModelConfigV1,
+) -> ArgentumCheckpointManifestV1:
+    """Load a C1_06 model only from the exact bytes already verified by C1_07B."""
+    if not isinstance(manifest_bytes, bytes) or not isinstance(weight_bytes, bytes):
+        raise C1_06DataGateError("verified checkpoint artifacts must be byte snapshots")
+    if hashlib.sha256(manifest_bytes).hexdigest() != expected_checkpoint_manifest_content_digest:
+        raise C1_06DataGateError("verified checkpoint manifest digest differs from expected")
+    try:
+        manifest = ArgentumCheckpointManifestV1.from_json(manifest_bytes)
+    except ValueError as exc:
+        raise C1_06DataGateError("verified checkpoint manifest is malformed") from exc
+    if manifest_bytes != canonical_bytes(manifest.to_dict()):
+        raise C1_06DataGateError("verified checkpoint manifest is not canonical")
+    _validate_c1_06_checkpoint_manifest(
+        manifest,
+        expected_source_dataset_identity=expected_source_dataset_identity,
+        expected_label_artifact_id=expected_label_artifact_id,
+        expected_labels_content_digest=expected_labels_content_digest,
+        expected_source_manifest_content_digest=expected_source_manifest_content_digest,
+        expected_source_commit=expected_source_commit,
+        config=config,
+    )
+    state_dict = load_state_dict_from_bytes(weight_bytes, manifest)
+    model.load_state_dict(state_dict, strict=True)
+    model.eval()
+    return manifest
+
+
+def _validate_c1_06_checkpoint_manifest(
+    manifest: ArgentumCheckpointManifestV1,
+    *,
+    expected_source_dataset_identity: str,
+    expected_label_artifact_id: str,
+    expected_labels_content_digest: str,
+    expected_source_manifest_content_digest: str,
+    expected_source_commit: str,
+    config: C1_06ModelConfigV1,
+) -> None:
+    data = manifest.to_dict()
+    implementation = data["modelImplementationIdentity"]
+    if data["sourceDatasetIdentity"] != expected_source_dataset_identity:
         raise C1_06DataGateError("checkpoint source dataset identity differs from expected")
-    if manifest_data["modelArchitectureIdentity"] != config.architecture_identity:
+    if data["modelArchitectureIdentity"] != config.architecture_identity:
         raise C1_06DataGateError("checkpoint model architecture identity differs from expected")
-    if manifest_data["modelConfigDigest"] != config.digest:
+    if data["modelConfigDigest"] != config.digest:
         raise C1_06DataGateError("checkpoint model config digest differs from expected")
-    if manifest_data["trainingRecipeIdentity"] != TRAINING_RECIPE_IDENTITY:
+    if data["trainingRecipeIdentity"] != TRAINING_RECIPE_IDENTITY:
         raise C1_06DataGateError("checkpoint training recipe identity differs from expected")
     if implementation["implementation"] != MODEL_IMPLEMENTATION_IDENTITY:
         raise C1_06DataGateError("checkpoint model implementation identity differs from expected")
@@ -722,15 +835,11 @@ def load_c1_06_checkpoint(
         source_dataset_identity=expected_source_dataset_identity,
         label_artifact_id=expected_label_artifact_id,
         labels_content_digest=expected_labels_content_digest,
-        manifest_content_digest=expected_manifest_content_digest,
+        manifest_content_digest=expected_source_manifest_content_digest,
         model_config_digest=config.digest,
     )
-    if manifest_data["trainingRunIdentity"] != expected_training_run_identity:
+    if data["trainingRunIdentity"] != expected_training_run_identity:
         raise C1_06DataGateError("checkpoint training run identity differs from expected provenance")
-    state_dict = load_state_dict(Path(weight_path), manifest)
-    model.load_state_dict(state_dict, strict=True)
-    model.eval()
-    return manifest
 
 
 def _current_source_commit() -> str:

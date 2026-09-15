@@ -72,6 +72,24 @@ def load_state_dict(
         weight_bytes = source.read_bytes()
     except OSError as exc:
         raise WeightArtifactError("weight artifact could not be read") from exc
+    return load_state_dict_from_bytes(weight_bytes, manifest)
+
+
+def load_state_dict_from_bytes(
+    weight_bytes: bytes,
+    manifest: ArgentumCheckpointManifestV1,
+) -> dict[str, Any]:
+    """Decode the exact already-read bytes of a validated Safetensors artifact."""
+    if not isinstance(weight_bytes, bytes):
+        raise WeightArtifactError("weight artifact bytes must be bytes")
+    if not isinstance(manifest, ArgentumCheckpointManifestV1):
+        raise WeightArtifactError("weight loading requires a validated checkpoint manifest")
+    manifest_data = manifest.to_dict()
+    weight_identity = manifest_data["weightArtifactIdentity"]
+    if weight_identity["container"] != SAFETENSORS_CONTAINER_IDENTITY:
+        raise WeightArtifactError(
+            "checkpoint weight container is not bound to the Safetensors adapter"
+        )
     manifest.validate_weight_bytes(weight_bytes)
     safetensors_torch = require_optional_module("safetensors.torch", "safetensors")
     try:

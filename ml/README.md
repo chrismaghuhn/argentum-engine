@@ -51,6 +51,29 @@ py -3.13 -m unittest discover -s tooling_tests -v
 From the repository root, use `just ml-tooling-test`. This path installs only the pinned learner
 extra and runs the focused tooling suite. It does not train a model or access a dataset service.
 
+## C1_07B local policy runtime
+
+`argentum_ml.live_policy` contains the first checkpoint-backed local policy runtime. Its
+`C1_07B_POLICY_PROFILE` is immutable and binds the accepted C1_06 checkpoint, manifest/weight
+digests, C1_06 architecture/config, inference/selection/RNG identities, and
+`C1_REFERENCE_NUMERIC_PROFILE`. `LocalPythonPolicyRuntime.start(checkpoint_dir)` launches the fixed
+`python -m argentum_ml.live_policy.worker` command without a shell and does not accept a caller
+worker-command override; test-only workers patch the process seam. The worker performs a health
+handshake, validates canonical manifest bytes and Safetensors content, retains the verified bytes
+for model loading instead of reopening filesystem paths, loads the C1_06 model on `cuda:0`, and
+then serves bounded binary-framed requests until clean shutdown. Its code-owned numeric profile
+configures and verifies PyTorch `2.14.0+cu130`, CUDA `13.0`, capability `(8,9)`, float32, disabled
+CUDA autocast, `highest` float32 matmul precision, deterministic algorithms, the accepted TF32
+settings, and evaluation mode before reporting `READY`.
+
+The request is the C1_07A inner semantic payload. The outer process envelope carries only the
+server-owned profile/checkpoint/contract identities and request correlation. Python receives model
+features, ordinal control data, masks, semantic tie discriminators, and PolicyTieRng state; it
+never receives `GameState`, exact `LegalAction`/`DecisionResponse` bindings, or `bindingDigest`.
+Scores and ordinal selection are fail-closed: worker crashes, timeouts, malformed frames, profile
+drift, non-finite/wrong-count scores, and RNG/correlation mismatches produce typed runtime errors;
+there is no CPU, random, first-choice, auto-pass, or Engine-AI fallback.
+
 ## Core and optional learner tooling
 
 The core contract layer remains dependency-free. It contains the canonical contracts, derived
