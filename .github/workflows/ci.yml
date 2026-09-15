@@ -156,6 +156,10 @@ jobs:
         run: python -m unittest discover -s tooling_tests -v
         working-directory: ml
 
+      - name: Run C1_06 learner contract tests
+        run: python -m unittest discover -s tests -p 'test_c1_06_feed_forward.py' -v
+        working-directory: ml
+
       - name: Compile-check learner tooling
         run: python -m compileall -q src tooling_tests
         working-directory: ml

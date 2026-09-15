@@ -1,6 +1,20 @@
+import importlib.util
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+
+
+def _optional_torch_available() -> bool:
+    try:
+        return importlib.util.find_spec("torch") is not None
+    except ModuleNotFoundError:
+        return False
+
+
+_REQUIRES_TORCH = unittest.skipUnless(
+    _optional_torch_available(),
+    "optional PyTorch learner tooling is not installed",
+)
 
 
 class _FakeCuda:
@@ -49,6 +63,7 @@ class C1_06ModelContractTests(unittest.TestCase):
         self.assertEqual(config.hidden_layers, 2)
         self.assertEqual(config.dtype, "float32")
 
+    @_REQUIRES_TORCH
     def test_real_model_candidate_permutation_preserves_semantic_scores(self) -> None:
         import torch
 
@@ -99,6 +114,7 @@ class C1_06ModelContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_candidate_batch([{"kind": "PassPriority"}], target_index=1)
 
+    @_REQUIRES_TORCH
     def test_feed_forward_model_supports_variable_candidate_counts(self) -> None:
         import torch
 
@@ -135,6 +151,7 @@ class C1_06ModelContractTests(unittest.TestCase):
         self.assertEqual(tuple(scores.shape), (2, 3))
         self.assertTrue(torch.isfinite(scores).all().item())
 
+    @_REQUIRES_TORCH
     def test_training_step_has_finite_cuda_or_explicit_cpu_test_tensors(self) -> None:
         import torch
 
@@ -169,6 +186,7 @@ class C1_06ModelContractTests(unittest.TestCase):
         self.assertTrue(all(parameter.grad is not None for parameter in model.parameters()))
         optimizer.step()
 
+    @_REQUIRES_TORCH
     def test_tiny_overfit_loss_decreases_on_explicit_test_cpu(self) -> None:
         import torch
 
@@ -228,6 +246,7 @@ class C1_06ModelContractTests(unittest.TestCase):
         )
         validate_tiny_overfit(strong)
 
+    @_REQUIRES_TORCH
     def test_cuda_kernel_probe_requires_real_cuda(self) -> None:
         import torch
 
@@ -257,6 +276,7 @@ class C1_06CheckpointContractTests(unittest.TestCase):
         self.assertEqual(identity["recurrentSequenceContractIdentity"], "NONE_FOR_FEED_FORWARD")
         self.assertEqual(identity["labelArtifactId"], "b" * 64)
 
+    @_REQUIRES_TORCH
     def test_checkpoint_safetensors_round_trip_preserves_scores(self) -> None:
         import tempfile
         from pathlib import Path
@@ -315,6 +335,7 @@ class C1_06CheckpointContractTests(unittest.TestCase):
             after = reloaded(batch.observation, batch.candidates).detach()
         self.assertTrue(torch.equal(before, after))
 
+    @_REQUIRES_TORCH
     def test_checkpoint_reload_rejects_wrong_source_identity(self) -> None:
         import tempfile
         from pathlib import Path
@@ -355,6 +376,7 @@ class C1_06CheckpointContractTests(unittest.TestCase):
                     config=config,
                 )
 
+    @_REQUIRES_TORCH
     def test_checkpoint_reload_rejects_wrong_label_identity(self) -> None:
         import tempfile
         from pathlib import Path
