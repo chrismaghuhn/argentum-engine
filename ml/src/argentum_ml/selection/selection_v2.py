@@ -9,6 +9,11 @@ from typing import Any, Sequence
 
 from ..contracts.canonical_json import canonical_json
 from ..contracts.tie_discriminator import SemanticTieDiscriminator
+from .ordinal_selection import (
+    OrdinalSelectionError,
+    SelectionAddressCandidate,
+    select_ordinal,
+)
 from .policy_tie_rng import PolicyTieRngStateV1
 
 
@@ -163,41 +168,31 @@ def select_v2(
         binding_keys.add(binding_key)
         if candidate.candidate_presence and not math.isfinite(float(candidate.score)):
             raise SelectionError("present candidate scores must be finite")
-    eligible = [
+    address_candidates = [
+        SelectionAddressCandidate(
+            source_binding_ordinal=candidate.source_binding_ordinal,
+            score=candidate.score,
+            candidate_presence=candidate.candidate_presence,
+            candidate_executable_support=candidate.candidate_executable_support,
+            deterministic_semantic_tie_discriminator=candidate.deterministic_semantic_tie_discriminator,
+        )
+        for candidate in values
+    ]
+    try:
+        ordinal_result = select_ordinal(address_candidates, rng_state)
+    except OrdinalSelectionError as exc:
+        raise SelectionError(f"Selection V2 rejected ordinal selection: {exc}") from exc
+    winner = next(
         candidate
         for candidate in values
-        if candidate.candidate_presence and candidate.candidate_executable_support
-    ]
-    if not eligible:
-        raise SelectionError("Selection V2 has no executable present candidate")
-    maximum = max(candidate.score for candidate in eligible)
-    tied = [candidate for candidate in eligible if candidate.score == maximum]
-    cursor_before = rng_state.cursor
-    if len(tied) == 1:
-        return _result(tied[0], rng_state, cursor_before)
-    discriminator_values = [candidate.deterministic_semantic_tie_discriminator for candidate in tied]
-    if all(_valid_discriminator(value) for value in discriminator_values) and len(set(discriminator_values)) == len(tied):
-        winner = min(tied, key=lambda candidate: candidate.deterministic_semantic_tie_discriminator.canonical_value if candidate.deterministic_semantic_tie_discriminator else "")
-        return _result(winner, rng_state, cursor_before)
-    ordered = sorted(tied, key=lambda candidate: candidate.source_binding_ordinal)
-    address, after = rng_state.uniform_below(len(ordered))
-    return _result(ordered[address], after, cursor_before)
-
-
-def _valid_discriminator(value: SemanticTieDiscriminator | None) -> bool:
-    return isinstance(value, SemanticTieDiscriminator) and value._source_validated
-
-
-def _result(
-    winner: SelectionCandidate,
-    rng_state: PolicyTieRngStateV1,
-    cursor_before: int,
-) -> SelectionResult:
+        if candidate.source_binding_ordinal
+        == ordinal_result.selected_source_binding_ordinal
+    )
     return SelectionResult(
         exact_source_binding=winner.exact_source_binding,
-        audit_source_binding_ordinal=winner.source_binding_ordinal,
-        rng_state=rng_state,
-        rng_draw_count=rng_state.cursor - cursor_before,
-        cursor_before=cursor_before,
-        cursor_after=rng_state.cursor,
+        audit_source_binding_ordinal=ordinal_result.selected_source_binding_ordinal,
+        rng_state=ordinal_result.rng_state,
+        rng_draw_count=ordinal_result.rng_draw_count,
+        cursor_before=ordinal_result.cursor_before,
+        cursor_after=ordinal_result.cursor_after,
     )

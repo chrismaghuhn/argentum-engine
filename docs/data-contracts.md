@@ -1260,3 +1260,27 @@ relation drift; nested V5 or required-cost drift; a plan from another target bin
 ExplicitV3 data; or any failed V3 preflight is rejected atomically before Rules execution, events,
 step advancement, or replay recording. The trusted path never falls back to AutoPay, FromPool,
 legacy Explicit source lists, or a different target binding.
+
+### C1_07A live policy snapshot and ordinal selection
+
+LivePolicyDecisionSnapshotV1 is a JVM-owned, lock-coherent composition of one
+PlayerObservationV1, one CompleteLegalDomainV1, the shared C1 model-facing projection, and
+the exact binding digest for that domain. The observation digest, complete-domain digest, model
+input, candidate feature views, and ordinal-only selection channel are cross-validated when the
+snapshot is constructed and again against a fresh current snapshot before execution.
+
+The Python-facing LivePolicyDecisionRequestV1 contains only the model input, feature views,
+source-binding ordinals, presence/executable masks, validated semantic tie discriminators,
+PolicyTieRng state, and digests. It contains no GameState, LegalAction, DecisionResponse,
+raw entity ID, or exact source-binding value. The JVM retains the non-serializable
+LiveExactSourceBindingTable and maps the returned ordinal back to the exact current binding.
+
+Flat exact-bindable Selection V2 and the live ordinal-selection core share the same maximum,
+semantic-discriminator, mask, permutation, and PolicyTieRng semantics. Structured alternatives
+must be explicitly enumerated by the authoritative source, pass a required completeness validator,
+have unique ordinals, and be paired with a table whose digest is derived from the actual exact JVM
+values. Model-facing alternative features are checked through the shared alias/identity validator;
+missing or incomplete alternatives fail closed. Responses carry the exact RNG cursor
+before/after/draw-count relation and cannot move to another stream. In particular,
+AssignDamageDecision without a typed domain, partial mana-source domains, and BatchYesNoResponse
+are not silently reduced to ordinary choices; they emit their typed unsupported diagnostic.
