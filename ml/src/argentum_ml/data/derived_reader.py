@@ -759,6 +759,25 @@ def _validate_target_membership(
                 raise DerivedArtifactError("chosen folded response is not uniquely in the domain")
 
 
+def validate_exact_source_binding_membership(
+    target: dict[str, Any],
+    selected_exact_source_binding: dict[str, Any],
+    complete_legal_domain: dict[str, Any],
+) -> None:
+    """Validate a derived exact target against a supplied complete source domain."""
+
+    try:
+        _validate_target_membership(
+            target,
+            selected_exact_source_binding,
+            complete_legal_domain,
+        )
+    except DerivedArtifactError:
+        raise
+    except (TypeError, ValueError, KeyError) as exc:
+        raise DerivedArtifactError("exact source-binding membership is malformed") from exc
+
+
 def _validate_action_choice_payload(candidate: dict[str, Any], chosen: dict[str, Any]) -> None:
     payload = _expect_object(chosen.get("choicePayload"), "chosen action choicePayload")
     required_value = candidate.get("requiredPayloadFields")

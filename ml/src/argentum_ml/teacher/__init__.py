@@ -20,6 +20,18 @@ from .contracts import (
 )
 from .public_observation_teacher import PublicObservationTeacherV1
 from .request import PublicObservationTeacherRequestV1
+from .execution import (
+    C1_05AdmissionBindingV1,
+    TeacherExecutionBindingV1,
+    TeacherExecutionError,
+    TeacherTieRngScheduleV1,
+    teacher_seat_index,
+)
+from .request_factory import (
+    ExpectedC1_00Unbindable,
+    TeacherRequestFactoryError,
+    teacher_request_from_validated_sample,
+)
 from .scoring import GenericPublicObservationScorer, PublicObservationScorer
 
 __all__ = [
@@ -38,6 +50,14 @@ __all__ = [
     "PublicObservationTeacherIdentityV1",
     "PublicObservationTeacherRequestV1",
     "PublicObservationTeacherV1",
+    "TeacherExecutionBindingV1",
+    "C1_05AdmissionBindingV1",
+    "TeacherExecutionError",
+    "TeacherTieRngScheduleV1",
+    "teacher_seat_index",
+    "ExpectedC1_00Unbindable",
+    "TeacherRequestFactoryError",
+    "teacher_request_from_validated_sample",
     "SelectedTeacherResultV1",
     "TeacherConfigError",
     "TeacherDiagnosticsV1",

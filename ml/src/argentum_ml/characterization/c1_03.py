@@ -27,8 +27,14 @@ from ..teacher.contracts import (
     PublicObservationTeacherConfigV1,
     SelectedTeacherResultV1,
 )
+from ..teacher.execution import TeacherExecutionError, teacher_seat_index
 from ..teacher.public_observation_teacher import PublicObservationTeacherV1
 from ..teacher.request import PublicObservationTeacherRequestV1
+from ..teacher.request_factory import (
+    ExpectedC1_00Unbindable as SharedExpectedC1_00Unbindable,
+    TeacherRequestFactoryError,
+    teacher_request_from_validated_sample,
+)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -1179,56 +1185,12 @@ def sample_view(
 def teacher_request(
     validated: ValidatedDerivedSample,
 ) -> PublicObservationTeacherRequestV1:
-    if not isinstance(validated, ValidatedDerivedSample):
-        raise C1_00AuthorityFailure("Teacher request requires a reader-issued sample")
-    sample = validated.sample
     try:
-        model_input = sample["input"]
-        model_domain = model_input["domain"]
-        source_domain = sample["binding"]["completeLegalDomain"]
-        family = source_domain["kind"]
-        if family == "ACTION_CANDIDATES":
-            source_candidates = source_domain["candidates"]
-            if any(_required_payload_fields(candidate) for candidate in source_candidates):
-                raise ExpectedC1_00Unbindable(
-                    "ACTION_CANDIDATES has a nonempty requiredPayloadFields field"
-                )
-        if family == "STRUCTURED_DECISION":
-            item = VariableDomainItem(
-                model_input=dict(model_input),
-                candidates=(),
-                structured_domain=dict(model_domain["structuredType"]),
-                target_binding_ordinal=None,
-            )
-        elif family in {"ACTION_CANDIDATES", "FOLDED_DECISION_OPTIONS"}:
-            source_candidates = source_domain["candidates"]
-            model_candidates = model_domain["candidates"]
-            if not isinstance(source_candidates, list) or not isinstance(model_candidates, list):
-                raise C1_00AuthorityFailure("flat candidate lists are malformed")
-            if len(source_candidates) != len(model_candidates):
-                raise C1_00AuthorityFailure("flat source/model candidate counts differ")
-            target_ordinal = _selected_source_ordinal(sample, source_candidates, family)
-            candidates = tuple(
-                CandidateFeature(
-                    feature_view=dict(model_candidate),
-                    source_binding_ordinal=ordinal,
-                    present=True,
-                    executable_support=_affordable(source_candidate),
-                )
-                for ordinal, (source_candidate, model_candidate) in enumerate(
-                    zip(source_candidates, model_candidates)
-                )
-            )
-            item = VariableDomainItem(
-                model_input=dict(model_input),
-                candidates=candidates,
-                structured_domain=None,
-                target_binding_ordinal=target_ordinal,
-            )
-        else:
-            raise C1_00AuthorityFailure(f"unsupported source domain family: {family}")
-        request = InferenceRequest.from_validated_sample(validated, item)
-        return PublicObservationTeacherRequestV1.from_inference_request(request)
+        return teacher_request_from_validated_sample(validated)
+    except SharedExpectedC1_00Unbindable as exc:
+        raise ExpectedC1_00Unbindable(str(exc)) from exc
+    except TeacherRequestFactoryError as exc:
+        raise C1_00AuthorityFailure(str(exc)) from exc
     except ExpectedC1_00Unbindable:
         raise
     except C1_00AuthorityFailure:
@@ -1450,26 +1412,10 @@ def _candidate_for_ordinal(
 
 
 def _seat_index(sample: Mapping[str, Any]) -> int:
-    source = sample.get("sourceReference")
-    provenance = sample.get("provenance")
-    if not isinstance(source, Mapping) or not isinstance(provenance, Mapping):
-        raise C1_00AuthorityFailure("sample provenance is missing")
-    perspective = source.get("perspectivePlayerId")
-    environment = provenance.get("environmentIdentity")
-    roster = environment.get("roster") if isinstance(environment, Mapping) else None
-    if not isinstance(perspective, str) or not isinstance(roster, list):
-        raise C1_00AuthorityFailure("sample roster provenance is malformed")
-    matches = [
-        entry
-        for entry in roster
-        if isinstance(entry, Mapping) and _identity_value(entry.get("playerId")) == perspective
-    ]
-    if len(matches) != 1:
-        raise C1_00AuthorityFailure("perspective does not map to exactly one roster seat")
-    seat = matches[0].get("seatIndex")
-    if isinstance(seat, bool) or not isinstance(seat, int) or seat < 0:
-        raise C1_00AuthorityFailure("roster seat index is malformed")
-    return seat
+    try:
+        return teacher_seat_index(sample)
+    except TeacherExecutionError as exc:
+        raise C1_00AuthorityFailure(str(exc)) from exc
 
 
 def _role_and_deck(sample: Mapping[str, Any]) -> tuple[str, str]:
