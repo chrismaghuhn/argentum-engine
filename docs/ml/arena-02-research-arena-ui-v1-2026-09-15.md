@@ -1,8 +1,9 @@
 # ARENA_02 Research Arena UI V1 — implementation report
 
-This slice makes the accepted server-owned Akiri-versus-Chevill curriculum tournament visible in
-the development client. It adds no game-server, Commander, ML, training, RL, self-play, pacing, or
-spectator-protocol code.
+The Arena-owned changes make the accepted server-owned Akiri-versus-Chevill curriculum tournament
+visible in the development client. They add no game-server, Commander, ML, training, RL, self-play,
+pacing, or spectator-protocol code; the unrelated C1_05 ML files in the integrated `origin/main`
+history are not Arena changes.
 
 ## Required report
 
@@ -10,13 +11,20 @@ spectator-protocol code.
 TASK=ARENA_02_RESEARCH_ARENA_UI_V1
 
 BASE=04f20410ca534338e1be7328d163036849baaf13
-HEAD=af8b793d9f7c814c80324d5531dde518d2fef4c0
-REMOTE_HEAD=af8b793d9f7c814c80324d5531dde518d2fef4c0
+HEAD=a43d8dffd90600ffea7a5a63c5ba21e904e727df
+REMOTE_HEAD=a43d8dffd90600ffea7a5a63c5ba21e904e727df
 REMOTE_HEAD_MATCH=YES
-WORKTREE_CLEAN=YES_AT_CODE_HEAD_AND_RECHECKED_BEFORE_FINAL_REPORT_PUSH
+WORKTREE_CLEAN=YES_AT_CODE_HEAD_AND_RECHECKED_AFTER_INTEGRATION
 DIFF_CHECK_EXIT=0
+ORIGIN_MAIN_AT_INTEGRATION=888dca8d8e413d041cd4384f2d80e3d33faecf76
+NORMAL_MAIN_MERGE=YES
+REBASE=NO
+FORCE_PUSH=NO
+MAIN_FILE_OVERLAP_RISK=LOW
 
-CHANGED_FILES=12
+CHANGED_FILES=26
+ARENA_02_SLICE_CHANGED_FILES=12
+MERGED_MAIN_FILES=14
 FRONTEND_PRODUCTION_CODE_CHANGED=YES
 GAME_SERVER_PRODUCTION_CODE_CHANGED=NO
 ML_CODE_CHANGED=NO
@@ -62,7 +70,7 @@ DEV_ENDPOINT_DISABLED_STATE=HANDLED
 
 FRONTEND_TEST_INFRASTRUCTURE=Vitest plus sibling e2e-scenarios Playwright; no React Testing Library/jsdom
 RED_TESTS=Vitest missing-module RED for aiTournamentApi and researchArenaState; mocked browser RED before route/page implementation
-FOCUSED_TESTS=7 Vitest tests PASS; e2e-scenarios/tests/general/research-arena-ui.spec.ts 5/5 PASS
+FOCUSED_TESTS=7 Vitest tests PASS; e2e-scenarios/tests/general/research-arena-ui.spec.ts 8/8 PASS
 TYPECHECK=npm run typecheck PASS
 FRONTEND_BUILD=npm run build PASS; existing large-chunk warning only
 MANUAL_BROWSER_SMOKE=PASS
@@ -83,10 +91,12 @@ ML_POLICY_GAMEPLAY_AUTHORIZED=NO
 
 C1_05_WORKTREE_TOUCHED=NO
 C1_05_RUN_TOUCHED=NO
-TRAINING_STARTED=NO
-C1_06_STARTED=NO
-RL_STARTED=NO
-SELF_PLAY_STARTED=NO
+TRAINING_STARTED_BY_ARENA_02=NO
+C1_06_WORKTREE_TOUCHED=NO
+C1_06_STARTED_BY_ARENA_02=NO
+C1_06_INTERACTION=NONE
+RL_STARTED_BY_ARENA_02=NO
+SELF_PLAY_STARTED_BY_ARENA_02=NO
 
 PR_CREATED=NO
 NEXT_TASK_STARTED=NO
@@ -114,6 +124,11 @@ spectator path it records `argentum-research-arena-watched:<gameSessionId>` in s
 real smoke reached a live session and rendered the existing `Spectating` header through the existing
 spectator connection and `SpectatorGameBoard`.
 
+During integration, `git merge origin/main` was used normally after `origin/main` advanced to the
+C1_05 merge `888dca8d8e413d041cd4384f2d80e3d33faecf76`. The merge had no conflicts and introduced
+no web-client or e2e-scenarios paths. The Arena branch did not inspect, start, or modify C1_06
+work; all C1_06 and training fields above are scoped to Arena-02 activity.
+
 ## Verification commands
 
 ```text
@@ -130,7 +145,7 @@ npm run build
   exit 0
 
 $env:SKIP_WEB_SERVER='true'; $env:E2E_BASE_URL='http://127.0.0.1:5173'; npx playwright test tests/general/research-arena-ui.spec.ts
-  5 tests passed
+  8 tests passed
 ```
 
 The bounded manual smoke used the local server with `GAME_DEV_ENDPOINTS_ENABLED=true` and the
