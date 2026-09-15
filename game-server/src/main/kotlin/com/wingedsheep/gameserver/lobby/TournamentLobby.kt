@@ -1,5 +1,6 @@
 package com.wingedsheep.gameserver.lobby
 
+import com.wingedsheep.gameserver.curriculum.CurriculumMatchProvenanceV1
 import com.wingedsheep.gameserver.deck.SideboardDerivation
 import com.wingedsheep.gameserver.cube.CubeSetConfig
 import com.wingedsheep.gameserver.cube.ResolvedCube
@@ -391,6 +392,12 @@ class TournamentLobby(
      * a logged-in human (no AI). Re-validated at start. Ignored for FFA / team modes.
      */
     var ranked: Boolean = false,
+    /** True only for a server-owned fixed deck source that must not be changed at match start. */
+    var immutableFixedDeckSource: Boolean = false,
+    /** Repository-relative source provenance for a locked dev match; never contains deck maps. */
+    var curriculumProvenance: CurriculumMatchProvenanceV1? = null,
+    /** True when this fixed preset must use the built-in Engine AI regardless of global AI mode. */
+    var engineAiOnly: Boolean = false,
 ) {
     var cube: ResolvedCube? = null
         private set

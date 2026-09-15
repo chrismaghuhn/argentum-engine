@@ -52,7 +52,8 @@ fun TournamentLobby.toPersistent(): PersistentTournamentLobby {
                 currentSpectatingGameId = playerState.identity.currentSpectatingGameId,
                 isAi = playerState.identity.isAi,
                 aiModelOverride = playerState.identity.aiModelOverride,
-                submittedSideboard = playerState.submittedSideboard
+                submittedSideboard = playerState.submittedSideboard,
+                commander = playerState.commander,
             )
         },
         cubeName = cube?.name,
@@ -79,7 +80,10 @@ fun TournamentLobby.toPersistent(): PersistentTournamentLobby {
         randomTeams = randomTeams,
         teamAssignments = teamAssignments.mapKeys { it.key.value },
         ffaGameSessionId = ffaGameSessionId,
-        ffaGamesPlayed = ffaGamesPlayed
+        ffaGamesPlayed = ffaGamesPlayed,
+        immutableFixedDeckSource = immutableFixedDeckSource,
+        curriculumProvenance = curriculumProvenance,
+        engineAiOnly = engineAiOnly,
     )
 }
 
@@ -130,7 +134,10 @@ fun restoreTournamentLobby(
             .getOrDefault(LobbyGameMode.TOURNAMENT),
         attackMode = runCatching { com.wingedsheep.sdk.core.AttackMode.valueOf(persistent.attackMode) }
             .getOrDefault(com.wingedsheep.sdk.core.AttackMode.MULTIPLE),
-        randomTeams = persistent.randomTeams
+        randomTeams = persistent.randomTeams,
+        immutableFixedDeckSource = persistent.immutableFixedDeckSource,
+        curriculumProvenance = persistent.curriculumProvenance,
+        engineAiOnly = persistent.engineAiOnly,
     )
     lobby.bannedCardNames = persistent.bannedCardNames
     lobby.includedSetProducts = persistent.includedSetProducts
@@ -198,7 +205,8 @@ fun restoreTournamentLobby(
             currentPack = currentPack,
             packQueue = packQueue,
             submittedDeck = persistentPlayer.submittedDeck,
-            submittedSideboard = persistentPlayer.submittedSideboard
+            submittedSideboard = persistentPlayer.submittedSideboard,
+            commander = persistentPlayer.commander,
         )
         lobby.players[playerId] = playerState
     }

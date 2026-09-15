@@ -2,6 +2,9 @@ package com.wingedsheep.gameserver.handler
 
 import com.wingedsheep.gameserver.ai.AiGameManager
 import com.wingedsheep.gameserver.ai.AiWebSocketSession
+import com.wingedsheep.gameserver.curriculum.CurriculumAiTournamentPreset
+import com.wingedsheep.gameserver.curriculum.CurriculumDeckSourceLoader
+import com.wingedsheep.gameserver.curriculum.CurriculumMatchProvenanceV1
 import com.wingedsheep.gameserver.handler.ConnectionHandler.Companion.cardToSealedCardInfo
 import com.wingedsheep.gameserver.lobby.AiDeckSpec
 import com.wingedsheep.gameserver.lobby.LobbyGameMode
@@ -60,6 +63,7 @@ class LobbyHandler(
     private val tournamentMatchHandler: TournamentMatchHandler,
     private val freeForAllHandler: FreeForAllHandler,
     private val deckValidator: DeckValidator,
+    private val curriculumDeckSourceLoader: CurriculumDeckSourceLoader,
     private val randomDeckResolver: com.wingedsheep.gameserver.ai.RandomDeckResolver,
     private val commanderDeckGenerator: com.wingedsheep.ai.engine.deck.CommanderDeckGenerator,
     private val tournamentResultSink: com.wingedsheep.gameserver.stats.TournamentResultSink
@@ -368,6 +372,98 @@ class LobbyHandler(
         lobbyRepository.saveLobby(lobby)
 
         logger.info("AI fixed-deck tournament created: ${lobby.lobbyId} (${decks.size} AI players, deck sizes: ${decks.map { it.values.sum() }})")
+        return lobby.lobbyId
+    }
+
+    /**
+     * Create the locked Akiri/Chevill dev match from repository-owned source artifacts.
+     *
+     * All files are loaded and structured-Commander validated before any lobby or AI identity is
+     * created. The submitted lobby map deliberately contains the commander copy (the lobby wire
+     * convention); [TournamentMatchHandler] removes exactly one copy at the engine boundary.
+     */
+    fun createAiTournamentFromCurriculumPreset(preset: CurriculumAiTournamentPreset): String {
+        require(aiGameManager.isEnabled) { "AI opponent is not enabled on this server" }
+
+        val sources = preset.sourcePaths.map(curriculumDeckSourceLoader::load)
+        require(sources.size == 2) { "Curriculum preset ${preset.identity} must contain exactly two seats" }
+
+        val invalidDecks = sources.mapIndexedNotNull { index, source ->
+            val validation = deckValidator.validate(
+                source.asCommanderDeck(),
+                com.wingedsheep.sdk.core.DeckFormat.COMMANDER,
+            )
+            if (validation.valid) null
+            else {
+                val reason = validation.errors.joinToString("; ") { it.message }
+                "seat ${index + 1} (${source.commander}): $reason"
+            }
+        }
+        require(invalidDecks.isEmpty()) {
+            "Curriculum preset ${preset.identity} is invalid: ${invalidDecks.joinToString(" | ")}"
+        }
+
+        val lobby = TournamentLobby(
+            setCodes = emptyList(),
+            setNames = emptyList(),
+            boosterGenerator = boosterGenerator,
+            format = TournamentFormat.PREMADE_DECKS,
+            boosterCount = 0,
+            boosterDistribution = emptyMap(),
+            maxPlayers = sources.size,
+            gamesPerMatch = 1,
+            // This is intentionally public-spectatable only for this exact server-owned preset;
+            // normal private dev tournaments keep their existing lobby admission semantics.
+            isPublic = true,
+            deckFormat = com.wingedsheep.sdk.core.DeckFormat.COMMANDER,
+            rules = com.wingedsheep.sdk.core.GameRules.COMMANDER,
+            deckSizeMin = 100,
+            allowDuplicates = false,
+            immutableFixedDeckSource = true,
+            curriculumProvenance = CurriculumMatchProvenanceV1(
+                presetIdentity = preset.identity,
+                sources = sources.map { it.provenance() },
+            ),
+            engineAiOnly = true,
+        )
+
+        val playerIds = sources.map { source ->
+            val identity = aiGameManager.createAiIdentity()
+            val playerId = lobby.addPlayer(identity)
+            lobby.players[playerId]?.aiDeckSpec = AiDeckSpec.Fixed(
+                deckList = source.libraryDeckList(),
+                label = source.commander,
+                commander = source.commander,
+            )
+            val result = lobby.submitDeck(
+                playerId = playerId,
+                deckList = source.deckList,
+                commander = source.commander,
+            )
+            require(result is TournamentLobby.DeckSubmissionResult.Success) {
+                val message = (result as? TournamentLobby.DeckSubmissionResult.Error)?.message ?: "unknown error"
+                "Failed to submit curriculum deck for ${source.commander}: $message"
+            }
+            playerId
+        }
+
+        check(playerIds.size == lobby.maxPlayers)
+        lobby.activatePremadeTournament()
+        lobbyRepository.saveLobby(lobby)
+
+        val tournament = tournamentMatchHandler.ensureTournamentCreated(lobby)
+        lobby.players.values.forEach { playerState ->
+            tournamentMatchHandler.sendTournamentStartedToPlayer(lobby, tournament, playerState.identity)
+        }
+        tournamentMatchHandler.autoReadyAiPlayers(lobby, tournament)
+        lobbyRepository.saveLobby(lobby)
+
+        logger.info(
+            "Curriculum AI tournament created: lobbyId={}, preset={}, sources={}",
+            lobby.lobbyId,
+            preset.identity,
+            sources.joinToString { it.sourcePath },
+        )
         return lobby.lobbyId
     }
 

@@ -1188,6 +1188,9 @@ class GamePlayHandler(
         val info = gameSession.getPlayerPersistenceInfo()
         val aiPlayers = info.filter { (_, pi) -> pi.isAi }
         if (aiPlayers.isEmpty()) return
+        val forceEngine = gameRepository.getLobbyForGame(gameSession.sessionId)
+            ?.let(lobbyRepository::findLobbyById)
+            ?.engineAiOnly == true
 
         for ((aiPlayerId, pi) in aiPlayers) {
             val deckList = gameSession.getStartingDeckList(aiPlayerId)
@@ -1199,7 +1202,8 @@ class GamePlayHandler(
                 onActionReady = { id, action -> handleAiAction(gameSession, id, action) },
                 onMulliganKeep = { id -> handleAiMulliganKeep(gameSession, id) },
                 onMulliganTake = { id -> handleAiMulliganTake(gameSession, id) },
-                onBottomCards = { id, cardIds -> handleAiBottomCards(gameSession, id, cardIds) }
+                onBottomCards = { id, cardIds -> handleAiBottomCards(gameSession, id, cardIds) },
+                forceEngine = forceEngine,
             )
 
             val aiIdentity = sessionRegistry.getAllIdentities().firstOrNull { it.playerId == aiPlayerId }

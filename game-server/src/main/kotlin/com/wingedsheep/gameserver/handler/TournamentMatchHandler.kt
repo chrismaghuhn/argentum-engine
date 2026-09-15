@@ -437,10 +437,14 @@ class TournamentMatchHandler(
         val deckPrintings1 = player1State.cardPool + lobby.basicLands.values
         val deckPrintings2 = player2State.cardPool + lobby.basicLands.values
         val deck1WithEgg = EasterEggDeckInjector.maybeInjectEasterEggs(
-            player1State.identity.playerName, baseDeck1, gameProperties.easterEggs.enabled
+            player1State.identity.playerName,
+            baseDeck1,
+            gameProperties.easterEggs.enabled && !lobby.immutableFixedDeckSource,
         )
         val deck2WithEgg = EasterEggDeckInjector.maybeInjectEasterEggs(
-            player2State.identity.playerName, baseDeck2, gameProperties.easterEggs.enabled
+            player2State.identity.playerName,
+            baseDeck2,
+            gameProperties.easterEggs.enabled && !lobby.immutableFixedDeckSource,
         )
 
         // Commander rules come off the lobby's Rules axis — one field, whether the decks were
@@ -576,7 +580,8 @@ class TournamentMatchHandler(
                     },
                     onBottomCards = { aiPlayerId, cardIds ->
                         gamePlayHandler.handleAiBottomCards(gameSession, aiPlayerId, cardIds)
-                    }
+                    },
+                    forceEngine = lobby.engineAiOnly,
                 )
                 val aiIdentity = lobby.players[ps.playerId]?.identity
                 if (aiIdentity != null) {

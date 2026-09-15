@@ -123,18 +123,19 @@ class AiGameManager(
     private fun createController(
         aiPlayerId: EntityId,
         gameSession: GameSession? = null,
-        modelOverride: String? = null
+        modelOverride: String? = null,
+        forceEngine: Boolean = false,
     ): AiPlayerController {
         val ai = gameProperties.ai
-        // A model override implicitly requests LLM mode for this player,
-        // regardless of the server's global mode setting.
+        // A model override implicitly requests LLM mode for this player, regardless of the server's
+        // global mode setting. A locked dev preset may explicitly force the Engine AI below.
         val aiConfig = ai.toAiConfig().let { cfg ->
             if (modelOverride != null) cfg.copy(model = modelOverride, mode = "llm") else cfg
         }
         // Local testing mode only, and null everywhere else: the LLM controller's engine fallback
         // gets one too, so a fallback decision doesn't silently vanish from the panel.
         val insightSink = gameSession?.sessionId?.let { aiInsightService.sinkFor(it, aiPlayerId) }
-        return if (aiConfig.isEngineMode) {
+        return if (forceEngine || aiConfig.isEngineMode) {
             EngineAiPlayerController(
                 cardRegistry = cardRegistry,
                 playerId = aiPlayerId,
@@ -467,7 +468,9 @@ class AiGameManager(
         onActionReady: (EntityId, GameAction) -> Unit,
         onMulliganKeep: (EntityId) -> Unit,
         onMulliganTake: (EntityId) -> Unit,
-        onBottomCards: (EntityId, List<EntityId>) -> Unit
+        onBottomCards: (EntityId, List<EntityId>) -> Unit,
+        /** Locked dev presets use Engine AI even when the server's general mode is LLM. */
+        forceEngine: Boolean = false,
     ) {
         val identity = sessionRegistry.getAllIdentities().find { it.playerId == aiPlayerId }
         val oldSession = identity?.webSocketSession as? AiWebSocketSession
@@ -477,7 +480,7 @@ class AiGameManager(
 
         val aiProperties = gameProperties.ai
         val modelOverride = lookupModelOverride(aiPlayerId)
-        val controller = createController(aiPlayerId, gameSession, modelOverride)
+        val controller = createController(aiPlayerId, gameSession, modelOverride, forceEngine)
 
         // Give the AI knowledge of its deck composition
         if (deckList != null) {
