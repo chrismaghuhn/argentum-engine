@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Sequence
 
 
 class ModelFacingContractError(ValueError):
@@ -92,6 +92,36 @@ _RAW_OR_FORBIDDEN_KEYS = {
     "engineSeed", "hiddenWorld", "runtimeAbilityId", "pendingDecisionId", "sourceEntityId",
     "playerId", "cardId", "targetEntityIds", "entityId", "sourceId", "targetId", "manaAbilityKey",
 }
+_LIVE_FORBIDDEN_MODEL_KEYS = _RAW_OR_FORBIDDEN_KEYS | {
+    "id",
+    "manaAbilityKey",
+    "target",
+    "editableBy",
+    "triggeringPlayerId",
+    "attachedTo",
+    "attachments",
+    "attackerId",
+    "blockerId",
+    "defenderId",
+    "attackedDefenderId",
+    "blockedByIds",
+    "blockedAttackerIds",
+    "coChooserId",
+    "splicedCardIds",
+    "giftRecipient",
+    "casualtyCreature",
+    "sourceBindingOrdinal",
+    "allocationOrder",
+    "batchSlot",
+    "selectedExactSourceBinding",
+    "exactSourceBinding",
+    "binding",
+    "sourceBinding",
+    "exactAction",
+    "exactResponse",
+    "completeLegalDomain",
+    "playerObservation",
+}
 _CANDIDATE_KEYS = {
     "kind", "affordable", "sourceAlias", "targetEntityAliases", "manaCost", "hasXCost", "maxAffordableX",
     "minTargets", "maxTargets", "validSacrificeTargetsAliases", "sacrificeCount", "sacrificeMinCount",
@@ -127,6 +157,81 @@ def validate_model_input(
     _validate_decision_context(input_value["decisionContext"], source_domain["kind"])
     _validate_observation(input_value["observation"], aliases)
     _validate_domain_view(input_value["domain"], aliases, source_domain)
+
+
+def validate_live_model_surface(
+    value: Any,
+    candidate_feature_views: Sequence[dict[str, Any]],
+) -> None:
+    """Validate the complete model-facing allowlist at the live worker boundary.
+
+    C1_07A remains the source of semantic domain/binding authority. This helper only reuses the
+    existing model-facing shape validator so a malformed or raw/exact feature tree cannot reach
+    the optional PyTorch provider after transport validation.
+    """
+
+    input_value = require_model_input(value)
+    domain = _object(input_value["domain"], "domain")
+    kind = _string(domain.get("kind"), "domain.kind")
+    aliases = _collect_model_aliases(input_value)
+    if kind in {"ACTION_CANDIDATES", "FOLDED_DECISION_OPTIONS"}:
+        candidates = domain.get("candidates")
+        if not isinstance(candidates, list):
+            raise ModelFacingContractError("live flat domain candidates must be a list")
+        source_domain: dict[str, Any] = {"kind": kind, "candidates": candidates}
+    elif kind == "STRUCTURED_DECISION":
+        structured = _object(domain.get("structuredType"), "domain.structuredType")
+        source_domain = {
+            "kind": kind,
+            "candidates": [],
+            "structuredDomain": {"type": structured.get("type")},
+        }
+    else:
+        raise ModelFacingContractError("live model domain kind is unsupported")
+    _reject_live_forbidden_keys(input_value, "live model input")
+    validate_model_input(input_value, aliases=aliases, source_domain=source_domain)
+    for index, feature_view in enumerate(candidate_feature_views):
+        if not isinstance(feature_view, dict):
+            raise ModelFacingContractError(f"live candidate feature view {index} must be an object")
+        _reject_live_forbidden_keys(feature_view, f"live candidate feature view {index}")
+        if kind in {"ACTION_CANDIDATES", "FOLDED_DECISION_OPTIONS"}:
+            _validate_candidate(feature_view, aliases, f"live candidate feature view {index}")
+        else:
+            _validate_feature_tree(feature_view, aliases, f"live candidate feature view {index}")
+
+
+def _collect_model_aliases(value: Any) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if isinstance(child, str) and _ALIAS.fullmatch(child):
+                    aliases[child] = child
+                elif isinstance(child, list):
+                    for item in child:
+                        if isinstance(item, str) and _ALIAS.fullmatch(item):
+                            aliases[item] = item
+                visit(child)
+        elif isinstance(node, list):
+            for child in node:
+                visit(child)
+
+    visit(value)
+    return aliases
+
+
+def _reject_live_forbidden_keys(value: Any, label: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in _LIVE_FORBIDDEN_MODEL_KEYS or (
+                (key.endswith("Id") or key.endswith("Ids")) and key != "cardDefinitionId"
+            ):
+                raise ModelFacingContractError(f"{label} contains a raw or exact field: {key}")
+            _reject_live_forbidden_keys(child, label)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_live_forbidden_keys(child, label)
 
 
 def _object(value: Any, label: str) -> dict[str, Any]:

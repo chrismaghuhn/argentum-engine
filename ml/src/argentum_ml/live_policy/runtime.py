@@ -134,21 +134,30 @@ class LocalPythonPolicyRuntime:
                 raise LivePolicyWorkerCrashedError("worker request write failed", code="WORKER_WRITE_FAILURE") from exc
             event, value = self._next_event(self._inference_timeout_seconds)
             if event == "eof":
+                self._abort()
                 raise LivePolicyWorkerCrashedError("local Python worker closed its output", code="WORKER_CRASH")
             if event == "error":
+                self._abort()
                 if isinstance(value, FramedProtocolError):
                     raise LivePolicyProtocolError("worker returned an invalid frame", code="FRAME_PROTOCOL_FAILURE") from value
                 raise LivePolicyWorkerCrashedError("local Python worker reader failed", code="WORKER_READ_FAILURE") from value
             if value.get("messageType") == "ERROR":
-                code, error_request_id = parse_error_envelope(value, self._profile)
+                try:
+                    code, error_request_id = parse_error_envelope(value, self._profile)
+                except LivePolicyProtocolError:
+                    self._abort()
+                    raise
                 if error_request_id is not None and error_request_id != parsed_request.request_id:
+                    self._abort()
                     raise LivePolicyProtocolError("worker error response has the wrong requestId", code="REQUEST_ID_MISMATCH")
                 raise LivePolicyRuntimeError("worker rejected the live inference request", code=code)
             try:
                 return LivePolicyResponseEnvelopeV1.from_dict(value, self._profile, parsed_request).response
             except LivePolicyProtocolError:
+                self._abort()
                 raise
             except Exception as exc:
+                self._abort()
                 raise LivePolicyProtocolError("worker response envelope is invalid", code="RESPONSE_INVALID") from exc
 
     def close(self) -> None:

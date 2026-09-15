@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ..contracts.canonical_json import canonical_json
+from ..contracts.model_facing import ModelFacingContractError, validate_live_model_surface
 from ..contracts.tie_discriminator import SemanticTieDiscriminator
 from ..selection.ordinal_selection import OrdinalSelectionResult
 from ..selection.policy_tie_rng import PolicyTieRngStateV1, UINT64_MAX
@@ -105,6 +106,64 @@ _RAW_OR_EXACT_KEYS = {
 }
 
 
+class _FrozenDict(dict[str, Any]):
+    """Dict-compatible immutable JSON object retained by a validated live request."""
+
+    def __init__(self, values: dict[str, Any]) -> None:
+        dict.__init__(self, values)
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("validated live request JSON is immutable")
+
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _immutable
+
+    def __ior__(self, other: Any) -> "_FrozenDict":
+        self._immutable()
+        return self
+
+
+class _FrozenList(list[Any]):
+    """List-compatible immutable JSON array retained by a validated live request."""
+
+    def __init__(self, values: list[Any]) -> None:
+        list.__init__(self, values)
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("validated live request JSON is immutable")
+
+    __setitem__ = __delitem__ = append = clear = extend = insert = pop = remove = reverse = sort = _immutable
+
+    def __iadd__(self, other: Any) -> "_FrozenList":
+        self._immutable()
+        return self
+
+    def __imul__(self, other: Any) -> "_FrozenList":
+        self._immutable()
+        return self
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _FrozenDict({key: _deep_freeze(child) for key, child in value.items()})
+    if isinstance(value, list):
+        return _FrozenList([_deep_freeze(child) for child in value])
+    if isinstance(value, tuple):
+        return tuple(_deep_freeze(child) for child in value)
+    return value
+
+
+def _deep_thaw(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _deep_thaw(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_deep_thaw(child) for child in value]
+    if isinstance(value, tuple):
+        return [_deep_thaw(child) for child in value]
+    return value
+
+
 @dataclass(frozen=True, init=False)
 class LivePolicyDecisionRequestV1:
     """The C1_07A inner semantic payload; it contains no exact JVM binding or binding digest."""
@@ -136,7 +195,7 @@ class LivePolicyDecisionRequestV1:
         request_id = _nonempty_string(obj["requestId"], "requestId")
         observation_digest = _sha256(obj["observationDigest"], "observationDigest")
         candidate_domain_digest = _parse_candidate_domain_digest(obj["candidateDomainDigest"])
-        model_input = _copy_object(obj["modelInput"], "modelInput")
+        model_input = _deep_freeze(_copy_object(obj["modelInput"], "modelInput"))
         if set(model_input) != {"decisionContext", "observation", "domain"}:
             raise LivePolicyProtocolError("modelInput wrapper shape is not C1_07A", code="MODEL_INPUT_INVALID")
         _reject_raw_or_exact(model_input, "modelInput")
@@ -144,7 +203,7 @@ class LivePolicyDecisionRequestV1:
         if not isinstance(raw_features, list) or not raw_features:
             raise LivePolicyProtocolError("candidateFeatureViews must be a non-empty list", code="CANDIDATE_FEATURES_INVALID")
         candidate_features = tuple(
-            _copy_object(feature, f"candidateFeatureViews[{index}]")
+            _deep_freeze(_copy_object(feature, f"candidateFeatureViews[{index}]"))
             for index, feature in enumerate(raw_features)
         )
         for index, feature in enumerate(candidate_features):
@@ -166,6 +225,13 @@ class LivePolicyDecisionRequestV1:
             raise LivePolicyProtocolError("an absent candidate cannot be executable", code="CANDIDATE_MASK_INVALID")
         discriminators = _parse_discriminators(channel["semanticTieDiscriminators"], ordinals)
         rng = _parse_rng(obj["policyRngState"])
+        try:
+            validate_live_model_surface(model_input, candidate_features)
+        except (ModelFacingContractError, KeyError, TypeError, ValueError) as exc:
+            raise LivePolicyProtocolError(
+                "live model-facing input is not the accepted C1 surface",
+                code="MODEL_INPUT_INVALID",
+            ) from exc
         _require_flat_projection_alignment(model_input, candidate_features)
         instance = object.__new__(cls)
         for name, parsed in {
@@ -199,9 +265,9 @@ class LivePolicyDecisionRequestV1:
             "schemaIdentity": self.schema_identity,
             "requestId": self.request_id,
             "observationDigest": self.observation_digest,
-            "candidateDomainDigest": copy.deepcopy(self.candidate_domain_digest),
-            "modelInput": copy.deepcopy(self.model_input),
-            "candidateFeatureViews": copy.deepcopy(list(self.candidate_feature_views)),
+            "candidateDomainDigest": _deep_thaw(self.candidate_domain_digest),
+            "modelInput": _deep_thaw(self.model_input),
+            "candidateFeatureViews": [_deep_thaw(feature) for feature in self.candidate_feature_views],
             "selectionBindingChannel": {
                 "version": LIVE_PROTOCOL_VERSION,
                 "schemaIdentity": LIVE_SELECTION_ADDRESS_CONTRACT_IDENTITY,
@@ -412,11 +478,18 @@ def parse_error_envelope(value: Mapping[str, Any], profile: C1_07BPolicyProfile)
         raise LivePolicyProtocolError("error envelope fields are not exact", code="ERROR_ENVELOPE_INVALID")
     _require_profile_envelope(obj, profile, LIVE_ERROR_MESSAGE_TYPE)
     code = _nonempty_string(obj["errorCode"], "errorCode")
-    _nonempty_string(obj["phase"], "phase")
+    phase = _nonempty_string(obj["phase"], "phase")
+    if phase not in {"startup", "protocol", "inference"}:
+        raise LivePolicyProtocolError("error envelope phase is unsupported", code="ERROR_PHASE_INVALID")
     _nonempty_string(obj["message"], "message")
     request_id = obj.get("requestId")
     if request_id is not None:
         request_id = _nonempty_string(request_id, "error requestId")
+    elif phase == "inference":
+        raise LivePolicyProtocolError(
+            "inference error envelope must carry requestId",
+            code="REQUEST_ID_MISSING",
+        )
     return code, request_id
 
 

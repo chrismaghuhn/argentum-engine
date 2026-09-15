@@ -53,8 +53,46 @@ def _request(
     cursor: int = 0,
 ) -> LivePolicyDecisionRequestV1:
     candidates = [
-        {"kind": "candidate", "affordable": True, "slot": "a"},
-        {"kind": "candidate", "affordable": True, "slot": "b"},
+        {
+            "kind": "candidate",
+            "affordable": True,
+            "targetEntityAliases": [],
+            "manaCost": None,
+            "hasXCost": False,
+            "maxAffordableX": None,
+            "minTargets": 0,
+            "maxTargets": 0,
+            "validSacrificeTargetsAliases": [],
+            "sacrificeCount": 0,
+            "sacrificeMinCount": 0,
+            "sacrificeMaxCount": 0,
+            "requiresDamageDistribution": False,
+            "isManaAbility": False,
+            "requiresStructuredAction": False,
+            "requiredPayloadFields": [],
+            "actionSemantics": {"type": "PlayLand"},
+            "isDecisionOption": False,
+        },
+        {
+            "kind": "candidate",
+            "affordable": True,
+            "targetEntityAliases": [],
+            "manaCost": None,
+            "hasXCost": False,
+            "maxAffordableX": None,
+            "minTargets": 0,
+            "maxTargets": 0,
+            "validSacrificeTargetsAliases": [],
+            "sacrificeCount": 0,
+            "sacrificeMinCount": 0,
+            "sacrificeMaxCount": 0,
+            "requiresDamageDistribution": False,
+            "isManaAbility": False,
+            "requiresStructuredAction": False,
+            "requiredPayloadFields": [],
+            "actionSemantics": {"type": "PlayLand"},
+            "isDecisionOption": False,
+        },
     ]
     return LivePolicyDecisionRequestV1.from_dict(
         {
@@ -68,8 +106,23 @@ def _request(
                 "value": "b" * 64,
             },
             "modelInput": {
-                "decisionContext": {"domainKind": "ACTION_CANDIDATES"},
-                "observation": {"players": [], "zones": [], "stack": []},
+                "decisionContext": {
+                    "domainKind": "ACTION_CANDIDATES",
+                    "turnNumber": 1,
+                    "phase": "PRECOMBAT_MAIN",
+                    "step": "PRECOMBAT_MAIN",
+                    "agentToActRole": "SELF",
+                    "activePlayerRole": "SELF",
+                    "priorityPlayerRole": "SELF",
+                },
+                "observation": {
+                    "turnNumber": 1,
+                    "phase": "PRECOMBAT_MAIN",
+                    "step": "PRECOMBAT_MAIN",
+                    "players": [],
+                    "zones": [],
+                    "stack": [],
+                },
                 "domain": {"kind": "ACTION_CANDIDATES", "candidates": candidates},
             },
             "candidateFeatureViews": candidates,
@@ -117,6 +170,13 @@ def _test_worker_command(mode: str) -> list[str]:
         if {mode!r} == "timeout":
             time.sleep(60)
         request = frame["request"]
+        if {mode!r} == "inference-error-no-request-id":
+            write_frame(stdout, C1_07B_POLICY_PROFILE.error_envelope(
+                code="SCORE_PROVIDER_FAILURE",
+                phase="inference",
+                message="score provider failed",
+            ))
+            raise SystemExit(1)
         request_id = frame["requestId"]
         if {mode!r} == "wrong-request-id":
             request_id = "wrong-request-id"
@@ -184,6 +244,13 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
         encoded["modelInput"]["observation"]["mutatedAfterValidation"] = True
         self.assertNotIn("mutatedAfterValidation", request.model_input["observation"])
 
+    def test_request_nested_model_data_is_immutable(self) -> None:
+        request = _request()
+        with self.assertRaises(TypeError):
+            request.model_input["observation"]["mutated"] = True
+        with self.assertRaises(TypeError):
+            request.candidate_feature_views[0]["mutated"] = True
+
     def test_request_constructor_is_parser_only(self) -> None:
         with self.assertRaisesRegex(TypeError, "must be parsed from a versioned payload"):
             LivePolicyDecisionRequestV1()
@@ -198,6 +265,19 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
         encoded["candidateFeatureViews"][0]["binding"] = {"action": "raw"}
         with self.assertRaises(LivePolicyProtocolError):
             LivePolicyDecisionRequestV1.from_dict(encoded)
+
+        for field, value in (
+            ("id", "raw-id"),
+            ("manaAbilityKey", "raw-ability"),
+            ("target", "raw-target"),
+            ("editableBy", "raw-player"),
+            ("selectedExactSourceBinding", {"action": "raw"}),
+        ):
+            encoded = _request().to_dict()
+            encoded["candidateFeatureViews"][0][field] = value
+            encoded["modelInput"]["domain"]["candidates"][0][field] = value
+            with self.assertRaises(LivePolicyProtocolError):
+                LivePolicyDecisionRequestV1.from_dict(encoded)
 
     def test_request_rejects_unknown_protocol_version(self) -> None:
         encoded = C1_07B_POLICY_PROFILE.health_envelope()
@@ -323,6 +403,18 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
         )
         with self.assertRaises(LivePolicyWorkerCrashedError):
             runtime.decide(_request())
+        self.assertTrue(runtime._closed)
+        self.assertIsNotNone(runtime._process.poll())
+        runtime.close()
+
+    def test_inference_error_requires_request_id(self) -> None:
+        runtime = LocalPythonPolicyRuntime.start(
+            Path("unused-test-artifact"),
+            _worker_command=_test_worker_command("inference-error-no-request-id"),
+        )
+        with self.assertRaises(LivePolicyProtocolError):
+            runtime.decide(_request())
+        self.assertTrue(runtime._closed)
         runtime.close()
 
     def test_runtime_timeout_fails_closed(self) -> None:
