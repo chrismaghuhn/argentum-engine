@@ -38,6 +38,8 @@ import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import java.nio.file.Files
 
@@ -206,6 +208,46 @@ class ActorControlPlaneTest : FunSpec({
         ).failureCode shouldBe StoragePreflightFailureCode.INSUFFICIENT_PUBLISH_BUDGET
     }
 
+    test("storage preflight saturates Long arithmetic and rejects an exceeded provider cap") {
+        val overflow = StoragePreflight.evaluate(
+            StoragePreflightRequestV1(
+                measuredWorkingFreeBytes = 0,
+                measuredScratchFreeBytes = 1,
+                estimatedFinalizedOutputBytes = 1,
+                requiredAdditionalScratchBytes = 0,
+                publicationOverheadBytes = Long.MAX_VALUE,
+                workingSafetyReserveBytes = Long.MAX_VALUE,
+                providerSafetyReserveBytes = 0,
+                providerOutputBudgetRemainingBytes = Long.MAX_VALUE,
+            ),
+        )
+
+        overflow.status shouldBe StoragePreflightStatus.REJECTED
+        overflow.failureCode shouldBe StoragePreflightFailureCode.INSUFFICIENT_PUBLISH_BUDGET
+        overflow.workingFilesystemBudgetBytes shouldBe 0
+        overflow.providerBudgetBytes shouldBe Long.MAX_VALUE
+        overflow.publishBudgetBytes shouldBe 0
+
+        val exceededCap = StoragePreflight.evaluate(
+            StoragePreflightRequestV1(
+                measuredWorkingFreeBytes = Long.MAX_VALUE,
+                measuredScratchFreeBytes = 1,
+                estimatedFinalizedOutputBytes = 1,
+                requiredAdditionalScratchBytes = 0,
+                publicationOverheadBytes = 0,
+                workingSafetyReserveBytes = 0,
+                providerSafetyReserveBytes = 0,
+                configuredProviderOutputCapBytes = 10,
+                providerExistingOrPlannedOutputBytes = 11,
+            ),
+        )
+
+        exceededCap.status shouldBe StoragePreflightStatus.REJECTED
+        exceededCap.failureCode shouldBe StoragePreflightFailureCode.INSUFFICIENT_PUBLISH_BUDGET
+        exceededCap.providerBudgetBytes shouldBe 0
+        exceededCap.publishBudgetBytes shouldBe 0
+    }
+
     test("status progress is monotonic and physical persistence is milestone based") {
         val assignment = WorkAssignmentV1.from(testPlan(), listOf(0))
         val clock = FakeActorClock()
@@ -244,6 +286,7 @@ class ActorControlPlaneTest : FunSpec({
         val result = TrustedActorRunner(
             assignment = assignment,
             executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-a"),
+            actualRuntimeSourceCommit = assignment.items.first().environmentIdentity.engineCommit,
             preflight = {
                 StoragePreflightResultV1.pass(
                     publishBudgetBytes = 10_000,
@@ -275,6 +318,7 @@ class ActorControlPlaneTest : FunSpec({
         val result = TrustedActorRunner(
             assignment = assignment,
             executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-exception"),
+            actualRuntimeSourceCommit = assignment.items.first().environmentIdentity.engineCommit,
             preflight = {
                 StoragePreflightResultV1.pass(
                     publishBudgetBytes = 10_000,
@@ -302,6 +346,7 @@ class ActorControlPlaneTest : FunSpec({
         val result = TrustedActorRunner(
             assignment = assignment,
             executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-sink-failure"),
+            actualRuntimeSourceCommit = assignment.items.first().environmentIdentity.engineCommit,
             preflight = {
                 StoragePreflightResultV1.pass(
                     publishBudgetBytes = 10_000,
@@ -337,6 +382,7 @@ class ActorControlPlaneTest : FunSpec({
         val result = TrustedActorRunner(
             assignment = assignment,
             executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-preflight"),
+            actualRuntimeSourceCommit = assignment.items.first().environmentIdentity.engineCommit,
             preflight = { preflight },
             episodeExecutor = ActorEpisodeExecutor {
                 error("Episode executor must not run after failed preflight")
@@ -362,6 +408,7 @@ class ActorControlPlaneTest : FunSpec({
         val result = TrustedActorRunner(
             assignment = WorkAssignmentV1.from(testPlan(), listOf(0)),
             executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-complete"),
+            actualRuntimeSourceCommit = item.environmentIdentity.engineCommit,
             preflight = {
                 StoragePreflightResultV1.pass(
                     publishBudgetBytes = 100_000_000,
@@ -393,6 +440,9 @@ class ActorControlPlaneTest : FunSpec({
 
         result.status.state shouldBe ActorStateV1.FINALIZED_LOCAL
         result.report.completedJobOrdinals shouldContainExactly listOf(0)
+        result.report.expectedSourceCommit shouldBe "engine-commit"
+        result.report.actualRuntimeSourceCommit shouldBe "engine-commit"
+        result.report.sourceRevisionVerified shouldBe true
         result.report.requestedConcurrency shouldBe 3
         result.report.actualConcurrency shouldBe 2
         ActorOperationalV1Json.decodeAndValidateRunReport(
@@ -400,6 +450,39 @@ class ActorControlPlaneTest : FunSpec({
         ).shouldBeInstanceOf<ActorOperationalValidationResult.RunReportValid>()
         result.manifest!!.counts.episodeCount shouldBe 1
         result.manifest.counts.failedCount shouldBe 0
+    }
+
+    test("unverified runtime source revision fails before executing or publishing an episode") {
+        val assignment = WorkAssignmentV1.from(testPlan(), listOf(0))
+        val sink = RecordingB2Sink()
+        var executorCalled = false
+        val result = TrustedActorRunner(
+            assignment = assignment,
+            executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-source-mismatch"),
+            actualRuntimeSourceCommit = "different-runtime-commit",
+            preflight = {
+                error("Preflight must not run before source revision verification")
+            },
+            episodeExecutor = ActorEpisodeExecutor {
+                executorCalled = true
+                error("Episode executor must not run after source revision mismatch")
+            },
+            sinkFactory = { sink },
+            statusSink = RecordingStatusSink(),
+            clock = FakeActorClock(),
+        ).run()
+
+        result.status.state shouldBe ActorStateV1.FAILED
+        result.report.expectedSourceCommit shouldBe "engine-commit"
+        result.report.actualRuntimeSourceCommit shouldBe "different-runtime-commit"
+        result.report.sourceRevisionVerified shouldBe false
+        result.report.diagnostics.single().code shouldBe
+            ActorDiagnosticCodeV1.SOURCE_REVISION_UNVERIFIED
+        executorCalled shouldBe false
+        sink.appendCalls shouldBe 0
+        ActorOperationalV1Json.decodeAndValidateRunReport(
+            ActorOperationalV1Json.encode(result.report),
+        ).shouldBeInstanceOf<ActorOperationalValidationResult.RunReportValid>()
     }
 
     test("non-exact replay binding is rejected before the B2 sink and is not reported as verified") {
@@ -417,6 +500,7 @@ class ActorControlPlaneTest : FunSpec({
         val result = TrustedActorRunner(
             assignment = assignment,
             executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-replay-gap"),
+            actualRuntimeSourceCommit = assignment.items.first().environmentIdentity.engineCommit,
             preflight = {
                 StoragePreflightResultV1.pass(
                     publishBudgetBytes = 10_000,
@@ -450,6 +534,7 @@ class ActorControlPlaneTest : FunSpec({
         val result = TrustedActorRunner(
             assignment = assignment,
             executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-mismatch"),
+            actualRuntimeSourceCommit = assignment.items.first().environmentIdentity.engineCommit,
             preflight = {
                 StoragePreflightResultV1.pass(
                     publishBudgetBytes = 10_000,
@@ -504,20 +589,44 @@ class ActorControlPlaneTest : FunSpec({
         snapshot.rootLabel shouldBe "scratch"
     }
 
-    test("diagnostic details reject paths and credential-like content") {
-        shouldThrow<IllegalArgumentException> {
-            ActorDiagnosticV1(
-                code = ActorDiagnosticCodeV1.ACTOR_EXECUTOR_FAILURE,
-                severity = ActorDiagnosticSeverityV1.ERROR,
-                detail = "C:\\Users\\private\\failure.log",
+    test("diagnostics reject arbitrary detail fields instead of transporting free strings") {
+        val assignment = WorkAssignmentV1.from(testPlan(), listOf(0))
+        val tracker = ActorStatusTracker(
+            assignmentIdentity = assignment.assignmentIdentity,
+            executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-diagnostics"),
+            clock = FakeActorClock(),
+        )
+        tracker.assign(1)
+        val status = tracker.snapshot().copy(
+            diagnostics = listOf(
+                ActorDiagnosticV1(
+                    code = ActorDiagnosticCodeV1.ACTOR_EXECUTOR_FAILURE,
+                    severity = ActorDiagnosticSeverityV1.ERROR,
+                ),
+            ),
+        )
+        val root = A3SemanticJson.strictJson.parseToJsonElement(
+            ActorOperationalV1Json.encode(status),
+        ).jsonObject
+        val diagnostic = root.getValue("diagnostics").jsonArray.single().jsonObject
+
+        listOf(
+            "/tmp/diagnostic.log",
+            "/kaggle/working/diagnostic.log",
+            "/var/log/diagnostic.log",
+            "\\\\server\\share\\diagnostic.log",
+            "Authorization: Bearer secret-value",
+        ).forEach { detail ->
+            val diagnosticWithFreeDetail = JsonObject(
+                diagnostic.toMap() + ("detail" to JsonPrimitive(detail)),
             )
-        }
-        shouldThrow<IllegalArgumentException> {
-            ActorDiagnosticV1(
-                code = ActorDiagnosticCodeV1.ACTOR_EXECUTOR_FAILURE,
-                severity = ActorDiagnosticSeverityV1.ERROR,
-                detail = "token=secret-value",
+            val malformed = JsonObject(
+                root.toMap() + (
+                    "diagnostics" to JsonArray(listOf(diagnosticWithFreeDetail))
+                ),
             )
+            ActorOperationalV1Json.decodeAndValidateStatus(malformed.toString())
+                .shouldBeInstanceOf<ActorOperationalValidationResult.Rejected>()
         }
     }
 })
