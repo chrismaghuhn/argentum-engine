@@ -197,11 +197,11 @@ The proposed profile should create the same fixed-deck/Commander shape used by A
     immutableFixedDeckSource=true
     curriculumProvenance=<same loader output>
     engineAiOnly=false
-    recordTournamentStats=false
+    recordDurableStats=false
     human identity: isAi=false, source 0
     AI identity: isAi=true, forceEngine=true, source 1
 
-isPublic=false keeps this ordinary human gameplay private, while recordTournamentStats=false keeps
+isPublic=false keeps this ordinary human gameplay private, while recordDurableStats=false keeps
 the development match out of durable tournament history. These are independent server-owned
 policies. The existing ARENA_02 public spectator policy is not expanded to make a human match
 publicly watchable.
@@ -252,7 +252,7 @@ No controller profile is accepted from the browser. A future reverse orientation
 | AI actions | AiWebSocketSession → EngineAiPlayerController → GamePlayHandler.handleAi* → GameSession. |
 | Hidden-information masking | GameSession.getClientState → ClientStateTransformer → Visibility; the human receives its normal player perspective only. |
 | Reconnect | ConnectionHandler.handleReconnect, SessionRegistry token binding, TournamentLobby.rejoinPlayer/reconnection state, and GameSession.associatePlayer. |
-| Durable tournament history | TournamentLobby.recordTournamentStats plus TournamentResultSink lifecycle gates; the Research Arena profile sets this policy false and persists it through PersistentTournamentLobby/LobbyConverter. |
+| Durable tournament history | TournamentLobby.recordDurableStats plus TournamentResultSink and MatchResultSink lifecycle gates; the Research Arena profile sets this policy false and persists it through PersistentTournamentLobby/LobbyConverter. |
 | Cleanup | Launch adapter's compensating cleanup, reusing LobbyRepository.removeLobby/removeTournament, GameRepository.remove/removeLobbyLink, and AiGameManager.cleanupGame; a small AI identity disposal helper may be needed for a pre-game failure. |
 
 ## Human decision-control boundary
@@ -292,7 +292,7 @@ lifecycle policy, not a curriculum-name or player-name special case.
 
 Add a server-owned property to TournamentLobby with a backwards-compatible default:
 
-    recordTournamentStats: Boolean = true
+    recordDurableStats: Boolean = true
 
 The Research Arena Human-Akiri/Engine-Chevill profile sets it to false at creation and does not
 expose it to the client or allow host settings to change it. Ordinary tournaments retain true. The
@@ -305,19 +305,30 @@ Every lifecycle emission must carry or consult that policy:
     recordTournamentProgress
     completeTournament / recordCompleted
     every recordAbandoned call site
+    GamePlayHandler / MatchResultSink.record for meaningful completed games
 
-The narrowest implementation is to add the same boolean to the internal RecordedTournament snapshot,
-guard recordStarted/recordProgress/recordCompleted in TournamentResultSink implementations, and pass
-the lobby policy explicitly to recordAbandoned before the lobby is removed. All existing callers that
-own the lobby object—TournamentMatchHandler, LobbyHandler, ConnectionHandler, and
-ZombieSessionSweeper—must pass its value. A default-true argument preserves existing callers until
-they are updated, but acceptance requires that no Arena abandonment path relies on that default.
+The narrowest implementation is to add the same boolean to the internal RecordedTournament and
+RecordedMatch snapshots, guard recordStarted/recordProgress/recordCompleted in
+TournamentResultSink implementations, and pass the lobby policy explicitly to recordAbandoned
+before the lobby is removed. GamePlayHandler already resolves statsLobby from the linked lobby, so it
+must set the RecordedMatch policy from that server-owned object and avoid calling MatchResultSink
+when the resolved lobby is ineligible. A defense-in-depth guard in JdbcMatchResultSink keeps a false
+snapshot from being persisted. For a truly non-lobby game, the existing default remains true.
 
-With false, no IN_PROGRESS, COMPLETED, or ABANDONED TournamentRow is created for the Research Arena
-match. This remains true if the failure occurs after TournamentManager creation or after a start
-callback. StatsQueryService and the admin/profile views need no special filtering because the row is
-never emitted. No code may use curriculumPreset, playerName, ranked, or isPublic as a substitute for
-this policy.
+All existing callers that own the lobby object—TournamentMatchHandler, LobbyHandler,
+ConnectionHandler, and ZombieSessionSweeper—must pass its value. A default-true argument preserves
+existing callers until they are updated, but acceptance requires that no Arena start, progress,
+completion, or abandonment path relies on that default.
+
+With false, no IN_PROGRESS, COMPLETED, or ABANDONED TournamentRow and no MatchResultRow is created
+for the Research Arena match. This remains true if the failure occurs after TournamentManager
+creation, after a start callback, or after a meaningful game completes. StatsQueryService and the
+admin/profile views need no special filtering because the rows are never emitted. No code may use
+curriculumPreset, playerName, ranked, or isPublic as a substitute for this policy.
+
+Replay persistence is intentionally outside this remediation. A playable Research Arena match may
+still produce its existing replay artifact; the durable-stats policy does not alter CompactReplay,
+ReplayStore, replay checkpoints, or replay navigation.
 
 ## Browser/UI topology
 
@@ -356,11 +367,12 @@ All source loading and Commander validation happen before creating a lobby or AI
 | Reconnect while lobby/game exists | Existing ConnectionHandler and sendTournamentActiveState/GameSession.associatePlayer restore the human seat; no new match is created. |
 | Navigation/session handoff failure | Keep the authoritative store/session state; allow the normal root application to be entered. Never fall back to spectator navigation. |
 
-For the Research Arena profile, recordTournamentStats=false is also a hard lifecycle invariant:
-recordStarted, recordProgress, recordCompleted, and recordAbandoned must all be no-ops for durable
-tournament history. HUMAN_AI_17 through HUMAN_AI_20 must cover the live, completed, failed, and
-recovered cases. A failure after stats start is not considered cleaned up if it leaves a row that
-later appears as IN_PROGRESS or ABANDONED.
+For the Research Arena profile, recordDurableStats=false is also a hard lifecycle invariant:
+TournamentResultSink recordStarted, recordProgress, recordCompleted, and recordAbandoned, plus
+MatchResultSink record for a meaningful completed game, must all be no-ops for durable statistics.
+HUMAN_AI_17 through HUMAN_AI_22 must cover the live, completed, failed, recovered, and individual-
+game cases. A failure after stats start is not considered cleaned up if it leaves a row that later
+appears as IN_PROGRESS, COMPLETED, or ABANDONED.
 
 AiGameManager.cleanupGame currently cleans live AI sessions. A failed pre-game identity also needs a small reusable disposal operation that shuts down its placeholder AiWebSocketSession, removes its SessionRegistry identity/mappings, and clears the manager's AI tracking set. This is a lifecycle helper, not a new controller or authority primitive, and it must not be implemented as Arena-only state.
 
@@ -420,19 +432,23 @@ This task does not modify these files. The following is the smallest expected fu
       expose the narrow server command/facade and existing tournament lifecycle
 
     game-server/src/main/kotlin/com/wingedsheep/gameserver/lobby/TournamentLobby.kt
-      add the generic server-owned recordTournamentStats policy, defaulting to true
+      add the generic server-owned recordDurableStats policy, defaulting to true
 
     game-server/src/main/kotlin/com/wingedsheep/gameserver/persistence/dto/PersistentLobby.kt
     game-server/src/main/kotlin/com/wingedsheep/gameserver/persistence/LobbyConverter.kt
       persist and restore the policy without changing legacy rows' default behavior
 
     game-server/src/main/kotlin/com/wingedsheep/gameserver/stats/TournamentResultSink.kt
-      respect the policy for started, progress, completed, and abandoned emissions
+    game-server/src/main/kotlin/com/wingedsheep/gameserver/stats/MatchResultSink.kt
+      respect the policy for tournament lifecycle and completed-game emissions
 
     game-server/src/main/kotlin/com/wingedsheep/gameserver/handler/TournamentMatchHandler.kt
     game-server/src/main/kotlin/com/wingedsheep/gameserver/session/ZombieSessionSweeper.kt
     game-server/src/main/kotlin/com/wingedsheep/gameserver/handler/ConnectionHandler.kt
       pass the lobby-owned policy through every tournament stats lifecycle path
+
+    game-server/src/main/kotlin/com/wingedsheep/gameserver/handler/GamePlayHandler.kt
+      carry the linked lobby's policy into MatchResultSink and retain true for non-lobby games
 
     game-server/src/main/kotlin/com/wingedsheep/gameserver/ai/AiGameManager.kt
       only if required for the reusable pre-game AI identity disposal helper
@@ -460,7 +476,7 @@ This task does not modify these files. The following is the smallest expected fu
 
     game-server/src/test/kotlin/com/wingedsheep/gameserver/stats/MatchResultSinkTest.kt
     game-server/src/test/kotlin/com/wingedsheep/gameserver/curriculum/CurriculumLobbyPersistenceTest.kt
-      sink lifecycle guards, ordinary default-true behavior, and persistence/recovery of the policy
+      sink lifecycle guards for tournament and match rows, ordinary default-true behavior, and persistence/recovery of the policy
 
     e2e-scenarios/tests/general/arena-human-01.spec.ts
       connected browser flow, duplicate click, normal player navigation, and no spectator URL
@@ -507,7 +523,10 @@ The future implementation must begin with these failing tests before production 
 | HUMAN_AI_17 | With accounts enabled, starting the Research Arena mixed match creates no TournamentRow. | The current JdbcTournamentResultSink records any tournament with a human seat; this policy guard is new. |
 | HUMAN_AI_18 | Progress and completion of the Research Arena match still create no TournamentRow. | The current progress/completion lifecycle is sink-backed; policy propagation is new. |
 | HUMAN_AI_19 | A failure after TournamentManager creation produces no stats row and no orphan IN_PROGRESS/ABANDONED record. | Existing cleanup design has no stats lifecycle guard; failure injection is new. |
-| HUMAN_AI_20 | Persisting and recovering the lobby preserves recordTournamentStats=false, and recovered lifecycle callbacks still emit no row. | PersistentTournamentLobby currently has no policy field; persistence/recovery coverage is new. |
+| HUMAN_AI_20 | Persisting and recovering the lobby preserves recordDurableStats=false, and recovered lifecycle callbacks still emit no row. | PersistentTournamentLobby currently has no policy field; persistence/recovery coverage is new. |
+| HUMAN_AI_21 | A meaningful completed Research Arena game calls no MatchResultRepository save and creates no MatchResultRow. | GamePlayHandler currently calls MatchResultSink for any meaningful mixed human/AI game; the lobby-policy guard is new. |
+| HUMAN_AI_22 | A recovered Research Arena lobby/game still suppresses MatchResultSink output on completion. | Existing GameSession recovery preserves the lobby link, but MatchResultSink eligibility propagation is new. |
+| ORDINARY_STATS_REGRESSION | An ordinary human-vs-AI game and ordinary human tournament retain recordDurableStats=true and continue recording through MatchResultSink and TournamentResultSink. | Existing positive sink tests are the compatibility baseline; the default must not change. |
 
 The first RED suite should use the existing game-server SpringBoot/WebSocket test style and the existing Playwright harness in e2e-scenarios. Do not introduce React Testing Library or a new test framework for this slice.
 
@@ -519,7 +538,7 @@ The first RED suite should use the existing game-server SpringBoot/WebSocket tes
 | ARENA_01A privacy/admission | handler/SpectatingHandlerAdmissionTest, GameMaskingTest, session/GameSessionSpectatorTest | Private admission, restore re-check, masked spectator view. |
 | ARENA_02 | e2e-scenarios/tests/general/research-arena-ui.spec.ts, web-client/src/api/aiTournamentApi.test.ts, web-client production build | Existing AI-AI route, exact preset-only POST, polling, provenance, auto-watch/back suppression. |
 | AI Sandbox | web-client/src/components/aiSandbox/AiSandboxPage.tsx focused E2E coverage where available, aiTournamentApi.test.ts, typecheck/build | Legacy sealed/fixed-deck, set/model overrides, and auto-watch behavior remain separate. |
-| Tournament stats | game-server/src/test/kotlin/com/wingedsheep/gameserver/stats/MatchResultSinkTest.kt plus HUMAN_AI_17..20 | Research Arena emits no durable history; ordinary human tournaments retain the default-true lifecycle. |
+| Tournament and match stats | game-server/src/test/kotlin/com/wingedsheep/gameserver/stats/MatchResultSinkTest.kt plus HUMAN_AI_17..22 | Research Arena emits no durable TournamentRow or MatchResultRow; ordinary human tournaments/games retain the default-true lifecycle. |
 | Quick Game | QuickGameLobbyCommanderAiTest | Existing generic mixed Commander Quick Game does not regress. |
 | Commander/deck validation | deck/DeckValidatorTest, deck/GeneratedCommanderDeckLegalityTest, Arena01CommanderFixedMatchRedTest | No change to Commander legality or deck semantics. |
 | GameSession/player authority | GameConnectionTest, GameFlowTest, GameMulliganTest, session/MultiplayerSessionTest | Normal connection, action, mulligan, and session behavior. |
@@ -567,6 +586,7 @@ The design document itself is the only intended change on the task branch. The f
     P2=0
     P3=0
     STATS_LIFECYCLE_DESIGN=PASS
+    MATCH_STATS_LIFECYCLE_DESIGN=PASS
     DESIGN_PASS=YES
     IMPLEMENTATION_AUTHORIZED=NO
     PR_CREATED=NO
