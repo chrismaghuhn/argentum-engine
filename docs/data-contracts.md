@@ -1348,4 +1348,8 @@ automatic-payment, or auto-pass fallback. Human and existing Engine-AI routes re
 existing paths. Runtime teardown is coupled to repository/session disposal, and rehydration creates
 a fresh worker from the persisted authority/state. The current server configuration is disabled by
 default and accepts only server-owned operational Python/checkpoint locators; no public Arena ML
-launcher is part of C1_07C.
+launcher is part of C1_07C. The current C1_07A/B live contract does not represent the separate
+GameSession mulligan or London bottom-card messages. An ML seat therefore fails closed with a typed
+unsupported-mulligan outcome during either phase; it never uses an implicit keep, random choice, or
+first-card bottoming. A generic model-facing mulligan/BottomCards contract and its source-owned
+binding adapter are required before a normal ML match can start through that lifecycle.

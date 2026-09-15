@@ -1361,7 +1361,7 @@ class GamePlayHandler(
 
     fun handleAiAction(gameSession: GameSession, aiPlayerId: EntityId, action: com.wingedsheep.engine.core.GameAction) {
         try {
-            val result = gameSession.executeAction(aiPlayerId, action)
+            val result = gameSession.executeActionFromAiController(aiPlayerId, action)
             when (result) {
                 is GameSession.ActionResult.Success -> {
                     logger.debug("AI action executed successfully")
@@ -1383,7 +1383,7 @@ class GamePlayHandler(
                     logger.warn("AI action failed: {} — trying safe fallbacks", result.reason)
                     var recovered = false
                     for (fallback in safeFallbackActions(gameSession, aiPlayerId)) {
-                        when (val fb = gameSession.executeAction(aiPlayerId, fallback)) {
+                        when (val fb = gameSession.executeActionFromAiController(aiPlayerId, fallback)) {
                             is GameSession.ActionResult.Success -> {
                                 broadcastStateUpdate(gameSession, fb.events)
                                 if (gameSession.isGameOver()) handleGameOver(gameSession, events = fb.events)
@@ -1463,7 +1463,7 @@ class GamePlayHandler(
 
     fun handleAiMulliganKeep(gameSession: GameSession, aiPlayerId: EntityId) {
         try {
-            val result = gameSession.keepHand(aiPlayerId)
+            val result = gameSession.keepHandFromAiController(aiPlayerId)
             when (result) {
                 is GameSession.MulliganActionResult.Success -> {
                     logger.info("AI kept hand")
@@ -1489,7 +1489,7 @@ class GamePlayHandler(
 
     fun handleAiMulliganTake(gameSession: GameSession, aiPlayerId: EntityId) {
         try {
-            val result = gameSession.takeMulligan(aiPlayerId)
+            val result = gameSession.takeMulliganFromAiController(aiPlayerId)
             when (result) {
                 is GameSession.MulliganActionResult.Success -> {
                     logger.info("AI took mulligan")
@@ -1517,7 +1517,7 @@ class GamePlayHandler(
 
     fun handleAiBottomCards(gameSession: GameSession, aiPlayerId: EntityId, cardIds: List<EntityId>) {
         try {
-            val result = gameSession.chooseBottomCards(aiPlayerId, cardIds)
+            val result = gameSession.chooseBottomCardsFromAiController(aiPlayerId, cardIds)
             when (result) {
                 is GameSession.MulliganActionResult.Success -> {
                     logger.info("AI chose bottom cards")

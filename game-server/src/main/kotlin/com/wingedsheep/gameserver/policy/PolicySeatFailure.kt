@@ -4,6 +4,7 @@ package com.wingedsheep.gameserver.policy
 enum class PolicySeatFailureCode {
     CONTROLLER_AUTHORITY_INVALID,
     SESSION_NOT_READY,
+    UNSUPPORTED_MULLIGAN_DECISION,
     UNSUPPORTED_STRUCTURED_DECISION,
     STALE_INFERENCE,
     INVALID_RESPONSE,

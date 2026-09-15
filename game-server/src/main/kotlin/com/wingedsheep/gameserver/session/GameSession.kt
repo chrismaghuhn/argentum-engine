@@ -669,14 +669,43 @@ class GameSession(
      * Routes through the engine's action processor.
      * Synchronized to prevent lost updates when multiple players act simultaneously.
      */
-    fun keepHand(playerId: EntityId): MulliganActionResult = synchronized(stateLock) {
+    fun keepHand(playerId: EntityId): MulliganActionResult =
+        keepHandFromController(playerId, ControllerKindV1.HUMAN)
+
+    internal fun keepHandFromController(
+        playerId: EntityId,
+        controllerKind: ControllerKindV1,
+    ): MulliganActionResult = synchronized(stateLock) {
+        controllerAuthorityFailureLocked(playerId, controllerKind)?.let {
+            return@synchronized MulliganActionResult.Failure(it)
+        }
+        keepHandLocked(playerId)
+    }
+
+    internal fun keepHandFromAiController(playerId: EntityId): MulliganActionResult = synchronized(stateLock) {
+        val controllerKind = aiControllerKindLocked(playerId)
+            ?: return@synchronized MulliganActionResult.Failure(
+                "AI controller is not authoritative for this seat",
+            )
+        keepHandLocked(playerId, controllerKind)
+    }
+
+    private fun keepHandLocked(
+        playerId: EntityId,
+        controllerKind: ControllerKindV1? = null,
+    ): MulliganActionResult {
+        controllerKind?.let {
+            controllerAuthorityFailureLocked(playerId, it)?.let { reason ->
+                return MulliganActionResult.Failure(reason)
+            }
+        }
         val state = gameState ?: return MulliganActionResult.Failure("Game not started")
 
         val action = KeepHand(playerId)
         val result = actionProcessor.process(state, action).result
 
         val error = result.error
-        if (error != null) {
+        return if (error != null) {
             MulliganActionResult.Failure(error)
         } else {
             gameState = result.state
@@ -695,14 +724,43 @@ class GameSession(
      * Routes through the engine's action processor.
      * Synchronized to prevent lost updates when multiple players act simultaneously.
      */
-    fun takeMulligan(playerId: EntityId): MulliganActionResult = synchronized(stateLock) {
+    fun takeMulligan(playerId: EntityId): MulliganActionResult =
+        takeMulliganFromController(playerId, ControllerKindV1.HUMAN)
+
+    internal fun takeMulliganFromController(
+        playerId: EntityId,
+        controllerKind: ControllerKindV1,
+    ): MulliganActionResult = synchronized(stateLock) {
+        controllerAuthorityFailureLocked(playerId, controllerKind)?.let {
+            return@synchronized MulliganActionResult.Failure(it)
+        }
+        takeMulliganLocked(playerId)
+    }
+
+    internal fun takeMulliganFromAiController(playerId: EntityId): MulliganActionResult = synchronized(stateLock) {
+        val controllerKind = aiControllerKindLocked(playerId)
+            ?: return@synchronized MulliganActionResult.Failure(
+                "AI controller is not authoritative for this seat",
+            )
+        takeMulliganLocked(playerId, controllerKind)
+    }
+
+    private fun takeMulliganLocked(
+        playerId: EntityId,
+        controllerKind: ControllerKindV1? = null,
+    ): MulliganActionResult {
+        controllerKind?.let {
+            controllerAuthorityFailureLocked(playerId, it)?.let { reason ->
+                return MulliganActionResult.Failure(reason)
+            }
+        }
         val state = gameState ?: return MulliganActionResult.Failure("Game not started")
 
         val action = TakeMulligan(playerId)
         val result = actionProcessor.process(state, action).result
 
         val error = result.error
-        if (error != null) {
+        return if (error != null) {
             MulliganActionResult.Failure(error)
         } else {
             gameState = result.state
@@ -716,14 +774,48 @@ class GameSession(
      * Routes through the engine's action processor.
      * Synchronized to prevent lost updates when multiple players act simultaneously.
      */
-    fun chooseBottomCards(playerId: EntityId, cardIds: List<EntityId>): MulliganActionResult = synchronized(stateLock) {
+    fun chooseBottomCards(playerId: EntityId, cardIds: List<EntityId>): MulliganActionResult =
+        chooseBottomCardsFromController(playerId, cardIds, ControllerKindV1.HUMAN)
+
+    internal fun chooseBottomCardsFromController(
+        playerId: EntityId,
+        cardIds: List<EntityId>,
+        controllerKind: ControllerKindV1,
+    ): MulliganActionResult = synchronized(stateLock) {
+        controllerAuthorityFailureLocked(playerId, controllerKind)?.let {
+            return@synchronized MulliganActionResult.Failure(it)
+        }
+        chooseBottomCardsLocked(playerId, cardIds)
+    }
+
+    internal fun chooseBottomCardsFromAiController(
+        playerId: EntityId,
+        cardIds: List<EntityId>,
+    ): MulliganActionResult = synchronized(stateLock) {
+        val controllerKind = aiControllerKindLocked(playerId)
+            ?: return@synchronized MulliganActionResult.Failure(
+                "AI controller is not authoritative for this seat",
+            )
+        chooseBottomCardsLocked(playerId, cardIds, controllerKind)
+    }
+
+    private fun chooseBottomCardsLocked(
+        playerId: EntityId,
+        cardIds: List<EntityId>,
+        controllerKind: ControllerKindV1? = null,
+    ): MulliganActionResult {
+        controllerKind?.let {
+            controllerAuthorityFailureLocked(playerId, it)?.let { reason ->
+                return MulliganActionResult.Failure(reason)
+            }
+        }
         val state = gameState ?: return MulliganActionResult.Failure("Game not started")
 
         val action = BottomCards(playerId, cardIds)
         val result = actionProcessor.process(state, action).result
 
         val error = result.error
-        if (error != null) {
+        return if (error != null) {
             MulliganActionResult.Failure(error)
         } else {
             gameState = result.state
@@ -817,7 +909,50 @@ class GameSession(
      * Undo checkpoint management follows the engine's [UndoCheckpointAction] policy —
      * the engine decides what to do with checkpoints, the server just executes it.
      */
-    fun executeAction(playerId: EntityId, action: GameAction, messageId: String? = null): ActionResult = synchronized(stateLock) {
+    fun executeAction(playerId: EntityId, action: GameAction, messageId: String? = null): ActionResult =
+        executeActionFromController(playerId, action, ControllerKindV1.HUMAN, messageId)
+
+    /**
+     * Execute an action only for the explicit controller origin that owns [playerId]. This is the
+     * single mutating action gate shared by human, existing AI, and ML controller paths.
+     */
+    internal fun executeActionFromController(
+        playerId: EntityId,
+        action: GameAction,
+        controllerKind: ControllerKindV1,
+        messageId: String? = null,
+    ): ActionResult = synchronized(stateLock) {
+        controllerAuthorityFailureLocked(
+            controllerId = playerId,
+            expectedControllerKind = controllerKind,
+            controlledPlayerId = action.playerId,
+        )?.let { return@synchronized ActionResult.Failure(it) }
+        executeActionLocked(playerId, action, messageId)
+    }
+
+    /** Existing Engine/LLM AI callback path; an ML or human seat can never use it. */
+    internal fun executeActionFromAiController(
+        playerId: EntityId,
+        action: GameAction,
+        messageId: String? = null,
+    ): ActionResult = synchronized(stateLock) {
+        val controllerKind = aiControllerKindLocked(playerId)
+            ?: return@synchronized ActionResult.Failure(
+                "AI controller is not authoritative for this seat",
+            )
+        controllerAuthorityFailureLocked(
+            controllerId = playerId,
+            expectedControllerKind = controllerKind,
+            controlledPlayerId = action.playerId,
+        )?.let { return@synchronized ActionResult.Failure(it) }
+        executeActionLocked(playerId, action, messageId)
+    }
+
+    private fun executeActionLocked(
+        playerId: EntityId,
+        action: GameAction,
+        messageId: String? = null,
+    ): ActionResult {
         val state = gameState ?: return ActionResult.Failure("Game not started")
 
         // Seat authorization: a seat may submit actions tagged with its own playerId, or
@@ -878,6 +1013,7 @@ class GameSession(
      * Synchronized to prevent lost updates.
      */
     fun playerConcedes(playerId: EntityId): GameState? = synchronized(stateLock) {
+        if (controllerAuthorities[playerId]?.isMlPolicy == true) return@synchronized null
         val state = gameState ?: return null
         val action = Concede(playerId)
         val result = actionProcessor.process(state, action).result
@@ -939,10 +1075,16 @@ class GameSession(
                     PolicySeatFailureCode.SESSION_NOT_READY,
                     "cannot infer before the GameSession has a current GameState",
                 )
-            if (state.gameOver || isMulliganPhase) {
+            if (state.gameOver) {
                 throw PolicySeatFailure(
                     PolicySeatFailureCode.SESSION_NOT_READY,
-                    "ML policy inference is unavailable during mulligan or after game end",
+                    "ML policy inference is unavailable after game end",
+                )
+            }
+            if (hasPendingMulliganChoice(state)) {
+                throw PolicySeatFailure(
+                    PolicySeatFailureCode.UNSUPPORTED_MULLIGAN_DECISION,
+                    "C1_07C has no complete live contract for mulligan or bottom-card choices",
                 )
             }
             val policyState = policySeatStates[playerId]
@@ -999,12 +1141,17 @@ class GameSession(
             )
             val actionResult = when (binding) {
                 is com.wingedsheep.gameserver.policy.PolicySeatExactBinding.LegalActionBinding ->
-                    executeAction(playerId, binding.legalAction.action)
+                    executeActionFromController(
+                        playerId,
+                        binding.legalAction.action,
+                        ControllerKindV1.ML_POLICY,
+                    )
 
                 is com.wingedsheep.gameserver.policy.PolicySeatExactBinding.DecisionResponseBinding ->
-                    executeAction(
+                    executeActionFromController(
                         playerId,
                         SubmitDecision(playerId, binding.response),
+                        ControllerKindV1.ML_POLICY,
                     )
             }
             if (actionResult is ActionResult.Failure) {
@@ -1063,14 +1210,50 @@ class GameSession(
         return LivePolicySourceAdapter.fromObservationResult(result)
     }
 
+    private fun aiControllerKindLocked(playerId: EntityId): ControllerKindV1? =
+        controllerAuthorities[playerId]?.controllerKind?.takeIf {
+            it == ControllerKindV1.ENGINE_AI || it == ControllerKindV1.LEGACY_AI
+        }
+
+    /**
+     * Enforce the controller origin at the session mutation boundary. A missing authority is
+     * treated as the historical human default for test/scenario sessions, while every explicit
+     * authority must match the caller's origin. A controller may not use a hotseat/control link
+     * to mutate an explicitly ML-owned seat through another path.
+     */
+    private fun controllerAuthorityFailureLocked(
+        controllerId: EntityId,
+        expectedControllerKind: ControllerKindV1,
+        controlledPlayerId: EntityId = controllerId,
+    ): String? {
+        val actualControllerKind = controllerAuthorities[controllerId]?.controllerKind
+            ?: ControllerKindV1.HUMAN
+        if (actualControllerKind != expectedControllerKind) {
+            return "Controller $expectedControllerKind is not authoritative for seat ${controllerId.value}"
+        }
+        if (
+            controlledPlayerId != controllerId &&
+            controllerAuthorities[controlledPlayerId]?.isMlPolicy == true
+        ) {
+            return "An explicitly ML_POLICY-owned seat cannot be mutated through another controller"
+        }
+        return null
+    }
+
     /** The explicit ML seat currently owning the live decision boundary, if any. */
     internal fun policySeatToAct(): EntityId? = synchronized(stateLock) {
         val state = gameState ?: return@synchronized null
-        if (state.gameOver || isMulliganPhase) return@synchronized null
+        if (state.gameOver || hasPendingMulliganChoice(state)) return@synchronized null
         val decisionOwner = state.pendingDecision?.playerId ?: state.priorityPlayerId
             ?: return@synchronized null
         val controller = state.actorFor(decisionOwner)
         controller.takeIf { controllerAuthorities[it]?.isMlPolicy == true }
+    }
+
+    private fun hasPendingMulliganChoice(state: GameState): Boolean = state.turnOrder.any { playerId ->
+        state.getEntity(playerId)?.get<MulliganStateComponent>()?.let { mulligan ->
+            !mulligan.hasKept || mulligan.cardsToBottom > 0
+        } == true
     }
 
     internal fun isPolicySeat(playerId: EntityId): Boolean = synchronized(stateLock) {
@@ -1287,7 +1470,7 @@ class GameSession(
         // Nobody may pass priority while the game is waiting on a decision. This used to be
         // implicit — getLegalActions returned nothing during a decision — but a mana-payment
         // window (CR 605.3a) now legitimately offers mana abilities, so state it outright.
-        if (state.pendingDecision != null) return null
+        if (state.pendingDecision != null || hasPendingMulliganChoice(state)) return null
 
         // Get the player with priority
         val priorityPlayer = state.priorityPlayerId ?: return null
@@ -1436,6 +1619,11 @@ class GameSession(
      * Returns the result of the PassPriority action.
      */
     fun executeAutoPass(playerId: EntityId): ActionResult = synchronized(stateLock) {
+        if (controllerAuthorities[playerId]?.isMlPolicy == true) {
+            return@synchronized ActionResult.Failure(
+                "ML_POLICY seats cannot be mutated by the auto-pass path",
+            )
+        }
         val state = gameState ?: return ActionResult.Failure("Game not started")
 
         // Verify this player has priority
