@@ -64,6 +64,38 @@ class LearnerBoundaryTests(unittest.TestCase):
 
         self.assertIn("TOOLING_UNAVAILABLE", str(context.exception))
 
+    def test_c1_06_contract_tests_skip_without_optional_torch(self) -> None:
+        source_root = Path(__file__).parents[1] / "src"
+        tests_root = Path(__file__).parent
+        script = textwrap.dedent(
+            f"""
+            import sys
+            import unittest
+
+            class ForbiddenTorchFinder:
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname == "torch" or fullname.startswith("torch."):
+                        raise ModuleNotFoundError("blocked optional torch")
+                    return None
+
+            sys.meta_path.insert(0, ForbiddenTorchFinder())
+            sys.path.insert(0, {str(source_root)!r})
+            sys.path.insert(0, {str(tests_root)!r})
+            suite = unittest.defaultTestLoader.loadTestsFromName("test_c1_06_feed_forward")
+            result = unittest.TextTestRunner(verbosity=0).run(suite)
+            if not result.wasSuccessful() or len(result.skipped) < 8:
+                raise SystemExit(1)
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).parents[1],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_missing_trackio_reports_tooling_unavailable(self) -> None:
         from argentum_ml.learner.optional import LearnerToolingUnavailable
         from argentum_ml.learner.trackio import TrackioRun
