@@ -61,7 +61,7 @@ tasks.register<Test>("kaggleActor05CharacterizationTest") {
     testClassesDirs = sourceSets["test"].output.classesDirs
     classpath = sourceSets["test"].runtimeClasspath
     include("**/KaggleActor05ProviderCharacterizationTest*")
-    maxHeapSize = "4g"
+    maxHeapSize = "8g"
 }
 
 // B1 performance/scaling characterization is opt-in test-only work. Forward its controls to the

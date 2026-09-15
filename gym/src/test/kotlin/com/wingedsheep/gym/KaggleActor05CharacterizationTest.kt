@@ -70,6 +70,13 @@ class KaggleActor05CharacterizationTest : FunSpec({
             .shouldBeTrue()
     }
 
+    test("the KA05 task reserves the A9-sized heap for 2,000-step episodes") {
+        val build = Files.readString(ka05RepositoryRoot().resolve("gym/build.gradle.kts"))
+        val task = build.substringAfter("tasks.register<Test>(\"kaggleActor05CharacterizationTest\")")
+            .substringBefore("// B1 performance")
+        task.contains("maxHeapSize = \"8g\"").shouldBeTrue()
+    }
+
     test("one stable plan preserves global semantic identities across assignment sizes") {
         val context = Ka05CharacterizationHarness.planForTests()
         context.plan.jobs.size shouldBe KA05_PLAN_EPISODES
