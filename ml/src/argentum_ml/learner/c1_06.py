@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import argparse
 import json
+import math
 import subprocess
 import time
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ class C1_06DataGateError(ValueError):
 
 MODEL_ARCHITECTURE_IDENTITY = "argentum-ml-c1-06-feed-forward-candidate-scorer@v1"
 MODEL_CONFIG_IDENTITY = "argentum-ml-c1-06-feed-forward-config@v1"
+MODEL_IMPLEMENTATION_IDENTITY = "argentum-ml-c1-06-feed-forward-runtime@v1"
+TRAINING_RECIPE_IDENTITY = "argentum-ml-c1-06-feed-forward-gpu-smoke@v1"
 C1_05_SOURCE_ARTIFACT_ID = "be545edcb7809a34d78ab9be03476b3cd29ab42e54e6c7f7e20b25b5bcc05a4a"
 C1_05_LABEL_ARTIFACT_ID = "22c6d18fa05301010b7057a4f524ef689a89626aa7dfb7582d73572a4f0f1c52"
 C1_05_LABELS_CONTENT_DIGEST = "5f683753dd01f8a7e20c6b6b2ef31c38e6bb4949cac116a49c7ccfbb577f3a24"
@@ -223,6 +226,7 @@ class C1_06TrainingResult:
     train_top1_agreement: float
     validation_top1_agreement: float
     optimizer_steps: int
+    training_examples_processed: int
     wall_seconds: float
     nonfinite_scores: int
     nonfinite_losses: int
@@ -296,28 +300,6 @@ def run_cuda_kernel_probe(torch_module: Any) -> CudaKernelEvidence:
     if peak <= 0:
         raise C1_06GpuGateError("CUDA_KERNEL_PROBE=FAIL: no CUDA memory was allocated")
     return CudaKernelEvidence(peak_memory_bytes=peak)
-
-
-def _stable_public_feature_key(observation: Mapping[str, Any], candidate: Mapping[str, Any]) -> str:
-    return canonical_json({"observation": dict(observation), "candidate": dict(candidate)})
-
-
-def candidate_score_map(
-    observation: Mapping[str, Any],
-    candidates: Sequence[Mapping[str, Any]],
-) -> dict[str, float]:
-    """Return deterministic public-feature scores keyed by candidate kind for contract tests."""
-
-    result: dict[str, float] = {}
-    for candidate in candidates:
-        kind = candidate.get("kind")
-        if not isinstance(kind, str) or not kind:
-            raise ValueError("candidate kind must be a non-empty string")
-        digest = hashlib.sha256(
-            _stable_public_feature_key(observation, candidate).encode("utf-8")
-        ).digest()
-        result[kind] = int.from_bytes(digest[:8], "big") / float(2**64)
-    return result
 
 
 def validate_candidate_batch(
@@ -564,6 +546,7 @@ def run_training_loop(
         train_top1_agreement=train_accuracy,
         validation_top1_agreement=validation_accuracy,
         optimizer_steps=optimizer_steps,
+        training_examples_processed=optimizer_steps * batch_size,
         wall_seconds=wall_seconds,
         nonfinite_scores=initial_nonfinite_scores + final_nonfinite_scores + validation_nonfinite_scores,
         nonfinite_losses=nonfinite_losses,
@@ -571,6 +554,23 @@ def run_training_loop(
         cuda_max_memory_allocated_bytes=max_allocated,
         cuda_max_memory_reserved_bytes=max_reserved,
     )
+
+
+def validate_tiny_overfit(result: C1_06TrainingResult) -> None:
+    values = (
+        result.initial_train_loss,
+        result.final_train_loss,
+        result.initial_train_top1_agreement,
+        result.train_top1_agreement,
+    )
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("C1_06 tiny overfit metrics are not finite")
+    if result.initial_train_loss <= 0:
+        raise ValueError("C1_06 tiny overfit initial loss must be positive")
+    if result.final_train_loss >= result.initial_train_loss * 0.5:
+        raise ValueError("C1_06 tiny overfit did not strongly decrease loss")
+    if result.train_top1_agreement <= result.initial_train_top1_agreement:
+        raise ValueError("C1_06 tiny overfit did not increase agreement")
 
 
 def build_feed_forward_checkpoint_identity(
@@ -595,6 +595,28 @@ def build_feed_forward_checkpoint_identity(
         "modelImplementationSourceCommit": source_commit,
         "recurrentSequenceContractIdentity": "NONE_FOR_FEED_FORWARD",
     }
+
+
+def _training_run_identity(
+    *,
+    source_dataset_identity: str,
+    label_artifact_id: str,
+    labels_content_digest: str,
+    manifest_content_digest: str,
+    model_config_digest: str,
+) -> str:
+    return sha256_hex(
+        canonical_bytes(
+            {
+                "schema": "argentum-ml-c1-06-training-run@v1",
+                "sourceDatasetIdentity": source_dataset_identity,
+                "labelArtifactId": label_artifact_id,
+                "labelsContentDigest": labels_content_digest,
+                "labelManifestContentDigest": manifest_content_digest,
+                "modelConfigDigest": model_config_digest,
+            }
+        )
+    )
 
 
 def _checkpoint_id(manifest: Mapping[str, Any]) -> str:
@@ -625,24 +647,19 @@ def save_c1_06_checkpoint(
     if manifest_path.exists() or weight_path.exists():
         raise ValueError("C1_06 checkpoint output already exists")
     weight_artifact = save_state_dict(model.state_dict(), weight_path)
-    training_run_identity = sha256_hex(
-        canonical_bytes(
-            {
-                "schema": "argentum-ml-c1-06-training-run@v1",
-                "sourceDatasetIdentity": source_dataset_identity,
-                "labelArtifactId": label_artifact_id,
-                "labelsContentDigest": labels_content_digest,
-                "labelManifestContentDigest": manifest_content_digest,
-                "modelConfigDigest": config.digest,
-            }
-        )
+    training_run_identity = _training_run_identity(
+        source_dataset_identity=source_dataset_identity,
+        label_artifact_id=label_artifact_id,
+        labels_content_digest=labels_content_digest,
+        manifest_content_digest=manifest_content_digest,
+        model_config_digest=config.digest,
     )
     manifest: dict[str, Any] = {
         "version": 1,
         "manifestContractIdentity": "argentum-ml-checkpoint-manifest@v1",
         "policyArtifactKind": "FEED_FORWARD_POLICY",
         "modelImplementationIdentity": {
-            "implementation": "argentum-ml-c1-06-feed-forward-runtime@v1",
+            "implementation": MODEL_IMPLEMENTATION_IDENTITY,
             "sourceCommit": source_commit,
         },
         "modelArchitectureIdentity": config.architecture_identity,
@@ -662,7 +679,7 @@ def save_c1_06_checkpoint(
         "selectionContractIdentity": "argentum-ml-policy-selection@v2",
         "requiredNumericProfileClass": "C1_REFERENCE_NUMERIC_PROFILE",
         "policyRngContractIdentity": "argentum-ml-policy-tie-rng@v1",
-        "trainingRecipeIdentity": "argentum-ml-c1-06-feed-forward-gpu-smoke@v1",
+        "trainingRecipeIdentity": TRAINING_RECIPE_IDENTITY,
         "trainingRunIdentity": training_run_identity,
         "parentCheckpointIdentity": None,
         "teacherBootstrapProvenance": None,
@@ -678,8 +695,38 @@ def load_c1_06_checkpoint(
     model: Any,
     manifest_path: Path | str,
     weight_path: Path | str,
+    *,
+    expected_source_dataset_identity: str,
+    expected_label_artifact_id: str,
+    expected_labels_content_digest: str,
+    expected_manifest_content_digest: str,
+    expected_source_commit: str,
+    config: C1_06ModelConfigV1,
 ) -> ArgentumCheckpointManifestV1:
     manifest = ArgentumCheckpointManifestV1.from_path(Path(manifest_path))
+    manifest_data = manifest.to_dict()
+    implementation = manifest_data["modelImplementationIdentity"]
+    if manifest_data["sourceDatasetIdentity"] != expected_source_dataset_identity:
+        raise C1_06DataGateError("checkpoint source dataset identity differs from expected")
+    if manifest_data["modelArchitectureIdentity"] != config.architecture_identity:
+        raise C1_06DataGateError("checkpoint model architecture identity differs from expected")
+    if manifest_data["modelConfigDigest"] != config.digest:
+        raise C1_06DataGateError("checkpoint model config digest differs from expected")
+    if manifest_data["trainingRecipeIdentity"] != TRAINING_RECIPE_IDENTITY:
+        raise C1_06DataGateError("checkpoint training recipe identity differs from expected")
+    if implementation["implementation"] != MODEL_IMPLEMENTATION_IDENTITY:
+        raise C1_06DataGateError("checkpoint model implementation identity differs from expected")
+    if implementation["sourceCommit"] != expected_source_commit:
+        raise C1_06DataGateError("checkpoint source commit differs from expected")
+    expected_training_run_identity = _training_run_identity(
+        source_dataset_identity=expected_source_dataset_identity,
+        label_artifact_id=expected_label_artifact_id,
+        labels_content_digest=expected_labels_content_digest,
+        manifest_content_digest=expected_manifest_content_digest,
+        model_config_digest=config.digest,
+    )
+    if manifest_data["trainingRunIdentity"] != expected_training_run_identity:
+        raise C1_06DataGateError("checkpoint training run identity differs from expected provenance")
     state_dict = load_state_dict(Path(weight_path), manifest)
     model.load_state_dict(state_dict, strict=True)
     model.eval()
@@ -759,8 +806,7 @@ def run_c1_06_gpu_smoke(
         batch_size=min(batch_size, len(tiny_samples)),
         learning_rate=learning_rate,
     )
-    if tiny_result.final_train_loss >= tiny_result.initial_train_loss:
-        raise ValueError("C1_06 tiny overfit did not decrease loss")
+    validate_tiny_overfit(tiny_result)
     torch.manual_seed(20260915)
     torch.cuda.manual_seed_all(20260915)
     model = FeedForwardCandidateScorer(config, device=device)
@@ -788,6 +834,7 @@ def run_c1_06_gpu_smoke(
     model.eval()
     with torch.no_grad():
         scores_before = model(fixed_batch.observation, fixed_batch.candidates).detach().cpu().clone()
+    source_commit = _current_source_commit()
     checkpoint = save_c1_06_checkpoint(
         model,
         checkpoint_output_dir,
@@ -795,7 +842,7 @@ def run_c1_06_gpu_smoke(
         label_artifact_id=data.label_manifest["labelArtifactId"],
         labels_content_digest=data.label_manifest["labelsContentDigest"],
         manifest_content_digest=data.label_manifest["manifestContentDigest"],
-        source_commit=_current_source_commit(),
+        source_commit=source_commit,
         config=config,
     )
     reloaded = FeedForwardCandidateScorer(config, device=device)
@@ -803,6 +850,12 @@ def run_c1_06_gpu_smoke(
         reloaded,
         checkpoint.manifest_path,
         checkpoint.weight_path,
+        expected_source_dataset_identity=data.label_manifest["sourceDerivedArtifactId"],
+        expected_label_artifact_id=data.label_manifest["labelArtifactId"],
+        expected_labels_content_digest=data.label_manifest["labelsContentDigest"],
+        expected_manifest_content_digest=data.label_manifest["manifestContentDigest"],
+        expected_source_commit=source_commit,
+        config=config,
     )
     with torch.no_grad():
         scores_after = reloaded(fixed_batch.observation, fixed_batch.candidates).detach().cpu()
@@ -825,6 +878,7 @@ def run_c1_06_gpu_smoke(
         "modelConfigDigest": config.digest,
         "trainableParameters": sum(parameter.numel() for parameter in model.parameters()),
         "optimizerSteps": result.optimizer_steps,
+        "trainingExamplesProcessed": result.training_examples_processed,
         "trainingDevice": str(device),
         "cudaKernelPeakMemoryBytes": kernel.peak_memory_bytes,
         "cudaMaxMemoryAllocatedBytes": result.cuda_max_memory_allocated_bytes,
@@ -850,7 +904,7 @@ def run_c1_06_gpu_smoke(
         "postReloadInference": "PASS",
         "deterministicInference": "PASS",
         "trainingWallSeconds": result.wall_seconds,
-        "decisionsPerSecond": len(train_samples) * optimizer_steps / max(result.wall_seconds, 1e-9),
+        "decisionsPerSecond": result.training_examples_processed / max(result.wall_seconds, 1e-9),
     }
 
 

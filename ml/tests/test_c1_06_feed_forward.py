@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -48,20 +49,47 @@ class C1_06ModelContractTests(unittest.TestCase):
         self.assertEqual(config.hidden_layers, 2)
         self.assertEqual(config.dtype, "float32")
 
-    def test_candidate_permutation_preserves_semantic_score_map(self) -> None:
-        from argentum_ml.learner.c1_06 import candidate_score_map
+    def test_real_model_candidate_permutation_preserves_semantic_scores(self) -> None:
+        import torch
 
-        observation = {"decisionContext": {"domainKind": "ACTION_CANDIDATES"}}
-        candidates = [
-            {"kind": "PassPriority", "affordable": True},
-            {"kind": "PlayLand", "affordable": True},
-            {"kind": "ActivateAbility", "affordable": False},
-        ]
-        original = candidate_score_map(observation, candidates)
-        permuted = candidate_score_map(observation, [candidates[2], candidates[0], candidates[1]])
-        self.assertEqual(original[candidates[0]["kind"]], permuted[candidates[0]["kind"]])
-        self.assertEqual(original[candidates[1]["kind"]], permuted[candidates[1]["kind"]])
-        self.assertEqual(original[candidates[2]["kind"]], permuted[candidates[2]["kind"]])
+        from argentum_ml.learner.c1_06 import (
+            C1_06ModelConfigV1,
+            C1_06TrainingSample,
+            FeedForwardCandidateScorer,
+            tensorize_samples,
+        )
+
+        config = C1_06ModelConfigV1.reference()
+        torch.manual_seed(11)
+        model = FeedForwardCandidateScorer(config, device=torch.device("cpu"))
+        candidates = (
+            {"kind": "CastSpell", "cardId": "card-a", "affordable": True},
+            {"kind": "CastSpell", "cardId": "card-b", "affordable": True},
+            {"kind": "CastSpell", "cardId": "card-c", "affordable": True},
+        )
+
+        def scores_for(candidate_views: tuple[dict[str, object], ...], target_index: int) -> dict[str, float]:
+            sample = C1_06TrainingSample(
+                model_input={"observation": {"phase": "BEGINNING"}},
+                candidate_feature_views=candidate_views,
+                target_index=target_index,
+                partition="VALIDATION",
+                source_key=("episode-a", 0, "decision-a"),
+            )
+            batch = tensorize_samples(
+                [sample],
+                torch_module=torch,
+                device=torch.device("cpu"),
+                config=config,
+            )
+            with torch.no_grad():
+                values = model(batch.observation, batch.candidates)[0]
+            return {candidate["cardId"]: float(values[index]) for index, candidate in enumerate(candidate_views)}
+
+        original = scores_for(candidates, target_index=0)
+        permuted_candidates = (candidates[2], candidates[0], candidates[1])
+        permuted = scores_for(permuted_candidates, target_index=1)
+        self.assertEqual(original, permuted)
 
     def test_model_rejects_empty_or_truncated_candidate_batch(self) -> None:
         from argentum_ml.learner.c1_06 import validate_candidate_batch
@@ -176,8 +204,29 @@ class C1_06ModelContractTests(unittest.TestCase):
             learning_rate=0.01,
         )
         self.assertLess(result.final_train_loss, result.initial_train_loss)
+        self.assertEqual(result.training_examples_processed, 120)
         self.assertTrue(result.nonfinite_scores == 0)
         self.assertTrue(result.nonfinite_losses == 0)
+
+    def test_tiny_overfit_requires_strong_loss_decrease_and_agreement_increase(self) -> None:
+        from argentum_ml.learner.c1_06 import validate_tiny_overfit
+
+        weak = SimpleNamespace(
+            initial_train_loss=1.0,
+            final_train_loss=0.75,
+            initial_train_top1_agreement=0.5,
+            train_top1_agreement=0.5,
+        )
+        with self.assertRaises(ValueError):
+            validate_tiny_overfit(weak)
+
+        strong = SimpleNamespace(
+            initial_train_loss=1.0,
+            final_train_loss=0.4,
+            initial_train_top1_agreement=0.5,
+            train_top1_agreement=0.6,
+        )
+        validate_tiny_overfit(strong)
 
     def test_cuda_kernel_probe_requires_real_cuda(self) -> None:
         import torch
@@ -252,9 +301,99 @@ class C1_06CheckpointContractTests(unittest.TestCase):
                 config=config,
             )
             reloaded = FeedForwardCandidateScorer(config, device=torch.device("cpu"))
-            load_c1_06_checkpoint(reloaded, result.manifest_path, result.weight_path)
+            load_c1_06_checkpoint(
+                reloaded,
+                result.manifest_path,
+                result.weight_path,
+                expected_source_dataset_identity="a" * 64,
+                expected_label_artifact_id="b" * 64,
+                expected_labels_content_digest="c" * 64,
+                expected_manifest_content_digest="d" * 64,
+                expected_source_commit="e" * 40,
+                config=config,
+            )
             after = reloaded(batch.observation, batch.candidates).detach()
         self.assertTrue(torch.equal(before, after))
+
+    def test_checkpoint_reload_rejects_wrong_source_identity(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import torch
+
+        from argentum_ml.learner.c1_06 import (
+            C1_06DataGateError,
+            C1_06ModelConfigV1,
+            FeedForwardCandidateScorer,
+            load_c1_06_checkpoint,
+            save_c1_06_checkpoint,
+        )
+
+        config = C1_06ModelConfigV1.reference()
+        model = FeedForwardCandidateScorer(config, device=torch.device("cpu"))
+        with tempfile.TemporaryDirectory() as directory:
+            result = save_c1_06_checkpoint(
+                model,
+                Path(directory),
+                source_dataset_identity="a" * 64,
+                label_artifact_id="b" * 64,
+                labels_content_digest="c" * 64,
+                manifest_content_digest="d" * 64,
+                source_commit="e" * 40,
+                config=config,
+            )
+            with self.assertRaises(C1_06DataGateError):
+                load_c1_06_checkpoint(
+                    FeedForwardCandidateScorer(config, device=torch.device("cpu")),
+                    result.manifest_path,
+                    result.weight_path,
+                    expected_source_dataset_identity="z" * 64,
+                    expected_label_artifact_id="b" * 64,
+                    expected_labels_content_digest="c" * 64,
+                    expected_manifest_content_digest="d" * 64,
+                    expected_source_commit="e" * 40,
+                    config=config,
+                )
+
+    def test_checkpoint_reload_rejects_wrong_label_identity(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import torch
+
+        from argentum_ml.learner.c1_06 import (
+            C1_06DataGateError,
+            C1_06ModelConfigV1,
+            FeedForwardCandidateScorer,
+            load_c1_06_checkpoint,
+            save_c1_06_checkpoint,
+        )
+
+        config = C1_06ModelConfigV1.reference()
+        model = FeedForwardCandidateScorer(config, device=torch.device("cpu"))
+        with tempfile.TemporaryDirectory() as directory:
+            result = save_c1_06_checkpoint(
+                model,
+                Path(directory),
+                source_dataset_identity="a" * 64,
+                label_artifact_id="b" * 64,
+                labels_content_digest="c" * 64,
+                manifest_content_digest="d" * 64,
+                source_commit="e" * 40,
+                config=config,
+            )
+            with self.assertRaises(C1_06DataGateError):
+                load_c1_06_checkpoint(
+                    FeedForwardCandidateScorer(config, device=torch.device("cpu")),
+                    result.manifest_path,
+                    result.weight_path,
+                    expected_source_dataset_identity="a" * 64,
+                    expected_label_artifact_id="z" * 64,
+                    expected_labels_content_digest="c" * 64,
+                    expected_manifest_content_digest="d" * 64,
+                    expected_source_commit="e" * 40,
+                    config=config,
+                )
 
 
 class C1_06DataJoinTests(unittest.TestCase):
