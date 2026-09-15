@@ -465,6 +465,9 @@ export function HomeScreen({
                     <button onClick={() => navigate('/ai-sandbox')} className={styles.secondaryButton}>
                       AI Sandbox
                     </button>
+                    <button onClick={() => navigate('/dev/research-arena')} className={styles.secondaryButton}>
+                      Research Arena
+                    </button>
                   </div>
                   <p className={styles.tierCaption}>
                     Debugging and content tools, not part of normal play.

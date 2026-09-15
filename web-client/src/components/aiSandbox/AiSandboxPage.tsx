@@ -14,28 +14,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { AvailableSet } from '@/types/messages'
 import { SetPickerModal } from '@/components/ui/SetPickerModal'
+import {
+  AiTournamentApiError,
+  fetchAiTournamentStatus,
+  type AiTournamentStatus,
+} from '@/api/aiTournamentApi'
 
 const API = '/api/dev/ai-tournament'
-
-interface LiveGame {
-  gameSessionId: string
-  player1Name: string
-  player2Name: string
-  player1Life: number
-  player2Life: number
-  turnNumber: number
-}
-
-interface SandboxStatus {
-  lobbyId: string
-  state: string
-  playerNames: string[]
-  decksSubmitted: number
-  round: number
-  totalRounds: number
-  complete: boolean
-  liveGames: LiveGame[]
-}
 
 /** Auto-watch is a preference, not a per-run choice — it survives the jump into the game. */
 const AUTO_WATCH_KEY = 'argentum-ai-sandbox-autowatch'
@@ -64,7 +49,7 @@ function watchGame(gameSessionId: string) {
 export function AiSandboxPage() {
   const { lobbyId: routeLobbyId } = useParams<{ lobbyId?: string }>()
   const navigate = useNavigate()
-  const [status, setStatus] = useState<SandboxStatus | null>(null)
+  const [status, setStatus] = useState<AiTournamentStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [autoWatch, setAutoWatch] = useState(() => localStorage.getItem(AUTO_WATCH_KEY) !== 'false')
 
@@ -74,18 +59,16 @@ export function AiSandboxPage() {
     const id = lobbyIdRef.current
     if (!id) return
     try {
-      const res = await fetch(`${API}/${id}`)
-      if (res.ok) {
-        setStatus(await res.json() as SandboxStatus)
-      } else if (res.status === 404) {
+      setStatus(await fetchAiTournamentStatus(id))
+    } catch (error) {
+      if (error instanceof AiTournamentApiError && error.status === 404) {
         // Lobbies don't survive a server restart — drop back to the form rather than polling a
         // lobby id that will never answer again.
         lobbyIdRef.current = null
         setStatus(null)
         navigate('/ai-sandbox', { replace: true })
       }
-    } catch {
-      /* transient — keep the last view */
+      // Preserve the existing behavior for transient failures: keep the last view.
     }
   }, [navigate])
 
@@ -310,7 +293,7 @@ function StatusPanel({
   onToggleAutoWatch,
   onNew,
 }: {
-  status: SandboxStatus
+  status: AiTournamentStatus
   autoWatch: boolean
   onToggleAutoWatch: (v: boolean) => void
   onNew: () => void
