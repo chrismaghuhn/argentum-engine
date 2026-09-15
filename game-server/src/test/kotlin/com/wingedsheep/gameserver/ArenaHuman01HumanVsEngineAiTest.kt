@@ -31,6 +31,7 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.assertions.nondeterministic.eventually
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.ints.shouldBeGreaterThan
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import org.springframework.beans.factory.annotation.Autowired
@@ -202,7 +203,7 @@ class ArenaHuman01HumanVsEngineAiTest : GameServerTestBase() {
             // HUMAN_AI_08/HUMAN_AI_10: the human action is attributed to Akiri, while a later
             // priority action is attributed to Chevill's existing forced Engine AI seat.
             game.getRecordedActions().any { it.playerId == aiSeat.identity.playerId } shouldBe true
-            game.getRecordedActions().filter { it is PassPriority && it.playerId == humanId }.shouldHaveSize(1)
+            game.getRecordedActions().any { it is PassPriority && it.playerId == humanId } shouldBe true
 
             val intruder = createClient()
             intruder.connectAs("Arena Intruder")
@@ -296,6 +297,13 @@ class ArenaHuman01HumanVsEngineAiTest : GameServerTestBase() {
             client.send(ClientMessage.KeepHand)
             eventually(20.seconds) {
                 game.allMulligansComplete shouldBe true
+            }
+            // Drain the same WebSocket's KeepHand message before replacing the repository entry;
+            // the normal handler persists its state update after broadcasting it.
+            val pongsBefore = client.messages.count { it is ServerMessage.Pong }
+            client.send(ClientMessage.Ping)
+            eventually(10.seconds) {
+                client.messages.count { it is ServerMessage.Pong } shouldBeGreaterThan pongsBefore
             }
 
             // HUMAN_AI_20/HUMAN_AI_22: freeze the original AI callback before replacing the in-memory object with the

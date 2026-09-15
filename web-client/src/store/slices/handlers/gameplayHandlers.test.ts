@@ -7,7 +7,7 @@ describe('gameplay lifecycle handlers', () => {
     const setState = vi.fn() as unknown as SetState
     const getState = vi.fn() as unknown as GetState
 
-    createGameplayHandlers(setState, getState).onGameCancelled()
+    createGameplayHandlers(setState, getState).onGameCancelled({ type: 'gameCancelled' })
 
     expect(setState).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: null,
