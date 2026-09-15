@@ -17,7 +17,9 @@ class PlayerIdentity(
     playerName: String,
     val isAi: Boolean = false,
     /** LLM model override for AI players, null otherwise. Persisted alongside the lobby. */
-    val aiModelOverride: String? = null
+    val aiModelOverride: String? = null,
+    /** True when this identity must use the built-in Engine AI even if global mode is LLM. */
+    val forceEngine: Boolean = false,
 ) {
     /**
      * Display name shown to opponents and spectators. For a signed-in player this is the account's

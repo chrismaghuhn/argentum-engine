@@ -36,5 +36,7 @@ data class PersistentPlayerInfo(
     val playerName: String,
     val token: String,
     val isAi: Boolean = false,
-    val aiModelOverride: String? = null
+    val aiModelOverride: String? = null,
+    /** True when the recovered AI identity must use the built-in Engine AI. */
+    val forceEngine: Boolean = false,
 )

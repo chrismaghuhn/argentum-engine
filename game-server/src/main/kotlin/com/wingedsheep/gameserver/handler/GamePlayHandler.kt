@@ -1184,12 +1184,21 @@ class GamePlayHandler(
      * the next broadcast lands at the AI's virtual session and play resumes.
      */
     fun rewireAiForRecoveredGame(gameSession: GameSession) {
-        if (!aiGameManager.isEnabled) return
+        if (!aiGameManager.aiEnabledToggle) return
         val info = gameSession.getPlayerPersistenceInfo()
         val aiPlayers = info.filter { (_, pi) -> pi.isAi }
         if (aiPlayers.isEmpty()) return
+        val forceEngine = gameRepository.getLobbyForGame(gameSession.sessionId)
+            ?.let(lobbyRepository::findLobbyById)
+            ?.engineAiOnly == true
 
         for ((aiPlayerId, pi) in aiPlayers) {
+            val aiIdentity = sessionRegistry.getAllIdentities().firstOrNull { it.playerId == aiPlayerId }
+            val forceEngineForPlayer = forceEngine || pi.forceEngine || aiIdentity?.forceEngine == true
+            if (!forceEngineForPlayer && !aiGameManager.isEnabled) {
+                logger.warn("Skipping recovered AI {} because no usable AI configuration is available", aiPlayerId.value)
+                continue
+            }
             val deckList = gameSession.getStartingDeckList(aiPlayerId)
                 ?.groupingBy { it }?.eachCount()
             aiGameManager.wireAiForGame(
@@ -1199,10 +1208,10 @@ class GamePlayHandler(
                 onActionReady = { id, action -> handleAiAction(gameSession, id, action) },
                 onMulliganKeep = { id -> handleAiMulliganKeep(gameSession, id) },
                 onMulliganTake = { id -> handleAiMulliganTake(gameSession, id) },
-                onBottomCards = { id, cardIds -> handleAiBottomCards(gameSession, id, cardIds) }
+                onBottomCards = { id, cardIds -> handleAiBottomCards(gameSession, id, cardIds) },
+                forceEngine = forceEngineForPlayer,
             )
 
-            val aiIdentity = sessionRegistry.getAllIdentities().firstOrNull { it.playerId == aiPlayerId }
             val newWs = aiIdentity?.webSocketSession
             if (newWs != null) {
                 gameSession.associatePlayer(PlayerSession(
