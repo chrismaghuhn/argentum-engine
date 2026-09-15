@@ -32,6 +32,9 @@ const LlmTournamentPage = lazy(() =>
 const AiSandboxPage = lazy(() =>
   import('./components/aiSandbox/AiSandboxPage').then(({ AiSandboxPage }) => ({ default: AiSandboxPage }))
 )
+const ResearchArenaPage = lazy(() =>
+  import('./components/researchArena/ResearchArenaPage').then(({ ResearchArenaPage }) => ({ default: ResearchArenaPage }))
+)
 const SetCompletionPage = lazy(() =>
   import('./components/setCompletion/SetCompletionPage').then(({ SetCompletionPage }) => ({ default: SetCompletionPage }))
 )
@@ -85,6 +88,8 @@ createRoot(rootElement).render(
           <Route path="/llm-tournament/:id" element={<LlmTournamentPage />} />
           <Route path="/ai-sandbox" element={<AiSandboxPage />} />
           <Route path="/ai-sandbox/:lobbyId" element={<AiSandboxPage />} />
+          <Route path="/dev/research-arena" element={<ResearchArenaPage />} />
+          <Route path="/dev/research-arena/:lobbyId" element={<ResearchArenaPage />} />
           <Route path="*" element={<App />} />
         </Routes>
       </Suspense>
