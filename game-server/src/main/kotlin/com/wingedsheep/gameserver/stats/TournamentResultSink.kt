@@ -15,6 +15,8 @@ enum class TournamentStatus { IN_PROGRESS, COMPLETED, ABANDONED }
 /** A tournament ready to be recorded for stats — at start (partial) or on completion (final). */
 data class RecordedTournament(
     val lobbyId: String,
+    /** Server-owned lobby policy; false keeps research/dev runs out of durable statistics. */
+    val recordDurableStats: Boolean = true,
     val name: String?,
     val format: String?,
     val gameMode: String?,
@@ -63,6 +65,11 @@ interface TournamentResultSink {
 
     /** Mark a torn-down tournament as ABANDONED. No-op unless an in-progress row exists for the lobby. */
     fun recordAbandoned(lobbyId: String)
+
+    /** Apply the owning lobby's durable-statistics policy before marking a tournament abandoned. */
+    fun recordAbandoned(lobbyId: String, recordDurableStats: Boolean) {
+        if (recordDurableStats) recordAbandoned(lobbyId)
+    }
 }
 
 /** Default: accounts disabled — tournaments are not persisted. */
@@ -82,6 +89,7 @@ class JdbcTournamentResultSink(private val tournaments: TournamentRepository) : 
     private val logger = LoggerFactory.getLogger(JdbcTournamentResultSink::class.java)
 
     override fun recordStarted(tournament: RecordedTournament) {
+        if (!tournament.recordDurableStats) return
         if (tournament.participants.none { !it.isAi }) return
         // Idempotent: startTournament and the eager-creation path may both fire for one lobby.
         if (tournaments.findFirstByLobbyIdOrderByIdDesc(tournament.lobbyId) != null) return
@@ -90,6 +98,7 @@ class JdbcTournamentResultSink(private val tournaments: TournamentRepository) : 
     }
 
     override fun recordProgress(tournament: RecordedTournament) {
+        if (!tournament.recordDurableStats) return
         if (tournament.participants.none { !it.isAi }) return
         val existing = tournaments.findFirstByLobbyIdOrderByIdDesc(tournament.lobbyId) ?: return
         // Only refresh a live tournament; never overwrite a completed or abandoned one.
@@ -106,6 +115,7 @@ class JdbcTournamentResultSink(private val tournaments: TournamentRepository) : 
     }
 
     override fun recordCompleted(tournament: RecordedTournament) {
+        if (!tournament.recordDurableStats) return
         if (tournament.participants.none { !it.isAi }) return
         val existing = tournaments.findFirstByLobbyIdOrderByIdDesc(tournament.lobbyId)
         tournaments.save(

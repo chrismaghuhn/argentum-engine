@@ -4,6 +4,7 @@ import {
   arenaErrorAction,
   arenaPhaseForStatus,
   firstUnwatchedLiveGame,
+  humanGameReadyForNavigation,
 } from './researchArenaState'
 
 const game: AiLiveGame = {
@@ -48,5 +49,10 @@ describe('Research Arena state decisions', () => {
   it('selects the first unwatched live game', () => {
     expect(firstUnwatchedLiveGame([game], (id) => id === 'game-1')).toBeNull()
     expect(firstUnwatchedLiveGame([game], () => false)).toEqual(game)
+  })
+
+  it('does not enter the player route from TournamentMatchStarting alone', () => {
+    expect(humanGameReadyForNavigation('game-1', false)).toBe(false)
+    expect(humanGameReadyForNavigation('game-1', true)).toBe(true)
   })
 })

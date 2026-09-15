@@ -396,6 +396,8 @@ class TournamentLobby(
     var immutableFixedDeckSource: Boolean = false,
     /** Repository-relative source provenance for a locked dev match; never contains deck maps. */
     var curriculumProvenance: CurriculumMatchProvenanceV1? = null,
+    /** Whether this lobby contributes to durable tournament and match statistics. */
+    var recordDurableStats: Boolean = true,
     /** True when this fixed preset must use the built-in Engine AI regardless of global AI mode. */
     var engineAiOnly: Boolean = false,
 ) {

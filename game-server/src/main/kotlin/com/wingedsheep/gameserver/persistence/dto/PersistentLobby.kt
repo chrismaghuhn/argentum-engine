@@ -73,6 +73,8 @@ data class PersistentTournamentLobby(
     val immutableFixedDeckSource: Boolean = false,
     /** Repository-relative provenance for the locked source, without persisting a deck map. */
     val curriculumProvenance: CurriculumMatchProvenanceV1? = null,
+    /** Whether this lobby contributes to durable tournament and match statistics. */
+    val recordDurableStats: Boolean = true,
     /** Forces the locked preset through the built-in Engine AI controller. */
     val engineAiOnly: Boolean = false
 )

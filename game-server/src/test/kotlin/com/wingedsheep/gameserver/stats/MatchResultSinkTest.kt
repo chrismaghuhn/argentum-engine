@@ -18,9 +18,13 @@ private val SOME_USER: UUID = UUID.fromString("00000000-0000-0000-0000-000000000
 
 class MatchResultSinkTest : FunSpec({
 
-    fun match(vararg participants: RecordedParticipant) = RecordedMatch(
+    fun match(
+        vararg participants: RecordedParticipant,
+        recordDurableStats: Boolean = true,
+    ) = RecordedMatch(
         gameId = "g", format = "Standard", tournamentName = null, gameMode = "CASUAL",
         frameCount = 20, turnCount = 6, startedAt = Instant.now(), endedAt = Instant.now(),
+        recordDurableStats = recordDurableStats,
         participants = participants.toList(),
     )
 
@@ -65,6 +69,18 @@ class MatchResultSinkTest : FunSpec({
             )
         )
         verify(exactly = 1) { repo.save(any()) }
+    }
+
+    test("Research Arena policy suppresses a meaningful mixed match row") {
+        val repo = mockk<MatchResultRepository>(relaxed = true)
+        JdbcMatchResultSink(repo).record(
+            match(
+                RecordedParticipant(userId = SOME_USER, playerName = "Alice", won = true, isAi = false),
+                RecordedParticipant(userId = null, playerName = "AI", won = false, isAi = true),
+                recordDurableStats = false,
+            )
+        )
+        verify(exactly = 0) { repo.save(any()) }
     }
 
     test("recordStarted persists an in-progress row for a human seat but skips AI-only") {
@@ -158,6 +174,23 @@ class MatchResultSinkTest : FunSpec({
         verify(exactly = 0) { repo.save(any()) }
     }
 
+    test("Research Arena policy suppresses every tournament lifecycle row") {
+        val repo = mockk<TournamentRepository>(relaxed = true)
+        every { repo.findFirstByLobbyIdOrderByIdDesc(any()) } returns
+            TournamentRow(id = 1, lobbyId = "l", status = "IN_PROGRESS")
+        val sink = JdbcTournamentResultSink(repo)
+        val human = RecordedTournamentParticipant(
+            SOME_USER, "Carol", isAi = false, placement = 1, wins = 1, losses = 0, draws = 0,
+        )
+
+        sink.recordStarted(tournament(human, recordDurableStats = false))
+        sink.recordProgress(progress(human, recordDurableStats = false))
+        sink.recordCompleted(tournament(human, recordDurableStats = false))
+        sink.recordAbandoned("l", recordDurableStats = false)
+
+        verify(exactly = 0) { repo.save(any()) }
+    }
+
     test("recordAbandoned flips only in-progress rows to ABANDONED") {
         val repo = mockk<TournamentRepository>(relaxed = true)
         val saved = slot<TournamentRow>()
@@ -180,15 +213,21 @@ class MatchResultSinkTest : FunSpec({
     }
 })
 
-private fun tournament(vararg p: RecordedTournamentParticipant) = RecordedTournament(
+private fun tournament(
+    vararg p: RecordedTournamentParticipant,
+    recordDurableStats: Boolean = true,
+) = RecordedTournament(
     lobbyId = "l", name = "Test", format = "SEALED", gameMode = "TOURNAMENT", setCodes = "DSK",
     playerCount = p.size, rounds = 3, gamesPerMatch = 1, winnerName = "Carol",
-    startedAt = null, endedAt = Instant.now(), participants = p.toList(),
+    startedAt = null, endedAt = Instant.now(), recordDurableStats = recordDurableStats, participants = p.toList(),
 )
 
 /** An in-progress snapshot: no end time and no winner yet, as [TournamentMatchHandler] builds it. */
-private fun progress(vararg p: RecordedTournamentParticipant) = RecordedTournament(
+private fun progress(
+    vararg p: RecordedTournamentParticipant,
+    recordDurableStats: Boolean = true,
+) = RecordedTournament(
     lobbyId = "l", name = "Test", format = "SEALED", gameMode = "TOURNAMENT", setCodes = "DSK",
     playerCount = p.size, rounds = 1, gamesPerMatch = 1, winnerName = null,
-    startedAt = null, endedAt = null, participants = p.toList(),
+    startedAt = null, endedAt = null, recordDurableStats = recordDurableStats, participants = p.toList(),
 )

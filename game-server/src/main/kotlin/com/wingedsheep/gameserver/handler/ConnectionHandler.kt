@@ -441,7 +441,7 @@ class ConnectionHandler(
                     LobbyState.WAITING_FOR_PLAYERS, LobbyState.DRAFTING, LobbyState.DECK_BUILDING -> {
                         lobby.removePlayer(identity.playerId)
                         if (lobby.playerCount == 0) {
-                            tournamentResultSink.recordAbandoned(lobbyId)
+                            tournamentResultSink.recordAbandoned(lobbyId, lobby.recordDurableStats)
                             lobbyRepository.removeLobby(lobbyId)
                             lobbyRepository.removeTournament(lobbyId)
                         } else {

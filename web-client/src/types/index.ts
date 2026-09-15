@@ -242,6 +242,7 @@ export type {
   LobbyUpdateMessage,
   LobbyStoppedMessage,
   CreateTournamentLobbyMessage,
+  StartCurriculumHumanVsEngineAiMessage,
   JoinLobbyMessage,
   StartTournamentLobbyMessage,
   MakePickMessage,
@@ -375,6 +376,7 @@ export {
   // Lobby message factories & guards
   createCreateTournamentLobbyMessage,
   createCreateSealedLobbyMessage,
+  createStartCurriculumHumanVsEngineAiMessage,
   createJoinLobbyMessage,
   createStartTournamentLobbyMessage,
   createStartSealedLobbyMessage,

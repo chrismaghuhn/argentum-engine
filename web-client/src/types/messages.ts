@@ -1948,6 +1948,7 @@ export type ClientMessage =
   | SubmitSealedDeckMessage
   // Lobby Messages
   | CreateTournamentLobbyMessage
+  | StartCurriculumHumanVsEngineAiMessage
   | JoinLobbyMessage
   | StartTournamentLobbyMessage
   | MakePickMessage
@@ -2335,6 +2336,11 @@ export interface CreateTournamentLobbyMessage {
   readonly rules?: GameRules
 }
 
+/** Start the server-owned Human-Akiri versus forced Engine-AI-Chevill research match. */
+export interface StartCurriculumHumanVsEngineAiMessage {
+  readonly type: 'startCurriculumHumanVsEngineAi'
+}
+
 export interface JoinLobbyMessage {
   readonly type: 'joinLobby'
   readonly lobbyId: string
@@ -2592,6 +2598,10 @@ export function createCreateTournamentLobbyMessage(
   rules: GameRules = 'STANDARD'
 ): CreateTournamentLobbyMessage {
   return { type: 'createTournamentLobby', setCodes, format, boosterCount, maxPlayers, pickTimeSeconds, isPublic, gameMode, rules }
+}
+
+export function createStartCurriculumHumanVsEngineAiMessage(): StartCurriculumHumanVsEngineAiMessage {
+  return { type: 'startCurriculumHumanVsEngineAi' }
 }
 
 // Backwards compatibility alias

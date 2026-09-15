@@ -13,6 +13,8 @@ import java.util.UUID
 /** A finished game ready to be recorded for stats. */
 data class RecordedMatch(
     val gameId: String,
+    /** Server-owned lobby policy; false keeps linked research runs out of durable statistics. */
+    val recordDurableStats: Boolean = true,
     val format: String?,
     val tournamentName: String?,
     /** The lobby that produced this game, or null for non-lobby games. Links games to a tournament. */
@@ -75,6 +77,7 @@ class JdbcMatchResultSink(private val matchResults: MatchResultRepository) : Mat
     private val logger = LoggerFactory.getLogger(JdbcMatchResultSink::class.java)
 
     override fun record(match: RecordedMatch) {
+        if (!match.recordDurableStats) return
         if (match.participants.none { !it.isAi }) return
         matchResults.save(
             MatchResultRow(

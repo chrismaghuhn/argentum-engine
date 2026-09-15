@@ -943,6 +943,7 @@ export type GameStore = {
   ffaState: FfaState | null
   spectatingState: SpectatingState | null
   createTournamentLobby: (setCodes: string[], format?: TournamentFormat, boosterCount?: number, maxPlayers?: number, pickTimeSeconds?: number, isPublic?: boolean, gameMode?: LobbyGameMode, rules?: GameRules) => void
+  startCurriculumHumanVsEngineAi: () => void
   joinLobby: (lobbyId: string) => void
   startLobby: () => void
   leaveLobby: () => void

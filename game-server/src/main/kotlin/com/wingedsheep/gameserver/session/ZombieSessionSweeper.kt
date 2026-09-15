@@ -67,7 +67,7 @@ class ZombieSessionSweeper(
         for (lobby in empty) {
             logger.info("Sweeping lobby: ${lobby.lobbyId} (state=${lobby.state}, players=${lobby.playerCount})")
             // No-op unless this was a still-live tournament with an in-progress stats row.
-            tournamentResultSink.recordAbandoned(lobby.lobbyId)
+            tournamentResultSink.recordAbandoned(lobby.lobbyId, lobby.recordDurableStats)
             lobbyRepository.removeLobby(lobby.lobbyId)
             lobbyRepository.removeTournament(lobby.lobbyId)
         }
