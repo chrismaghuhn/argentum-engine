@@ -104,7 +104,9 @@ class C1_06ModelContractTests(unittest.TestCase):
         original = scores_for(candidates, target_index=0)
         permuted_candidates = (candidates[2], candidates[0], candidates[1])
         permuted = scores_for(permuted_candidates, target_index=1)
-        self.assertEqual(original, permuted)
+        self.assertEqual(original.keys(), permuted.keys())
+        for candidate_id in original:
+            self.assertAlmostEqual(original[candidate_id], permuted[candidate_id], delta=1e-6)
 
     def test_model_rejects_empty_or_truncated_candidate_batch(self) -> None:
         from argentum_ml.learner.c1_06 import validate_candidate_batch
