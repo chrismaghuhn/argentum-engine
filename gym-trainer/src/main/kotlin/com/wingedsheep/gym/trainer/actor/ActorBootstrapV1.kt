@@ -210,7 +210,12 @@ private class ProcessSourceBootstrapGitCommandV1(
 data class LocalActorExecutionRequestV1(
     val assignment: WorkAssignmentV1,
     val executionAttemptIdentity: ExecutionAttemptIdentityV1,
-    val sourceBootstrap: SourceBootstrapResultV1,
+    val sourceRepositoryRoot: Path,
+    val requiredPinnedPaths: List<String> = listOf(
+        "gradlew",
+        "gradle/wrapper/gradle-wrapper.properties",
+        "gradle/libs.versions.toml",
+    ),
     val preflight: () -> StoragePreflightResultV1,
     val episodeExecutor: ActorEpisodeExecutor,
     val sinkFactory: () -> B2TrajectorySink,
@@ -222,17 +227,29 @@ data class LocalActorExecutionRequestV1(
 
 /** Local/Linux composition seam; provider adapters remain outside the actor runner. */
 object LocalActorExecutionV1 {
-    fun run(request: LocalActorExecutionRequestV1): ActorRunResult = TrustedActorRunner(
-        assignment = request.assignment,
-        executionAttemptIdentity = request.executionAttemptIdentity,
-        actualRuntimeSourceCommit = request.sourceBootstrap.actualRuntimeSourceCommit
-            .takeIf { request.sourceBootstrap.verified },
-        preflight = request.preflight,
-        episodeExecutor = request.episodeExecutor,
-        sinkFactory = request.sinkFactory,
-        statusSink = request.statusSink,
-        clock = request.clock,
-        requestedConcurrency = request.requestedConcurrency,
-        actualConcurrency = request.actualConcurrency,
-    ).run()
+    fun run(request: LocalActorExecutionRequestV1): ActorRunResult {
+        val expectedSourceCommit = request.assignment.items.first()
+            .environmentIdentity.engineCommit
+        val bootstrap = runCatching {
+            LocalSourceBootstrapV1(
+                GitSourceBootstrapProbeV1(
+                    repositoryRoot = request.sourceRepositoryRoot,
+                    requiredPinnedPaths = request.requiredPinnedPaths,
+                ),
+            ).verify(expectedSourceCommit)
+        }.getOrNull()
+        return TrustedActorRunner(
+            assignment = request.assignment,
+            executionAttemptIdentity = request.executionAttemptIdentity,
+            actualRuntimeSourceCommit = bootstrap?.actualRuntimeSourceCommit
+                ?.takeIf { bootstrap.verified },
+            preflight = request.preflight,
+            episodeExecutor = request.episodeExecutor,
+            sinkFactory = request.sinkFactory,
+            statusSink = request.statusSink,
+            clock = request.clock,
+            requestedConcurrency = request.requestedConcurrency,
+            actualConcurrency = request.actualConcurrency,
+        ).run()
+    }
 }
