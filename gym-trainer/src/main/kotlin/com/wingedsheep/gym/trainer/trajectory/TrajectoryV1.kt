@@ -144,6 +144,27 @@ private fun sha256Canonical(element: JsonElement): String =
         A3SemanticJson.canonicalJson(element).toByteArray(StandardCharsets.UTF_8),
     )
 
+/** Shared B2 identity derivation for actor plans and trajectory metadata. */
+object TrajectoryV1Identity {
+    fun semanticEpisodeId(environmentIdentity: EnvironmentIdentityV1): String = sha256Canonical(
+        buildJsonObject {
+            put("schema", SEMANTIC_EPISODE_IDENTITY_V1_SCHEMA_IDENTITY)
+            put("environmentIdentityDigest", environmentIdentity.identityDigest())
+        },
+    )
+
+    fun collectionJobId(
+        semanticEpisodeId: String,
+        policyProvenance: PolicyProvenanceV1,
+    ): String = sha256Canonical(
+        buildJsonObject {
+            put("schema", COLLECTION_JOB_IDENTITY_V1_SCHEMA_IDENTITY)
+            put("semanticEpisodeId", semanticEpisodeId)
+            put("policyProvenance", policyProvenance.canonicalElement())
+        },
+    )
+}
+
 /** One ordered, public seat-to-role/deck binding in the reproducible environment identity. */
 @Serializable
 data class RosterSeatV1(
@@ -401,20 +422,11 @@ data class EpisodeMetadataV1(
         requireSha256(collectionJobId, "Collection job identity")
     }
 
-    fun recomputeSemanticEpisodeId(): String = sha256Canonical(
-        buildJsonObject {
-            put("schema", SEMANTIC_EPISODE_IDENTITY_V1_SCHEMA_IDENTITY)
-            put("environmentIdentityDigest", environmentIdentity.identityDigest())
-        },
-    )
+    fun recomputeSemanticEpisodeId(): String =
+        TrajectoryV1Identity.semanticEpisodeId(environmentIdentity)
 
-    fun recomputeCollectionJobId(): String = sha256Canonical(
-        buildJsonObject {
-            put("schema", COLLECTION_JOB_IDENTITY_V1_SCHEMA_IDENTITY)
-            put("semanticEpisodeId", semanticEpisodeId)
-            put("policyProvenance", policyProvenance.canonicalElement())
-        },
-    )
+    fun recomputeCollectionJobId(): String =
+        TrajectoryV1Identity.collectionJobId(semanticEpisodeId, policyProvenance)
 
     internal fun canonicalElement(): JsonObject = buildJsonObject {
         put("version", version)
