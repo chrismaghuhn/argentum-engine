@@ -69,6 +69,10 @@ The authoritative files were not copied or edited:
 | A | `docs/ml/curriculum/akiri-v0.1.txt` | `E774200BF9444DBF420B27573C63BAC4659F59568BBB53340D3A0FD7BDBE5E04` | 100 | Akiri, Fearless Voyager |
 | B | `docs/ml/curriculum/chevill-v0.1.txt` | `0257823208E24D8EAC90773081B98ECF875FB77639BAFD820BC24CA41FC06474` | 100 | Chevill, Bane of Monsters |
 
+`.gitattributes` pins these two authoritative TXT artifacts to `eol=crlf`. The file contents and card
+rows are unchanged; the policy makes the raw-byte digest stable across Windows and Linux checkouts,
+which is required for source identity.
+
 `CurriculumDeckSourceLoader` hashes the exact bytes read from disk before parsing. It accepts only
 repository-relative paths below its configured repository root; the endpoint never accepts a caller
 path or caller digest.
