@@ -203,23 +203,44 @@ def validate_live_model_surface(
 def _collect_model_aliases(value: Any) -> dict[str, str]:
     aliases: dict[str, str] = {}
 
-    def visit(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, child in node.items():
-                if key == "entityAlias" and isinstance(child, str) and _ALIAS.fullmatch(child):
-                    aliases[child] = child
-                visit(child)
-        elif isinstance(node, list):
-            for child in node:
-                visit(child)
+    input_value = _object(value, "model input")
+    observation = _object(input_value.get("observation"), "observation")
 
-    visit(value)
+    def declare(node: Any, label: str) -> None:
+        if not isinstance(node, dict):
+            return
+        alias = node.get("entityAlias")
+        if not isinstance(alias, str) or _ALIAS.fullmatch(alias) is None:
+            return
+        if alias in aliases:
+            raise ModelFacingContractError(f"{label} duplicates declared entity alias {alias}")
+        aliases[alias] = alias
+
+    players = observation.get("players")
+    if isinstance(players, list):
+        for index, player in enumerate(players):
+            declare(player, f"observation.players[{index}]")
+    zones = observation.get("zones")
+    if isinstance(zones, list):
+        for zone_index, zone in enumerate(zones):
+            if not isinstance(zone, dict):
+                continue
+            cards = zone.get("cards")
+            if isinstance(cards, list):
+                for card_index, card in enumerate(cards):
+                    declare(card, f"observation.zones[{zone_index}].cards[{card_index}]")
+    stack = observation.get("stack")
+    if isinstance(stack, list):
+        for index, item in enumerate(stack):
+            declare(item, f"observation.stack[{index}]")
     return aliases
 
 
 def _reject_live_forbidden_keys(value: Any, label: str) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
+            if not isinstance(key, str):
+                raise ModelFacingContractError(f"{label} contains a non-string field name")
             if key in _LIVE_FORBIDDEN_MODEL_KEYS or (
                 (key.endswith("Id") or key.endswith("Ids")) and key != "cardDefinitionId"
             ):

@@ -290,6 +290,14 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
         with self.assertRaises(LivePolicyProtocolError):
             LivePolicyDecisionRequestV1.from_dict(encoded)
 
+        encoded = _request().to_dict()
+        fabricated_target = {"type": "Permanent", "entityAlias": "entity-999"}
+        action_semantics = {"type": "CastSpell", "targetsAliases": [fabricated_target]}
+        encoded["candidateFeatureViews"][0]["actionSemantics"] = action_semantics
+        encoded["modelInput"]["domain"]["candidates"][0]["actionSemantics"] = action_semantics
+        with self.assertRaises(LivePolicyProtocolError):
+            LivePolicyDecisionRequestV1.from_dict(encoded)
+
     def test_request_rejects_unknown_protocol_version(self) -> None:
         encoded = C1_07B_POLICY_PROFILE.health_envelope()
         encoded["protocolVersion"] = 2
@@ -527,6 +535,16 @@ class C1_06LiveScoreProviderTests(unittest.TestCase):
         payload = _request().to_dict()
         payload["modelInput"]["domain"]["candidates"][0]["id"] = "raw-id"
         payload["candidateFeatureViews"][0]["id"] = "raw-id"
+        with self.assertRaises(LivePolicyInferenceError):
+            provider.score(
+                payload["modelInput"],
+                payload["candidateFeatureViews"],
+            )
+
+    def test_provider_normalizes_non_string_model_keys_to_typed_failure(self) -> None:
+        provider = object.__new__(C1_06LiveScoreProvider)
+        payload = _request().to_dict()
+        payload["modelInput"]["observation"][1] = "malformed"
         with self.assertRaises(LivePolicyInferenceError):
             provider.score(
                 payload["modelInput"],
