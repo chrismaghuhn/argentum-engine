@@ -52,6 +52,38 @@ object LocalPublicationEnvelopeV1 {
         assignment: WorkAssignmentV1,
         status: ActorStatusV1,
         report: RunReportV1,
+    ): LocalPublishedEnvelopeV1 = publishInternal(
+        sourceDatasetDirectory = sourceDatasetDirectory,
+        destinationDirectory = destinationDirectory,
+        assignment = assignment,
+        status = status,
+        report = report,
+        afterCopyBeforeValidation = {},
+    )
+
+    internal fun publishWithStagingObserver(
+        sourceDatasetDirectory: Path,
+        destinationDirectory: Path,
+        assignment: WorkAssignmentV1,
+        status: ActorStatusV1,
+        report: RunReportV1,
+        afterCopyBeforeValidation: (Path) -> Unit,
+    ): LocalPublishedEnvelopeV1 = publishInternal(
+        sourceDatasetDirectory = sourceDatasetDirectory,
+        destinationDirectory = destinationDirectory,
+        assignment = assignment,
+        status = status,
+        report = report,
+        afterCopyBeforeValidation = afterCopyBeforeValidation,
+    )
+
+    private fun publishInternal(
+        sourceDatasetDirectory: Path,
+        destinationDirectory: Path,
+        assignment: WorkAssignmentV1,
+        status: ActorStatusV1,
+        report: RunReportV1,
+        afterCopyBeforeValidation: (Path) -> Unit,
     ): LocalPublishedEnvelopeV1 {
         require(status.assignmentIdentity == assignment.assignmentIdentity) {
             "Local publication status does not belong to the assignment"
@@ -86,12 +118,21 @@ object LocalPublicationEnvelopeV1 {
         val stagingDirectory = Files.createTempDirectory(stagingRoot, "envelope-")
         var moved = false
         try {
+            val stagedDatasetDirectory = stagingDirectory.resolve(
+                "$LOCAL_PUBLICATION_DATASET_DIRECTORY_PREFIX_V1${manifest.datasetId}",
+            )
             copyTree(
                 sourceDatasetDirectory,
-                stagingDirectory.resolve(
-                    "$LOCAL_PUBLICATION_DATASET_DIRECTORY_PREFIX_V1${manifest.datasetId}",
-                ),
+                stagedDatasetDirectory,
             )
+            afterCopyBeforeValidation(stagedDatasetDirectory)
+            val stagedValidatedDataset = TrajectoryV1Reader.openPublishedDataset(stagedDatasetDirectory)
+            require(stagedValidatedDataset.manifest == manifest) {
+                "Copied staging dataset manifest disagrees with the source dataset"
+            }
+            require(report.localShardDigests == stagedValidatedDataset.manifest.shards.map { it.contentDigest }) {
+                "Copied staging dataset shard digests disagree with the actor report"
+            }
             writeNew(
                 stagingDirectory.resolve(LOCAL_PUBLICATION_ASSIGNMENT_FILE_V1),
                 ActorWorkloadV1Json.encode(assignment),
@@ -262,8 +303,11 @@ object LocalPublicationEnvelopeV1 {
     private fun moveNewDirectory(source: Path, destination: Path) {
         try {
             Files.move(source, destination, ATOMIC_MOVE)
-        } catch (_: AtomicMoveNotSupportedException) {
-            Files.move(source, destination)
+        } catch (failure: AtomicMoveNotSupportedException) {
+            throw IllegalStateException(
+                "Local publication requires an atomic envelope move",
+                failure,
+            )
         }
     }
 

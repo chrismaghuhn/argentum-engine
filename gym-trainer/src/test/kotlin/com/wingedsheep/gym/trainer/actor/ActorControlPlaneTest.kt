@@ -42,6 +42,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.charset.StandardCharsets
 
 class ActorControlPlaneTest : FunSpec({
     test("workload plan resolves authoritative work items and content identity") {
@@ -485,29 +487,55 @@ class ActorControlPlaneTest : FunSpec({
         ).shouldBeInstanceOf<ActorOperationalValidationResult.RunReportValid>()
     }
 
-    test("dirty source bootstrap fails before local actor execution") {
-        val assignment = WorkAssignmentV1.from(testPlan(), listOf(0))
-        val bootstrap = LocalSourceBootstrapV1(
-            probe = FakeSourceBootstrapProbe(
-                SourceBootstrapObservationV1(
-                    actualHeadCommit = "engine-commit",
-                    trackedSourceClean = false,
-                    requiredPinsPresent = true,
-                ),
+    test("local actor execution rechecks the repository at the execution boundary") {
+        val repository = createSourceRepository()
+        val assignment = WorkAssignmentV1.from(
+            testPlanWithEngineCommit(repository.commit),
+            listOf(0),
+        )
+        val priorVerification = LocalSourceBootstrapV1(
+            GitSourceBootstrapProbeV1(
+                repositoryRoot = repository.root,
+                requiredPinnedPaths = listOf("pin.txt"),
             ),
-        ).verify(expectedSourceCommit = "engine-commit")
+        ).verify(repository.commit)
+        priorVerification.status shouldBe SourceBootstrapStatusV1.VERIFIED
 
-        bootstrap.status shouldBe SourceBootstrapStatusV1.REJECTED
-        bootstrap.failureCode shouldBe SourceBootstrapFailureCodeV1.TRACKED_SOURCE_DIRTY
-        bootstrap.actualRuntimeSourceCommit shouldBe "engine-commit"
+        val cleanResult = LocalActorExecutionV1.run(
+            LocalActorExecutionRequestV1(
+                assignment = assignment,
+                executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-fresh-source"),
+                sourceRepositoryRoot = repository.root,
+                requiredPinnedPaths = listOf("pin.txt"),
+                preflight = { StoragePreflightResultV1.pass(10_000, 1_000) },
+                episodeExecutor = ActorEpisodeExecutor {
+                    ActorEpisodeOutcome.PartialLost(
+                        listOf(
+                            ActorDiagnosticV1(
+                                code = ActorDiagnosticCodeV1.PROVIDER_PROCESS_LOST,
+                                severity = ActorDiagnosticSeverityV1.ERROR,
+                            ),
+                        ),
+                    )
+                },
+                sinkFactory = { RecordingB2Sink() },
+                statusSink = RecordingStatusSink(),
+                clock = FakeActorClock(),
+            ),
+        )
 
+        cleanResult.report.actualRuntimeSourceCommit shouldBe repository.commit
+        cleanResult.report.sourceRevisionVerified shouldBe true
+
+        Files.writeString(repository.root.resolve("pin.txt"), "changed after earlier verification")
         var preflightCalled = false
         var executorCalled = false
-        val result = LocalActorExecutionV1.run(
+        val dirtyResult = LocalActorExecutionV1.run(
             LocalActorExecutionRequestV1(
                 assignment = assignment,
                 executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-dirty-source"),
-                sourceBootstrap = bootstrap,
+                sourceRepositoryRoot = repository.root,
+                requiredPinnedPaths = listOf("pin.txt"),
                 preflight = {
                     preflightCalled = true
                     StoragePreflightResultV1.pass(10_000, 1_000)
@@ -522,10 +550,10 @@ class ActorControlPlaneTest : FunSpec({
             ),
         )
 
-        result.status.state shouldBe ActorStateV1.FAILED
-        result.report.actualRuntimeSourceCommit shouldBe null
-        result.report.sourceRevisionVerified shouldBe false
-        result.report.diagnostics.single().code shouldBe
+        dirtyResult.status.state shouldBe ActorStateV1.FAILED
+        dirtyResult.report.actualRuntimeSourceCommit shouldBe null
+        dirtyResult.report.sourceRevisionVerified shouldBe false
+        dirtyResult.report.diagnostics.single().code shouldBe
             ActorDiagnosticCodeV1.SOURCE_REVISION_UNVERIFIED
         preflightCalled shouldBe false
         executorCalled shouldBe false
@@ -610,6 +638,31 @@ class ActorControlPlaneTest : FunSpec({
         imported.status shouldBe source.envelope.status
         imported.manifest shouldBe source.envelope.manifest
         imported.streamEpisodes().toList() shouldBe listOf(testB2Episode(testPlan().resolve(0)).trajectory)
+    }
+
+    test("publication rejects a mutated staging copy before final envelope move") {
+        val source = publishActorSource(testPlan().resolve(0), "staging-mutation")
+        val destination = Files.createTempDirectory("actor-staging-mutation-envelope-")
+        val finalDirectory = destination.resolve("envelope-${source.envelope.manifest.datasetId}")
+
+        shouldThrow<Exception> {
+            LocalPublicationEnvelopeV1.publishWithStagingObserver(
+                sourceDatasetDirectory = source.envelope.datasetDirectory,
+                destinationDirectory = destination,
+                assignment = source.envelope.assignment,
+                status = source.envelope.status,
+                report = source.envelope.report,
+            ) { stagedDatasetDirectory ->
+                val shard = Files.walk(stagedDatasetDirectory).use { stream ->
+                    stream.iterator().asSequence()
+                        .filter { path -> path.fileName.toString().endsWith(".ndjson") }
+                        .single()
+                }
+                Files.write(shard, Files.readAllBytes(shard) + byteArrayOf(0))
+            }
+        }
+
+        Files.exists(finalDirectory) shouldBe false
     }
 
     test("re-import rejects a bundle whose report does not prove source revision") {
@@ -1146,6 +1199,17 @@ private fun testB2Episode(
     )
 }
 
+private fun testPlanWithEngineCommit(engineCommit: String): WorkloadPlanV1 {
+    val plan = testPlan()
+    return plan.copy(
+        jobs = plan.jobs.map { job ->
+            job.copy(
+                environmentIdentity = job.environmentIdentity.copy(engineCommit = engineCommit),
+            )
+        },
+    )
+}
+
 private data class PublishedActorSource(
     val envelope: LocalPublishedEnvelopeV1,
     val trajectory: TrajectoryV1,
@@ -1193,12 +1257,6 @@ private fun publishActorSource(
     return PublishedActorSource(envelope, generated.trajectory, generated.binding)
 }
 
-private class FakeSourceBootstrapProbe(
-    private val observation: SourceBootstrapObservationV1,
-) : SourceBootstrapProbeV1 {
-    override fun inspect(): SourceBootstrapObservationV1 = observation
-}
-
 private class FakeActorClock : ActorClock {
     private var nowNanos: Long = 0
     override fun utcNow(): String = "2026-09-15T12:00:00Z"
@@ -1206,6 +1264,38 @@ private class FakeActorClock : ActorClock {
     fun advanceNanos(delta: Long) {
         nowNanos += delta
     }
+}
+
+private data class SourceRepositoryFixture(
+    val root: Path,
+    val commit: String,
+)
+
+private fun createSourceRepository(): SourceRepositoryFixture {
+    val root = Files.createTempDirectory("actor-source-repository-")
+    Files.writeString(root.resolve("pin.txt"), "pinned")
+    runGit(root, "init", "--quiet")
+    runGit(root, "config", "user.name", "KACTOR Test")
+    runGit(root, "config", "user.email", "kactor-test@example.invalid")
+    runGit(root, "add", "pin.txt")
+    runGit(root, "commit", "--quiet", "-m", "initial source")
+    return SourceRepositoryFixture(root, runGit(root, "rev-parse", "HEAD"))
+}
+
+private fun runGit(root: Path, vararg arguments: String): String {
+    val process = ProcessBuilder(buildList {
+        add("git")
+        addAll(arguments)
+    })
+        .directory(root.toFile())
+        .redirectErrorStream(true)
+        .start()
+    val output = String(process.inputStream.readAllBytes(), StandardCharsets.UTF_8)
+    check(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+        "Git test command timed out"
+    }
+    check(process.exitValue() == 0) { "Git test command failed: ${output.trim()}" }
+    return output.trim()
 }
 
 private class RecordingStatusSink : ActorStatusSink {
