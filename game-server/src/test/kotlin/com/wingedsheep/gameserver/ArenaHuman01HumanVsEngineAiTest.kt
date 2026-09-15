@@ -54,7 +54,7 @@ class CapturingMatchResultSink : MatchResultSink {
         "game.ai.mode=llm",
         "game.ai.api-key=",
         "game.ai.open-router-api-key=",
-        "game.ai.thinking-delay-ms=30000",
+        "game.ai.thinking-delay-ms=0",
         "game.hand-smoother.enabled=false",
     ],
 )
@@ -138,6 +138,24 @@ class ArenaHuman01HumanVsEngineAiTest : GameServerTestBase() {
             eventually(10.seconds) {
                 game.hasMulliganComplete(humanId) shouldBe true
             }
+
+            // HUMAN_AI_09: a post-mulligan choice still travels through the normal player
+            // protocol. Wait for a legal priority window instead of guessing whose turn is first.
+            var humanActionSent = false
+            eventually(20.seconds) {
+                if (!humanActionSent && game.getLegalActions(humanId).any { it.action is PassPriority }) {
+                    client.send(ClientMessage.SubmitAction(PassPriority(humanId)))
+                    humanActionSent = true
+                }
+                game.getRecordedActions().any {
+                    it.playerId == humanId && it is PassPriority
+                } shouldBe true
+            }
+
+            // HUMAN_AI_08/HUMAN_AI_10: the human action is attributed to Akiri, while a later
+            // priority action is attributed to Chevill's existing forced Engine AI seat.
+            game.getRecordedActions().any { it.playerId == aiSeat.identity.playerId } shouldBe true
+            game.getRecordedActions().filter { it is PassPriority && it.playerId == humanId }.shouldHaveSize(1)
 
             val intruder = createClient()
             intruder.connectAs("Arena Intruder")
