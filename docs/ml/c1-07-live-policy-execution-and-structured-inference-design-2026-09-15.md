@@ -30,7 +30,7 @@ server-owned fixed Arena profile
   -> one coherent perspective-safe live Gym/C1 snapshot
   -> alias-only C1 model-facing request
   -> long-lived local Python runtime
-  -> Python ScoreProvider + Selection V2 + PolicyTieRng V1
+  -> Python ScoreProvider + ordinal-selection core + PolicyTieRng V1
   -> selected source-binding ordinal
   -> JVM revalidation against the exact current domain
   -> existing GameSession action/DecisionResponse path
@@ -50,8 +50,18 @@ The repository already supplies most semantic ingredients:
 * ChosenSemanticActionV1 and ChosenSemanticResponseV1 validate semantic
   membership without making the model authoritative for legality.
 * Python already provides ScoreProvider, InferenceContext, InferenceRuntime,
-  Selection V2, PolicyTieRng V1, strict checkpoint manifests, and Safetensors
-  verification.
+  the exact-bindable offline Selection V2 contract, PolicyTieRng V1, strict
+  checkpoint manifests, and Safetensors verification.
+
+The existing exact-bindable Selection V2 contract cannot be used unchanged at
+the live seam: SelectionCandidate requires ExactSemanticSourceBinding and the
+selector uses that binding for injectivity, membership, and its result. C1_07A
+therefore must split the live path into an ordinal-selection core and an
+exact-source-binding adapter, or introduce the equivalent generic
+SelectionAddressCandidate primitive. Python receives only model features,
+ordinals, validated masks/discriminators, and RNG state. The JVM retains exact
+source binding, injectivity, current-domain membership, final mapping, and
+execution.
 
 The current end-to-end live seat is nevertheless not executable safely:
 
@@ -123,7 +133,14 @@ origin/main; acceptance is not inferred from a green local test alone.
 | C1_03/A/B/C | PRs #187, #189, #190, #191, #193; readmission merge 9cd9314dcf62497014b930ef6bf50c1db78be5bf | Readmission and limited flat reference bootstrap accepted. ACTION_CANDIDATES and FOLDED_DECISION_OPTIONS are admitted; structured families are not. |
 | C1_04 | PR #194, merge f1766919524da248f17a35a853465f3d21b19aff | Local PyTorch/Safetensors/Trackio tooling boundary accepted. Manifest remains semantic authority. |
 | C1_05 | PR #197, head 0786fc1fdec8ce36e72cdae79b62455e777a5f7c, merge 888dca8d8e413d041cd4384f2d80e3d33faecf76 | Source-bound label sidecar and accepted C1_05 artifact are recorded as accepted. |
-| C1_06 | PR #199, head 6a0d682931913862022d577088dd691f31738d88, merge 03bce91dea0502d74c7af2a1bab5acc2e43f1fa2 | Merged; all listed Hosted CI jobs pass; coverage job skipped. Independent exact-SHA/code-review acceptance is not established. |
+| C1_06 | PR #199, head 6a0d682931913862022d577088dd691f31738d88, merge 03bce91dea0502d74c7af2a1bab5acc2e43f1fa2 | Merged; all listed Hosted CI jobs pass; coverage job skipped. Final code review and exact-SHA acceptance are YES at the final head; no ml/src production code changed after the reviewed implementation. |
+
+The exact-reviewed C1_06 implementation stand was 76b80c5. The delta to the
+final PR head 6a0d682931913862022d577088dd691f31738d88 was limited to
+.github/workflows/ci.yml, the C1_06 design document,
+ml/tests/test_c1_06_feed_forward.py, and
+ml/tests/test_learner_boundary.py. No ml/src production code changed. Hosted
+CI on the final head was successful, and PR #199 was merged into main.
 
 The current #124 status sync explicitly records:
 
@@ -134,8 +151,11 @@ C1_02_FINAL_ACCEPTANCE_PASS=YES
 C1_03_C1_03A_C1_03B_C1_03C_ACCEPTED=YES
 C1_04_FINAL_ACCEPTANCE_PASS=YES
 C1_05_FINAL_ACCEPTANCE_PASS=YES
-C1_06_CODE_REVIEW_PASS=NO
-C1_06_FINAL_ACCEPTANCE_PASS=NO
+C1_06_IMPLEMENTATION_PASS=YES
+C1_06_GPU_SMOKE_EXECUTION_PASS=YES
+C1_06_CODE_REVIEW_PASS=YES
+C1_06_HOSTED_CI_PASS=YES
+C1_06_FINAL_ACCEPTANCE_PASS=YES
 ~~~
 
 Source: [issue #124](https://github.com/chrismaghuhn/argentum-engine/issues/124)
@@ -158,8 +178,9 @@ POLICY_RNG_CONTRACT=argentum-ml-policy-tie-rng@v1
 ~~~
 
 The physical checkpoint path in the report is local temporary storage, not a
-repository artifact. No weights.safetensors is committed. Hosted CI is evidence
-for the merged implementation, not authorization for live gameplay.
+repository artifact. No weights.safetensors is committed. The accepted C1_06
+implementation and final status are a read-only baseline for future work; they
+do not authorize live gameplay implementation in C1_07.
 
 ### 2.4 Baseline verification
 
@@ -229,6 +250,10 @@ TrajectoryV1 / A7 trust
   -> ExactSemanticSourceBinding
 ~~~
 
+This is the accepted offline exact-bindable path. It is not the live wire
+contract: the live path must select an ordinal and keep the exact binding
+adapter on the JVM side.
+
 Concrete ownership:
 
 | owner / file | method or type | input | output | lifecycle / failure behavior |
@@ -240,8 +265,9 @@ Concrete ownership:
 | ml/.../derived_reader.py | DerivedArtifactReader.open, iter_validated_samples_for_inference | fixed manifest and NDJSON files | reader-issued ValidatedDerivedSample | Strict canonical bytes, counts, digests, cross-field membership, privacy, and version checks; failures close the path. |
 | ml/.../variable_batch.py | VariableDomainItem, VariableDomainBatch | immutable model input and candidate feature views | variable-width transport with masks | Preserves all supplied candidates; no truncation/top-k; structured items cannot carry flat candidates. |
 | ml/.../inference/runtime.py | InferenceRequest.from_validated_sample | ValidatedDerivedSample and VariableDomainItem | reader-bound InferenceRequest | Rejects transport drift, wrong order, missing source fields, and structured input without approved selector. |
-| ml/.../inference/runtime.py | InferenceRuntime.select | request, ScoreProvider, PolicyTieRngStateV1 | SelectionResult with exact source binding | Requires matching checkpoint/profile; rejects structured input, provider errors, bad score count, non-finite scores, and Selection errors. |
-| ml/.../selection/selection_v2.py | select_v2 | exact candidates, scores, masks, semantic discriminator, RNG state | exact binding and RNG cursor result | Unique max and valid semantic tie use no RNG; unresolved exact tie uses only PolicyTieRng V1. |
+| ml/.../inference/runtime.py | InferenceRuntime.select | request, ScoreProvider, PolicyTieRngStateV1 | SelectionResult with exact source binding | Offline exact-bindable path only; requires matching checkpoint/profile and rejects structured input, provider errors, bad score count, non-finite scores, and Selection errors. |
+| ml/.../selection/selection_v2.py | select_v2 | exact candidates, scores, masks, semantic discriminator, RNG state | exact binding and RNG cursor result | Existing offline contract; unique max and valid semantic tie use no RNG, unresolved exact tie uses only PolicyTieRng V1. |
+| C1_07A proposed SelectionAddressCandidate / ordinal-selection core | live feature views, sourceBindingOrdinal, presence/executable masks, validated semantic discriminator, RNG state | selected ordinal and next RNG state | New live primitive; it must not accept or return ExactSemanticSourceBinding. The exact-source-binding adapter, injectivity, membership, and final mapping remain JVM-owned. |
 
 ### 4.2 Existing live Arena graph
 
@@ -380,7 +406,7 @@ forbidden_fix=GameSession raw state -> ad hoc ML JSON
 | --- | --- | --- | --- | --- |
 | ml/src/argentum_ml/checkpoint/manifest.py | ArgentumCheckpointManifestV1.from_path, validate_weight_file | regular manifest/weight files | immutable validated manifest / digest check | No server-owned profile registry or live process loader. |
 | ml/src/argentum_ml/inference/provider.py | ScoreProvider | immutable model input and candidate feature views | one score per supplied candidate | C1_06 raw Torch module is not yet an adapter implementing it. |
-| ml/src/argentum_ml/inference/runtime.py | InferenceContext.from_checkpoint | validated manifest and numeric profile | checkpoint-bound context | Requires manifest compatibility with Selection V2 and PolicyTieRng V1. |
+| ml/src/argentum_ml/inference/runtime.py | InferenceContext.from_checkpoint | validated manifest and numeric profile | checkpoint-bound context | Requires manifest compatibility with the offline Selection V2 contract, live ordinal-selection contract, and PolicyTieRng V1. |
 | ml/src/argentum_ml/inference/runtime.py | InferenceRequest.from_validated_sample | ValidatedDerivedSample and VariableDomainItem | reader-issued request | Factory is offline-reader-issued; it cannot consume a live snapshot. |
 | ml/src/argentum_ml/inference/runtime.py | InferenceRuntime.select | request, provider, RNG state | exact SelectionResult | Rejects every structured_domain with C1_00_STRUCTURED_INFERENCE_TOTALITY=NO. |
 | ml/src/argentum_ml/selection/selection_v2.py | select_v2 | exact source bindings and scores | exact binding, ordinal audit, RNG cursor | Correctly avoids physical-row preference; no JVM equivalent exists. |
@@ -596,7 +622,7 @@ evidence available without generating new trajectories. It proves observed
 families, not all future branches. Static curriculum counts are potential only.
 No unobserved family is promoted to supported by name alone.
 
-| family | reachability evidence in current sources | training label coverage | model input encoding | complete current domain | exact source binding | Selection V2 totality | live execution today |
+| family | reachability evidence in current sources | training label coverage | model input encoding | complete current domain | exact source binding | offline Selection V2 totality | live execution today |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | targetless ACTION_CANDIDATES | Observed extensively in accepted artifact | YES for admitted exact-bindable flat rows | YES, C1 model-facing candidate JSON | YES | YES when no required payload | YES in Python | NO, live snapshot/runtime missing |
 | FOLDED_DECISION_OPTIONS | 2,149 decisions in accepted artifact | YES for admitted folded rows | YES | YES for current folded types | YES through ChosenSemanticResponseV1 | YES in Python | NO, live snapshot/runtime missing |
@@ -720,7 +746,7 @@ LLM Engine fallback.
 | option | authority | latency/startup | verification | failure/lifecycle | portability/security/testability | decision |
 | --- | --- | --- | --- | --- | --- | --- |
 | Python process per decision | Python owns one call | high process startup/import cost | repeated checkpoint load or unsafe cache | many crash/timeout races; no stable runtime state | easy prototype, poor determinism and portability | REJECT |
-| long-lived local Python subprocess with framed stdin/stdout | JVM owns launch/profile; Python owns model scoring/selection | one startup; low per-call framing cost; bounded queue | verify manifest/weights once, then match profile on every request | explicit health, timeout, shutdown, crash, in-flight correlation | no network surface, fixed command, deterministic test double, Windows/Linux portable | RECOMMENDED |
+| long-lived local Python subprocess with framed stdin/stdout | JVM owns launch/profile; Python owns model scoring and ordinal selection | one startup; low per-call framing cost; bounded queue | verify manifest/weights once, then match profile on every request | explicit health, timeout, shutdown, crash, in-flight correlation | no network surface, fixed command, deterministic test double, Windows/Linux portable | RECOMMENDED |
 | localhost-only inference HTTP service | JVM/operator owns a separate service | one startup; HTTP overhead and deployment coordination | service repeats exact manifest/profile checks | service discovery/restart/port ambiguity | debuggable, but larger network/config surface | DEFERRED ALTERNATIVE |
 | JVM-native Torch/Safetensors implementation | JVM owns everything | potentially low after load | new loader and numeric-equivalence proof | JVM failure is server failure | no Python dependency, but no current loader and high risk | REJECT for first live seat |
 | cloud/remote API | external provider owns execution | network latency/availability | cannot bind accepted local checkpoint semantics | remote failure and privacy exposure | violates local-only first-seat boundary | REJECT |
@@ -736,13 +762,18 @@ profile checkpoint once and reports typed health.
 The worker must import optional learner dependencies only inside the worker,
 load a validated ArgentumCheckpointManifestV1, verify manifest and weight
 digests, instantiate the exact C1_06 architecture/config, wrap it in a
-ScoreProvider, run InferenceRuntime/Selection V2/PolicyTieRng V1, accept only
-versioned framed requests, and never open TrajectoryV1, C1_05 data, raw
-GameState, or source directories. It has no Internet inference path.
+ScoreProvider, and use the live ordinal-selection core plus PolicyTieRng V1.
+For offline exact-bindable samples, the existing InferenceRuntime/Selection V2
+contract remains unchanged. The live worker must not construct
+ExactSemanticSourceBinding or call the current exact-binding selector unchanged.
+It accepts only versioned framed requests and never opens TrajectoryV1, C1_05
+data, raw GameState, or source directories. It has no Internet inference path.
 
 The JVM adapter owns request correlation, current-domain revalidation, timeout,
-process health, match failure closure, and controller persistence. Python owns
-score computation and accepted selection.
+process health, exact-source-binding mapping/injectivity, match failure
+closure, and controller persistence. Python owns score computation, ordinal
+selection, and the PolicyTieRng state transition; it returns only the selected
+ordinal and the next RNG state.
 
 ## 11. Live inference request and response contract
 
@@ -761,6 +792,7 @@ separate.
   "checkpointId": "f4b191d99734af66a5643c988ce3c2f2198a2957be24e2a717287006a43124c5",
   "inferenceContractIdentity": "argentum-ml-inference@v1",
   "selectionContractIdentity": "argentum-ml-policy-selection@v2",
+  "selectionAddressContractIdentity": "argentum-ml-live-selection-address@v1",
   "policyRngContractIdentity": "argentum-ml-policy-tie-rng@v1",
   "numericProfileClass": "C1_REFERENCE_NUMERIC_PROFILE",
   "policyRngState": {
@@ -783,9 +815,10 @@ separate.
     }
   ],
   "selectionBindingChannel": {
-    "kind": "alias-only-source-binding-certificate",
-    "completeLegalDomain": {},
+    "kind": "ordinal-only-live-selection-address@v1",
     "sourceBindingOrdinals": [0],
+    "presentMask": [true],
+    "executableSupportMask": [true],
     "semanticTieDiscriminators": {}
   }
 }
@@ -802,11 +835,15 @@ Rules:
 * candidates are transport records. The worker passes only featureView to
   ScoreProvider; ordinal, presence, executable support, and bindings remain
   control data.
-* the binding channel is alias-only and may be used by Python Selection V2 for
-  validation and tie handling. It cannot contain raw GameState, raw EntityId
-  values, object references, paths, PIDs, or debug reveal fields.
-* the JVM keeps the raw exact source mapping locally. Python need not return a
-  raw action.
+* the live selectionBindingChannel is ordinal-only. The JVM validates exact
+  source-binding injectivity and derives the ordinal/masks/discriminators before
+  sending the request. Python uses the validated control data with the new
+  ordinal-selection core; it does not use the current exact-binding Selection
+  V2 entry point unchanged.
+* the channel cannot contain raw GameState, raw EntityId values, exact
+  GameAction/DecisionResponse objects, object references, paths, PIDs, or debug
+  reveal fields. The JVM keeps the exact source mapping locally, and Python
+  returns no raw action or response.
 * the server supplies the complete current domain unchanged. The worker cannot
   add, delete, reorder, or repair candidates.
 
@@ -819,6 +856,7 @@ Rules:
   "requestId": "same-transport-correlation-only",
   "profileIdentity": "server-owned-profile-id",
   "checkpointId": "f4b191d99734af66a5643c988ce3c2f2198a2957be24e2a717287006a43124c5",
+  "selectionAddressContractIdentity": "argentum-ml-live-selection-address@v1",
   "selectedSourceBindingOrdinal": 0,
   "scoredCandidateCount": 1,
   "scoreVectorDigest": "optional-internal-diagnostic-digest",
@@ -838,22 +876,74 @@ filesystem path.
 
 ~~~text
 1. Build one lock-coherent LivePolicyDecisionSnapshot.
-2. Compute observation/domain digests and alias-only model input.
-3. Send one request outside GameSession.stateLock.
-4. Validate response envelope and requestId.
-5. Re-enter the GameSession-authoritative seam.
-6. Recompute or compare exact current observation/domain digest.
-7. Reject a stale response; do not retry it as a different action.
-8. Require selected ordinal in the exact current source domain.
-9. Map ordinal to the JVM-held exact LegalAction/DecisionResponse.
-10. Validate semantic membership and required payload completeness.
-11. Execute through existing GameSession.executeAction().
-12. Commit returned PolicyTieRng cursor only with the successful action.
-13. Persist controller state and broadcast through existing lifecycle code.
+2. Validate the exact current source-binding map is injective and derive the
+   ordinal/masks/discriminators for the alias-only request.
+3. Compute observation/domain digests and alias-only model input.
+4. Send one request outside GameSession.stateLock.
+5. Validate response envelope and requestId.
+6. Re-enter the GameSession-authoritative seam.
+7. Recompute or compare exact current observation/domain digest.
+8. Reject a stale response; do not retry it as a different action.
+9. Require selected ordinal in the exact current source domain.
+10. Map ordinal to the JVM-held exact LegalAction/DecisionResponse.
+11. Validate semantic membership and required payload completeness.
+12. Execute through existing GameSession.executeAction().
+13. Commit returned PolicyTieRng cursor only with the successful action.
+14. Persist controller state and broadcast through existing lifecycle code.
 ~~~
 
-Selection V2 keeps one owner while Argentum remains the only transition
-authority. A valid ordinal with a stale digest is rejected.
+The JVM exact-source-binding adapter is the live binding authority while
+Argentum remains the only transition authority. A valid ordinal with a stale
+digest is rejected.
+
+### 11.4 Live ordinal-selection primitive and equivalence gate
+
+C1_07A must introduce a small generic live primitive, either named
+SelectionAddressCandidate or expressed as a split of Selection V2:
+
+~~~text
+ordinal-selection core
+  inputs: scores, sourceBindingOrdinal, presence/executable masks,
+          validated semantic tie discriminator, PolicyTieRng state
+  output: selectedSourceBindingOrdinal, next PolicyTieRng state
+
+exact-source-binding adapter
+  JVM-owned exact LegalAction/DecisionResponse binding
+  JVM-owned injectivity and current-domain membership
+  JVM-owned ordinal -> exact binding mapping
+  JVM-owned final revalidation and execution
+~~~
+
+The live core must not require, serialize, or return
+ExactSemanticSourceBinding. The existing Python Selection V2
+exact-bindable contract remains available for offline samples. The live core
+may be implemented in Python, but its selection semantics must be extracted
+or refactored rather than approximated.
+
+The C1_07A equivalence gate is:
+
+~~~text
+for every flat exact-bindable domain:
+  old SelectionV2(exact bindings)
+  ==
+  new ordinal-selection core
+        followed by the JVM exact-source-binding adapter
+~~~
+
+The executable proof must cover all of the following:
+
+* unique maximum, with no RNG cursor advancement;
+* valid semantic discriminator tie, with no RNG cursor advancement;
+* unresolved exact tie, with identical PolicyTieRng draw choice and next cursor;
+* presence and executable masks, including rejected/absent candidates;
+* candidate permutations, with semantic association preserved by ordinal;
+* mapping the selected ordinal back to the same exact source binding.
+
+The comparison uses the same scores, candidate metadata, semantic
+discriminators, and initial RNG state. It compares selected ordinal/exact
+binding and post-selection RNG state, and includes invalid/stale membership
+cases at the JVM adapter boundary. No raw exact action or response crosses the
+Python seam in any vector or production request.
 
 ## 12. Checkpoint provisioning and verification
 
@@ -875,6 +965,7 @@ binds:
   expectedConfigDigest=542b74694061b07c8adc397e27ea3a57b71edaaa33af24b05b99099d95d3c966
   expectedInferenceContract=argentum-ml-inference@v1
   expectedSelection=argentum-ml-policy-selection@v2
+  expectedLiveSelectionAddress=argentum-ml-live-selection-address@v1
   expectedPolicyRng=argentum-ml-policy-tie-rng@v1
   expectedNumericProfile=C1_REFERENCE_NUMERIC_PROFILE
   expectedC1_06SourceCommit=943338abbaf47f289cfe606acd50caf0a2b15ef5
@@ -938,8 +1029,10 @@ are operational provenance, not controller id, checkpoint id, or RNG seed.
 
 ## 14. PolicyTieRng and determinism
 
-Selection V2 and PolicyTieRng V1 remain Python-owned. The server adds no second
-argmax or tie breaker.
+PolicyTieRng V1 and the live ordinal-selection core remain Python-owned. The
+existing exact-bindable Selection V2 remains the offline Python contract. The
+server adds no second argmax or tie breaker, but it owns the exact-source-binding
+adapter and final membership revalidation.
 
 For a live policy instance:
 
@@ -966,8 +1059,8 @@ Selection handling:
 
 * unique maximum: cursor unchanged;
 * valid semantic discriminator tie: cursor unchanged;
-* unresolved exact tie: only Selection V2 consumes words and returns the
-  post-draw cursor;
+* unresolved exact tie: only the Selection V2-equivalent ordinal-selection core
+  consumes words and returns the post-draw cursor;
 * stale/rejected action: cursor is not committed as a successful choice;
 * unknown in-flight response after process failure: match fails closed rather
   than guessing whether the draw/action committed.
@@ -1271,7 +1364,8 @@ Required additional REDs:
 | ControllerKind and per-seat authority | GENERIC_CONTROLLER_PRIMITIVE_MISSING | Add versioned seat descriptor; legacy fields remain compatibility projections. |
 | ML runtime and ScoreProvider wrapper around C1_06 | CHECKPOINT_RUNTIME_PRIMITIVE_MISSING | Long-lived fixed local Python worker, strict load/health contract. |
 | persisted profile/checkpoint/numeric/RNG state and atomic commit | PERSISTENCE_PRIMITIVE_MISSING | Add ControllerAuthorityV1 and game-scoped policy runtime state. |
-| Selection V2 / PolicyTieRng implementation | NO_GAP | Keep Python-owned; do not duplicate in Kotlin. |
+| offline exact-bindable Selection V2 / PolicyTieRng implementation | NO_GAP | Preserve the existing Python offline contract; do not duplicate it in Kotlin. |
+| live ordinal selection plus exact-source-binding adapter | LIVE_SELECTION_BINDING_PRIMITIVE_MISSING | Add SelectionAddressCandidate or the equivalent ordinal-selection-core/exact-source-binding-adapter split in C1_07A. Prove equivalence to existing flat exact-bindable Selection V2 before runtime wiring. |
 | current Engine AI identity/session plumbing | NO_GAP for Engine AI | Preserve existing AiGameManager/AiWebSocketSession path. |
 | ML adapter into GamePlayHandler and match failure closure | ADAPTER_MISSING | New ML-only callback/handler with no safe fallback. |
 
@@ -1291,13 +1385,20 @@ Scope:
 * define versioned structured-choice alternatives/prefix semantics only where
   complete and injective;
 * add AssignDamage/partial mana to the explicit unsupported matrix;
-* define live request/response and Selection V2 ownership;
+* define the ordinal-only live request/response and the split ownership:
+  Python ordinal-selection core plus PolicyTieRng, JVM exact-source-binding
+  adapter, injectivity, membership, revalidation, and execution;
+* add SelectionAddressCandidate or the equivalent Selection V2 split;
+* add the executable flat-domain equivalence proof for unique max, semantic
+  discriminator ties, PolicyTieRng ties, masks, permutations, and cursor
+  advancement;
 * add ML_SEAT_09 through ML_SEAT_15 and ML_SEAT_26 through ML_SEAT_29 REDs.
 
 Gate:
 
 ~~~text
 STRUCTURED_CONTRACT_REVIEW_PASS=YES
+LIVE_SELECTION_EQUIVALENCE_PASS=YES
 LIVE_MODEL_INPUT_PARITY=YES
 or an explicit bounded profile matrix with unsupported families proven
 unreachable by the accepted locked pair
@@ -1314,7 +1415,8 @@ Scope:
 * validate exact manifest/weight/profile/numeric contracts at startup;
 * implement framed request/response, correlation, timeout, health, crash, and
   no-network behavior;
-* keep Selection V2 and PolicyTieRng in Python;
+* keep PolicyTieRng and the proven ordinal-selection core in Python; retain
+  exact-bindable Selection V2 for offline use only;
 * add ML_SEAT_04 through ML_SEAT_06, ML_SEAT_10 through ML_SEAT_13,
   ML_SEAT_16, and ML_SEAT_30/31 runtime tests.
 
@@ -1324,6 +1426,7 @@ Prerequisites:
 C1_06_FINAL_ACCEPTANCE_PASS=YES
 C1_06 accepted code/checkpoint contract on implementation baseline
 C1_07A structured/live contract accepted
+LIVE_SELECTION_EQUIVALENCE_PASS=YES
 CPU_GAMEPLAY_INFERENCE_AUTHORIZED=NO unless a new profile is accepted
 ~~~
 
@@ -1374,31 +1477,38 @@ training/RL/self-play
 
 Blocking conditions:
 
-1. C1_06_FINAL_ACCEPTANCE_PASS=NO. Merged PR and Hosted CI are not a
-   substitute for independent exact-SHA/code-review acceptance.
-2. No accepted live GameSession-to-C1 model-facing snapshot exists.
-3. Current C1 runtime rejects structured input and current source binding
+1. No accepted live GameSession-to-C1 model-facing snapshot exists.
+2. Current C1 runtime rejects structured input and current source binding
    rejects action templates with required payloads.
-4. No generic structured-choice selector exists for observed target,
+3. No generic structured-choice selector exists for observed target,
    card-selection, payment, attack, and repeat surfaces.
-5. Current controller/persistence fields cannot distinguish ML Policy from
+4. Current controller/persistence fields cannot distinguish ML Policy from
    Engine AI or carry exact checkpoint/RNG authority.
-6. No checkpoint artifact is physically provisioned in the repository/server
+5. No checkpoint artifact is physically provisioned in the repository/server
    runtime, and C1_06 does not certify CPU gameplay inference.
-7. Existing Engine-AI fallbacks would violate ML fail-closed behavior if reused
+6. Existing Engine-AI fallbacks would violate ML fail-closed behavior if reused
    without a ControllerKind branch.
 
-These blockers are characterized, not worked around. This design does not lower
-C1 acceptance criteria, use a fake LLM model name, treat forceEngine=false as
-ML, choose first/random/heuristic structured options, or auto-concede ML.
+C1_06 is no longer a blocker: its implementation, GPU smoke, code review,
+Hosted CI, and final acceptance are YES at the final PR head. The live
+selection primitive is an explicitly classified C1_07A implementation
+dependency, not permission to send exact bindings across the seam.
+
+These blockers are characterized, not worked around. This design does not
+lower C1 acceptance criteria, use a fake LLM model name, treat forceEngine=false
+as ML, choose first/random/heuristic structured options, or auto-concede ML.
 
 ## 23. Final design gate
 
 ~~~text
 TASK=C1_07_LIVE_POLICY_EXECUTION_AND_STRUCTURED_INFERENCE_TOTALITY_DESIGN
 
-C1_06_STATE=PR_199_MERGED_HOSTED_CI_PASS_INDEPENDENT_EXACT_SHA_REVIEW_NOT_ESTABLISHED
-C1_06_FINAL_ACCEPTANCE_PASS=NO
+C1_06_STATE=PR_199_MERGED_FINAL_HEAD_6a0d682931913862022d577088dd691f31738d88_HOSTED_CI_AND_EXACT_SHA_ACCEPTED
+C1_06_IMPLEMENTATION_PASS=YES
+C1_06_GPU_SMOKE_EXECUTION_PASS=YES
+C1_06_CODE_REVIEW_PASS=YES
+C1_06_HOSTED_CI_PASS=YES
+C1_06_FINAL_ACCEPTANCE_PASS=YES
 C1_06_IMPLEMENTATION_USED=MAIN
 
 LIVE_MODEL_INPUT_PARITY=PARTIAL
@@ -1417,8 +1527,10 @@ STRUCTURED_EXECUTION_TOTALITY=NO
 
 RECOMMENDED_POLICY_RUNTIME=
   one long-lived fixed local Python subprocess with framed stdin/stdout;
-  Python owns C1_06 ScoreProvider, Selection V2, and PolicyTieRng V1;
-  JVM owns profile launch, current-domain revalidation, transition, and failure closure
+  Python owns C1_06 ScoreProvider, the live ordinal-selection core, and
+  PolicyTieRng V1; existing exact-bindable Selection V2 remains offline;
+  JVM owns profile launch, exact-source-binding map/injectivity, current-domain
+  revalidation, transition, and failure closure
 
 RECOMMENDED_CONTROLLER_SEAM=
   versioned per-seat ControllerKind plus deep ML PolicySeatRuntime;
@@ -1434,13 +1546,17 @@ HIDDEN_INFO_TO_MODEL=NO
 ENGINE_AI_FALLBACK_FOR_ML=NO
 RANDOM_FALLBACK_FOR_ML=NO
 FIRST_CHOICE_FALLBACK_FOR_ML=NO
+LIVE_SELECTION_BINDING_PRIMITIVE_MISSING=YES
+LIVE_SELECTION_EQUIVALENCE_GATE_REQUIRED=YES
 
 ML_POLICY_SEAT_IMPLEMENTATION_AUTHORIZED=NO
+C1_07A_IMPLEMENTATION_AUTHORIZED=NO
 
 P1=0
 P2=0
 P3=1
 
+DESIGN_REVIEW_PASS=PENDING_EXACT_SHA_REVIEW
 DESIGN_PASS=YES
 PR_CREATED=NO
 NEXT_TASK_STARTED=NO
