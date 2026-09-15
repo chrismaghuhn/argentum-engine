@@ -53,25 +53,33 @@ IDLE
   -> LIVE
   -> COMPLETE
 
-STARTING / WAITING_FOR_LIVE_GAME / LIVE --poll failure--> ERROR
-STARTING --create failure--> ERROR
-ERROR --explicit retry--> STARTING
+STARTING --create failure--> ERROR(kind=CREATE_ERROR)
+WAITING_FOR_LIVE_GAME / LIVE --poll failure--> ERROR(kind=STATUS_ERROR)
+WAITING_FOR_LIVE_GAME / LIVE --confirmed 404--> ERROR(kind=LOST_LOBBY)
+ERROR(kind=STATUS_ERROR) --retry status--> WAITING_FOR_LIVE_GAME / LIVE
+ERROR(kind=CREATE_ERROR) --explicit start--> STARTING
+ERROR(kind=LOST_LOBBY) --explicit start new match--> STARTING
 ```
 
 The page uses a ref set before awaiting the create request so one user start action can issue at
 most one POST even if React rerenders or the button is clicked rapidly. Polling begins only after a
-successful response supplies a lobby id. It stops on completion, a non-recoverable 404, or another
-poll error. A disabled endpoint is reported as a clear message and never enters a polling loop.
+successful response supplies a lobby id. A status failure preserves that lobby id and stops the
+current poll cycle; its retry action performs another GET for the same lobby and never creates a
+second match. Only an explicit `Start new match` action may clear a known lobby and issue a new POST.
+A confirmed 404 is treated as `LOST_LOBBY`, while a create-time 404 is treated as the disabled dev
+endpoint. Completion, a confirmed lost lobby, or a non-retryable poll error stops polling.
 
-The first server-reported live game is eligible for automatic navigation exactly once. A separate
-manual `Watch` action remains available for the live row. Navigation uses the existing full-page
-pattern `/?spectate=<encodedGameSessionId>`; the Arena does not connect to or render spectator data
-itself.
+The first server-reported live game is eligible for automatic navigation exactly once. The page
+records `argentum-research-arena-watched:<gameSessionId>` in `sessionStorage` before navigating, so
+returning with the browser Back button does not auto-watch the same game again. A separate manual
+`Watch` action remains available for the live row. Navigation uses the existing full-page pattern
+`/?spectate=<encodedGameSessionId>`; the Arena does not connect to or render spectator data itself.
 
 ## UI
 
-Register `/dev/research-arena` in the existing `main.tsx` route table and add a `Research Arena`
-button to the existing development-only `HomeScreen` Lab section. The page is visibly labeled
+Register both `/dev/research-arena` and `/dev/research-arena/:lobbyId` in the existing `main.tsx`
+route table and add a `Research Arena` button to the existing development-only `HomeScreen` Lab
+section. The page is visibly labeled
 `Development / ML Research Tooling` and uses layout B:
 
 - a matchup card for Akiri, Fearless Voyager versus Chevill, Bane of Monsters;
@@ -83,6 +91,12 @@ button to the existing development-only `HomeScreen` Lab section. The page is vi
   each source's path, commander, card count, and digest without changing or truncating stored data;
 - clear launch, polling, completed, and dev-endpoint-disabled error copy with an explicit retry/new
   match action.
+
+After create succeeds, navigate to `/dev/research-arena/:lobbyId`. Mounting that parameterized route
+restores the lobby context by fetching the existing status endpoint immediately. `STATUS_ERROR`
+offers `Retry status` with the preserved lobby id; `CREATE_ERROR` and `LOST_LOBBY` offer explicit
+new-match creation. Returning from `/?spectate=...` therefore restores the same Arena lobby and
+provenance instead of showing a fresh empty page.
 
 The page does not expose controller selectors, deck maps, source-file inputs, model/checkpoint
 inputs, ML policy behavior, pacing controls, player actions, reveal/debug flags, or a second
@@ -105,11 +119,15 @@ overrides, model overrides, card counts, raw `GameState`, or private-information
 
 ## Error handling
 
-- A non-OK create response is converted to a typed error and displayed without navigating.
-- A create/status 404 that represents the absent dev route or a lost in-memory lobby becomes a
-  terminal `ERROR` state; no interval continues running.
-- A transient network or status failure becomes `ERROR` with an explicit retry action. Retrying is
-  a new user-requested match, not an automatic second POST.
+- A non-OK create response is converted to a typed error and displayed without navigating. A
+  create-time 404 is rendered as `Research Arena dev endpoint is not enabled on this server.` and
+  does not start polling.
+- A status 404 for a known lobby becomes `ERROR(kind=LOST_LOBBY)` with a `Start new match` action;
+  it never retries a lobby that the server says is gone.
+- A transient network or non-404 status failure becomes `ERROR(kind=STATUS_ERROR)` while preserving
+  the lobby id. `Retry status` repeats only the GET for that id; it never sends a create request.
+- A create failure before a lobby id exists becomes `ERROR(kind=CREATE_ERROR)`. Its explicit start
+  action is the user's request for a new create attempt.
 - A status response with `complete=true` becomes `COMPLETE`, even if no game is currently live.
 - `LIVE` is entered only when the status response contains a live game; elapsed time never implies
   that the game exists.
@@ -121,8 +139,9 @@ browser flows; there is no React-Testing-Library/jsdom layer. Add focused Vitest
 shared request/status transport and the pure Arena state/auto-watch decisions. If the existing
 Playwright setup can run locally without a long backend match, add a short mocked-HTTP browser test
 covering route rendering, exact request shape, duplicate-click prevention, status progression,
-provenance rendering, and spectator navigation. Otherwise record the unsupported browser test as
-not run and use the repository's existing manual smoke path.
+provenance rendering, same-lobby status retry without a second POST, parameterized-route resume,
+session-scoped auto-watch suppression, and spectator navigation. Otherwise record the unsupported
+browser test as not run and use the repository's existing manual smoke path.
 
 The implementation verification must include:
 
