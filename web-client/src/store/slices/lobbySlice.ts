@@ -12,6 +12,7 @@ import type {
 import type { AiDeckSpec, GameRules, TournamentFormat, LobbyGameMode } from '@/types'
 import {
   createCreateTournamentLobbyMessage,
+  createStartCurriculumHumanVsEngineAiMessage,
   createJoinLobbyMessage,
   createStartTournamentLobbyMessage,
   createLeaveLobbyMessage,
@@ -42,6 +43,7 @@ export interface LobbySliceState {
 
 export interface LobbySliceActions {
   createTournamentLobby: (setCodes: string[], format?: TournamentFormat, boosterCount?: number, maxPlayers?: number, pickTimeSeconds?: number, isPublic?: boolean, gameMode?: LobbyGameMode, rules?: GameRules) => void
+  startCurriculumHumanVsEngineAi: () => void
   joinLobby: (lobbyId: string) => void
   startLobby: () => void
   leaveLobby: () => void
@@ -100,6 +102,10 @@ export const createLobbySlice: SliceCreator<LobbySlice> = (set, get) => ({
     set({ deckBuildingState: null })
     trackEvent('tournament_lobby_created', { set_codes: setCodes, format, booster_count: boosterCount, max_players: maxPlayers, is_public: isPublic, game_mode: gameMode, rules })
     getWebSocket()?.send(createCreateTournamentLobbyMessage(setCodes, format, boosterCount, maxPlayers, pickTimeSeconds, isPublic, gameMode, rules))
+  },
+
+  startCurriculumHumanVsEngineAi: () => {
+    getWebSocket()?.send(createStartCurriculumHumanVsEngineAiMessage())
   },
 
   joinLobby: (lobbyId) => {

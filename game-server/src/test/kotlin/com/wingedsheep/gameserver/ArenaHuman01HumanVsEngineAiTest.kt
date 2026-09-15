@@ -1,5 +1,6 @@
 package com.wingedsheep.gameserver
 
+import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.gameserver.ai.AiGameManager
 import com.wingedsheep.gameserver.curriculum.CurriculumDeckSourceLoader
@@ -8,7 +9,10 @@ import com.wingedsheep.gameserver.repository.GameRepository
 import com.wingedsheep.gameserver.repository.LobbyRepository
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.protocol.ClientMessage
+import com.wingedsheep.gameserver.protocol.ErrorCode
 import com.wingedsheep.gameserver.protocol.ServerMessage
+import com.wingedsheep.gameserver.stats.MatchResultSink
+import com.wingedsheep.gameserver.stats.RecordedMatch
 import com.wingedsheep.sdk.core.DeckFormat
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.GameRules
@@ -21,7 +25,26 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.boot.test.context.TestConfiguration
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Import
+import org.springframework.context.annotation.Primary
 import kotlin.time.Duration.Companion.seconds
+
+@TestConfiguration(proxyBeanMethods = false)
+class ArenaHuman01MatchSinkTestConfiguration {
+    @Bean
+    @Primary
+    fun capturingMatchResultSink() = CapturingMatchResultSink()
+}
+
+class CapturingMatchResultSink : MatchResultSink {
+    val matches = java.util.concurrent.CopyOnWriteArrayList<RecordedMatch>()
+
+    override fun record(match: RecordedMatch) {
+        matches += match
+    }
+}
 
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -35,6 +58,7 @@ import kotlin.time.Duration.Companion.seconds
         "game.hand-smoother.enabled=false",
     ],
 )
+@Import(ArenaHuman01MatchSinkTestConfiguration::class)
 class ArenaHuman01HumanVsEngineAiTest : GameServerTestBase() {
 
     @Autowired
@@ -45,6 +69,9 @@ class ArenaHuman01HumanVsEngineAiTest : GameServerTestBase() {
 
     @Autowired
     private lateinit var aiGameManager: AiGameManager
+
+    @Autowired
+    private lateinit var matchResultSink: CapturingMatchResultSink
 
     private val loader = CurriculumDeckSourceLoader()
 
@@ -102,6 +129,28 @@ class ArenaHuman01HumanVsEngineAiTest : GameServerTestBase() {
             game.getPlayerPersistenceInfo()[aiSeat.identity.playerId]?.isAi shouldBe true
             game.getPlayerPersistenceInfo()[aiSeat.identity.playerId]?.forceEngine shouldBe true
             gameRepository.getLobbyForGame(game.sessionId) shouldBe matchStarting.lobbyId
+
+            eventually(10.seconds) {
+                client.latestMulliganDecision().shouldNotBeNull()
+            }
+            game.hasMulliganComplete(humanId) shouldBe false
+            client.send(ClientMessage.KeepHand)
+            eventually(10.seconds) {
+                game.hasMulliganComplete(humanId) shouldBe true
+            }
+
+            val intruder = createClient()
+            intruder.connectAs("Arena Intruder")
+            intruder.send(ClientMessage.SubmitAction(PassPriority(humanId)))
+            eventually(10.seconds) {
+                intruder.latestError()?.code shouldBe ErrorCode.GAME_NOT_FOUND
+            }
+
+            client.send(ClientMessage.Concede)
+            eventually(20.seconds) {
+                client.messages.any { it is ServerMessage.GameOver } shouldBe true
+            }
+            matchResultSink.matches shouldBe emptyList()
         }
 
         test("one ordinary start action does not create two human curriculum lobbies") {
@@ -120,6 +169,39 @@ class ArenaHuman01HumanVsEngineAiTest : GameServerTestBase() {
                 }
             }
             humanLobbies shouldBe 1
+        }
+
+        test("reconnect restores the existing human tournament seat") {
+            val client = createClient()
+            client.connectAs("Arena Reconnect")
+            client.send(ClientMessage.StartCurriculumHumanVsEngineAi)
+
+            eventually(20.seconds) {
+                client.messages.any { it is ServerMessage.TournamentMatchStarting } shouldBe true
+            }
+            val matchStarting = client.messages
+                .filterIsInstance<ServerMessage.TournamentMatchStarting>()
+                .last()
+            val token = client.messages.filterIsInstance<ServerMessage.Connected>().first().token
+            client.close()
+
+            val reconnected = createClient()
+            reconnected.connect()
+            reconnected.send(ClientMessage.Connect("Different Display Name", token = token))
+
+            eventually(20.seconds) {
+                reconnected.messages.any {
+                    it is ServerMessage.Reconnected &&
+                        it.context == "tournament" &&
+                        it.contextId == matchStarting.lobbyId
+                } shouldBe true
+            }
+            eventually(20.seconds) {
+                reconnected.messages.any {
+                    it is ServerMessage.TournamentMatchStarting &&
+                        it.gameSessionId == matchStarting.gameSessionId
+                } shouldBe true
+            }
         }
     }
 

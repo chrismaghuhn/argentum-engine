@@ -760,9 +760,11 @@ class GamePlayHandler(
             val persistenceInfo = gameSession.getPlayerPersistenceInfo()
             val gameMode = statsLobby?.gameMode?.name
                 ?: if (gameSession.quickGameSetCode != null) "QUICK_GAME" else "CASUAL"
-            matchResultSink.record(
+            val recordDurableStats = statsLobby?.recordDurableStats ?: true
+            if (recordDurableStats) matchResultSink.record(
                 com.wingedsheep.gameserver.stats.RecordedMatch(
                     gameId = gameSessionId,
+                    recordDurableStats = recordDurableStats,
                     format = statsLobby?.format?.name ?: gameSession.engineFormat::class.simpleName,
                     tournamentName = statsLobby?.let {
                         it.setNames.joinToString(" / ") + " " + it.format.name.lowercase()

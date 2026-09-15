@@ -574,6 +574,23 @@ class AiGameManager(
     }
 
     /**
+     * Dispose an AI identity that was created for a lobby but never reached a live game, or whose
+     * server-owned launch was rolled back. This keeps the registry and AI-player index in sync;
+     * cleanupGame remains responsible for live game sessions.
+     */
+    fun disposeAiIdentity(identity: PlayerIdentity) {
+        require(identity.isAi) { "disposeAiIdentity called for non-AI identity ${identity.playerName}" }
+        val ws = identity.webSocketSession
+        (ws as? AiWebSocketSession)?.shutdown()
+        if (ws != null) sessionRegistry.removeByWsId(ws.id)
+        sessionRegistry.removeIdentity(identity.token)
+        aiPlayerIds.remove(identity.playerId)
+        identity.webSocketSession = null
+        identity.currentLobbyId = null
+        identity.currentGameSessionId = null
+    }
+
+    /**
      * Check if a game has an AI player.
      */
     fun hasAiPlayer(gameSessionId: String): Boolean =

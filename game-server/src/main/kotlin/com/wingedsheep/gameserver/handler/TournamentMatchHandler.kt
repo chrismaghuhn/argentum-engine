@@ -966,6 +966,7 @@ class TournamentMatchHandler(
         val standings = tournament.getRankedStandings()
         return com.wingedsheep.gameserver.stats.RecordedTournament(
             lobbyId = lobby.lobbyId,
+            recordDurableStats = lobby.recordDurableStats,
             name = tournamentDisplayName(lobby),
             format = lobby.format.name,
             gameMode = lobby.gameMode.name,
@@ -1006,6 +1007,7 @@ class TournamentMatchHandler(
         tournamentResultSink.recordStarted(
             com.wingedsheep.gameserver.stats.RecordedTournament(
                 lobbyId = lobby.lobbyId,
+                recordDurableStats = lobby.recordDurableStats,
                 name = tournamentDisplayName(lobby),
                 format = lobby.format.name,
                 gameMode = lobby.gameMode.name,

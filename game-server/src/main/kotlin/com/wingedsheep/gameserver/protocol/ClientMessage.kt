@@ -185,6 +185,11 @@ sealed interface ClientMessage {
         val rules: String? = null,
     ) : ClientMessage
 
+    /** Start the server-owned Human-Akiri versus forced Engine-AI-Chevill research match. */
+    @Serializable
+    @SerialName("startCurriculumHumanVsEngineAi")
+    data object StartCurriculumHumanVsEngineAi : ClientMessage
+
     /**
      * Join an existing tournament lobby.
      */

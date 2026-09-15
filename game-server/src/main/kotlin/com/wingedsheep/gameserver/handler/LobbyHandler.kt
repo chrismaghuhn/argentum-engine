@@ -3,8 +3,8 @@ package com.wingedsheep.gameserver.handler
 import com.wingedsheep.gameserver.ai.AiGameManager
 import com.wingedsheep.gameserver.ai.AiWebSocketSession
 import com.wingedsheep.gameserver.curriculum.CurriculumAiTournamentPreset
-import com.wingedsheep.gameserver.curriculum.CurriculumDeckSourceLoader
-import com.wingedsheep.gameserver.curriculum.CurriculumMatchProvenanceV1
+import com.wingedsheep.gameserver.curriculum.CurriculumHumanAiMatchLauncher
+import com.wingedsheep.gameserver.curriculum.CurriculumPresetService
 import com.wingedsheep.gameserver.handler.ConnectionHandler.Companion.cardToSealedCardInfo
 import com.wingedsheep.gameserver.lobby.AiDeckSpec
 import com.wingedsheep.gameserver.lobby.LobbyGameMode
@@ -63,7 +63,8 @@ class LobbyHandler(
     private val tournamentMatchHandler: TournamentMatchHandler,
     private val freeForAllHandler: FreeForAllHandler,
     private val deckValidator: DeckValidator,
-    private val curriculumDeckSourceLoader: CurriculumDeckSourceLoader,
+    private val curriculumPresetService: CurriculumPresetService,
+    private val curriculumHumanAiMatchLauncher: CurriculumHumanAiMatchLauncher,
     private val randomDeckResolver: com.wingedsheep.gameserver.ai.RandomDeckResolver,
     private val commanderDeckGenerator: com.wingedsheep.ai.engine.deck.CommanderDeckGenerator,
     private val tournamentResultSink: com.wingedsheep.gameserver.stats.TournamentResultSink
@@ -155,6 +156,7 @@ class LobbyHandler(
             is ClientMessage.SubmitSealedDeck -> handleSubmitSealedDeck(session, message)
             is ClientMessage.UnsubmitDeck -> handleUnsubmitDeck(session)
             is ClientMessage.CreateTournamentLobby -> handleCreateTournamentLobby(session, message)
+            is ClientMessage.StartCurriculumHumanVsEngineAi -> handleStartCurriculumHumanVsEngineAi(session)
             is ClientMessage.JoinLobby -> handleJoinLobby(session, message)
             is ClientMessage.StartTournamentLobby -> handleStartTournamentLobby(session)
             is ClientMessage.MakePick -> boosterDraftHandler.handleMakePick(session, message)
@@ -170,6 +172,24 @@ class LobbyHandler(
             is ClientMessage.SpectateGame -> spectatingHandler.handleSpectateGame(session, message)
             is ClientMessage.StopSpectating -> spectatingHandler.handleStopSpectating(session)
             else -> {}
+        }
+    }
+
+    private fun handleStartCurriculumHumanVsEngineAi(session: WebSocketSession) {
+        val identity = sessionRegistry.getIdentityByWsId(session.id)
+        val playerSession = sessionRegistry.getPlayerSession(session.id)
+        if (identity == null || playerSession == null || playerSession.playerId != identity.playerId) {
+            sender.sendError(session, ErrorCode.NOT_CONNECTED, "Not connected")
+            return
+        }
+
+        try {
+            curriculumHumanAiMatchLauncher.start(identity)
+        } catch (e: com.wingedsheep.gameserver.curriculum.CurriculumLaunchRejected) {
+            sender.sendError(session, ErrorCode.INVALID_ACTION, e.message ?: "Research Arena launch rejected")
+        } catch (e: Exception) {
+            logger.error("Research Arena Human-vs-Engine launch failed for ${identity.playerName}", e)
+            sender.sendError(session, ErrorCode.INTERNAL_ERROR, "Research Arena launch failed: ${e.message}")
         }
     }
 
@@ -385,23 +405,8 @@ class LobbyHandler(
     fun createAiTournamentFromCurriculumPreset(preset: CurriculumAiTournamentPreset): String {
         require(aiGameManager.aiEnabledToggle) { "AI opponent is not enabled on this server" }
 
-        val sources = preset.sourcePaths.map(curriculumDeckSourceLoader::load)
-        require(sources.size == 2) { "Curriculum preset ${preset.identity} must contain exactly two seats" }
-
-        val invalidDecks = sources.mapIndexedNotNull { index, source ->
-            val validation = deckValidator.validate(
-                source.asCommanderDeck(),
-                com.wingedsheep.sdk.core.DeckFormat.COMMANDER,
-            )
-            if (validation.valid) null
-            else {
-                val reason = validation.errors.joinToString("; ") { it.message }
-                "seat ${index + 1} (${source.commander}): $reason"
-            }
-        }
-        require(invalidDecks.isEmpty()) {
-            "Curriculum preset ${preset.identity} is invalid: ${invalidDecks.joinToString(" | ")}"
-        }
+        val validated = curriculumPresetService.loadValidated(preset)
+        val sources = validated.sources
 
         val lobby = TournamentLobby(
             setCodes = emptyList(),
@@ -420,10 +425,7 @@ class LobbyHandler(
             deckSizeMin = 100,
             allowDuplicates = false,
             immutableFixedDeckSource = true,
-            curriculumProvenance = CurriculumMatchProvenanceV1(
-                presetIdentity = preset.identity,
-                sources = sources.map { it.provenance() },
-            ),
+            curriculumProvenance = validated.provenance,
             engineAiOnly = true,
         )
 
@@ -2209,7 +2211,7 @@ class LobbyHandler(
         logger.info("Player ${identity.playerName} left lobby $lobbyId (cannot rejoin)")
 
         if (lobby.playerCount == 0) {
-            tournamentResultSink.recordAbandoned(lobbyId)
+            tournamentResultSink.recordAbandoned(lobbyId, lobby.recordDurableStats)
             lobbyRepository.removeLobby(lobbyId)
             logger.info("Lobby $lobbyId removed (empty)")
         } else {
@@ -2239,7 +2241,7 @@ class LobbyHandler(
         logger.info("Player ${identity.playerName} auto-left lobby $lobbyId")
 
         if (lobby.playerCount == 0) {
-            tournamentResultSink.recordAbandoned(lobbyId)
+            tournamentResultSink.recordAbandoned(lobbyId, lobby.recordDurableStats)
             lobbyRepository.removeLobby(lobbyId)
             logger.info("Lobby $lobbyId removed (empty)")
         } else {
@@ -2297,7 +2299,7 @@ class LobbyHandler(
         }
 
         // Remove the lobby
-        tournamentResultSink.recordAbandoned(lobbyId)
+        tournamentResultSink.recordAbandoned(lobbyId, lobby.recordDurableStats)
         lobbyRepository.removeLobby(lobbyId)
     }
 

@@ -101,6 +101,7 @@ class GameWebSocketHandler(
                 is ClientMessage.SubmitSealedDeck,
                 is ClientMessage.UnsubmitDeck,
                 is ClientMessage.CreateTournamentLobby,
+                is ClientMessage.StartCurriculumHumanVsEngineAi,
                 is ClientMessage.JoinLobby,
                 is ClientMessage.StartTournamentLobby,
                 is ClientMessage.MakePick,

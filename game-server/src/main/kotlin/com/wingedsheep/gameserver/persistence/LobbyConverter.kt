@@ -84,6 +84,7 @@ fun TournamentLobby.toPersistent(): PersistentTournamentLobby {
         ffaGamesPlayed = ffaGamesPlayed,
         immutableFixedDeckSource = immutableFixedDeckSource,
         curriculumProvenance = curriculumProvenance,
+        recordDurableStats = recordDurableStats,
         engineAiOnly = engineAiOnly,
     )
 }
@@ -138,6 +139,7 @@ fun restoreTournamentLobby(
         randomTeams = persistent.randomTeams,
         immutableFixedDeckSource = persistent.immutableFixedDeckSource,
         curriculumProvenance = persistent.curriculumProvenance,
+        recordDurableStats = persistent.recordDurableStats,
         engineAiOnly = persistent.engineAiOnly,
     )
     lobby.bannedCardNames = persistent.bannedCardNames

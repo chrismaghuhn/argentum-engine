@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useGameStore } from '@/store/gameStore.ts'
+import { useConnectName } from '@/store/useConnectName'
 import {
   AiTournamentApiError,
   createCurriculumAiTournament,
@@ -25,6 +27,14 @@ interface ArenaError {
 export function ResearchArenaPage() {
   const { lobbyId: routeLobbyId } = useParams<{ lobbyId?: string }>()
   const navigate = useNavigate()
+  const connectionStatus = useGameStore((state) => state.connectionStatus)
+  const connect = useGameStore((state) => state.connect)
+  const startCurriculumHumanVsEngineAi = useGameStore((state) => state.startCurriculumHumanVsEngineAi)
+  const sessionId = useGameStore((state) => state.sessionId)
+  const lastError = useGameStore((state) => state.lastError)
+  const clearError = useGameStore((state) => state.clearError)
+  const sessionReplaced = useGameStore((state) => state.sessionReplaced)
+  const { name: connectName, resolving: nameResolving } = useConnectName()
   const [phase, setPhase] = useState<ArenaPhase>(() => routeLobbyId ? 'STARTING' : 'IDLE')
   const [lobbyId, setLobbyId] = useState<string | null>(() => routeLobbyId ?? null)
   const [status, setStatus] = useState<AiTournamentStatus | null>(null)
@@ -33,9 +43,52 @@ export function ResearchArenaPage() {
   const [launching, setLaunching] = useState(false)
   const launchInFlightRef = useRef(false)
   const autoWatchedGameRef = useRef<string | null>(null)
+  const [playerName, setPlayerName] = useState(() => localStorage.getItem('argentum-player-name') || '')
+  const [humanLaunching, setHumanLaunching] = useState(false)
+  const [humanLaunchError, setHumanLaunchError] = useState<string | null>(null)
+  const humanLaunchInFlightRef = useRef(false)
+  const hasConnectedRef = useRef(false)
+
+  useEffect(() => {
+    if (sessionReplaced) return
+    if (connectName && connectionStatus === 'disconnected' && !hasConnectedRef.current) {
+      hasConnectedRef.current = true
+      connect(connectName)
+    }
+  }, [connectionStatus, connect, connectName, sessionReplaced])
+
+  const handleConnect = useCallback(() => {
+    const trimmedName = playerName.trim()
+    if (!trimmedName) return
+    localStorage.setItem('argentum-player-name', trimmedName)
+    hasConnectedRef.current = true
+    connect(trimmedName)
+  }, [connect, playerName])
+
+  const startHumanMatch = useCallback(() => {
+    if (humanLaunchInFlightRef.current || launchInFlightRef.current || connectionStatus !== 'connected') return
+    humanLaunchInFlightRef.current = true
+    setHumanLaunching(true)
+    setHumanLaunchError(null)
+    clearError()
+    startCurriculumHumanVsEngineAi()
+  }, [clearError, connectionStatus, startCurriculumHumanVsEngineAi])
+
+  useEffect(() => {
+    if (!humanLaunching) return
+    if (lastError) {
+      humanLaunchInFlightRef.current = false
+      setHumanLaunching(false)
+      setHumanLaunchError(lastError.message)
+      return
+    }
+    if (sessionId) {
+      navigate('/', { replace: true })
+    }
+  }, [humanLaunching, lastError, navigate, sessionId])
 
   const startNewMatch = useCallback(async () => {
-    if (launchInFlightRef.current) return
+    if (launchInFlightRef.current || humanLaunchInFlightRef.current) return
 
     launchInFlightRef.current = true
     setLaunching(true)
@@ -156,11 +209,13 @@ export function ResearchArenaPage() {
   }, [phase, status, watchGame])
 
   const statusLabel = getStatusLabel(phase, status, error)
-  const canStartNewMatch = !launching && (
+  const canStartNewMatch = !launching && !humanLaunching && (
     phase === 'IDLE' ||
     phase === 'COMPLETE' ||
     (phase === 'ERROR' && error?.kind !== 'STATUS_ERROR')
   )
+  const showNameEntry = connectionStatus === 'disconnected' && !connectName && !nameResolving && !sessionReplaced
+  const canStartHumanMatch = connectionStatus === 'connected' && !humanLaunching && !launching && !sessionId
 
   return (
     <div style={styles.page}>
@@ -197,7 +252,43 @@ export function ResearchArenaPage() {
                 Retry status
               </button>
             )}
+            <button
+              type="button"
+              style={{ ...styles.primaryButton, ...(canStartHumanMatch ? {} : styles.disabledButton) }}
+              disabled={!canStartHumanMatch}
+              onClick={startHumanMatch}
+            >
+              {humanLaunching ? 'Starting human match…' : 'Play Akiri vs Engine AI Chevill'}
+            </button>
           </div>
+          {showNameEntry && (
+            <div style={styles.connectForm}>
+              <label htmlFor="research-arena-player-name" style={styles.smallText}>Connect as a player to enable the human seat</label>
+              <div style={styles.connectRow}>
+                <input
+                  id="research-arena-player-name"
+                  type="text"
+                  value={playerName}
+                  onChange={(event) => setPlayerName(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === 'Enter') handleConnect() }}
+                  placeholder="Your name"
+                  maxLength={20}
+                  style={styles.nameInput}
+                />
+                <button
+                  type="button"
+                  style={{ ...styles.secondaryButton, ...(playerName.trim() ? {} : styles.disabledButton) }}
+                  disabled={!playerName.trim()}
+                  onClick={handleConnect}
+                >
+                  Connect
+                </button>
+              </div>
+            </div>
+          )}
+          {connectionStatus === 'connecting' && <p style={styles.smallText}>Connecting the existing player session…</p>}
+          {sessionReplaced && <p role="alert" style={styles.errorText}>This player session is active in another tab or device.</p>}
+          {humanLaunchError && <p role="alert" style={styles.errorText}>{humanLaunchError}</p>}
         </section>
 
         <section style={styles.card} aria-labelledby="status-heading">
@@ -329,6 +420,10 @@ const styles: Record<string, CSSProperties> = {
   actionRow: { display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 20 },
   primaryButton: { background: '#2563eb', color: '#fff', border: 0, borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 700, padding: '10px 16px' },
   secondaryButton: { background: 'transparent', color: '#7dd3fc', border: '1px solid #334155', borderRadius: 8, cursor: 'pointer', fontSize: 13, padding: '9px 14px' },
+  disabledButton: { cursor: 'not-allowed', opacity: 0.5 },
+  connectForm: { display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 },
+  connectRow: { display: 'flex', flexWrap: 'wrap', gap: 8 },
+  nameInput: { background: '#0f172a', border: '1px solid #334155', borderRadius: 7, color: '#e2e8f0', fontSize: 13, minWidth: 180, padding: '9px 10px' },
   statusHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 },
   statusPill: { borderRadius: 999, fontSize: 12, fontWeight: 700, padding: '5px 10px', whiteSpace: 'nowrap' },
   smallText: { color: '#94a3b8', fontSize: 12, lineHeight: 1.5, margin: '10px 0 0' },
