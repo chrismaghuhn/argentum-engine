@@ -41,6 +41,8 @@ class ArenaHuman01PartialStartRollbackTest : GameServerTestBase() {
 
     init {
         test("failure after match notification resets the player before rollback completes") {
+            // HUMAN_AI_14/HUMAN_AI_19: exercise the partial-start compensating cleanup after the
+            // client has already received TournamentMatchStarting.
             val client = createClient()
             client.connectAs("Arena Partial Failure")
             client.send(ClientMessage.StartCurriculumHumanVsEngineAi)

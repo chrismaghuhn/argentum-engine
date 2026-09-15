@@ -27,3 +27,11 @@ export function firstUnwatchedLiveGame(
 ): AiLiveGame | null {
   return games.find((game) => !wasWatched(game.gameSessionId)) ?? null
 }
+
+/**
+ * TournamentMatchStarting assigns a session id before the server has finished starting the game.
+ * The normal player's mulligan decision is the first usable signal that GameStarted completed.
+ */
+export function humanGameReadyForNavigation(sessionId: string | null, hasMulliganDecision: boolean): boolean {
+  return sessionId !== null && hasMulliganDecision
+}

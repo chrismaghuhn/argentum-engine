@@ -1,10 +1,18 @@
 package com.wingedsheep.gameserver
 
 import com.wingedsheep.engine.core.PassPriority
+import com.wingedsheep.engine.limited.BoosterGenerator
+import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.registry.PrintingRegistry
+import com.wingedsheep.engine.registry.TokenArtRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.gameserver.ai.AiGameManager
 import com.wingedsheep.gameserver.curriculum.CurriculumDeckSourceLoader
+import com.wingedsheep.gameserver.handler.GamePlayHandler
 import com.wingedsheep.gameserver.lobby.TournamentFormat
+import com.wingedsheep.gameserver.persistence.restoreGameSession
+import com.wingedsheep.gameserver.persistence.restoreTournamentLobby
+import com.wingedsheep.gameserver.persistence.toPersistent
 import com.wingedsheep.gameserver.repository.GameRepository
 import com.wingedsheep.gameserver.repository.LobbyRepository
 import com.wingedsheep.gameserver.session.GameSession
@@ -13,6 +21,8 @@ import com.wingedsheep.gameserver.protocol.ErrorCode
 import com.wingedsheep.gameserver.protocol.ServerMessage
 import com.wingedsheep.gameserver.stats.MatchResultSink
 import com.wingedsheep.gameserver.stats.RecordedMatch
+import com.wingedsheep.gameserver.stats.RecordedTournament
+import com.wingedsheep.gameserver.stats.TournamentResultSink
 import com.wingedsheep.sdk.core.DeckFormat
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.GameRules
@@ -36,6 +46,10 @@ class ArenaHuman01MatchSinkTestConfiguration {
     @Bean
     @Primary
     fun capturingMatchResultSink() = CapturingMatchResultSink()
+
+    @Bean
+    @Primary
+    fun capturingTournamentResultSink() = CapturingTournamentResultSink()
 }
 
 class CapturingMatchResultSink : MatchResultSink {
@@ -44,6 +58,24 @@ class CapturingMatchResultSink : MatchResultSink {
     override fun record(match: RecordedMatch) {
         matches += match
     }
+}
+
+class CapturingTournamentResultSink : TournamentResultSink {
+    val snapshots = java.util.concurrent.CopyOnWriteArrayList<RecordedTournament>()
+
+    override fun recordStarted(tournament: RecordedTournament) {
+        snapshots += tournament
+    }
+
+    override fun recordProgress(tournament: RecordedTournament) {
+        snapshots += tournament
+    }
+
+    override fun recordCompleted(tournament: RecordedTournament) {
+        snapshots += tournament
+    }
+
+    override fun recordAbandoned(lobbyId: String) = Unit
 }
 
 @SpringBootTest(
@@ -71,7 +103,22 @@ class ArenaHuman01HumanVsEngineAiTest : GameServerTestBase() {
     private lateinit var aiGameManager: AiGameManager
 
     @Autowired
+    private lateinit var gamePlayHandler: GamePlayHandler
+
+    @Autowired
+    private lateinit var cardRegistry: CardRegistry
+
+    @Autowired
+    private lateinit var printingRegistry: PrintingRegistry
+
+    @Autowired
+    private lateinit var tokenArtRegistry: TokenArtRegistry
+
+    @Autowired
     private lateinit var matchResultSink: CapturingMatchResultSink
+
+    @Autowired
+    private lateinit var tournamentResultSink: CapturingTournamentResultSink
 
     private val loader = CurriculumDeckSourceLoader()
 
@@ -168,7 +215,11 @@ class ArenaHuman01HumanVsEngineAiTest : GameServerTestBase() {
             eventually(20.seconds) {
                 client.messages.any { it is ServerMessage.GameOver } shouldBe true
             }
+            // HUMAN_AI_17/HUMAN_AI_18/HUMAN_AI_21: the linked Research Arena policy reaches both
+            // durable sinks while ordinary sink tests retain the default-true behavior.
             matchResultSink.matches shouldBe emptyList()
+            tournamentResultSink.snapshots.isNotEmpty() shouldBe true
+            tournamentResultSink.snapshots.all { !it.recordDurableStats } shouldBe true
         }
 
         test("one ordinary start action does not create two human curriculum lobbies") {
@@ -219,6 +270,78 @@ class ArenaHuman01HumanVsEngineAiTest : GameServerTestBase() {
                     it is ServerMessage.TournamentMatchStarting &&
                         it.gameSessionId == matchStarting.gameSessionId
                 } shouldBe true
+            }
+        }
+
+        test("recovered Research Arena game preserves its lobby link and durable-stats policy") {
+            val client = createClient()
+            val humanId = EntityId(client.connectAs("Arena Recovery"))
+            client.send(ClientMessage.StartCurriculumHumanVsEngineAi)
+
+            eventually(20.seconds) {
+                client.messages.any { it is ServerMessage.TournamentMatchStarting } shouldBe true
+            }
+            val matchStarting = client.messages
+                .filterIsInstance<ServerMessage.TournamentMatchStarting>()
+                .last()
+            eventually(20.seconds) {
+                client.messages.any { it is ServerMessage.GameStarted } shouldBe true
+            }
+
+            val lobby = lobbyRepository.findLobbyById(matchStarting.lobbyId).shouldNotBeNull()
+            val game = awaitStartedGame(matchStarting.gameSessionId)
+            eventually(10.seconds) {
+                client.latestMulliganDecision().shouldNotBeNull()
+            }
+            client.send(ClientMessage.KeepHand)
+            eventually(20.seconds) {
+                game.allMulligansComplete shouldBe true
+            }
+
+            // HUMAN_AI_20/HUMAN_AI_22: freeze the original AI callback before replacing the in-memory object with the
+            // persisted/recovered representation. The recovery assertion is about the restored
+            // authority and stats link, not about starting a second AI loop.
+            aiGameManager.cleanupGame(game.sessionId)
+            val humanSession = game.getPlayerSession(humanId).shouldNotBeNull()
+            val aiId = lobby.players.values.single { it.identity.isAi }.identity.playerId
+            val aiSession = game.getPlayerSession(aiId).shouldNotBeNull()
+
+            val persistentGame = game.toPersistent(lobby.lobbyId)
+            persistentGame.lobbyId shouldBe lobby.lobbyId
+            val (recoveredGame, recoveredIdentities) = restoreGameSession(
+                persistentGame,
+                cardRegistry,
+                printingRegistry,
+                tokenArtRegistry,
+            )
+            recoveredIdentities.all { it.currentLobbyId == lobby.lobbyId } shouldBe true
+            recoveredIdentities.all { it.currentGameSessionId == game.sessionId } shouldBe true
+
+            val recoveredLobby = restoreTournamentLobby(
+                lobby.toPersistent(),
+                cardRegistry,
+                BoosterGenerator(emptyMap()),
+            ).first
+            recoveredLobby.recordDurableStats shouldBe false
+            lobbyRepository.saveLobby(recoveredLobby)
+
+            gameRepository.remove(game.sessionId)
+            gameRepository.save(recoveredGame)
+            gameRepository.linkToLobby(recoveredGame.sessionId, recoveredLobby.lobbyId)
+            recoveredGame.associatePlayer(humanSession)
+            recoveredGame.associatePlayer(aiSession)
+            matchResultSink.matches.clear()
+            tournamentResultSink.snapshots.clear()
+
+            // Complete the recovered GameSession through the existing game-over path. The
+            // restored lobby link makes GamePlayHandler consult recordDurableStats=false.
+            gamePlayHandler.concedeSeat(recoveredGame, humanId)
+
+            eventually(10.seconds) {
+                gameRepository.findById(recoveredGame.sessionId) shouldBe null
+                matchResultSink.matches shouldBe emptyList()
+                tournamentResultSink.snapshots.isNotEmpty() shouldBe true
+                tournamentResultSink.snapshots.all { !it.recordDurableStats } shouldBe true
             }
         }
     }

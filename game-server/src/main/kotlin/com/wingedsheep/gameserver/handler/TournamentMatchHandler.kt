@@ -16,6 +16,7 @@ import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gameserver.deck.EasterEggDeckInjector
 import com.wingedsheep.engine.limited.BoosterGenerator
 import com.wingedsheep.sdk.model.EntityId
+import org.springframework.beans.factory.annotation.Value
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import org.springframework.web.socket.WebSocketSession
@@ -31,7 +32,10 @@ class TournamentMatchHandler(
     private val gameProperties: GameProperties,
     private val gameRepository: GameRepository,
     private val aiGameManager: AiGameManager,
-    private val tournamentResultSink: com.wingedsheep.gameserver.stats.TournamentResultSink
+    private val tournamentResultSink: com.wingedsheep.gameserver.stats.TournamentResultSink,
+    /** Test-only failure injection used to exercise rollback after the player is notified. */
+    @Value("\${game.dev-endpoints.test-failure-after-tournament-match-starting:false}")
+    private val failAfterTournamentMatchStarting: Boolean,
 ) {
     private val logger = LoggerFactory.getLogger(TournamentMatchHandler::class.java)
 
@@ -565,6 +569,10 @@ class TournamentMatchHandler(
                 gameSessionId = gameSession.sessionId,
                 opponentName = player1State.identity.playerName
             ))
+        }
+
+        if (failAfterTournamentMatchStarting) {
+            throw IllegalStateException("Injected failure after TournamentMatchStarting")
         }
 
         for (ps in listOf(ps1, ps2)) {

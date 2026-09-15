@@ -9,7 +9,9 @@ import com.wingedsheep.gameserver.repository.GameRepository
 import com.wingedsheep.gameserver.repository.LobbyRepository
 import com.wingedsheep.gameserver.session.PlayerIdentity
 import com.wingedsheep.gameserver.session.SessionRegistry
+import com.wingedsheep.gameserver.handler.MessageSender
 import com.wingedsheep.gameserver.handler.TournamentMatchHandler
+import com.wingedsheep.gameserver.protocol.ServerMessage
 import com.wingedsheep.sdk.core.DeckFormat
 import com.wingedsheep.sdk.core.GameRules
 import com.wingedsheep.sdk.model.EntityId
@@ -34,6 +36,7 @@ class CurriculumHumanAiMatchLauncher(
     private val curriculumPresetService: CurriculumPresetService,
     private val tournamentMatchHandler: TournamentMatchHandler,
     private val boosterGenerator: BoosterGenerator,
+    private val sender: MessageSender,
     @Value("\${game.dev-endpoints.enabled:false}")
     private val devEndpointsEnabled: Boolean,
 ) {
@@ -158,6 +161,14 @@ class CurriculumHumanAiMatchLauncher(
         aiIdentity: PlayerIdentity?,
     ) {
         val lobbyId = lobby?.lobbyId
+        // TournamentMatchHandler announces the game before AI wiring and game start finish. Reuse
+        // the normal pre-start cancellation message so the already-notified human clears the
+        // session id before this compensating rollback removes the GameSession.
+        if (humanIdentity.currentGameSessionId != null) {
+            humanIdentity.webSocketSession
+                ?.takeIf { it.isOpen }
+                ?.let { sender.send(it, ServerMessage.GameCancelled) }
+        }
         if (lobbyId != null) {
             val tournament = lobbyRepository.findTournamentById(lobbyId)
             val gameIds = mutableSetOf<String>()

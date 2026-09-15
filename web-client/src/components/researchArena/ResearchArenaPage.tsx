@@ -12,6 +12,7 @@ import {
 import {
   arenaPhaseForStatus,
   firstUnwatchedLiveGame,
+  humanGameReadyForNavigation,
   type ArenaErrorKind,
   type ArenaPhase,
 } from './researchArenaState'
@@ -31,6 +32,7 @@ export function ResearchArenaPage() {
   const connect = useGameStore((state) => state.connect)
   const startCurriculumHumanVsEngineAi = useGameStore((state) => state.startCurriculumHumanVsEngineAi)
   const sessionId = useGameStore((state) => state.sessionId)
+  const mulliganState = useGameStore((state) => state.mulliganState)
   const lastError = useGameStore((state) => state.lastError)
   const clearError = useGameStore((state) => state.clearError)
   const sessionReplaced = useGameStore((state) => state.sessionReplaced)
@@ -82,10 +84,10 @@ export function ResearchArenaPage() {
       setHumanLaunchError(lastError.message)
       return
     }
-    if (sessionId) {
+    if (humanGameReadyForNavigation(sessionId, mulliganState !== null)) {
       navigate('/', { replace: true })
     }
-  }, [humanLaunching, lastError, navigate, sessionId])
+  }, [humanLaunching, lastError, mulliganState, navigate, sessionId])
 
   const startNewMatch = useCallback(async () => {
     if (launchInFlightRef.current || humanLaunchInFlightRef.current) return
