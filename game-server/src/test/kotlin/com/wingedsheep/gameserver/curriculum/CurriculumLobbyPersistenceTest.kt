@@ -34,6 +34,7 @@ class CurriculumLobbyPersistenceTest : FunSpec({
             immutableFixedDeckSource = true,
             curriculumProvenance = provenance,
             engineAiOnly = true,
+            recordDurableStats = false,
         )
         val akiri = PlayerIdentity(playerId = EntityId("akiri"), playerName = "Akiri")
         val chevill = PlayerIdentity(playerId = EntityId("chevill"), playerName = "Chevill")
@@ -50,8 +51,17 @@ class CurriculumLobbyPersistenceTest : FunSpec({
 
         restored.immutableFixedDeckSource shouldBe true
         restored.engineAiOnly shouldBe true
+        restored.recordDurableStats shouldBe false
         restored.curriculumProvenance shouldBe provenance
         restored.players[EntityId("akiri")]?.commander shouldBe "Akiri, Fearless Voyager"
         restored.players[EntityId("chevill")]?.commander shouldBe "Chevill, Bane of Monsters"
+    }
+
+    test("ordinary tournament lobbies retain durable stats by default") {
+        TournamentLobby(
+            setCodes = listOf("ECL"),
+            setNames = listOf("Lorwyn Eclipsed"),
+            boosterGenerator = BoosterGenerator(emptyMap()),
+        ).recordDurableStats shouldBe true
     }
 })
