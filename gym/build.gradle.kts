@@ -55,6 +55,15 @@ tasks.register<Test>("kaggleActor04SmokeTest") {
     maxHeapSize = "4g"
 }
 
+tasks.register<Test>("kaggleActor05CharacterizationTest") {
+    description = "Runs the opt-in bounded actor characterization and sizing measurement."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/KaggleActor05ProviderCharacterizationTest*")
+    maxHeapSize = "4g"
+}
+
 // B1 performance/scaling characterization is opt-in test-only work. Forward its controls to the
 // test worker so Gradle's daemon properties cannot silently leave a measurement disabled or stale.
 tasks.withType<Test>().configureEach {
@@ -90,6 +99,16 @@ tasks.withType<Test>().configureEach {
         "ka04.outputRoot",
         "ka04.publicationRoot",
         "ka04.profiles",
+        "ka05.enabled",
+        "ka05.engineSourceCommit",
+        "ka05.repositoryRoot",
+        "ka05.outputRoot",
+        "ka05.publicationRoot",
+        "ka05.sizes",
+        "ka05.concurrencies",
+        "ka05.initialBytesPerEpisodeEstimate",
+        "ka05.providerOutputCapBytes",
+        "ka05.initialScratchEstimateBytes",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }
