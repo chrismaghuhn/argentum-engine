@@ -10,7 +10,7 @@ it may issue :class:`TrustedImmutableHandleV1`.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time
 import uuid
 from typing import Any
 
@@ -33,7 +34,21 @@ _STAGING_DIRNAME = ".staging"
 _OBJECTS_DIRNAME = "objects"
 _QUARANTINE_DIRNAME = ".quarantine"
 _DERIVED_NAMESPACE = "derived"
-_HANDLE_ISSUER = object()
+_VALIDATOR_CONTRACT_IDENTITY = "argentum-ml-derived-reader-full-strict@v1"
+_VALIDATOR_IMPLEMENTATION_IDENTITY = "argentum-ml-python-derived-reader@v1"
+_VALIDATOR_SOURCE_COMMIT = "03bce91dea0502d74c7af2a1bab5acc2e43f1fa2"
+_VALIDATOR_POLICY_DIGEST = hashlib.sha256(
+    canonical_bytes(
+        {
+            "validatorContractIdentity": _VALIDATOR_CONTRACT_IDENTITY,
+            "validatorImplementationIdentity": _VALIDATOR_IMPLEMENTATION_IDENTITY,
+            "validationEntryPoint": "DerivedArtifactReader.open",
+            "validationProfile": "canonical-manifest-and-strict-sample-file-v1",
+        }
+    )
+).hexdigest()
+_DUPLICATE_RETRY_WINDOW_SECONDS = 5.0
+_DUPLICATE_RETRY_INTERVAL_SECONDS = 0.01
 
 
 class StoreContractError(ValueError):
@@ -45,7 +60,7 @@ class ArtifactIdentityMismatch(StoreContractError):
 
 
 class ValidatorBindingMismatch(StoreContractError):
-    """Raised when a validator binding is not approved by the store policy."""
+    """Raised when a validator binding is not owned by an approved authority."""
 
 
 class StoreCapabilityV1(str, Enum):
@@ -62,6 +77,7 @@ class PublicationStatus(str, Enum):
     PUBLISHED = "PUBLISHED"
     ALREADY_PUBLISHED = "ALREADY_PUBLISHED"
     CONFLICT = "CONFLICT"
+    RETRYABLE = "RETRYABLE"
     NOT_ELIGIBLE = "NOT_ELIGIBLE"
 
 
@@ -278,7 +294,7 @@ class ValidatorBindingV1:
             validator_policy_digest=value["validatorPolicyDigest"],
         )
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "validatorBindingVersion": self.validator_binding_version,
             "validatorContractIdentity": self.validator_contract_identity,
@@ -286,6 +302,46 @@ class ValidatorBindingV1:
             "validatorSourceCommit": self.validator_source_commit,
             "validatorPolicyDigest": self.validator_policy_digest,
         }
+
+
+_VALIDATOR_BINDING = ValidatorBindingV1(
+    validator_contract_identity=_VALIDATOR_CONTRACT_IDENTITY,
+    validator_implementation_identity=_VALIDATOR_IMPLEMENTATION_IDENTITY,
+    validator_source_commit=_VALIDATOR_SOURCE_COMMIT,
+    validator_policy_digest=_VALIDATOR_POLICY_DIGEST,
+)
+
+
+class ValidatorAuthorityV1(ABC):
+    """Code-owned validator seam whose binding describes its actual execution."""
+
+    __slots__ = ()
+
+    @property
+    @abstractmethod
+    def binding(self) -> ValidatorBindingV1:
+        raise NotImplementedError
+
+    @abstractmethod
+    def validate(self, root: Path) -> ArtifactIdentityV1:
+        raise NotImplementedError
+
+
+class DerivedArtifactValidatorAuthorityV1(ValidatorAuthorityV1):
+    """The approved full-strict validator used by the local artifact store."""
+
+    __slots__ = ()
+
+    @property
+    def binding(self) -> ValidatorBindingV1:
+        return _VALIDATOR_BINDING
+
+    def validate(self, root: Path) -> ArtifactIdentityV1:
+        reader = DerivedArtifactReader.open(Path(root))
+        try:
+            return ArtifactIdentityV1.from_manifest(reader.manifest)
+        finally:
+            reader.close()
 
 
 @dataclass(frozen=True)
@@ -432,38 +488,11 @@ class TrustedImmutableHandleV1:
 
     __slots__ = ("_artifact_identity", "_validator_binding", "_artifact_root", "_provider")
 
-    def __init__(
-        self,
-        *,
-        _issuer: object,
-        artifact_identity: ArtifactIdentityV1,
-        validator_binding: ValidatorBindingV1,
-        artifact_root: Path,
-        provider_identity: ProviderIdentityV1,
-    ) -> None:
-        if _issuer is not _HANDLE_ISSUER:
-            raise TypeError("trusted handle can only be issued by an immutable store")
-        self._artifact_identity = artifact_identity
-        self._validator_binding = validator_binding
-        self._artifact_root = Path(artifact_root)
-        self._provider = provider_identity
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("trusted handle can only be issued by an immutable store")
 
-    @classmethod
-    def _issue(
-        cls,
-        *,
-        artifact_identity: ArtifactIdentityV1,
-        validator_binding: ValidatorBindingV1,
-        artifact_root: Path,
-        provider_identity: ProviderIdentityV1,
-    ) -> "TrustedImmutableHandleV1":
-        return cls(
-            _issuer=_HANDLE_ISSUER,
-            artifact_identity=artifact_identity,
-            validator_binding=validator_binding,
-            artifact_root=artifact_root,
-            provider_identity=provider_identity,
-        )
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("trusted immutable handle is read-only")
 
     @property
     def artifact_identity(self) -> ArtifactIdentityV1:
@@ -505,7 +534,6 @@ class ContentAddressedArtifactStore(ABC):
         staging_root: Path,
         *,
         expected_artifact_identity: ArtifactIdentityV1,
-        validator_binding: ValidatorBindingV1,
     ) -> PublicationResult:
         raise NotImplementedError
 
@@ -547,7 +575,7 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
         self,
         root: Path | str,
         *,
-        accepted_validator_bindings: Iterable[ValidatorBindingV1],
+        validator_authority: ValidatorAuthorityV1 | None = None,
     ) -> None:
         self._root = Path(root)
         if self._root.exists() and (self._root.is_symlink() or not self._root.is_dir()):
@@ -560,10 +588,12 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
             if path.exists() and path.is_symlink():
                 raise StoreContractError("store internal directories must not be symlinks")
             path.mkdir(parents=True, exist_ok=True)
-        bindings = frozenset(accepted_validator_bindings)
-        if not bindings or not all(isinstance(binding, ValidatorBindingV1) for binding in bindings):
-            raise StoreContractError("store requires at least one typed validator binding")
-        self._accepted_validator_bindings = bindings
+        authority = validator_authority or DerivedArtifactValidatorAuthorityV1()
+        if type(authority) is not DerivedArtifactValidatorAuthorityV1:
+            raise StoreContractError(
+                "local store requires the approved code-owned derived-artifact validator"
+            )
+        self._validator_authority = authority
 
     @property
     def root(self) -> Path:
@@ -576,6 +606,10 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
     @property
     def trusted_fast_open(self) -> bool:
         return False
+
+    @property
+    def validator_binding(self) -> ValidatorBindingV1:
+        return self._validator_authority.binding
 
     def create_staging(self) -> Path:
         return Path(tempfile.mkdtemp(prefix="artifact-", dir=self._staging_root))
@@ -590,11 +624,9 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
         staging_root: Path,
         *,
         expected_artifact_identity: ArtifactIdentityV1,
-        validator_binding: ValidatorBindingV1,
     ) -> PublicationResult:
         if not isinstance(expected_artifact_identity, ArtifactIdentityV1):
             raise StoreContractError("publication requires a typed expected artifact identity")
-        self._require_validator_binding(validator_binding)
         staging = self._require_staging(staging_root)
         actual_identity = self._validate_artifact(staging)
         if actual_identity != expected_artifact_identity:
@@ -605,7 +637,7 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
         final_root = self.object_path(actual_identity)
         receipt = PublicationReceiptV1.issue(
             artifact_identity=actual_identity,
-            validator_binding=validator_binding,
+            validator_binding=self.validator_binding,
             capability=self.capability,
             provider_identity=self._provider_identity(actual_identity),
         )
@@ -640,13 +672,9 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
             self._dispose_staging(staging, "published-staging")
             return PublicationResult(PublicationStatus.PUBLISHED, final_root, receipt)
         except FileExistsError:
+            result = self._compare_existing_after_race(final_root, receipt)
             self._dispose_staging(staging, "publication-race")
-            return PublicationResult(
-                PublicationStatus.CONFLICT,
-                final_root if final_root.exists() else None,
-                None,
-                "final content identity was claimed concurrently",
-            )
+            return result
         except Exception:
             if final_root.exists() or final_root.is_symlink():
                 self._quarantine(final_root, "publication-failure")
@@ -663,10 +691,10 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
             raise StoreContractError("exact open requires a typed expected artifact identity")
         if not isinstance(expected_validator_binding, ValidatorBindingV1):
             raise StoreContractError("exact open requires a typed expected validator binding")
-        if expected_validator_binding not in self._accepted_validator_bindings:
+        if expected_validator_binding != self.validator_binding:
             return OpenExactResult(
                 OpenExactStatus.CONFLICT,
-                reason="expected validator binding is not approved by this store",
+                reason="expected validator binding is not owned by this store's validator authority",
             )
         final_root = self.object_path(expected_artifact_identity)
         if final_root.is_symlink() or not final_root.is_dir():
@@ -685,6 +713,11 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
             return OpenExactResult(OpenExactStatus.CONFLICT, reason="artifact identity differs")
         if receipt.validator_binding != expected_validator_binding:
             return OpenExactResult(OpenExactStatus.CONFLICT, reason="validator binding differs")
+        if receipt.validator_binding != self.validator_binding:
+            return OpenExactResult(
+                OpenExactStatus.CONFLICT,
+                reason="receipt validator binding is not owned by this store's validator authority",
+            )
         if receipt.provider_identity != self._provider_identity(expected_artifact_identity):
             return OpenExactResult(OpenExactStatus.CONFLICT, reason="provider locator differs")
         if receipt.capability != StoreCapabilityV1.ATOMIC_ONLY:
@@ -714,6 +747,7 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
                 if (
                     receipt.capability != self.capability
                     or receipt.artifact_identity != actual_identity
+                    or receipt.validator_binding != self.validator_binding
                     or receipt.provider_identity != self._provider_identity(actual_identity)
                 ):
                     raise StoreContractError("published receipt does not match its object")
@@ -721,12 +755,6 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
                 destination = self._quarantine(published, "invalid-published-object")
                 records.append(RecoveryRecord(published, destination, "INVALID_PUBLISHED_OBJECT"))
         return tuple(records)
-
-    def _require_validator_binding(self, binding: ValidatorBindingV1) -> None:
-        if not isinstance(binding, ValidatorBindingV1):
-            raise ValidatorBindingMismatch("validator binding must be typed")
-        if binding not in self._accepted_validator_bindings:
-            raise ValidatorBindingMismatch("validator binding is not approved by this store")
 
     def _require_staging(self, staging_root: Path) -> Path:
         staging = Path(staging_root)
@@ -739,11 +767,7 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
         return staging
 
     def _validate_artifact(self, root: Path) -> ArtifactIdentityV1:
-        reader = DerivedArtifactReader.open(root)
-        try:
-            return ArtifactIdentityV1.from_manifest(reader.manifest)
-        finally:
-            reader.close()
+        return self._validator_authority.validate(root)
 
     def _provider_identity(self, identity: ArtifactIdentityV1) -> ProviderIdentityV1:
         locator = self.object_path(identity).relative_to(self._root).as_posix()
@@ -757,20 +781,56 @@ class AtomicOnlyArtifactStore(ContentAddressedArtifactStore):
         if path.is_symlink() or not path.is_file():
             raise StoreContractError("publication commit marker is missing")
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            raw = path.read_bytes()
+            value = json.loads(raw.decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise StoreContractError("publication commit marker is malformed") from exc
         if not isinstance(value, Mapping):
             raise StoreContractError("publication commit marker must be an object")
+        try:
+            canonical = canonical_bytes(value)
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise StoreContractError("publication commit marker is not canonical JSON") from exc
+        if canonical != raw:
+            raise StoreContractError("publication commit marker is not canonical JSON")
         return PublicationReceiptV1.from_dict(value)
+
+    def _compare_existing_after_race(
+        self,
+        final_root: Path,
+        expected_receipt: PublicationReceiptV1,
+    ) -> PublicationResult:
+        deadline = time.monotonic() + _DUPLICATE_RETRY_WINDOW_SECONDS
+        while True:
+            result = self._compare_existing(final_root, expected_receipt)
+            if result.status != PublicationStatus.RETRYABLE:
+                return result
+            if time.monotonic() >= deadline:
+                return result
+            time.sleep(_DUPLICATE_RETRY_INTERVAL_SECONDS)
 
     def _compare_existing(
         self,
         final_root: Path,
         expected_receipt: PublicationReceiptV1,
     ) -> PublicationResult:
+        if final_root.is_symlink() or not final_root.is_dir():
+            return PublicationResult(
+                PublicationStatus.CONFLICT,
+                final_root if final_root.exists() else None,
+                None,
+                "existing publication root is not a regular directory",
+            )
+        receipt_path = final_root / _RECEIPT_FILENAME
+        if receipt_path.is_symlink() or not receipt_path.is_file():
+            return PublicationResult(
+                PublicationStatus.RETRYABLE,
+                final_root,
+                None,
+                "existing publication is in-flight or lacks a commit marker; retry",
+            )
         try:
-            existing_receipt = self._read_receipt(final_root / _RECEIPT_FILENAME)
+            existing_receipt = self._read_receipt(receipt_path)
             existing_identity = self._validate_artifact(final_root)
             if (
                 existing_identity != expected_receipt.artifact_identity
@@ -829,6 +889,8 @@ __all__ = [
     "StoreCapabilityV1",
     "StoreContractError",
     "TrustedImmutableHandleV1",
+    "ValidatorAuthorityV1",
+    "DerivedArtifactValidatorAuthorityV1",
     "ValidatorBindingMismatch",
     "ValidatorBindingV1",
 ]

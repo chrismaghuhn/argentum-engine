@@ -4,12 +4,14 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from argentum_ml.contracts.canonical_json import canonical_bytes
 from argentum_ml.data.artifact_store import (
     ArtifactIdentityMismatch,
     ArtifactIdentityV1,
     AtomicOnlyArtifactStore,
+    DerivedArtifactValidatorAuthorityV1,
     ImmutableContentArtifactStore,
     OpenExactStatus,
     PublicationReceiptV1,
@@ -18,7 +20,7 @@ from argentum_ml.data.artifact_store import (
     StoreCapabilityV1,
     StoreContractError,
     TrustedImmutableHandleV1,
-    ValidatorBindingMismatch,
+    ValidatorAuthorityV1,
     ValidatorBindingV1,
 )
 from argentum_ml.data.derived_reader import DerivedArtifactReader
@@ -39,12 +41,23 @@ def _identity(root: Path) -> ArtifactIdentityV1:
 
 
 def _validator(seed: str = "a") -> ValidatorBindingV1:
-    return ValidatorBindingV1(
-        validator_contract_identity="argentum-ml-derived-reader-full-strict@v1",
-        validator_implementation_identity="argentum-ml-python-derived-reader@v1",
+    binding = DerivedArtifactValidatorAuthorityV1().binding
+    if seed == "a":
+        return binding
+    return replace(
+        binding,
         validator_source_commit=seed * 40,
-        validator_policy_digest=("b" if seed == "a" else "c") * 64,
+        validator_policy_digest="c" * 64,
     )
+
+
+class _CallerSuppliedValidatorAuthority(ValidatorAuthorityV1):
+    @property
+    def binding(self) -> ValidatorBindingV1:
+        return _validator("c")
+
+    def validate(self, root: Path) -> ArtifactIdentityV1:
+        raise AssertionError("a caller-supplied authority must never execute")
 
 
 def _copy_into_staging(store: AtomicOnlyArtifactStore, artifact: Path) -> Path:
@@ -98,12 +111,11 @@ class ArtifactStoreContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
+            store = AtomicOnlyArtifactStore(root / "store")
             identity = _identity(artifact)
             result = store.publish_validated(
                 _copy_into_staging(store, artifact),
                 expected_artifact_identity=identity,
-                validator_binding=_validator(),
             )
             decision = store.open_exact(
                 expected_artifact_identity=identity,
@@ -121,7 +133,7 @@ class ArtifactStoreContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
+            store = AtomicOnlyArtifactStore(root / "store")
             identity = _identity(artifact)
 
             partial = store.create_staging()
@@ -148,33 +160,79 @@ class ArtifactStoreContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
+            store = AtomicOnlyArtifactStore(root / "store")
             identity = _identity(artifact)
             first = store.publish_validated(
                 _copy_into_staging(store, artifact),
                 expected_artifact_identity=identity,
-                validator_binding=_validator(),
             )
             second = store.publish_validated(
                 _copy_into_staging(store, artifact),
                 expected_artifact_identity=identity,
-                validator_binding=_validator(),
             )
 
         self.assertEqual(first.status, PublicationStatus.PUBLISHED)
         self.assertEqual(second.status, PublicationStatus.ALREADY_PUBLISHED)
         self.assertEqual(second.receipt, first.receipt)
 
+    def test_concurrent_identical_publication_rechecks_the_winner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = _artifact_fixture(root / "artifact")
+            store = AtomicOnlyArtifactStore(root / "store")
+            identity = _identity(artifact)
+            first = store.publish_validated(
+                _copy_into_staging(store, artifact),
+                expected_artifact_identity=identity,
+            )
+            self.assertEqual(first.status, PublicationStatus.PUBLISHED)
+
+            hidden_once = False
+
+            def hide_existing_claim() -> bool:
+                nonlocal hidden_once
+                if not hidden_once:
+                    hidden_once = True
+                    return False
+                return True
+
+            with patch.object(Path, "exists", side_effect=hide_existing_claim):
+                result = store.publish_validated(
+                    _copy_into_staging(store, artifact),
+                    expected_artifact_identity=identity,
+                )
+
+        self.assertEqual(result.status, PublicationStatus.ALREADY_PUBLISHED)
+        self.assertEqual(result.receipt, first.receipt)
+
+    def test_incomplete_publication_race_is_retryable_not_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = _artifact_fixture(root / "artifact")
+            store = AtomicOnlyArtifactStore(root / "store")
+            identity = _identity(artifact)
+            incomplete = store.object_path(identity)
+            incomplete.mkdir(parents=True)
+            shutil.copy2(artifact / "manifest.json", incomplete / "manifest.json")
+            shutil.copy2(artifact / "samples.ndjson", incomplete / "samples.ndjson")
+
+            result = store.publish_validated(
+                _copy_into_staging(store, artifact),
+                expected_artifact_identity=identity,
+            )
+
+        self.assertEqual(result.status, PublicationStatus.RETRYABLE)
+        self.assertIsNone(result.receipt)
+
     def test_conflicting_same_id_publication_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
+            store = AtomicOnlyArtifactStore(root / "store")
             identity = _identity(artifact)
             store.publish_validated(
                 _copy_into_staging(store, artifact),
                 expected_artifact_identity=identity,
-                validator_binding=_validator(),
             )
             published_samples = store.object_path(identity) / "samples.ndjson"
             original = published_samples.read_bytes()
@@ -183,7 +241,6 @@ class ArtifactStoreContractTests(unittest.TestCase):
             result = store.publish_validated(
                 _copy_into_staging(store, artifact),
                 expected_artifact_identity=identity,
-                validator_binding=_validator(),
             )
 
         self.assertEqual(result.status, PublicationStatus.CONFLICT)
@@ -193,14 +250,13 @@ class ArtifactStoreContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
+            store = AtomicOnlyArtifactStore(root / "store")
             actual = _identity(artifact)
             wrong = replace(actual, derived_artifact_id="f" * 64)
             with self.assertRaises(ArtifactIdentityMismatch):
                 store.publish_validated(
                     _copy_into_staging(store, artifact),
                     expected_artifact_identity=wrong,
-                    validator_binding=_validator(),
                 )
             self.assertFalse(store.object_path(wrong).exists())
 
@@ -208,12 +264,11 @@ class ArtifactStoreContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
+            store = AtomicOnlyArtifactStore(root / "store")
             actual = _identity(artifact)
             store.publish_validated(
                 _copy_into_staging(store, artifact),
                 expected_artifact_identity=actual,
-                validator_binding=_validator(),
             )
             wrong = replace(actual, derived_artifact_id="f" * 64)
             decision = store.open_exact(
@@ -224,12 +279,12 @@ class ArtifactStoreContractTests(unittest.TestCase):
         self.assertEqual(decision.status, OpenExactStatus.NOT_FOUND)
         self.assertIsNone(decision.handle)
 
-    def test_wrong_validator_binding_fails_closed(self) -> None:
+    def test_caller_cannot_supply_validator_binding_to_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
-            with self.assertRaises(ValidatorBindingMismatch):
+            store = AtomicOnlyArtifactStore(root / "store")
+            with self.assertRaises(TypeError):
                 store.publish_validated(
                     _copy_into_staging(store, artifact),
                     expected_artifact_identity=_identity(artifact),
@@ -240,12 +295,11 @@ class ArtifactStoreContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
+            store = AtomicOnlyArtifactStore(root / "store")
             identity = _identity(artifact)
             store.publish_validated(
                 _copy_into_staging(store, artifact),
                 expected_artifact_identity=identity,
-                validator_binding=_validator(),
             )
             decision = store.open_exact(
                 expected_artifact_identity=identity,
@@ -259,12 +313,11 @@ class ArtifactStoreContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
+            store = AtomicOnlyArtifactStore(root / "store")
             identity = _identity(artifact)
             store.publish_validated(
                 _copy_into_staging(store, artifact),
                 expected_artifact_identity=identity,
-                validator_binding=_validator(),
             )
             shutil.copytree(store.object_path(identity), store.root / "latest")
             with self.assertRaises(StoreContractError):
@@ -279,18 +332,16 @@ class ArtifactStoreContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            first_store = AtomicOnlyArtifactStore(root / "store-a", accepted_validator_bindings={_validator()})
-            second_store = AtomicOnlyArtifactStore(root / "store-b", accepted_validator_bindings={_validator()})
+            first_store = AtomicOnlyArtifactStore(root / "store-a")
+            second_store = AtomicOnlyArtifactStore(root / "store-b")
             identity = _identity(artifact)
             first = first_store.publish_validated(
                 _copy_into_staging(first_store, artifact),
                 expected_artifact_identity=identity,
-                validator_binding=_validator(),
             )
             second = second_store.publish_validated(
                 _copy_into_staging(second_store, artifact),
                 expected_artifact_identity=identity,
-                validator_binding=_validator(),
             )
 
         self.assertEqual(first.receipt.artifact_identity, second.receipt.artifact_identity)
@@ -301,12 +352,11 @@ class ArtifactStoreContractTests(unittest.TestCase):
             with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 artifact = _artifact_fixture(root / "artifact")
-                store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
+                store = AtomicOnlyArtifactStore(root / "store")
                 identity = _identity(artifact)
                 store.publish_validated(
                     _copy_into_staging(store, artifact),
                     expected_artifact_identity=identity,
-                    validator_binding=_validator(),
                 )
                 receipt_path = store.object_path(identity) / "publication.receipt.json"
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -319,11 +369,35 @@ class ArtifactStoreContractTests(unittest.TestCase):
                 self.assertEqual(decision.status, OpenExactStatus.CONFLICT)
                 self.assertIsNone(decision.handle)
 
+    def test_noncanonical_receipt_bytes_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = _artifact_fixture(root / "artifact")
+            store = AtomicOnlyArtifactStore(root / "store")
+            identity = _identity(artifact)
+            store.publish_validated(
+                _copy_into_staging(store, artifact),
+                expected_artifact_identity=identity,
+            )
+            receipt_path = store.object_path(identity) / "publication.receipt.json"
+            receipt_path.write_text(
+                json.dumps(json.loads(receipt_path.read_text(encoding="utf-8")), indent=2),
+                encoding="utf-8",
+            )
+
+            decision = store.open_exact(
+                expected_artifact_identity=identity,
+                expected_validator_binding=_validator(),
+            )
+
+        self.assertEqual(decision.status, OpenExactStatus.CONFLICT)
+        self.assertIsNone(decision.handle)
+
     def test_recovery_quarantines_abandoned_staging_and_incomplete_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = _artifact_fixture(root / "artifact")
-            store = AtomicOnlyArtifactStore(root / "store", accepted_validator_bindings={_validator()})
+            store = AtomicOnlyArtifactStore(root / "store")
             identity = _identity(artifact)
             abandoned = _copy_into_staging(store, artifact)
             incomplete = store.object_path(identity)
@@ -341,10 +415,36 @@ class ArtifactStoreContractTests(unittest.TestCase):
         self.assertFalse(incomplete.exists())
         self.assertEqual(decision.status, OpenExactStatus.NOT_FOUND)
 
-    def test_trusted_handle_is_not_caller_constructible_and_immutable_store_is_explicit(self) -> None:
+    def test_trusted_handle_has_no_public_issuer(self) -> None:
         self.assertTrue(issubclass(ImmutableContentArtifactStore, object))
+        self.assertFalse(hasattr(TrustedImmutableHandleV1, "_issue"))
         with self.assertRaises(TypeError):
             TrustedImmutableHandleV1()  # type: ignore[call-arg]
+
+    def test_publication_binding_is_owned_by_the_validator_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = _artifact_fixture(root / "artifact")
+            store = AtomicOnlyArtifactStore(root / "store")
+            identity = _identity(artifact)
+            result = store.publish_validated(
+                _copy_into_staging(store, artifact),
+                expected_artifact_identity=identity,
+            )
+
+        self.assertEqual(
+            result.receipt.validator_binding,
+            DerivedArtifactValidatorAuthorityV1().binding,
+        )
+        self.assertEqual(store.validator_binding, result.receipt.validator_binding)
+
+    def test_caller_supplied_validator_authority_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(StoreContractError):
+                AtomicOnlyArtifactStore(
+                    Path(directory) / "store",
+                    validator_authority=_CallerSuppliedValidatorAuthority(),
+                )
 
 
 if __name__ == "__main__":
