@@ -226,7 +226,8 @@ class GameSession(
         val playerName: String,
         val token: String,
         val isAi: Boolean = false,
-        val aiModelOverride: String? = null
+        val aiModelOverride: String? = null,
+        val forceEngine: Boolean = false,
     )
 
     private val actionProcessor = ActionProcessor(services)
@@ -1768,9 +1769,16 @@ class GameSession(
         playerName: String,
         token: String,
         isAi: Boolean = false,
-        aiModelOverride: String? = null
+        aiModelOverride: String? = null,
+        forceEngine: Boolean = false,
     ) {
-        playerPersistenceInfo[playerId] = PlayerPersistenceInfo(playerName, token, isAi, aiModelOverride)
+        playerPersistenceInfo[playerId] = PlayerPersistenceInfo(
+            playerName,
+            token,
+            isAi,
+            aiModelOverride,
+            forceEngine,
+        )
     }
 
     /**

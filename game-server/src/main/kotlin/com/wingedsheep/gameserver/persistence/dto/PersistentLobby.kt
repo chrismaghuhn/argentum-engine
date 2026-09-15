@@ -96,6 +96,8 @@ data class PersistentLobbyPlayer(
     val submittedSideboard: Map<String, Int> = emptyMap(),  // cardName -> count (outside the game)
     /** Designated Commander retained for restart/reconnect of a Commander lobby. */
     val commander: String? = null,
+    /** True when the recovered AI identity must use the built-in Engine AI. */
+    val forceEngine: Boolean = false,
 )
 
 /**

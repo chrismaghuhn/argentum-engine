@@ -383,7 +383,7 @@ class LobbyHandler(
      * convention); [TournamentMatchHandler] removes exactly one copy at the engine boundary.
      */
     fun createAiTournamentFromCurriculumPreset(preset: CurriculumAiTournamentPreset): String {
-        require(aiGameManager.isEnabled) { "AI opponent is not enabled on this server" }
+        require(aiGameManager.aiEnabledToggle) { "AI opponent is not enabled on this server" }
 
         val sources = preset.sourcePaths.map(curriculumDeckSourceLoader::load)
         require(sources.size == 2) { "Curriculum preset ${preset.identity} must contain exactly two seats" }
@@ -428,7 +428,7 @@ class LobbyHandler(
         )
 
         val playerIds = sources.map { source ->
-            val identity = aiGameManager.createAiIdentity()
+            val identity = aiGameManager.createAiIdentity(forceEngine = true)
             val playerId = lobby.addPlayer(identity)
             lobby.players[playerId]?.aiDeckSpec = AiDeckSpec.Fixed(
                 deckList = source.libraryDeckList(),

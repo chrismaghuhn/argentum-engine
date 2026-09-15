@@ -54,6 +54,7 @@ fun TournamentLobby.toPersistent(): PersistentTournamentLobby {
                 aiModelOverride = playerState.identity.aiModelOverride,
                 submittedSideboard = playerState.submittedSideboard,
                 commander = playerState.commander,
+                forceEngine = playerState.identity.forceEngine,
             )
         },
         cubeName = cube?.name,
@@ -177,7 +178,8 @@ fun restoreTournamentLobby(
             playerId = playerId,
             playerName = persistentPlayer.playerName,
             isAi = persistentPlayer.isAi,
-            aiModelOverride = persistentPlayer.aiModelOverride
+            aiModelOverride = persistentPlayer.aiModelOverride,
+            forceEngine = persistentPlayer.forceEngine,
         ).also {
             it.currentLobbyId = persistent.lobbyId
             it.currentSpectatingGameId = persistentPlayer.currentSpectatingGameId

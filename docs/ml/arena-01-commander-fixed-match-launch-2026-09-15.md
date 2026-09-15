@@ -48,6 +48,18 @@ GameInitializer + existing AiGameManager/AiWebSocketSession lifecycle
 The match still starts through the normal `TournamentManager` readiness path. The dev controller does
 not call AI logic, execute actions in a loop, or construct a second `GameSession` implementation.
 
+## Exact-SHA review follow-up
+
+The first implementation review identified one P2: `engineAiOnly` was only consulted during later
+controller wiring, while `createAiIdentity()` and recovery still required `isEnabled`, which couples
+the locked Engine-AI preset to LLM-key availability under global LLM mode.
+
+The follow-up keeps normal AI semantics unchanged and carries one explicit `forceEngine` marker through
+the existing identity and persistence surfaces. A force-engine create/rehydrate/wire operation requires
+only `aiEnabledToggle`, creates an Engine-AI placeholder, suppresses misleading LLM model suffixes,
+and selects `EngineAiPlayerController`. Normal seats continue to use `isEnabled`; recovery applies the
+same per-seat distinction and still honors the master toggle.
+
 ## Curriculum source identities
 
 The authoritative files were not copied or edited:
@@ -144,16 +156,21 @@ added.
 
 ## AI controller path
 
-The preset creates ordinary AI identities and lets `TournamentMatchHandler` call
-`AiGameManager.wireAiForGame` for each seat. The existing `AiWebSocketSession` receives the normal
-`GameStarted`, mulligan, full/delta state, legal-action, and pending-decision messages; actions return
-through the existing `GamePlayHandler` callbacks into `GameSession.executeAction`.
+The preset creates marked AI identities through `AiGameManager.createAiIdentity(forceEngine = true)`.
+That path requires only the existing `aiEnabledToggle` master switch, creates an Engine-AI placeholder,
+and omits any global LLM model suffix. Normal identities still use the existing `isEnabled` gate.
+
+At match start, `TournamentMatchHandler` calls `AiGameManager.wireAiForGame` for each seat with the
+identity/lobby force marker. The existing `AiWebSocketSession` receives the normal `GameStarted`,
+mulligan, full/delta state, legal-action, and pending-decision messages; actions return through the
+existing `GamePlayHandler` callbacks into `GameSession.executeAction`.
 
 The narrow `forceEngine` argument is used only for the locked preset, so a global LLM configuration or
-an accidental model override cannot silently turn this exact V1 matchup into an LLM seat. Recovered
-AI games resolve the same flag through the existing game-to-lobby link before rewiring. No ML Policy
-controller exists here; Engine AI remains a visual/debug opponent rather than a trustworthy scientific
-evaluation baseline.
+an accidental model override cannot silently turn this exact V1 matchup into an LLM seat. Recovery
+applies the same distinction: the master toggle is required globally, normal AI seats retain the
+LLM-key gate, and marked Engine-only identities are rehydrated and rewired without a key. The marker is
+persisted in both lobby and game player metadata. No ML Policy controller exists here; Engine AI remains
+a visual/debug opponent rather than a trustworthy scientific evaluation baseline.
 
 ## Spectator and status path
 
@@ -171,8 +188,10 @@ server-side hidden-information projection remain covered by the surrounding regr
 ## Persistence
 
 The lobby persistence representation now retains the locked-source marker, Engine-AI-only marker,
-source provenance, and each player's designated commander. This prevents a Redis restore from losing
-the commander or re-enabling the EasterEgg mutation for an in-flight locked match.
+source provenance, each player's designated commander, and each marked identity's `forceEngine` bit.
+Game-session persistence retains the same AI-controller bit. This prevents a Redis restore from losing
+the commander, re-enabling the EasterEgg mutation, or requiring an unrelated LLM key for an in-flight
+locked match.
 
 The pre-existing persistence omission for general `deckFormat`, `deckSizeMin`, and
 `allowDuplicates` remains outside this slice. The locked match has already been structurally
@@ -199,7 +218,9 @@ Focused native Gradle tests cover:
 The direct affected existing tests cover Quick Game Commander AI, generated Commander legality,
 Commander lobby rules/persistence, ARENA_01A admission and source masking, and GameSession spectator
 lifecycle. The `just` wrapper remains an environment failure on this Windows host (`WinError 193`)
-before Gradle starts; native Gradle results are reported separately.
+before Gradle starts; native Gradle results are reported separately. A dedicated integration test also
+runs the locked preset with `game.ai.mode=llm`, an empty API key, and the master toggle enabled; it
+proves that the match starts and both Engine AI identities rehydrate without LLM dependency.
 
 ## Scope classification and remaining work
 
@@ -244,6 +265,8 @@ CHEVILL_SOURCE_SEMANTIC_COUNTS_PRESERVED=YES
 EASTER_EGG_MUTATION_APPLIED=NO
 AI_SEAT_COUNT=2
 AI_CONTROLLER_PATH=EXISTING_AI_GAME_MANAGER
+ENGINE_ONLY_WITHOUT_LLM_KEY=PASS
+ENGINE_ONLY_RECOVERY=PASS
 NEW_AI_LOOP_CREATED=NO
 SPECTATOR_POLICY_BYPASSED=NO
 ARENA_MATCH_SPECTATE_STATUS=AUTHORIZED_PATH_READY

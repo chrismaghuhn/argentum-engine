@@ -376,22 +376,30 @@ class AiGameManager(
      * when a tournament match starts via [wireAiForGame].
      *
      * @param modelOverride Optional LLM model override for this specific AI player.
+     * @param forceEngine Use the master AI toggle and create an Engine-AI identity without an LLM key.
      * @return The AI PlayerIdentity, registered in SessionRegistry.
      */
-    fun createAiIdentity(modelOverride: String? = null): PlayerIdentity {
-        require(isEnabled) { "AI is not enabled. Set game.ai.enabled=true." }
+    fun createAiIdentity(modelOverride: String? = null, forceEngine: Boolean = false): PlayerIdentity {
+        require(if (forceEngine) aiEnabledToggle else isEnabled) {
+            "AI is not enabled. Set game.ai.enabled=true."
+        }
 
         val aiPlayerId = EntityId("ai-${UUID.randomUUID().toString().take(8)}")
         val aiProperties = gameProperties.ai
 
         // Use a placeholder controller — will be replaced when match starts
-        val controller = createController(aiPlayerId, modelOverride = modelOverride)
+        val controller = createController(
+            aiPlayerId,
+            modelOverride = modelOverride,
+            forceEngine = forceEngine,
+        )
 
         // No game yet, so no callbacks and no step gate — [wireAiForGame] replaces this session
         // wholesale once a match starts.
         val aiSession = buildAiSession(aiPlayerId, controller, gameSession = null)
 
-        val effectiveModel = modelOverride ?: if (gameProperties.ai.isLlmMode) gameProperties.ai.model else null
+        val effectiveModel = if (forceEngine) null
+            else modelOverride ?: if (gameProperties.ai.isLlmMode) gameProperties.ai.model else null
         val modelSuffix = effectiveModel?.substringAfterLast('/')?.let { " ($it)" } ?: ""
         val aiName = randomAiName() + modelSuffix
         val identity = PlayerIdentity(
@@ -399,7 +407,8 @@ class AiGameManager(
             playerId = aiPlayerId,
             playerName = aiName,
             isAi = true,
-            aiModelOverride = modelOverride
+            aiModelOverride = modelOverride.takeUnless { forceEngine },
+            forceEngine = forceEngine,
         )
         identity.webSocketSession = aiSession
 
@@ -413,7 +422,8 @@ class AiGameManager(
         // Track this AI identity so we know which players are AI
         aiPlayerIds.add(aiPlayerId)
 
-        val modelInfo = if (modelOverride != null) "model=$modelOverride" else "model=${aiProperties.model}"
+        val modelInfo = if (forceEngine) "model=engine"
+            else if (modelOverride != null) "model=$modelOverride" else "model=${aiProperties.model}"
         logger.info("Created AI identity: {} ({}) [mode={}, {}]", identity.playerName, aiPlayerId.value, aiProperties.mode, modelInfo)
         return identity
     }
@@ -421,7 +431,8 @@ class AiGameManager(
     /**
      * Re-establish in-memory AI tracking for a [PlayerIdentity] that was loaded from
      * Redis on server startup. The persisted identity has `isAi = true` and (optionally)
-     * an `aiModelOverride`, but no live [AiWebSocketSession] (those aren't persisted).
+     * an `aiModelOverride` / `forceEngine` marker, but no live [AiWebSocketSession] (those aren't
+     * persisted).
      *
      * This adds the player back to [aiPlayerIds], creates a fresh placeholder
      * [AiWebSocketSession] with no-op callbacks (real ones get wired by `wireAiForGame`
@@ -430,7 +441,8 @@ class AiGameManager(
      */
     fun rehydrateAiIdentity(identity: PlayerIdentity) {
         require(identity.isAi) { "rehydrateAiIdentity called on non-AI identity ${identity.playerName}" }
-        if (!isEnabled) {
+        val forceEngine = identity.forceEngine
+        if (if (forceEngine) !aiEnabledToggle else !isEnabled) {
             logger.warn("AI is disabled but recovered AI identity {}; AI players will not act.",
                 identity.playerName)
             return
@@ -439,7 +451,11 @@ class AiGameManager(
         val aiPlayerId = identity.playerId
         val aiProperties = gameProperties.ai
 
-        val controller = createController(aiPlayerId, modelOverride = identity.aiModelOverride)
+        val controller = createController(
+            aiPlayerId,
+            modelOverride = identity.aiModelOverride,
+            forceEngine = forceEngine,
+        )
         // Replaced when a match (or draft) wires this AI, so no callbacks and no step gate here.
         val aiSession = buildAiSession(aiPlayerId, controller, gameSession = null)
 
@@ -460,6 +476,8 @@ class AiGameManager(
     /**
      * Wire an AI player's session for a specific tournament match.
      * Replaces the no-op callbacks with ones that feed actions into the given GameSession.
+     * [forceEngine] is also recovered from the identity marker, so restart wiring cannot silently
+     * switch a locked Engine-AI seat to an LLM controller.
      */
     fun wireAiForGame(
         gameSession: GameSession,
@@ -473,6 +491,10 @@ class AiGameManager(
         forceEngine: Boolean = false,
     ) {
         val identity = sessionRegistry.getAllIdentities().find { it.playerId == aiPlayerId }
+        val effectiveForceEngine = forceEngine || identity?.forceEngine == true
+        require(if (effectiveForceEngine) aiEnabledToggle else isEnabled) {
+            "AI is not enabled. Set game.ai.enabled=true."
+        }
         val oldSession = identity?.webSocketSession as? AiWebSocketSession
         if (oldSession != null) {
             oldSession.shutdown()
@@ -480,7 +502,12 @@ class AiGameManager(
 
         val aiProperties = gameProperties.ai
         val modelOverride = lookupModelOverride(aiPlayerId)
-        val controller = createController(aiPlayerId, gameSession, modelOverride, forceEngine)
+        val controller = createController(
+            aiPlayerId,
+            gameSession,
+            modelOverride,
+            effectiveForceEngine,
+        )
 
         // Give the AI knowledge of its deck composition
         if (deckList != null) {
@@ -509,7 +536,12 @@ class AiGameManager(
         }
 
         trackSession(gameSession.sessionId, aiPlayerId, newSession)
-        logger.info("Wired AI {} for game {} [mode={}]", aiPlayerId.value, gameSession.sessionId, aiProperties.mode)
+        logger.info(
+            "Wired AI {} for game {} [mode={}]",
+            aiPlayerId.value,
+            gameSession.sessionId,
+            if (effectiveForceEngine) "engine" else aiProperties.mode,
+        )
     }
 
     /**
