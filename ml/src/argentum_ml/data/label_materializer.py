@@ -1,0 +1,418 @@
+"""C1_05 exact Teacher-result to supervised-label transformation."""
+
+from __future__ import annotations
+
+import re
+import subprocess
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from ..contracts.canonical_json import canonical_json
+from ..teacher.contracts import (
+    NoLabelReason,
+    NoLabelTeacherResultV1,
+    PublicObservationTeacherConfigV1,
+    SelectedTeacherResultV1,
+)
+from ..teacher.execution import (
+    C1_05AdmissionBindingV1,
+    TeacherExecutionBindingV1,
+    TeacherExecutionError,
+    TeacherTieRngScheduleV1,
+    teacher_seat_index,
+    validate_teacher_result_rng_evidence,
+)
+from ..teacher.request import PublicObservationTeacherRequestV1
+from ..teacher.request_factory import ExpectedC1_00Unbindable, teacher_request_from_validated_sample
+from .derived_reader import (
+    DerivedArtifactError,
+    ValidatedDerivedSample,
+    validate_exact_source_binding_membership,
+)
+from .label_contracts import (
+    LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY,
+    LabelMaterializerConfigV1,
+    SupervisedPolicyTargetV1,
+)
+from .label_artifact import _write_label_artifact_for_test, write_label_artifact
+
+
+class LabelMaterializerError(ValueError):
+    """Raised when a selected Teacher result cannot become a C1_05 label."""
+
+
+_GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _production_materializer_implementation_identity() -> dict[str, str]:
+    """Resolve the code commit internally; callers cannot choose provenance."""
+
+    try:
+        repository_root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=Path.cwd(),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        source_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise LabelMaterializerError("cannot resolve the materializer source commit") from exc
+    if _GIT_SHA1.fullmatch(source_commit) is None:
+        raise LabelMaterializerError("resolved materializer source commit is malformed")
+    return {
+        "implementation": LABEL_MATERIALIZER_IMPLEMENTATION_IDENTITY,
+        "sourceCommit": source_commit,
+    }
+
+
+def _binding_key(binding: Any) -> tuple[str | None, str | None]:
+    if not hasattr(binding, "exact_action") or not hasattr(binding, "exact_response"):
+        raise LabelMaterializerError("result does not carry an exact source binding")
+    return (
+        canonical_json(binding.exact_action) if binding.exact_action is not None else None,
+        canonical_json(binding.exact_response) if binding.exact_response is not None else None,
+    )
+
+
+def _selected_binding_dict(result: SelectedTeacherResultV1) -> dict[str, Any]:
+    binding = result.exact_source_binding
+    if binding.exact_action is not None:
+        return dict(binding.exact_action)
+    if binding.exact_response is not None:
+        return dict(binding.exact_response)
+    raise LabelMaterializerError("Teacher result has no selected action or response")
+
+
+def materialize_selected_label(
+    validated_sample: ValidatedDerivedSample,
+    request: PublicObservationTeacherRequestV1,
+    result: SelectedTeacherResultV1,
+    *,
+    execution: TeacherExecutionBindingV1,
+    teacher_config_digest: str,
+) -> dict[str, Any]:
+    """Validate one selected result and emit an exact source-bound label row."""
+
+    if not isinstance(validated_sample, ValidatedDerivedSample):
+        raise LabelMaterializerError("label materialization requires a reader-issued sample")
+    if not isinstance(request, PublicObservationTeacherRequestV1):
+        raise LabelMaterializerError("label materialization requires a Teacher request")
+    if not isinstance(result, SelectedTeacherResultV1):
+        raise LabelMaterializerError("label materialization requires a selected Teacher result")
+    if not isinstance(execution, TeacherExecutionBindingV1):
+        raise LabelMaterializerError("label materialization requires Teacher execution provenance")
+    if not isinstance(teacher_config_digest, str) or not teacher_config_digest:
+        raise LabelMaterializerError("label materialization requires the admitted Teacher config digest")
+    try:
+        execution.validate()
+    except ValueError as exc:
+        raise LabelMaterializerError(str(exc)) from exc
+
+    sample = validated_sample.sample
+    source_reference = sample.get("sourceReference")
+    binding_channel = sample.get("binding")
+    if not isinstance(source_reference, Mapping) or not isinstance(binding_channel, Mapping):
+        raise LabelMaterializerError("validated source sample has malformed source channels")
+    partition = sample.get("partition")
+    if partition not in {"TRAIN", "VALIDATION"}:
+        raise LabelMaterializerError("label materialization only permits TRAIN and VALIDATION")
+
+    seat_index = teacher_seat_index(sample)
+    if request.decision_family not in {"ACTION_CANDIDATES", "FOLDED_DECISION_OPTIONS"}:
+        raise LabelMaterializerError("selected label has an unsupported decision family")
+    if result.diagnostics.decision_family != request.decision_family:
+        raise LabelMaterializerError("Teacher result family differs from request")
+    if result.diagnostics.config_digest != teacher_config_digest:
+        raise LabelMaterializerError("Teacher result config digest differs from admitted config")
+    if result.diagnostics.candidate_count != request.candidate_count:
+        raise LabelMaterializerError("Teacher result candidate count differs from request")
+    if result.diagnostics.no_label_reason is not None or result.diagnostics.support != "SUPPORTED":
+        raise LabelMaterializerError("selected Teacher result has NO_LABEL diagnostics")
+
+    ordinal = result.source_binding_ordinal
+    if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+        raise LabelMaterializerError("Teacher result ordinal is invalid")
+    try:
+        expected_binding = request.source_bindings.exact_binding_for(ordinal)
+        candidate = next(
+            candidate
+            for candidate in request.item.candidates
+            if candidate.source_binding_ordinal == ordinal
+        )
+    except (StopIteration, ValueError) as exc:
+        raise LabelMaterializerError("Teacher result ordinal is outside the request domain") from exc
+    if _binding_key(expected_binding) != _binding_key(result.exact_source_binding):
+        raise LabelMaterializerError("Teacher result exact binding differs from request binding")
+    if not candidate.present or not candidate.executable_support:
+        raise LabelMaterializerError("selected source candidate is not executable")
+
+    target = SupervisedPolicyTargetV1.from_exact_source_binding(
+        result.exact_source_binding
+    ).to_dict()
+    selected_binding = _selected_binding_dict(result)
+    try:
+        validate_exact_source_binding_membership(
+            target,
+            selected_binding,
+            binding_channel["completeLegalDomain"],
+        )
+    except (KeyError, TypeError, ValueError, DerivedArtifactError) as exc:
+        raise LabelMaterializerError("Teacher target is not a complete-domain member") from exc
+
+    return {
+        "version": 1,
+        "partition": partition,
+        "decisionFamily": request.decision_family,
+        "sourceReference": dict(source_reference),
+        "target": target,
+        "binding": {
+            "selectedExactSourceBinding": selected_binding,
+            "sourceBindingOrdinal": ordinal,
+        },
+        "provenance": {
+            "teacherResultSchemaIdentity": "argentum-ml-public-observation-teacher-result@v1",
+            "teacherConfigDigest": result.diagnostics.config_digest,
+            "selectionContractIdentity": "argentum-ml-policy-selection@v2",
+            "policyRngIdentity": "argentum-ml-policy-tie-rng@v1",
+            "teacherSeatIndex": seat_index,
+            "candidateCount": result.diagnostics.candidate_count,
+            "rngDrawCount": result.rng_draw_count,
+            "cursorBefore": result.cursor_before,
+            "cursorAfter": result.cursor_after,
+            "tieOccurred": result.diagnostics.tie_occurred,
+            "policyTieRngWordsConsumed": result.diagnostics.policy_tie_rng_words_consumed,
+        },
+    }
+
+
+def materialize_artifact(
+    source_root: Any,
+    output_root: Any,
+    *,
+    teacher: Any,
+    execution: TeacherExecutionBindingV1,
+) -> dict[str, Any]:
+    """Materialize only the repository-authoritative C1_03 source/admission tuple."""
+
+    return _materialize_artifact(
+        source_root,
+        output_root,
+        teacher=teacher,
+        execution=execution,
+        materializer_implementation_identity=_production_materializer_implementation_identity(),
+        materializer_config_digest=LabelMaterializerConfigV1.reference().digest,
+        authority=C1_05AdmissionBindingV1.reference(),
+    )
+
+
+def _materialize_artifact_for_test(
+    source_root: Any,
+    output_root: Any,
+    *,
+    teacher: Any,
+    execution: TeacherExecutionBindingV1,
+    materializer_implementation_identity: dict[str, str],
+    materializer_config_digest: str,
+    authority: C1_05AdmissionBindingV1,
+) -> dict[str, Any]:
+    """Private synthetic-fixture seam; never use for a production run."""
+
+    return _materialize_artifact(
+        source_root,
+        output_root,
+        teacher=teacher,
+        execution=execution,
+        materializer_implementation_identity=materializer_implementation_identity,
+        materializer_config_digest=materializer_config_digest,
+        authority=authority,
+        require_reference_materializer=False,
+    )
+
+
+def _materialize_artifact(
+    source_root: Any,
+    output_root: Any,
+    *,
+    teacher: Any,
+    execution: TeacherExecutionBindingV1,
+    materializer_implementation_identity: dict[str, str],
+    materializer_config_digest: str,
+    authority: C1_05AdmissionBindingV1,
+    require_reference_materializer: bool = True,
+) -> dict[str, Any]:
+    """Internal implementation with an explicit, already validated authority."""
+
+    if not hasattr(teacher, "select") or not hasattr(teacher, "identity") or not hasattr(teacher, "config"):
+        raise LabelMaterializerError("materializer requires an admitted Teacher")
+    try:
+        authority.validate_shape()
+    except TeacherExecutionError as exc:
+        raise LabelMaterializerError(str(exc)) from exc
+    try:
+        execution.validate()
+    except TeacherExecutionError as exc:
+        raise LabelMaterializerError(str(exc)) from exc
+    config = getattr(teacher, "config", None)
+    identity = getattr(teacher, "identity", None)
+    if not isinstance(config, PublicObservationTeacherConfigV1) or identity is None:
+        raise LabelMaterializerError("materializer requires the admitted Teacher contract")
+    if config.digest != authority.teacher_config_digest or config.schema_identity != authority.teacher_config_schema_identity:
+        raise LabelMaterializerError("Teacher configuration is not the admitted C1_05 reference")
+    if (
+        identity.teacher_contract_identity != authority.teacher_contract_identity
+        or identity.teacher_policy_identity != authority.teacher_policy_identity
+        or identity.teacher_source_identity != authority.teacher_source_identity
+        or config.scorer_identity != authority.scorer_identity
+        or config.selection_contract_identity != authority.selection_contract_identity
+        or config.policy_rng_contract_identity != authority.policy_rng_identity
+    ):
+        raise LabelMaterializerError("Teacher identity is not the admitted C1_05 reference")
+    if identity.source_commit != authority.teacher_source_commit:
+        raise LabelMaterializerError("Teacher source commit differs from accepted admission")
+    if execution != authority.execution:
+        raise LabelMaterializerError("Teacher execution binding differs from admission authority")
+    reader = None
+    try:
+        from .derived_reader import DerivedArtifactReader
+
+        reader = DerivedArtifactReader.open(source_root)
+        source_manifest = reader.manifest
+        if source_manifest["derivedArtifactId"] != authority.source_derived_artifact_id:
+            raise LabelMaterializerError("source derived artifact identity differs from expected")
+        if source_manifest["sourceDatasetId"] != authority.source_dataset_id:
+            raise LabelMaterializerError("source dataset identity differs from expected")
+        if source_manifest["sourceManifestContentDigest"] != authority.source_manifest_content_digest:
+            raise LabelMaterializerError("source manifest digest differs from expected")
+        schedule = TeacherTieRngScheduleV1(
+            execution,
+            teacher_policy_identity=identity.teacher_policy_identity,
+            policy_rng_identity=config.policy_rng_contract_identity,
+        )
+        partitions = ("TRAIN", "VALIDATION", "TEST")
+        processed = {partition: 0 for partition in partitions}
+        teacher_calls = {partition: 0 for partition in partitions}
+        labels = {partition: 0 for partition in partitions}
+        labels_by_family = {"ACTION_CANDIDATES": 0, "FOLDED_DECISION_OPTIONS": 0}
+        expected_no_label = {
+            partition: {reason.value: 0 for reason in NoLabelReason}
+            for partition in partitions
+        }
+        invalid_binding = {partition: 0 for partition in partitions}
+        invalid_selected = {partition: 0 for partition in partitions}
+        rejected_split = {partition: 0 for partition in partitions}
+        rejected_provenance = {partition: 0 for partition in partitions}
+        rows: list[dict[str, Any]] = []
+        for validated in reader.iter_validated_samples_for_inference():
+            sample = validated.sample
+            partition = sample.get("partition")
+            if partition == "TEST":
+                continue
+            if partition not in {"TRAIN", "VALIDATION"}:
+                raise LabelMaterializerError("source row has an unsupported partition")
+            processed[partition] += 1
+            try:
+                seat = teacher_seat_index(sample)
+                request = teacher_request_from_validated_sample(validated)
+            except ExpectedC1_00Unbindable:
+                invalid_binding[partition] += 1
+                continue
+            except (TeacherExecutionError, ValueError, KeyError, TypeError) as exc:
+                rejected_provenance[partition] += 1
+                raise LabelMaterializerError("source row could not produce an admitted Teacher request") from exc
+            episode_id = sample["sourceReference"]["semanticEpisodeId"]
+            state = schedule.current(episode_id, seat)
+            result = teacher.select(request, state)
+            teacher_calls[partition] += 1
+            if isinstance(result, NoLabelTeacherResultV1):
+                if result.diagnostics.config_digest != config.digest:
+                    raise LabelMaterializerError("NO_LABEL result config digest differs from admitted config")
+                if result.diagnostics.decision_family != request.decision_family:
+                    raise LabelMaterializerError("NO_LABEL result family differs from request")
+                if result.diagnostics.candidate_count != request.candidate_count:
+                    raise LabelMaterializerError("NO_LABEL result candidate count differs from request")
+                if (
+                    result.diagnostics.support != "NO_LABEL"
+                    or result.reason is None
+                    or result.diagnostics.no_label_reason != result.reason
+                ):
+                    raise LabelMaterializerError("NO_LABEL result diagnostics are invalid")
+                try:
+                    validate_teacher_result_rng_evidence(state, result)
+                except TeacherExecutionError as exc:
+                    raise LabelMaterializerError(str(exc)) from exc
+                reason = result.reason.value
+                expected_no_label[partition][reason] += 1
+                schedule.commit(episode_id, seat, result.rng_state or state, allow_cursor_advance=True)
+                continue
+            if not isinstance(result, SelectedTeacherResultV1):
+                raise LabelMaterializerError("Teacher returned an unknown result type")
+            try:
+                validate_teacher_result_rng_evidence(state, result)
+            except TeacherExecutionError as exc:
+                raise LabelMaterializerError(str(exc)) from exc
+            schedule.commit(episode_id, seat, result.rng_state, allow_cursor_advance=True)
+            try:
+                row = materialize_selected_label(
+                    validated,
+                    request,
+                    result,
+                    execution=execution,
+                    teacher_config_digest=config.digest,
+                )
+            except LabelMaterializerError:
+                invalid_selected[partition] += 1
+                continue
+            rows.append(row)
+            labels[partition] += 1
+            labels_by_family[request.decision_family] += 1
+        accounting = {
+            "sourceRowsByPartition": dict(source_manifest["sampleCountsByPartition"]),
+            "processedRowsByPartition": processed,
+            "teacherCallsByPartition": teacher_calls,
+            "labelCountsByPartition": labels,
+            "labelCountsByDecisionFamily": labels_by_family,
+            "expectedNoLabelByPartitionAndReason": expected_no_label,
+            "rejectedInvalidSourceBindingByPartition": invalid_binding,
+            "rejectedInvalidSelectedLabelByPartition": invalid_selected,
+            "rejectedSplitByPartition": rejected_split,
+            "rejectedProvenanceByPartition": rejected_provenance,
+            "duplicateDecisionKeyCount": 0,
+            "conflictingLabelCount": 0,
+            "otherFailClosedMaterializerErrorCount": 0,
+            "testRowsConsumed": 0,
+        }
+        teacher_provenance = {
+            **authority.to_teacher_provenance(),
+        }
+        artifact_identity = {
+            "sourceDatasetId": source_manifest["sourceDatasetId"],
+            "sourceManifestContentDigest": source_manifest["sourceManifestContentDigest"],
+            "sourceDerivedArtifactId": source_manifest["derivedArtifactId"],
+            "sourceDerivedViewSchemaIdentity": source_manifest["derivedViewSchemaIdentity"],
+            "trajectorySchemaIdentity": source_manifest["trajectorySchemaIdentity"],
+            "modelFacingContractIdentity": source_manifest["modelFacingContractIdentity"],
+            "splitContractIdentity": source_manifest["splitContractIdentity"],
+            "teacherProvenance": teacher_provenance,
+            "labelMaterializerImplementationIdentity": materializer_implementation_identity,
+            "labelMaterializerConfigDigest": materializer_config_digest,
+            "allowedPartitions": ["TRAIN", "VALIDATION"],
+            "sourceDecisionKeyIdentity": "argentum-ml-source-decision-key@v1",
+        }
+        writer = write_label_artifact if require_reference_materializer else _write_label_artifact_for_test
+        return writer(
+            output_root,
+            rows=rows,
+            identity=artifact_identity,
+            accounting=accounting,
+        )
+    finally:
+        if reader is not None:
+            reader.close()
