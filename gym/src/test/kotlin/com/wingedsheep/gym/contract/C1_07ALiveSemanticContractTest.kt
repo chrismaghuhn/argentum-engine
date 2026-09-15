@@ -11,9 +11,7 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.encodeToString
@@ -22,7 +20,7 @@ class C1_07ALiveSemanticContractTest : FunSpec({
 
     test("ML_SEAT_09 snapshot retains the complete flat domain and source digests") {
         val source = flatObservation()
-        val table = exactBindings(0, 1)
+        val table = exactBindings(source, 0, 1)
 
         val snapshot = LivePolicyDecisionSnapshotV1.from(source, table)
         val domain = CompleteLegalDomainV1.from(source)
@@ -37,7 +35,7 @@ class C1_07ALiveSemanticContractTest : FunSpec({
 
     test("ML_SEAT_10 shared model-facing projection contains no raw source identity") {
         val source = flatObservation()
-        val snapshot = LivePolicyDecisionSnapshotV1.from(source, exactBindings(0, 1))
+        val snapshot = LivePolicyDecisionSnapshotV1.from(source, exactBindings(source, 0, 1))
         val input = snapshot.modelInput.toString()
 
         input shouldNotContain "raw-source-a"
@@ -49,30 +47,41 @@ class C1_07ALiveSemanticContractTest : FunSpec({
 
     test("ML_SEAT_11 exact JVM binding table rejects missing or duplicate membership") {
         val source = flatObservation()
-        val missing = LiveExactSourceBindingTable.from(
-            listOf(LiveExactSourceBindingEntry(0, "exact-a")),
-        ) { value -> value }
-
         shouldThrow<IllegalArgumentException> {
-            LivePolicyDecisionSnapshotV1.from(source, missing)
+            exactBindings(source, 0)
         }
         shouldThrow<IllegalArgumentException> {
-            LiveExactSourceBindingTable.from(
+            LiveExactSourceBindingTable.fromCurrentDomain(
+                domain = CompleteLegalDomainV1.from(source),
                 listOf(
-                    LiveExactSourceBindingEntry(0, "same-value"),
-                    LiveExactSourceBindingEntry(1, "same-value"),
+                    LiveExactSourceBindingEntry(0, exactValue(0, source)),
+                    LiveExactSourceBindingEntry(1, exactValue(1, source)),
                 ),
-            ) { value -> value }
+                canonicalizeValue = { "same-value" },
+                semanticBindingOf = { it.semanticBinding },
+            )
         }
-        val original = exactBindings(0, 1)
-        val changed = LiveExactSourceBindingTable.from(
-            listOf(
-                LiveExactSourceBindingEntry(0, "changed-a"),
-                LiveExactSourceBindingEntry(1, "exact-1"),
+        shouldThrow<IllegalArgumentException> {
+            LiveExactSourceBindingTable.fromCurrentDomain(
+                domain = CompleteLegalDomainV1.from(source),
+                entries = listOf(
+                    LiveExactSourceBindingEntry(0, exactValue(0, source, semanticIndex = 1)),
+                    LiveExactSourceBindingEntry(1, exactValue(1, source, semanticIndex = 0)),
+                ),
+                canonicalizeValue = { it.label },
+                semanticBindingOf = { it.semanticBinding },
+            )
+        }
+        val original = exactBindings(source, 0, 1)
+        val changed = exactBindings(
+            source = source,
+            entries = listOf(
+                LiveExactSourceBindingEntry(0, exactValue(0, source, label = "changed-a")),
+                LiveExactSourceBindingEntry(1, exactValue(1, source)),
             ),
-        ) { value -> value }
+        )
         original.bindingDigest shouldNotBe changed.bindingDigest
-        val snapshot = LivePolicyDecisionSnapshotV1.from(source, exactBindings(0, 1))
+        val snapshot = LivePolicyDecisionSnapshotV1.from(source, original)
         val request = snapshot.toRequest(
             requestId = "request-1",
             policyRngState = LivePolicyRngStateV1("0".repeat(64), 0uL),
@@ -106,23 +115,18 @@ class C1_07ALiveSemanticContractTest : FunSpec({
                 action("raw-source-a", affordable = true),
             ),
         )
-        val table = LiveExactSourceBindingTable.from(
-            listOf(
-                LiveExactSourceBindingEntry(1, "exact-a"),
-                LiveExactSourceBindingEntry(0, "exact-b"),
-            ),
-        ) { value -> value }
+        val table = exactBindings(source, 1, 0)
 
         val snapshot = LivePolicyDecisionSnapshotV1.from(source, table)
 
         snapshot.selectionBindingChannel.sourceBindingOrdinals shouldBe listOf(0, 1)
-        table.exactBindingFor(0) shouldBe "exact-b"
-        table.exactBindingFor(1) shouldBe "exact-a"
+        table.exactBindingFor(0).label shouldBe "jvm-binding-0"
+        table.exactBindingFor(1).label shouldBe "jvm-binding-1"
     }
 
     test("ML_SEAT_13 PolicyTieRng state is carried without JVM tie breaking") {
         val source = flatObservation()
-        val table = exactBindings(0, 1)
+        val table = exactBindings(source, 0, 1)
         val snapshot = LivePolicyDecisionSnapshotV1.from(source, table)
 
         snapshot.selectionBindingChannel.semanticDigest().length shouldBe 64
@@ -135,9 +139,11 @@ class C1_07ALiveSemanticContractTest : FunSpec({
             ),
         )
         requestJson shouldNotContain "raw-source-a"
-        requestJson shouldNotContain "exact-0"
+        requestJson shouldNotContain "jvm-binding-0"
+        requestJson shouldNotContain "jvm-response"
         requestJson shouldNotContain "playerObservation"
         requestJson shouldNotContain "completeLegalDomain"
+        requestJson shouldNotContain "bindingDigest"
         LivePolicyDecisionResponseV1(
             requestId = "request-1",
             selectedSourceBindingOrdinal = 0,
@@ -174,32 +180,17 @@ class C1_07ALiveSemanticContractTest : FunSpec({
             domain = targetsDomain(),
         )
         val domain = CompleteLegalDomainV1.from(source)
+        val alternatives = targetAlternatives()
+        val table = structuredExactBindings(domain, alternatives)
         val choices = LiveStructuredChoiceDomainV1.from(
             domain = domain,
-            exactSourceBindings = exactBindings(0, 1),
-            completenessValidator = LiveStructuredChoiceCompletenessValidator<String> {
-                _, alternatives, bindings ->
-                require(alternatives.size == 2)
-                require(alternatives.map { it.sourceBindingOrdinal }.toSet() ==
-                    bindings.sourceBindingOrdinals
-                )
-            },
-            alternatives = listOf(
-                LiveStructuredChoiceAlternativeV1(
-                    sourceBindingOrdinal = 0,
-                    featureView = buildJsonObject { put("kind", "target") },
-                    semanticTieDiscriminator = "{\"semantic\":\"a\"}",
-                ),
-                LiveStructuredChoiceAlternativeV1(
-                    sourceBindingOrdinal = 1,
-                    featureView = buildJsonObject { put("kind", "target") },
-                    semanticTieDiscriminator = "{\"semantic\":\"b\"}",
-                ),
-            ),
+            exactSourceBindings = table,
+            completenessSource = completeTargetChoiceSource(),
+            alternatives = alternatives,
         )
         val snapshot = LivePolicyDecisionSnapshotV1.from(
             source,
-            exactBindings(0, 1),
+            table,
             structuredChoices = choices,
         )
 
@@ -213,23 +204,15 @@ class C1_07ALiveSemanticContractTest : FunSpec({
             domain = targetsDomain(),
         )
         val domain = CompleteLegalDomainV1.from(source)
+        val alternatives = targetAlternatives().take(1)
+        val table = structuredExactBindings(domain, alternatives)
 
         shouldThrow<IllegalArgumentException> {
             LiveStructuredChoiceDomainV1.from(
                 domain = domain,
-                exactSourceBindings = exactBindings(0),
-                completenessValidator = LiveStructuredChoiceCompletenessValidator<String> {
-                    _, alternatives, _ ->
-                    require(alternatives.size == 2) {
-                        "target domain completeness requires both target alternatives"
-                    }
-                },
-                alternatives = listOf(
-                    LiveStructuredChoiceAlternativeV1(
-                        sourceBindingOrdinal = 0,
-                        featureView = buildJsonObject { put("kind", "target") },
-                    ),
-                ),
+                exactSourceBindings = table,
+                completenessSource = completeTargetChoiceSource(),
+                alternatives = alternatives,
             )
         }
     }
@@ -240,22 +223,72 @@ class C1_07ALiveSemanticContractTest : FunSpec({
             domain = targetsDomain(),
         )
         val domain = CompleteLegalDomainV1.from(source)
+        val alternatives = targetAlternatives().mapIndexed { index, alternative ->
+            if (index == 0) {
+                alternative.copy(featureView = buildJsonObject { put("label", "target-a") })
+            } else {
+                alternative
+            }
+        }
+        val table = structuredExactBindings(domain, alternatives)
 
         shouldThrow<IllegalArgumentException> {
             LiveStructuredChoiceDomainV1.from(
                 domain = domain,
-                exactSourceBindings = exactBindings(0),
-                completenessValidator = LiveStructuredChoiceCompletenessValidator<String> {
-                    _, _, _ -> Unit
-                },
-                alternatives = listOf(
-                    LiveStructuredChoiceAlternativeV1(
-                        sourceBindingOrdinal = 0,
-                        featureView = buildJsonObject {
-                            put("label", "target-a")
-                        },
-                    ),
-                ),
+                exactSourceBindings = table,
+                completenessSource = completeTargetChoiceSource(),
+                alternatives = alternatives,
+            )
+        }
+    }
+
+    test("ML_SEAT_15 structured tie discriminators reject domain identities") {
+        val source = structuredObservation(
+            kind = PendingDecisionKind.CHOOSE_TARGETS,
+            domain = targetsDomain(),
+        )
+        val domain = CompleteLegalDomainV1.from(source)
+        val alternatives = targetAlternatives().mapIndexed { index, alternative ->
+            alternative.copy(
+                semanticTieDiscriminator = "{\"semantic\":\"${if (index == 0) "target-a" else "safe"}\"}",
+            )
+        }
+        val table = structuredExactBindings(domain, alternatives)
+
+        shouldThrow<IllegalArgumentException> {
+            LiveStructuredChoiceDomainV1.from(
+                domain = domain,
+                exactSourceBindings = table,
+                completenessSource = completeTargetChoiceSource(),
+                alternatives = alternatives,
+            )
+        }
+    }
+
+    test("ML_SEAT_15 structured tie discriminators reject observation-only identities") {
+        val source = structuredObservation(
+            kind = PendingDecisionKind.CHOOSE_TARGETS,
+            domain = targetsDomain(),
+        )
+        val domain = CompleteLegalDomainV1.from(source)
+        val alternatives = targetAlternatives().mapIndexed { index, alternative ->
+            alternative.copy(
+                semanticTieDiscriminator = "{\"semantic\":\"${if (index == 0) "self" else "safe"}\"}",
+            )
+        }
+        val table = structuredExactBindings(domain, alternatives)
+        val choices = LiveStructuredChoiceDomainV1.from(
+            domain = domain,
+            exactSourceBindings = table,
+            completenessSource = completeTargetChoiceSource(),
+            alternatives = alternatives,
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            LivePolicyDecisionSnapshotV1.from(
+                source,
+                table,
+                structuredChoices = choices,
             )
         }
     }
@@ -276,11 +309,26 @@ class C1_07ALiveSemanticContractTest : FunSpec({
 
     test("ML_SEAT_26 a changed observation cannot reuse the old snapshot") {
         val source = flatObservation()
-        val snapshot = LivePolicyDecisionSnapshotV1.from(source, exactBindings(0, 1))
+        val snapshot = LivePolicyDecisionSnapshotV1.from(source, exactBindings(source, 0, 1))
         val changed = source.copy(turnNumber = source.turnNumber + 1)
 
         shouldThrow<IllegalArgumentException> {
-            snapshot.requireCurrent(changed, exactBindings(0, 1))
+            snapshot.requireCurrent(changed, exactBindings(changed, 0, 1))
+        }
+        shouldThrow<IllegalArgumentException> {
+            snapshot.requireCurrent(
+                source,
+                exactBindings(
+                    source = source,
+                    entries = listOf(
+                        LiveExactSourceBindingEntry(
+                            0,
+                            exactValue(0, source, label = "stale-binding"),
+                        ),
+                        LiveExactSourceBindingEntry(1, exactValue(1, source)),
+                    ),
+                ),
+            )
         }
         shouldThrow<IllegalArgumentException> {
             snapshot.copy(
@@ -344,7 +392,7 @@ class C1_07ALiveSemanticContractTest : FunSpec({
         )
 
         val failure = shouldThrow<UnsupportedPathFailure> {
-            LivePolicyDecisionSnapshotV1.from(source, exactBindings(0))
+            LivePolicyDecisionSnapshotV1.from(source, exactBindings(source, 0))
         }
 
         failure.diagnostics.map { it.code } shouldBe
@@ -352,18 +400,93 @@ class C1_07ALiveSemanticContractTest : FunSpec({
     }
 })
 
-private fun exactBindings(vararg ordinals: Int): LiveExactSourceBindingTable<String> =
-    LiveExactSourceBindingTable.from(
-        ordinals.map { ordinal ->
+private data class ExactBindingValue(
+    val label: String,
+    val semanticBinding: JsonObject,
+)
+
+private fun exactBindings(
+    source: TrainingObservation,
+    vararg ordinals: Int,
+): LiveExactSourceBindingTable<ExactBindingValue> = exactBindings(
+    source = source,
+    entries = ordinals.map { ordinal ->
+        LiveExactSourceBindingEntry(ordinal, exactValue(ordinal, source))
+    },
+)
+
+private fun exactBindings(
+    source: TrainingObservation,
+    entries: List<LiveExactSourceBindingEntry<ExactBindingValue>>,
+): LiveExactSourceBindingTable<ExactBindingValue> {
+    val domain = CompleteLegalDomainV1.from(source)
+    return LiveExactSourceBindingTable.fromCurrentDomain(
+        domain = domain,
+        entries = entries,
+        canonicalizeValue = { it.label },
+        semanticBindingOf = { it.semanticBinding },
+    )
+}
+
+private fun exactValue(
+    ordinal: Int,
+    source: TrainingObservation,
+    label: String = "jvm-binding-$ordinal",
+    semanticIndex: Int = ordinal,
+): ExactBindingValue {
+    val domain = CompleteLegalDomainV1.from(source)
+    return ExactBindingValue(label, domain.candidates[semanticIndex])
+}
+
+private fun emptyExactBindings(): LiveExactSourceBindingTable<ExactBindingValue> =
+    LiveExactSourceBindingTable.empty()
+
+private fun targetAlternatives(): List<LiveStructuredChoiceAlternativeV1> = listOf(
+    LiveStructuredChoiceAlternativeV1(
+        sourceBindingOrdinal = 0,
+        featureView = buildJsonObject { put("kind", "target") },
+        semanticTieDiscriminator = "{\"semantic\":\"a\"}",
+        authoritativeSemanticBinding = buildJsonObject { put("target", "target-a") },
+    ),
+    LiveStructuredChoiceAlternativeV1(
+        sourceBindingOrdinal = 1,
+        featureView = buildJsonObject { put("kind", "target") },
+        semanticTieDiscriminator = "{\"semantic\":\"b\"}",
+        authoritativeSemanticBinding = buildJsonObject { put("target", "target-b") },
+    ),
+)
+
+private fun structuredExactBindings(
+    domain: CompleteLegalDomainV1,
+    alternatives: List<LiveStructuredChoiceAlternativeV1>,
+): LiveExactSourceBindingTable<ExactBindingValue> =
+    LiveExactSourceBindingTable.fromStructuredChoices(
+        domain = domain,
+        alternatives = alternatives,
+        entries = alternatives.map { alternative ->
             LiveExactSourceBindingEntry(
-                sourceBindingOrdinal = ordinal,
-                value = "exact-$ordinal",
+                sourceBindingOrdinal = alternative.sourceBindingOrdinal,
+                value = ExactBindingValue(
+                    label = "jvm-response-${alternative.sourceBindingOrdinal}",
+                    semanticBinding = alternative.authoritativeSemanticBinding,
+                ),
             )
         },
-    ) { value -> value }
+        canonicalizeValue = { it.label },
+        semanticBindingOf = { it.semanticBinding },
+    )
 
-private fun emptyExactBindings(): LiveExactSourceBindingTable<String> =
-    LiveExactSourceBindingTable.from(emptyList()) { value -> value }
+private fun completeTargetChoiceSource(): LiveStructuredChoiceCompletenessSource =
+    LiveStructuredChoiceCompletenessSource { domain ->
+        LiveStructuredChoiceCompletenessWitnessV1(
+            sourceDomainDigest = CandidateDomainDigestV1.from(domain),
+            sourceBindingOrdinals = setOf(0, 1),
+            semanticBindingsByOrdinal = mapOf(
+                0 to buildJsonObject { put("target", "target-a") },
+                1 to buildJsonObject { put("target", "target-b") },
+            ),
+        )
+    }
 
 private fun flatObservation(
     pending: PendingDecisionView? = null,

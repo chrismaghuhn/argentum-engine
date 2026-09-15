@@ -1267,20 +1267,29 @@ LivePolicyDecisionSnapshotV1 is a JVM-owned, lock-coherent composition of one
 PlayerObservationV1, one CompleteLegalDomainV1, the shared C1 model-facing projection, and
 the exact binding digest for that domain. The observation digest, complete-domain digest, model
 input, candidate feature views, and ordinal-only selection channel are cross-validated when the
-snapshot is constructed and again against a fresh current snapshot before execution.
+snapshot is constructed and again against a fresh current snapshot before execution. The JVM
+binding table is built by a source-owned factory: each exact LegalAction/DecisionResponse is
+mapped to an authoritative semantic binding and checked against the exact current domain entry;
+ordinal-set equality alone is not sufficient.
 
-The Python-facing LivePolicyDecisionRequestV1 contains only the model input, feature views,
-source-binding ordinals, presence/executable masks, validated semantic tie discriminators,
-PolicyTieRng state, and digests. It contains no GameState, LegalAction, DecisionResponse,
-raw entity ID, or exact source-binding value. The JVM retains the non-serializable
-LiveExactSourceBindingTable and maps the returned ordinal back to the exact current binding.
+LivePolicyDecisionRequestV1 is the inner semantic decision payload for the future worker envelope.
+It contains only the model input, feature views, source-binding ordinals, presence/executable
+masks, validated semantic tie discriminators, PolicyTieRng state, observation digest, and
+candidate-domain digest. The exact binding digest remains JVM-internal and is not sent to Python.
+The request contains no GameState, LegalAction, DecisionResponse, raw entity ID, or exact
+source-binding value. C1_07B may add server-owned profile/checkpoint/contract/numeric-profile
+identity fields in an outer envelope; it must not redefine this V1 payload. The JVM retains the
+non-serializable LiveExactSourceBindingTable and maps the returned ordinal back to the exact
+current binding.
 
 Flat exact-bindable Selection V2 and the live ordinal-selection core share the same maximum,
 semantic-discriminator, mask, permutation, and PolicyTieRng semantics. Structured alternatives
-must be explicitly enumerated by the authoritative source, pass a required completeness validator,
-have unique ordinals, and be paired with a table whose digest is derived from the actual exact JVM
-values. Model-facing alternative features are checked through the shared alias/identity validator;
-missing or incomplete alternatives fail closed. Responses carry the exact RNG cursor
+must be explicitly enumerated by the authoritative source, provide an independent completeness
+witness containing the complete injective semantic binding set, have unique ordinals, and be paired
+with a table whose digest is derived from the actual exact JVM values. Model-facing alternative
+features and tie discriminators are checked through the shared alias/identity validator, including
+raw values from both the current domain and observation. Missing or incomplete alternatives fail
+closed. Responses carry the exact RNG cursor
 before/after/draw-count relation and cannot move to another stream. In particular,
 AssignDamageDecision without a typed domain, partial mana-source domains, and BatchYesNoResponse
 are not silently reduced to ordinary choices; they emit their typed unsupported diagnostic.
