@@ -164,6 +164,8 @@ def _test_worker_command(mode: str) -> list[str]:
         stdin = sys.stdin.buffer
         stdout = sys.stdout.buffer
         write_frame(stdout, C1_07B_POLICY_PROFILE.health_envelope())
+        if {mode!r} == "crash-before-request":
+            raise SystemExit(8)
         frame = read_frame(stdin)
         if {mode!r} == "crash":
             raise SystemExit(7)
@@ -250,6 +252,8 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
             request.model_input["observation"]["mutated"] = True
         with self.assertRaises(TypeError):
             request.candidate_feature_views[0]["mutated"] = True
+        with self.assertRaises(TypeError):
+            request.candidate_domain_digest["value"] = "c" * 64
 
     def test_request_constructor_is_parser_only(self) -> None:
         with self.assertRaisesRegex(TypeError, "must be parsed from a versioned payload"):
@@ -278,6 +282,13 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
             encoded["modelInput"]["domain"]["candidates"][0][field] = value
             with self.assertRaises(LivePolicyProtocolError):
                 LivePolicyDecisionRequestV1.from_dict(encoded)
+
+    def test_request_rejects_an_alias_not_declared_by_the_observation(self) -> None:
+        encoded = _request().to_dict()
+        encoded["candidateFeatureViews"][0]["sourceAlias"] = "entity-999"
+        encoded["modelInput"]["domain"]["candidates"][0]["sourceAlias"] = "entity-999"
+        with self.assertRaises(LivePolicyProtocolError):
+            LivePolicyDecisionRequestV1.from_dict(encoded)
 
     def test_request_rejects_unknown_protocol_version(self) -> None:
         encoded = C1_07B_POLICY_PROFILE.health_envelope()
@@ -407,6 +418,17 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
         self.assertIsNotNone(runtime._process.poll())
         runtime.close()
 
+    def test_runtime_pre_inference_crash_closes_before_request_write(self) -> None:
+        runtime = LocalPythonPolicyRuntime.start(
+            Path("unused-test-artifact"),
+            _worker_command=_test_worker_command("crash-before-request"),
+        )
+        runtime._process.wait(timeout=2.0)
+        with self.assertRaises(LivePolicyWorkerCrashedError):
+            runtime.decide(_request())
+        self.assertTrue(runtime._closed)
+        runtime.close()
+
     def test_inference_error_requires_request_id(self) -> None:
         runtime = LocalPythonPolicyRuntime.start(
             Path("unused-test-artifact"),
@@ -500,6 +522,17 @@ class LivePolicyRuntimeContractTests(unittest.TestCase):
 
 
 class C1_06LiveScoreProviderTests(unittest.TestCase):
+    def test_provider_rejects_raw_model_surface_before_model_access(self) -> None:
+        provider = object.__new__(C1_06LiveScoreProvider)
+        payload = _request().to_dict()
+        payload["modelInput"]["domain"]["candidates"][0]["id"] = "raw-id"
+        payload["candidateFeatureViews"][0]["id"] = "raw-id"
+        with self.assertRaises(LivePolicyInferenceError):
+            provider.score(
+                payload["modelInput"],
+                payload["candidateFeatureViews"],
+            )
+
     def test_cuda_gate_rejects_unavailable_runtime_without_cpu_fallback(self) -> None:
         class FakeCuda:
             def is_available(self) -> bool:

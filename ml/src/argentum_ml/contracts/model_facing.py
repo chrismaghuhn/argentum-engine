@@ -206,12 +206,8 @@ def _collect_model_aliases(value: Any) -> dict[str, str]:
     def visit(node: Any) -> None:
         if isinstance(node, dict):
             for key, child in node.items():
-                if isinstance(child, str) and _ALIAS.fullmatch(child):
+                if key == "entityAlias" and isinstance(child, str) and _ALIAS.fullmatch(child):
                     aliases[child] = child
-                elif isinstance(child, list):
-                    for item in child:
-                        if isinstance(item, str) and _ALIAS.fullmatch(item):
-                            aliases[item] = item
                 visit(child)
         elif isinstance(node, list):
             for child in node:

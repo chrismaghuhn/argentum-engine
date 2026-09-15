@@ -121,6 +121,7 @@ class LocalPythonPolicyRuntime:
         with self._lock:
             self._require_open()
             if self._process.poll() is not None:
+                self._abort()
                 raise LivePolicyWorkerCrashedError("local Python worker exited before inference", code="WORKER_CRASH")
             parsed_request = (
                 request

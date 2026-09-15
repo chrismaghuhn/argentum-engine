@@ -194,7 +194,9 @@ class LivePolicyDecisionRequestV1:
             raise LivePolicyProtocolError("unsupported live policy request identity", code="REQUEST_SCHEMA_INVALID")
         request_id = _nonempty_string(obj["requestId"], "requestId")
         observation_digest = _sha256(obj["observationDigest"], "observationDigest")
-        candidate_domain_digest = _parse_candidate_domain_digest(obj["candidateDomainDigest"])
+        candidate_domain_digest = _deep_freeze(
+            _parse_candidate_domain_digest(obj["candidateDomainDigest"])
+        )
         model_input = _deep_freeze(_copy_object(obj["modelInput"], "modelInput"))
         if set(model_input) != {"decisionContext", "observation", "domain"}:
             raise LivePolicyProtocolError("modelInput wrapper shape is not C1_07A", code="MODEL_INPUT_INVALID")

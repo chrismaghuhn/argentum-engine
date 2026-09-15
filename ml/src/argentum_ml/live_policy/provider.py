@@ -13,6 +13,7 @@ from ..learner.c1_06 import (
     require_cuda_device,
     tensorize_live_input,
 )
+from ..contracts.model_facing import ModelFacingContractError, validate_live_model_surface
 from ..learner.optional import LearnerToolingUnavailable, require_optional_module
 from ..learner.weights import WeightArtifactError
 from .errors import LivePolicyCheckpointError, LivePolicyInferenceError
@@ -95,6 +96,16 @@ class C1_06LiveScoreProvider:
     ) -> tuple[float, ...]:
         if not isinstance(model_input, Mapping):
             raise LivePolicyInferenceError("live model input must be an object", code="MODEL_INPUT_INVALID")
+        try:
+            validate_live_model_surface(
+                dict(model_input),
+                tuple(dict(candidate) for candidate in candidates),
+            )
+        except (ModelFacingContractError, TypeError, ValueError) as exc:
+            raise LivePolicyInferenceError(
+                "C1_07A model-facing input is not valid for live scoring",
+                code="MODEL_INPUT_INVALID",
+            ) from exc
         try:
             batch = tensorize_live_input(
                 model_input,
