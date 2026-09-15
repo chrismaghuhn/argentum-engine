@@ -485,6 +485,320 @@ class ActorControlPlaneTest : FunSpec({
         ).shouldBeInstanceOf<ActorOperationalValidationResult.RunReportValid>()
     }
 
+    test("dirty source bootstrap fails before local actor execution") {
+        val assignment = WorkAssignmentV1.from(testPlan(), listOf(0))
+        val bootstrap = LocalSourceBootstrapV1(
+            probe = FakeSourceBootstrapProbe(
+                SourceBootstrapObservationV1(
+                    actualHeadCommit = "engine-commit",
+                    trackedSourceClean = false,
+                    requiredPinsPresent = true,
+                ),
+            ),
+        ).verify(expectedSourceCommit = "engine-commit")
+
+        bootstrap.status shouldBe SourceBootstrapStatusV1.REJECTED
+        bootstrap.failureCode shouldBe SourceBootstrapFailureCodeV1.TRACKED_SOURCE_DIRTY
+        bootstrap.actualRuntimeSourceCommit shouldBe "engine-commit"
+
+        var preflightCalled = false
+        var executorCalled = false
+        val result = LocalActorExecutionV1.run(
+            LocalActorExecutionRequestV1(
+                assignment = assignment,
+                executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-dirty-source"),
+                sourceBootstrap = bootstrap,
+                preflight = {
+                    preflightCalled = true
+                    StoragePreflightResultV1.pass(10_000, 1_000)
+                },
+                episodeExecutor = ActorEpisodeExecutor {
+                    executorCalled = true
+                    error("Dirty source must stop before episode execution")
+                },
+                sinkFactory = { error("Dirty source must stop before sink creation") },
+                statusSink = RecordingStatusSink(),
+                clock = FakeActorClock(),
+            ),
+        )
+
+        result.status.state shouldBe ActorStateV1.FAILED
+        result.report.actualRuntimeSourceCommit shouldBe null
+        result.report.sourceRevisionVerified shouldBe false
+        result.report.diagnostics.single().code shouldBe
+            ActorDiagnosticCodeV1.SOURCE_REVISION_UNVERIFIED
+        preflightCalled shouldBe false
+        executorCalled shouldBe false
+    }
+
+    test("git source bootstrap probe verifies HEAD, tracked cleanliness, and required pins") {
+        val repositoryRoot = Files.createTempDirectory("actor-source-probe-")
+        Files.writeString(repositoryRoot.resolve("gradle.lockfile"), "pinned")
+        val commands = mutableListOf<List<String>>()
+        val probe = GitSourceBootstrapProbeV1(
+            repositoryRoot = repositoryRoot,
+            requiredPinnedPaths = listOf("gradle.lockfile"),
+            git = SourceBootstrapGitCommandV1 { arguments ->
+                commands += arguments
+                when (arguments) {
+                    listOf("rev-parse", "HEAD") -> "expected-commit"
+                    listOf("status", "--porcelain=v1", "--untracked-files=no") -> ""
+                    listOf("ls-files", "--error-unmatch", "--", "gradle.lockfile") ->
+                        "gradle.lockfile"
+
+                    else -> null
+                }
+            },
+        )
+
+        val observation = probe.inspect()
+        val result = LocalSourceBootstrapV1(probe).verify("expected-commit")
+
+        observation shouldBe SourceBootstrapObservationV1(
+            actualHeadCommit = "expected-commit",
+            trackedSourceClean = true,
+            requiredPinsPresent = true,
+        )
+        result.status shouldBe SourceBootstrapStatusV1.VERIFIED
+        result.actualRuntimeSourceCommit shouldBe "expected-commit"
+        commands shouldContainExactly listOf(
+            listOf("rev-parse", "HEAD"),
+            listOf("status", "--porcelain=v1", "--untracked-files=no"),
+            listOf("ls-files", "--error-unmatch", "--", "gradle.lockfile"),
+            listOf("rev-parse", "HEAD"),
+            listOf("status", "--porcelain=v1", "--untracked-files=no"),
+            listOf("ls-files", "--error-unmatch", "--", "gradle.lockfile"),
+        )
+    }
+
+    test("environment replay reproducer compares semantic trajectory evidence only") {
+        val item = testPlan().resolve(0)
+        val expectedEvidence = testB2Episode(item)
+        val changedEvidence = testB2Episode(item, EpisodeInterruptionReason.CALLER_CANCELLED)
+        val expected = ActorReproducerSampleV1.from(
+            item = item,
+            trajectory = expectedEvidence.trajectory,
+            replayTrajectoryBinding = expectedEvidence.binding,
+        )
+        val actualSame = ActorReproducerSampleV1.from(
+            item = item,
+            trajectory = expectedEvidence.trajectory.copy(),
+            replayTrajectoryBinding = expectedEvidence.binding.copy(),
+        )
+        val actualDiverged = ActorReproducerSampleV1.from(
+            item = item,
+            trajectory = changedEvidence.trajectory,
+            replayTrajectoryBinding = changedEvidence.binding,
+        )
+
+        EnvironmentReplayReproducerV1.compare(expected, actualSame).status shouldBe
+            ActorReproducerComparisonStatusV1.EXACT
+        EnvironmentReplayReproducerV1.compare(expected, actualDiverged).status shouldBe
+            ActorReproducerComparisonStatusV1.TRAJECTORY_OR_REPLAY_DIVERGED
+    }
+
+    test("finalized local output is copied into an envelope and re-imported through the strict B2 reader") {
+        val source = publishActorSource(
+            item = testPlan().resolve(0),
+            attempt = "reimport",
+        )
+
+        val imported = LocalPublicationEnvelopeV1.reimport(source.envelope.envelopeDirectory)
+
+        imported.assignment shouldBe source.envelope.assignment
+        imported.report shouldBe source.envelope.report
+        imported.status shouldBe source.envelope.status
+        imported.manifest shouldBe source.envelope.manifest
+        imported.streamEpisodes().toList() shouldBe listOf(testB2Episode(testPlan().resolve(0)).trajectory)
+    }
+
+    test("re-import rejects a bundle whose report does not prove source revision") {
+        val source = publishActorSource(testPlan().resolve(0), "unverified-report")
+        val unverifiedReport = source.envelope.report.copy(
+            actualRuntimeSourceCommit = null,
+            sourceRevisionVerified = false,
+        )
+        Files.writeString(
+            source.envelope.envelopeDirectory.resolve(LOCAL_PUBLICATION_RUN_REPORT_FILE_V1),
+            ActorOperationalV1Json.encode(unverifiedReport),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            LocalPublicationEnvelopeV1.reimport(source.envelope.envelopeDirectory)
+        }
+    }
+
+    test("offline semantic join ignores the physical episode ordinal and repacks in global job order") {
+        val plan = testPlan()
+        val first = publishActorSource(plan.resolve(0), "join-first")
+        val second = publishActorSource(plan.resolve(1), "join-second")
+        val firstImported = LocalPublicationEnvelopeV1.reimport(first.envelope.envelopeDirectory)
+        val secondImported = LocalPublicationEnvelopeV1.reimport(second.envelope.envelopeDirectory)
+        firstImported.manifest.episodes.single().episodeOrdinal shouldBe 0
+        secondImported.manifest.episodes.single().episodeOrdinal shouldBe 0
+        val bindings = mapOf(
+            first.trajectory.semanticEpisodeId to first.binding,
+            second.trajectory.semanticEpisodeId to second.binding,
+        )
+        val fullAssignment = WorkAssignmentV1.from(plan, listOf(0, 1))
+        val request = OfflineAdmissionRequestV1(
+            assignment = fullAssignment,
+            sources = listOf(firstImported, secondImported),
+            replayVerifier = OfflineReplayVerifierV1 { trajectory ->
+                OfflineReplayVerificationResultV1.Verified(
+                    checkNotNull(bindings[trajectory.semanticEpisodeId]),
+                )
+            },
+        )
+
+        val admission = OfflineAdmissionV1.admit(request)
+
+        admission.offlineReplayReverification shouldBe
+            OfflineReplayReverificationStatusV1.VERIFIED
+        admission.datasetEligible shouldBe true
+        admission.ledger.entries.map(MembershipLedgerEntryV1::jobOrdinal) shouldContainExactly listOf(0, 1)
+        admission.ledger.entries.map(MembershipLedgerEntryV1::membershipState) shouldContainExactly listOf(
+            MembershipStateV1.ACCEPTED,
+            MembershipStateV1.ACCEPTED,
+        )
+        admission.acceptedSources.map(OfflineAcceptedSourceV1::jobOrdinal) shouldContainExactly listOf(0, 1)
+        AcceptedMembershipLedgerV1Json.decode(
+            AcceptedMembershipLedgerV1Json.encode(admission.ledger),
+        ) shouldBe admission.ledger
+
+        val forwardRoot = Files.createTempDirectory("actor-repack-forward-")
+        val reverseRoot = Files.createTempDirectory("actor-repack-reverse-")
+        val forward = OfflineAdmissionV1.repackAcceptedSources(
+            admission,
+            forwardRoot,
+            DatasetMetadataV1(maxShardBytes = 10_000_000, maxEpisodesPerShard = 1),
+        )
+        val reverse = OfflineAdmissionV1.repackAcceptedSources(
+            OfflineAdmissionV1.admit(request.copy(sources = listOf(secondImported, firstImported))),
+            reverseRoot,
+            DatasetMetadataV1(maxShardBytes = 10_000_000, maxEpisodesPerShard = 1),
+        )
+
+        forward shouldBe reverse
+        forward.shards.map { it.contentDigest } shouldBe reverse.shards.map { it.contentDigest }
+        forward.shards.zip(reverse.shards).all { (forwardShard, reverseShard) ->
+            Files.readAllBytes(
+                forwardRoot.resolve("dataset-${forward.datasetId}")
+                    .resolve(forwardShard.contentReference),
+            ).contentEquals(
+                Files.readAllBytes(
+                    reverseRoot.resolve("dataset-${reverse.datasetId}")
+                        .resolve(reverseShard.contentReference),
+                ),
+            )
+        } shouldBe true
+    }
+
+    test("identical offline claims retain all evidence while conflicting claims block membership") {
+        val item = testPlan().resolve(0)
+        val first = publishActorSource(item, "duplicate-first")
+        val identical = LocalPublicationEnvelopeV1.reimport(first.envelope.envelopeDirectory)
+        val bindings = mapOf(first.trajectory.semanticEpisodeId to first.binding)
+        val duplicate = OfflineAdmissionV1.admit(
+            OfflineAdmissionRequestV1(
+                assignment = WorkAssignmentV1.from(testPlan(), listOf(0)),
+                sources = listOf(
+                    LocalPublicationEnvelopeV1.reimport(first.envelope.envelopeDirectory),
+                    identical,
+                ),
+                replayVerifier = OfflineReplayVerifierV1 { trajectory ->
+                    OfflineReplayVerificationResultV1.Verified(
+                        checkNotNull(bindings[trajectory.semanticEpisodeId]),
+                    )
+                },
+            ),
+        )
+
+        duplicate.ledger.entries.first().membershipState shouldBe MembershipStateV1.ACCEPTED
+        duplicate.ledger.entries.first().claims.size shouldBe 2
+        duplicate.acceptedSources.size shouldBe 1
+        duplicate.ledger.entries.drop(1).all {
+            it.membershipState == MembershipStateV1.MISSING
+        } shouldBe true
+        duplicate.datasetEligible shouldBe false
+
+        val conflictingSource = publishActorSource(
+            item = item,
+            generated = testB2Episode(item, EpisodeInterruptionReason.CALLER_CANCELLED),
+            attempt = "duplicate-conflict",
+        )
+        val conflictBindings = mapOf(
+            first.trajectory.trajectoryId to first.binding,
+            conflictingSource.trajectory.trajectoryId to conflictingSource.binding,
+        )
+        val conflicted = OfflineAdmissionV1.admit(
+            OfflineAdmissionRequestV1(
+                assignment = WorkAssignmentV1.from(testPlan(), listOf(0)),
+                sources = listOf(
+                    LocalPublicationEnvelopeV1.reimport(first.envelope.envelopeDirectory),
+                    LocalPublicationEnvelopeV1.reimport(conflictingSource.envelope.envelopeDirectory),
+                ),
+                replayVerifier = OfflineReplayVerifierV1 { trajectory ->
+                    OfflineReplayVerificationResultV1.Verified(
+                        checkNotNull(conflictBindings[trajectory.trajectoryId]),
+                    )
+                },
+            ),
+        )
+
+        conflicted.ledger.entries.first().membershipState shouldBe MembershipStateV1.CONFLICTED
+        conflicted.ledger.entries.first().claims.size shouldBe 2
+        conflicted.acceptedSources shouldBe emptyList()
+        conflicted.datasetEligible shouldBe false
+    }
+
+    test("partial-lost source and absent independent replay proof cannot become dataset membership") {
+        val item = testPlan().resolve(0)
+        val partialResult = TrustedActorRunner(
+            assignment = WorkAssignmentV1.from(testPlan(), listOf(0)),
+            executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-partial-offline"),
+            actualRuntimeSourceCommit = item.environmentIdentity.engineCommit,
+            preflight = { StoragePreflightResultV1.pass(10_000, 1_000) },
+            episodeExecutor = ActorEpisodeExecutor {
+                ActorEpisodeOutcome.PartialLost(
+                    listOf(
+                        ActorDiagnosticV1(
+                            code = ActorDiagnosticCodeV1.PROVIDER_PROCESS_LOST,
+                            severity = ActorDiagnosticSeverityV1.ERROR,
+                        ),
+                    ),
+                )
+            },
+            sinkFactory = { RecordingB2Sink() },
+            statusSink = RecordingStatusSink(),
+            clock = FakeActorClock(),
+        ).run()
+
+        partialResult.status.state shouldBe ActorStateV1.PARTIAL_LOST
+        val source = publishActorSource(item, "no-proof")
+        val admission = OfflineAdmissionV1.admit(
+            OfflineAdmissionRequestV1(
+                assignment = WorkAssignmentV1.from(testPlan(), listOf(0)),
+                sources = listOf(LocalPublicationEnvelopeV1.reimport(source.envelope.envelopeDirectory)),
+                replayVerifier = null,
+            ),
+        )
+
+        admission.offlineReplayReverification shouldBe
+            OfflineReplayReverificationStatusV1.NO_INDEPENDENT_PROOF
+        admission.datasetEligible shouldBe false
+        admission.acceptedSources shouldBe emptyList()
+        admission.ledger.entries.all { it.membershipState == MembershipStateV1.MISSING } shouldBe true
+        admission.ledger.entries.all { it.claims.isEmpty() } shouldBe true
+        shouldThrow<IllegalArgumentException> {
+            OfflineAdmissionV1.repackAcceptedSources(
+                admission,
+                Files.createTempDirectory("actor-repack-without-proof-"),
+                DatasetMetadataV1(maxShardBytes = 10_000_000, maxEpisodesPerShard = 1),
+            )
+        }
+    }
+
     test("non-exact replay binding is rejected before the B2 sink and is not reported as verified") {
         val assignment = WorkAssignmentV1.from(testPlan(), listOf(0))
         val generated = testB2Episode(assignment.items.single())
@@ -728,7 +1042,10 @@ private data class TestB2Episode(
     val binding: ReplayTrajectoryBindingV1,
 )
 
-private fun testB2Episode(item: WorkItemV1): TestB2Episode {
+private fun testB2Episode(
+    item: WorkItemV1,
+    closureReason: EpisodeInterruptionReason = EpisodeInterruptionReason.HORIZON_REACHED,
+): TestB2Episode {
     val registry = CardRegistry().apply {
         register(PortalSet.cards)
         register(PortalSet.basicLands)
@@ -765,7 +1082,7 @@ private fun testB2Episode(item: WorkItemV1): TestB2Episode {
     val domain = CompleteLegalDomainV1.from(sourceObservation)
     val closure = com.wingedsheep.gym.EpisodeClosureV1.Interrupted(
         stepCount = 0,
-        reason = EpisodeInterruptionReason.HORIZON_REACHED,
+        reason = closureReason,
     )
     val replayContent = ReplayContentIdentityV1(
         replayVersion = 6,
@@ -827,6 +1144,59 @@ private fun testB2Episode(item: WorkItemV1): TestB2Episode {
         trajectory = base.copy(trajectoryId = base.recomputeTrajectoryId()),
         binding = binding,
     )
+}
+
+private data class PublishedActorSource(
+    val envelope: LocalPublishedEnvelopeV1,
+    val trajectory: TrajectoryV1,
+    val binding: ReplayTrajectoryBindingV1,
+)
+
+private fun publishActorSource(
+    item: WorkItemV1,
+    attempt: String,
+    generated: TestB2Episode = testB2Episode(item),
+): PublishedActorSource {
+    val assignment = WorkAssignmentV1.from(testPlan(), listOf(item.jobOrdinal))
+    val sourceRoot = Files.createTempDirectory("actor-local-source-$attempt-")
+    val result = TrustedActorRunner(
+        assignment = assignment,
+        executionAttemptIdentity = ExecutionAttemptIdentityV1("attempt-$attempt"),
+        actualRuntimeSourceCommit = item.environmentIdentity.engineCommit,
+        preflight = { StoragePreflightResultV1.pass(100_000_000, 1_000) },
+        episodeExecutor = ActorEpisodeExecutor {
+            ActorEpisodeOutcome.Completed(generated.trajectory, generated.binding)
+        },
+        sinkFactory = {
+            TrajectoryV1B2Sink(
+                com.wingedsheep.gym.trainer.trajectory.TrajectoryV1Writer(
+                    outputDirectory = sourceRoot,
+                    metadata = DatasetMetadataV1(
+                        maxShardBytes = 10_000_000,
+                        maxEpisodesPerShard = 1,
+                    ),
+                ),
+            )
+        },
+        statusSink = RecordingStatusSink(),
+        clock = FakeActorClock(),
+    ).run()
+    val manifest = checkNotNull(result.manifest)
+    val datasetRoot = sourceRoot.resolve("dataset-${manifest.datasetId}")
+    val envelope = LocalPublicationEnvelopeV1.publish(
+        sourceDatasetDirectory = datasetRoot,
+        destinationDirectory = Files.createTempDirectory("actor-local-envelope-$attempt-"),
+        assignment = assignment,
+        status = result.status,
+        report = result.report,
+    )
+    return PublishedActorSource(envelope, generated.trajectory, generated.binding)
+}
+
+private class FakeSourceBootstrapProbe(
+    private val observation: SourceBootstrapObservationV1,
+) : SourceBootstrapProbeV1 {
+    override fun inspect(): SourceBootstrapObservationV1 = observation
 }
 
 private class FakeActorClock : ActorClock {
