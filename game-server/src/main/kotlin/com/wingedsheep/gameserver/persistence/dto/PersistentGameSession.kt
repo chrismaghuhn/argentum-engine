@@ -2,6 +2,8 @@ package com.wingedsheep.gameserver.persistence.dto
 
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.view.ClientEvent
+import com.wingedsheep.gameserver.policy.ControllerAuthorityV1
+import com.wingedsheep.gameserver.policy.PolicySeatStateV1
 import kotlinx.serialization.Serializable
 
 /**
@@ -39,4 +41,8 @@ data class PersistentPlayerInfo(
     val aiModelOverride: String? = null,
     /** True when the recovered AI identity must use the built-in Engine AI. */
     val forceEngine: Boolean = false,
+    /** Explicit server-owned controller authority; null only for pre-C1_07C persisted sessions. */
+    val controllerAuthority: ControllerAuthorityV1? = null,
+    /** Mutable PolicyTieRng state; present only for ML_POLICY authorities. */
+    val policySeatState: PolicySeatStateV1? = null,
 )

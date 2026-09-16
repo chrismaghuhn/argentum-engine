@@ -125,6 +125,13 @@ game:
     # Local testing mode: record the engine AI's candidate actions + scores and serve them from
     # /api/dev/ai-insight. Off in production — recording retains a GameState per decision.
     insight-enabled: ${GAME_AI_INSIGHT_ENABLED:false}
+  ml-policy:
+    # C1_07C remains disabled until a server-owned launch path explicitly enables it.
+    enabled: ${GAME_ML_POLICY_ENABLED:false}
+    python-executable: ${GAME_ML_POLICY_PYTHON_EXECUTABLE:py}
+    checkpoint-directory: ${GAME_ML_POLICY_CHECKPOINT_DIRECTORY:}
+    startup-timeout-ms: ${GAME_ML_POLICY_STARTUP_TIMEOUT_MS:30000}
+    inference-timeout-ms: ${GAME_ML_POLICY_INFERENCE_TIMEOUT_MS:5000}
 
 # Swagger UI - only enabled when dev endpoints are enabled
 springdoc:
