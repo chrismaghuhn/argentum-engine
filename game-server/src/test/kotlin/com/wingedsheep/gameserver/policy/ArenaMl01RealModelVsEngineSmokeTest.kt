@@ -7,7 +7,9 @@ import com.wingedsheep.ai.llm.CardSummary
 import com.wingedsheep.ai.llm.MulliganInfo
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.SubmitDecision
+import com.wingedsheep.engine.mechanics.mana.FloatingManaProvenanceClassification
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.player.MulliganStateComponent
 import com.wingedsheep.gameserver.curriculum.CurriculumDeckSourceLoader
 import com.wingedsheep.gameserver.protocol.ServerMessage
@@ -54,16 +56,18 @@ import org.springframework.web.socket.WebSocketSession
  * wall-clock 30 minutes, 600 ML policy decisions, 2500 total authoritative actions.
  *
  * Known characterization (ARENA_ML_01, 2026-09-16, narrowed per exact-SHA review): with game
- * seed 20260916 the exercised game deterministically reaches decision #71 (ML-seat upkeep, turn
- * 2) where the observation contains the trusted [DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED]
- * signal. At that exact state, Shadowspear's {1} activation was enumerated as a legal, affordable
- * candidate, but the trusted observation path did not publish a complete PaymentDomainV5 and
- * emitted the diagnostic, so [LivePolicySourceAdapter] failed closed. LOWER_LEVEL_ROOT_CAUSE =
- * UNCHARACTERIZED: this task does not claim why the domain was refused beyond that boundary;
- * a separate follow-up must create a minimal RED characterization isolating where
- * paymentDomainV5For(...) returns null before any fix is authorized. Per the task contract the
- * fail-closed outcome is characterized here, never routed around: the primary test asserts the
- * fail-closed outcome (contract held, no fallback, worker clean) and the exact recorded boundary.
+ * seed 20260916 the exercised game deterministically reaches decision #71 (ML-seat upkeep,
+ * Akiri's fourth turn — authoritative turnNumber 7) where the observation contains the trusted
+ * [DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED] signal. At that exact state, Shadowspear's {1}
+ * activation was enumerated as a legal, affordable candidate, but the trusted observation path
+ * did not publish a complete PaymentDomainV5 and emitted the diagnostic, so
+ * [LivePolicySourceAdapter] failed closed. The provenance state of Akiri's mana pool at that
+ * boundary is captured and pinned in [SmokeReport.assertCharacterizedSmokeOutcome]
+ * (BOUNDARY_POOL); the minimal RED characterization of that exact pool shape lives in
+ * docs/ml/arena-ml-01-payment-domain-01-characterization.md
+ * (ARENA_ML_01_PAYMENT_DOMAIN_01). Per the task contract the fail-closed outcome is
+ * characterized here, never routed around: the primary test asserts the fail-closed outcome
+ * (contract held, no fallback, worker clean) and the exact recorded boundary.
  */
 class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
     test("REAL CUDA smoke: accepted C1_06 model controls Akiri vs Engine-AI Chevill; fail-closed characterization")
@@ -133,12 +137,13 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
         private const val MAX_TOTAL_ACTIONS = 2500
 
         /**
-         * Recorded deterministic fail-closed boundary (game seed 20260916): ML-seat turn-2 upkeep
-         * decision #71 — Shadowspear's paid {1} activation was enumerated as a legal, affordable
-         * candidate, but the trusted observation path did not publish a complete PaymentDomainV5
-         * and emitted PAYMENT_DOMAIN_UNSUPPORTED (lower-level root cause uncharacterized; see the
-         * class kdoc). The recorded context continues with the JVM-side legal menu; this prefix
-         * pins the semantic boundary, not the review-only menu text.
+         * Recorded deterministic fail-closed boundary (game seed 20260916): ML-seat upkeep
+         * decision #71 (Akiri's fourth turn, authoritative turnNumber 7) — Shadowspear's paid {1}
+         * activation was enumerated as a legal, affordable candidate, but the trusted observation
+         * path did not publish a complete PaymentDomainV5 and emitted PAYMENT_DOMAIN_UNSUPPORTED
+         * (lower-level cause characterized in ARENA_ML_01_PAYMENT_DOMAIN_01; see the class kdoc).
+         * The recorded context continues with the JVM-side legal menu; this prefix pins the
+         * semantic boundary, not the review-only menu text.
          */
         private const val KNOWN_BOUNDARY_CONTEXT =
             "decision #71 pregame=false pending=- phase=BEGINNING step=UPKEEP legal=5 " +
@@ -240,6 +245,7 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
             val unsupportedCount: Int,
             val rejectionCode: String?,
             val rejectionContext: String?,
+            val boundaryPool: String?,
             val mlTraces: List<MlDecisionTrace>,
             val finalPolicyCursor: ULong?,
             val wallClockMs: Long,
@@ -331,6 +337,7 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
                 appendLine("WORKER_FAILURE_COUNT=${outcome.workerFailures}")
                 appendLine("REJECTION_CODE=${outcome.rejectionCode ?: "-"}")
                 appendLine("REJECTION_CONTEXT=${outcome.rejectionContext ?: "-"}")
+                appendLine("BOUNDARY_POOL=${outcome.boundaryPool ?: "-"}")
                 appendLine("FINAL_POLICY_CURSOR=${outcome.finalPolicyCursor}")
                 appendLine("WALL_CLOCK_MS=${outcome.wallClockMs}")
                 appendLine("POLICY_RNG_COMMIT_SEMANTICS=cursor advanced only on accepted execution; " +
@@ -391,6 +398,25 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
                 outcome.rejectionCode shouldBe "UNSUPPORTED_STRUCTURED_DECISION"
                 outcome.rejectionContext.shouldStartWith(KNOWN_BOUNDARY_CONTEXT)
                 outcome.finalPolicyCursor shouldBe 0uL
+
+                // Durable link from the real ARENA boundary to the characterized root cause
+                // (ARENA_ML_01_PAYMENT_DOMAIN_01): Akiri's exact mana-pool provenance state at
+                // the fail-closed rejection, captured from the authoritative GameState in the
+                // rejection branch. The subtype-only shape (subtype provenance present, source
+                // provenance consumed by the legacy proportional spend seam) is the input the
+                // minimal RED characterization proves is classified Ambiguous and refused by
+                // PaymentDomainV5's initial-pool admission.
+                val boundaryPool = checkNotNull(outcome.boundaryPool) {
+                    "fail-closed boundary recorded no ManaPoolComponent evidence"
+                }
+                boundaryPool.shouldStartWith(
+                    "turn=7 step=UPKEEP white=1 blue=0 black=0 red=0 green=0 colorless=0 " +
+                        "bySubtype={Plains=1} bySource={} byFloatingBucket={} completeness=INCOMPLETE ",
+                )
+                boundaryPool.shouldContain(
+                    "classification=Ambiguous(reason=source and subtype provenance must both identify the pool)",
+                )
+                rendered.shouldContain("BOUNDARY_POOL=$boundaryPool")
 
                 // Pregame evidence must name the actual exercised decisions: this deterministic
                 // run kept on its first pull, so bottoming was never exercised.
@@ -471,6 +497,7 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
             var unsupportedCount = 0
             var rejectionCode: String? = null
             var rejectionContext: String? = null
+            var boundaryPool: String? = null
             var truncationReason: String? = null
             val mlTraces = mutableListOf<MlDecisionTrace>()
 
@@ -544,6 +571,20 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
                                     "decision #$decisionIndex pregame=$pregame pending=$pendingType " +
                                     "phase=$phase step=$step legal=$legalCount " +
                                     "message=${result.failure.message} menu=[$legalMenu]"
+                                // Durable review evidence (ARENA_ML_01_PAYMENT_DOMAIN_01 remediation):
+                                // the acting ML seat's authoritative pool provenance at the exact
+                                // rejection state, including the Rules-owned classification the
+                                // trusted payment-domain admission consults. JVM-side only;
+                                // never part of any model request.
+                                boundaryPool = preState?.getEntity(P1)?.get<ManaPoolComponent>()?.let { pool ->
+                                    "turn=${preState.turnNumber} step=${preState.step.name} " +
+                                        "white=${pool.white} blue=${pool.blue} black=${pool.black} " +
+                                        "red=${pool.red} green=${pool.green} colorless=${pool.colorless} " +
+                                        "bySubtype=${pool.manaBySubtype} bySource=${pool.manaBySource} " +
+                                        "byFloatingBucket=${pool.manaByFloatingBucket} " +
+                                        "completeness=${pool.manaProvenanceCompleteness} " +
+                                        "classification=${FloatingManaProvenanceClassification.classify(pool)}"
+                                }
                                 when (result.failure.code) {
                                     PolicySeatFailureCode.STALE_INFERENCE -> staleRejections++
                                     PolicySeatFailureCode.WORKER_STARTUP_FAILURE,
@@ -588,6 +629,7 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
                 unsupportedCount = unsupportedCount,
                 rejectionCode = rejectionCode,
                 rejectionContext = rejectionContext,
+                boundaryPool = boundaryPool,
                 mlTraces = mlTraces.toList(),
                 finalPolicyCursor = game.getPolicySeatState(P1)?.cursor,
                 wallClockMs = wallClockMs,
