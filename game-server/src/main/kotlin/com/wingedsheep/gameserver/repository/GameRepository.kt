@@ -28,7 +28,9 @@ class InMemoryGameRepository : GameRepository {
 
     override fun findById(sessionId: String): GameSession? = gameSessions[sessionId]
 
-    override fun remove(sessionId: String): GameSession? = gameSessions.remove(sessionId)
+    override fun remove(sessionId: String): GameSession? = gameSessions.remove(sessionId).also {
+        it?.closePolicySeatRuntimes()
+    }
 
     override fun findAll(): Collection<GameSession> = gameSessions.values
 

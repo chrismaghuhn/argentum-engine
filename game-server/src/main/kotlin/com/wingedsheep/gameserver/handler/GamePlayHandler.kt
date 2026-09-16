@@ -17,6 +17,10 @@ import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
 import com.wingedsheep.gameserver.session.SessionRegistry
 import com.wingedsheep.gameserver.config.GameProperties
+import com.wingedsheep.gameserver.policy.PolicySeatDecisionResult
+import com.wingedsheep.gameserver.policy.PolicySeatFailure
+import com.wingedsheep.gameserver.policy.PolicySeatFailureCode
+import com.wingedsheep.gameserver.policy.PolicySeatRuntimeManager
 import com.wingedsheep.gameserver.deck.EasterEggDeckInjector
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.PlayerLostEvent
@@ -47,6 +51,7 @@ class GamePlayHandler(
     private val replayCheckpointFlusher: com.wingedsheep.gameserver.replay.ReplayCheckpointFlusher,
     private val engineVersion: com.wingedsheep.gameserver.replay.EngineVersion,
     private val aiGameManager: AiGameManager,
+    private val policySeatRuntimeManager: PolicySeatRuntimeManager,
     private val matchResultSink: com.wingedsheep.gameserver.stats.MatchResultSink,
     private val rankedResultSink: com.wingedsheep.gameserver.ranking.RankedResultSink,
     private val deckProfiler: com.wingedsheep.gameserver.stats.DeckProfiler
@@ -228,6 +233,7 @@ class GamePlayHandler(
         }
 
         // Remove the game
+        policySeatRuntimeManager.closeGame(gameSessionId)
         gameRepository.remove(gameSessionId)
 
         // Notify the player
@@ -314,6 +320,10 @@ class GamePlayHandler(
             sender.send(player.webSocketSession, ServerMessage.GameStarted(gameSession.seatInfos(player.playerId)))
             sendMulliganDecision(gameSession, player)
         }
+        // A policy seat has no virtual WebSocket. Start its first pregame decision through the
+        // same long-lived runtime used for gameplay; human and existing AI seats remain on their
+        // established message/callback paths.
+        dispatchPolicyDecision(gameSession)
     }
 
     private fun sendMulliganDecision(gameSession: GameSession, playerSession: PlayerSession) {
@@ -503,6 +513,10 @@ class GamePlayHandler(
                     sender.send(player.webSocketSession, ServerMessage.WaitingForOpponentMulligan)
                 }
             }
+            // Human and existing AI mulligan callbacks do not broadcast a state update while the
+            // other seat is still deciding. A policy seat has no virtual WebSocket, so explicitly
+            // hand the next pregame boundary to the same runtime used by gameplay.
+            dispatchPolicyDecision(gameSession)
         }
     }
 
@@ -845,6 +859,7 @@ class GamePlayHandler(
             callback(gameSessionId, winnerId, winnerLife)
         }
 
+        policySeatRuntimeManager.closeGame(gameSessionId)
         gameRepository.remove(gameSessionId)
         mulliganBroadcastSent.remove(gameSessionId)
         aiGameManager.cleanupGame(gameSessionId)
@@ -917,6 +932,8 @@ class GamePlayHandler(
         } catch (e: Exception) {
             logger.error("Error broadcasting state update", e)
         }
+
+        dispatchPolicyDecision(gameSession)
     }
 
     private fun processAutoPassLoop(gameSession: GameSession, initialEvents: List<GameEvent>): List<GameEvent> {
@@ -927,6 +944,11 @@ class GamePlayHandler(
         while (loopCount < maxLoops) {
             if (gameSession.isGameOver()) break
             val autoPassPlayer = gameSession.getAutoPassPlayer() ?: break
+
+            if (gameSession.isPolicySeat(autoPassPlayer)) {
+                logger.debug("Skipping auto-pass for ML policy seat {}", autoPassPlayer.value)
+                break
+            }
 
             // Never auto-pass combat declarations for AI players — the AI controller
             // needs to decide which creatures to attack/block with. executeAutoPass would
@@ -1273,13 +1295,81 @@ class GamePlayHandler(
         if (rewired > 0) logger.info("Re-wired AI for {} recovered game session(s)", rewired)
     }
 
+    /** Recreate the ephemeral ML worker for a recovered session at its current policy boundary. */
+    @EventListener(ApplicationReadyEvent::class)
+    fun resumePolicyGamesOnStartup() {
+        if (!gameProperties.mlPolicy.enabled) return
+        val games = gameRepository.findAll()
+        var resumed = 0
+        for (game in games) {
+            if (game.policySeatToAct() == null) continue
+            dispatchPolicyDecision(game)
+            resumed++
+        }
+        if (resumed > 0) logger.info("Resumed ML policy runtime(s) for {} recovered game session(s)", resumed)
+    }
+
     // =========================================================================
     // AI opponent callbacks (invoked async from AiWebSocketSession coroutine)
     // =========================================================================
 
+    /** Dispatches only the explicit ML_POLICY controller; no legacy AI or fallback path is used. */
+    private fun dispatchPolicyDecision(gameSession: GameSession) {
+        try {
+            policySeatRuntimeManager.dispatchIfNeeded(gameSession) { result ->
+                handlePolicyDecisionResult(gameSession, result)
+            }
+        } catch (failure: PolicySeatFailure) {
+            logger.error(
+                "ML policy runtime could not be created for game {}: {}",
+                gameSession.sessionId,
+                failure.message,
+            )
+        }
+    }
+
+    private fun handlePolicyDecisionResult(
+        gameSession: GameSession,
+        result: PolicySeatDecisionResult,
+    ) {
+        when (result) {
+            is PolicySeatDecisionResult.Accepted -> when (val actionResult = result.actionResult) {
+                is GameSession.ActionResult.Success -> {
+                    broadcastStateUpdate(gameSession, actionResult.events)
+                    if (gameSession.isGameOver()) handleGameOver(gameSession, events = actionResult.events)
+                }
+
+                is GameSession.ActionResult.PausedForDecision -> {
+                    broadcastStateUpdate(gameSession, actionResult.events)
+                    if (gameSession.isGameOver()) handleGameOver(gameSession, events = actionResult.events)
+                }
+
+                is GameSession.ActionResult.Failure -> logger.error(
+                    "ML policy selected binding but authoritative execution rejected it in game {}: {}",
+                    gameSession.sessionId,
+                    actionResult.reason,
+                )
+            }
+
+            is PolicySeatDecisionResult.Rejected -> {
+                logger.error(
+                    "ML policy decision failed closed in game {}: {} ({})",
+                    gameSession.sessionId,
+                    result.failure.code,
+                    result.failure.message,
+                )
+                // A stale request describes a new authoritative boundary. Re-capture that new
+                // boundary once; worker/protocol failures remain closed and are never retried.
+                if (result.failure.code == PolicySeatFailureCode.STALE_INFERENCE) {
+                    dispatchPolicyDecision(gameSession)
+                }
+            }
+        }
+    }
+
     fun handleAiAction(gameSession: GameSession, aiPlayerId: EntityId, action: com.wingedsheep.engine.core.GameAction) {
         try {
-            val result = gameSession.executeAction(aiPlayerId, action)
+            val result = gameSession.executeActionFromAiController(aiPlayerId, action)
             when (result) {
                 is GameSession.ActionResult.Success -> {
                     logger.debug("AI action executed successfully")
@@ -1301,7 +1391,7 @@ class GamePlayHandler(
                     logger.warn("AI action failed: {} — trying safe fallbacks", result.reason)
                     var recovered = false
                     for (fallback in safeFallbackActions(gameSession, aiPlayerId)) {
-                        when (val fb = gameSession.executeAction(aiPlayerId, fallback)) {
+                        when (val fb = gameSession.executeActionFromAiController(aiPlayerId, fallback)) {
                             is GameSession.ActionResult.Success -> {
                                 broadcastStateUpdate(gameSession, fb.events)
                                 if (gameSession.isGameOver()) handleGameOver(gameSession, events = fb.events)
@@ -1381,7 +1471,7 @@ class GamePlayHandler(
 
     fun handleAiMulliganKeep(gameSession: GameSession, aiPlayerId: EntityId) {
         try {
-            val result = gameSession.keepHand(aiPlayerId)
+            val result = gameSession.keepHandFromAiController(aiPlayerId)
             when (result) {
                 is GameSession.MulliganActionResult.Success -> {
                     logger.info("AI kept hand")
@@ -1407,7 +1497,7 @@ class GamePlayHandler(
 
     fun handleAiMulliganTake(gameSession: GameSession, aiPlayerId: EntityId) {
         try {
-            val result = gameSession.takeMulligan(aiPlayerId)
+            val result = gameSession.takeMulliganFromAiController(aiPlayerId)
             when (result) {
                 is GameSession.MulliganActionResult.Success -> {
                     logger.info("AI took mulligan")
@@ -1435,7 +1525,7 @@ class GamePlayHandler(
 
     fun handleAiBottomCards(gameSession: GameSession, aiPlayerId: EntityId, cardIds: List<EntityId>) {
         try {
-            val result = gameSession.chooseBottomCards(aiPlayerId, cardIds)
+            val result = gameSession.chooseBottomCardsFromAiController(aiPlayerId, cardIds)
             when (result) {
                 is GameSession.MulliganActionResult.Success -> {
                     logger.info("AI chose bottom cards")

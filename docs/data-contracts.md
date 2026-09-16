@@ -1323,3 +1323,56 @@ C1_07A `LivePolicyDecisionRequestV1` inner payload. Python receives model-facing
 ordinal/mask/tie control data, and PolicyTieRng state. It never receives `GameState`, exact
 `LegalAction`/`DecisionResponse` bindings, or the JVM-internal `bindingDigest`. A runtime failure
 does not enter Engine AI, random/first-choice, auto-pass, or any other fallback path.
+
+### C1_07C controller authority and ML policy seat runtime
+
+`ControllerAuthorityV1` is explicit server-owned seat state with the versioned kinds `HUMAN`,
+`ENGINE_AI`, `ML_POLICY`, and an explicit legacy-AI compatibility kind for the pre-C1_07C LLM
+path. The ML kind carries only the fixed C1_07B profile/checkpoint and the explicit policy seed plus
+stable seat index. `PolicySeatStateV1` carries only the derived PolicyTieRng stream and cursor;
+worker processes, paths, sockets, request IDs, and runtime handles are never persisted. Authority
+and policy state live in the server session persistence DTO, never CompactReplay, Trajectory V1, or
+B2 schema.
+
+Each ML seat has one ephemeral `PolicySeatRuntime` and one long-lived fixed-command C1_07B worker.
+The runtime captures C1_07A's source-owned snapshot under `GameSession`'s lock, releases that lock
+for framed subprocess inference, then reacquires it to rebuild a fresh snapshot, revalidate
+observation/domain/binding/RNG identity, map the ordinal to the exact current JVM binding, and
+execute through the ordinary `GameSession` action path. The returned RNG state is staged and is
+committed only after execution is accepted. Duplicate in-flight requests, stale responses, worker
+failure, timeout, invalid ordinals, unsupported structured decisions, and execution rejection do
+not execute an action and do not advance persisted PolicyTieRng state.
+
+`ML_POLICY` never routes through `AiWebSocketSession` and never uses Engine AI, random, first-choice,
+automatic-payment, or auto-pass fallback. Human and existing Engine-AI routes remain on their
+existing paths. Runtime teardown is coupled to repository/session disposal, and rehydration creates
+a fresh worker from the persisted authority/state. The current server configuration is disabled by
+default and accepts only server-owned operational Python/checkpoint locators.
+
+The C1_07C live contract additionally represents the two model-facing pregame decision
+boundaries — Mulligan and London BottomCards — through the generic source-owned
+`LivePregameDecisionSource` adapter over the engine's existing `SelectCardsDecision` primitive
+and the authoritative `KeepHand` / `TakeMulligan` / `BottomCards` actions:
+
+- The Mulligan boundary publishes the complete currently legal domain: `KeepHand` is always
+  offered, and `TakeMulligan` is offered exactly when the authoritative mulligan state
+  allows another mulligan.
+- The BottomCards boundary publishes the complete ordered domain for the exact required
+  bottom-card cardinality; ordering is explicit because it determines the resulting
+  bottom-of-library order. A domain beyond the explicit alternative bound fails closed with
+  a typed unsupported-structured-decision outcome instead of being truncated, as does a
+  pregame boundary without authoritative mulligan state.
+- Model-facing data uses stable semantic addressing only: per-request entity aliases
+  (identical physical hand cards keep full multiplicity under distinct aliases), the
+  complete C1 domain projection, source-binding ordinals, and authoritative semantic
+  bindings. Raw `EntityId`s, `GameState`, exact JVM bindings, and `bindingDigest` never
+  cross to Python; the exact `KeepHand` / `TakeMulligan` / `BottomCards` values stay in
+  the JVM-only binding table.
+- A worker response is revalidated against a freshly rebuilt authoritative source snapshot
+  (observation/domain/binding/RNG identity) before execution; the ordinal maps to the exact
+  current JVM binding and executes through the ordinary `GameSession` action path. Stale,
+  invalid, or unsupported responses fail closed without executing an action. The returned
+  PolicyTieRng state is staged and committed only after accepted authoritative execution.
+- There is no random, first-card, implicit-keep, Engine-AI, auto-pass, or other fallback on
+  any ML path. A normal ML seat can now progress from initial `GameSession` start through
+  pregame into gameplay. No Arena ML launcher or UI is part of C1_07C.
