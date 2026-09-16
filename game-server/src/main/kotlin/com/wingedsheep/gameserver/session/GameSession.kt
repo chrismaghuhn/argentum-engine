@@ -556,7 +556,17 @@ class GameSession(
      * Start the game. Both players must have joined with deck lists.
      * Initializes the game with the new engine - mulligan phase is handled by the engine.
      */
-    fun startGame(): GameState {
+    /**
+     * Start the game for every seated player.
+     *
+     * @param gameSeed explicit engine RNG seed (shuffles, turn order, coin flips). Null preserves
+     *   live entropy: the initializer draws fresh randomness and records the used seed on
+     *   [com.wingedsheep.engine.core.InitializationResult.seed]. Supply an explicit value for
+     *   reproducible runs (replays, MCTS, the ML policy smoke harness).
+     * @param startingPlayerIndex explicit starting-player seat index into the join order. Null
+     *   preserves the engine default.
+     */
+    fun startGame(gameSeed: Long? = null, startingPlayerIndex: Int? = null): GameState {
         require(isReady) { "Game session not ready - need $maxPlayers players with deck lists" }
 
         val playerConfigs = players.map { (playerId, session) ->
@@ -580,6 +590,8 @@ class GameSession(
             // Team partitioning for Two-Headed Giant (CR 810); null for non-team games. The seat
             // indices line up with playerConfigs, which preserves the join/turn order of `players`.
             teams = teams,
+            seed = gameSeed,
+            startingPlayerIndex = startingPlayerIndex,
         )
 
         val result = gameInitializer.initializeGame(config)

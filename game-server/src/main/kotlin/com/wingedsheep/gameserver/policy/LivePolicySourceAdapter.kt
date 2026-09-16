@@ -77,7 +77,8 @@ object LivePolicySourceAdapter {
         if (result.diagnostics.isNotEmpty()) {
             throw PolicySeatFailure(
                 PolicySeatFailureCode.UNSUPPORTED_STRUCTURED_DECISION,
-                "live observation contains unsupported authoritative diagnostics",
+                "live observation contains unsupported authoritative diagnostics: " +
+                    result.diagnostics.joinToString(prefix = "[", postfix = "]") { it.semanticCode },
             )
         }
         val observation = result.observation as? TrainingObservation
@@ -170,7 +171,8 @@ object LivePolicySourceAdapter {
         if (result.diagnostics.isNotEmpty()) {
             throw PolicySeatFailure(
                 PolicySeatFailureCode.UNSUPPORTED_STRUCTURED_DECISION,
-                "live observation contains unsupported authoritative diagnostics",
+                "live observation contains unsupported authoritative diagnostics: " +
+                    result.diagnostics.joinToString(prefix = "[", postfix = "]") { it.semanticCode },
             )
         }
         val observation = result.observation as? TrainingObservation
