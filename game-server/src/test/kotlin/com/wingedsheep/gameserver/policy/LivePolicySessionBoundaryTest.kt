@@ -1,11 +1,15 @@
 package com.wingedsheep.gameserver.policy
 
+import com.wingedsheep.engine.core.BottomCards
+import com.wingedsheep.engine.core.KeepHand
 import com.wingedsheep.engine.core.PassPriority
+import com.wingedsheep.engine.core.TakeMulligan
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.YieldKind
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.identity.PlayerComponent
 import com.wingedsheep.engine.state.components.player.HotseatControlComponent
@@ -15,11 +19,16 @@ import com.wingedsheep.engine.state.components.player.MulliganStateComponent
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
 import com.wingedsheep.gym.contract.CompleteLegalDomainKind
+import com.wingedsheep.gym.contract.C1ModelFacingProjectionV1
 import com.wingedsheep.gym.contract.LivePolicyDecisionResponseV1
 import com.wingedsheep.gym.contract.LivePolicyDecisionRequestV1
+import com.wingedsheep.gym.contract.PlayerObservationV1
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.CardType
+import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.AbilityIdentity
@@ -199,42 +208,259 @@ class LivePolicySessionBoundaryTest : FunSpec({
         clearAllSession.getReplayYields() shouldBe yieldsBeforeClearAll
     }
 
-    test("ML policy fails closed for mulligan and bottom-card decisions") {
+    test("ML policy exposes the complete current mulligan domain") {
         val mulliganSession = session()
         mulliganSession.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
-        mulliganSession.resetStateForDevScenario(
-            mulliganSession.getStateForTesting()!!.updateEntity(P1) {
-                it.with(MulliganStateComponent())
-            }.updateEntity(P2) {
-                it.with(MulliganStateComponent())
-            },
+        mulliganSession.resetStateForDevScenario(mulliganState(mulliganSession, MulliganStateComponent()))
+
+        mulliganSession.policySeatToAct() shouldBe P1
+        val capture = mulliganSession.captureLivePolicyDecision(P1)
+        val domain = capture.source.snapshot.completeLegalDomain
+        domain.kind shouldBe CompleteLegalDomainKind.STRUCTURED_DECISION
+        val cardSelection = domain.structuredDomain
+            .shouldBeTypeOf<com.wingedsheep.gym.contract.CardSelectionDomain>()
+        cardSelection.minSelections shouldBe 0
+        cardSelection.maxSelections shouldBe 3
+        cardSelection.ordered shouldBe false
+        capture.source.snapshot.structuredChoiceDomain!!.alternatives.size shouldBe 2
+        capture.source.exactSourceBindings.exactBindingFor(0)
+            .shouldBeTypeOf<PolicySeatExactBinding.GameActionBinding>()
+            .action.shouldBeTypeOf<KeepHand>()
+        capture.source.exactSourceBindings.exactBindingFor(1)
+            .shouldBeTypeOf<PolicySeatExactBinding.GameActionBinding>()
+            .action.shouldBeTypeOf<TakeMulligan>()
+        val requestText = capture.source.snapshot
+            .toRequest("mulligan-request", capture.policyState.toLiveState())
+            .toString()
+        requestText.contains(HAND_CARD_1.value) shouldBe false
+        requestText.contains("bindingDigest") shouldBe false
+        requestText.contains("KeepHand") shouldBe false
+        requestText.contains("TakeMulligan") shouldBe false
+    }
+
+    test("accepted ML KEEP and MULLIGAN use the authoritative existing actions") {
+        val keepSession = session()
+        keepSession.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        keepSession.resetStateForDevScenario(mulliganState(keepSession, MulliganStateComponent()))
+        val keepCapture = keepSession.captureLivePolicyDecision(P1)
+        val keepRequest = keepCapture.toRequest("keep-request")
+        val keepResult = keepSession.acceptLivePolicyDecision(
+            keepCapture,
+            keepRequest,
+            response(keepRequest, selectedOrdinal = 0),
+        )
+        keepResult.shouldBeTypeOf<PolicySeatDecisionResult.Accepted>()
+        keepSession.getStateForTesting()!!.getEntity(P1)
+            ?.get<MulliganStateComponent>()?.hasKept shouldBe true
+        keepSession.getRecordedActions().single().shouldBeTypeOf<KeepHand>()
+        keepSession.getPolicySeatState(P1)?.cursor shouldBe 0uL
+
+        val mulliganSession = session()
+        mulliganSession.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        mulliganSession.resetStateForDevScenario(mulliganState(mulliganSession, MulliganStateComponent()))
+        val mulliganCapture = mulliganSession.captureLivePolicyDecision(P1)
+        val mulliganRequest = mulliganCapture.toRequest("mulligan-request")
+        val mulliganResult = mulliganSession.acceptLivePolicyDecision(
+            mulliganCapture,
+            mulliganRequest,
+            response(mulliganRequest, selectedOrdinal = 1),
+        )
+        mulliganResult.shouldBeTypeOf<PolicySeatDecisionResult.Accepted>()
+        mulliganSession.getStateForTesting()!!.getEntity(P1)
+            ?.get<MulliganStateComponent>()?.mulligansTaken shouldBe 1
+        mulliganSession.getStateForTesting()!!.getEntity(P1)
+            ?.get<MulliganStateComponent>()?.hasKept shouldBe false
+        mulliganSession.getRecordedActions().single().shouldBeTypeOf<TakeMulligan>()
+        mulliganSession.getPolicySeatState(P1)?.cursor shouldBe 0uL
+    }
+
+    test("ML mulligan domain omits TakeMulligan when the authoritative state disallows it") {
+        val session = session()
+        session.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        session.resetStateForDevScenario(
+            mulliganState(
+                session,
+                MulliganStateComponent(mulligansTaken = 7),
+            ),
         )
 
-        shouldThrow<PolicySeatFailure> {
-            mulliganSession.captureLivePolicyDecision(P1)
-        }.code shouldBe PolicySeatFailureCode.UNSUPPORTED_MULLIGAN_DECISION
-        mulliganSession.policySeatToAct() shouldBe null
+        val capture = session.captureLivePolicyDecision(P1)
+        capture.source.snapshot.structuredChoiceDomain!!.alternatives.size shouldBe 1
+        capture.source.exactSourceBindings.exactBindingFor(0)
+            .shouldBeTypeOf<PolicySeatExactBinding.GameActionBinding>()
+            .action.shouldBeTypeOf<KeepHand>()
+    }
 
-        val bottomSession = session()
-        bottomSession.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
-        bottomSession.resetStateForDevScenario(
-            bottomSession.getStateForTesting()!!.updateEntity(P1) {
-                it.with(MulliganStateComponent(mulligansTaken = 1, hasKept = true))
-            }.updateEntity(P2) {
-                it.with(MulliganStateComponent(hasKept = true))
-            },
+    test("ML bottom-card domain is complete, ordered, and maps exact cards only in the JVM") {
+        val session = session()
+        session.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        session.resetStateForDevScenario(
+            mulliganState(
+                session,
+                MulliganStateComponent(mulligansTaken = 1, hasKept = true),
+            ),
         )
 
+        val capture = session.captureLivePolicyDecision(P1)
+        val domain = capture.source.snapshot.completeLegalDomain
+        val cardSelection = domain.structuredDomain
+            .shouldBeTypeOf<com.wingedsheep.gym.contract.CardSelectionDomain>()
+        cardSelection.minSelections shouldBe 1
+        cardSelection.maxSelections shouldBe 1
+        cardSelection.ordered shouldBe true
+        capture.source.snapshot.structuredChoiceDomain!!.alternatives.size shouldBe 3
+        capture.source.snapshot.structuredChoiceDomain!!.alternatives.forEach { alternative ->
+            alternative.featureView.toString().contains(HAND_CARD_1.value) shouldBe false
+            capture.source.exactSourceBindings.exactBindingFor(alternative.sourceBindingOrdinal)
+                .shouldBeTypeOf<PolicySeatExactBinding.GameActionBinding>()
+                .action.shouldBeTypeOf<BottomCards>()
+                .cardIds.size shouldBe 1
+        }
+
+        val request = capture.toRequest("bottom-request")
+        request.toString().contains("bindingDigest") shouldBe false
+        request.toString().contains("BottomCards") shouldBe false
+        request.toString().contains(HAND_CARD_1.value) shouldBe false
+        val result = session.acceptLivePolicyDecision(capture, request, response(request, 0))
+        result.shouldBeTypeOf<PolicySeatDecisionResult.Accepted>()
+        session.getStateForTesting()!!.getEntity(P1)
+            ?.get<MulliganStateComponent>()?.mulligansTaken shouldBe 0
+        session.getRecordedActions().single().shouldBeTypeOf<BottomCards>()
+        session.getPolicySeatState(P1)?.cursor shouldBe 0uL
+    }
+
+    test("identical physical hand cards retain complete multiplicity and distinct stable aliases") {
+        val session = session()
+        session.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        session.resetStateForDevScenario(
+            mulliganState(
+                session,
+                MulliganStateComponent(mulligansTaken = 1, hasKept = true),
+                duplicateFirstTwo = true,
+            ),
+        )
+
+        val capture = session.captureLivePolicyDecision(P1)
+        val alternatives = capture.source.snapshot.structuredChoiceDomain!!.alternatives
+        val aliasesBySourceId = C1ModelFacingProjectionV1.project(
+            observation = PlayerObservationV1.from(capture.source.observation),
+            domain = capture.source.snapshot.completeLegalDomain,
+        ).entityAliasBindings.associate { it.sourceEntityId to it.alias }
+        alternatives.size shouldBe 3
+        alternatives.map { it.featureView.toString() }.distinct().size shouldBe 3
+        capture.source.exactSourceBindings.sourceBindingOrdinals shouldBe setOf(0, 1, 2)
+        alternatives.forEach { alternative ->
+            val binding = capture.source.exactSourceBindings.exactBindingFor(alternative.sourceBindingOrdinal)
+                .shouldBeTypeOf<PolicySeatExactBinding.GameActionBinding>()
+            val action = binding.action.shouldBeTypeOf<BottomCards>()
+            action.cardIds.size shouldBe 1
+            alternative.featureView.toString().contains(
+                aliasesBySourceId.getValue(action.cardIds.single().value),
+            ) shouldBe true
+        }
+    }
+
+    test("stale pregame inference executes nothing and advances no PolicyTieRng") {
+        val session = session()
+        session.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        session.resetStateForDevScenario(mulliganState(session, MulliganStateComponent()))
+        val capture = session.captureLivePolicyDecision(P1)
+        val request = capture.toRequest("stale-pregame-request")
+        session.resetStateForDevScenario(
+            mulliganState(session, MulliganStateComponent(mulligansTaken = 1)),
+        )
+
+        val result = session.acceptLivePolicyDecision(capture, request, response(request, 0))
+        result.shouldBeTypeOf<PolicySeatDecisionResult.Rejected>()
+            .failure.code shouldBe PolicySeatFailureCode.STALE_INFERENCE
+        session.getRecordedActions().size shouldBe 0
+        session.getPolicySeatState(P1)?.cursor shouldBe 0uL
+    }
+
+    test("human mulligan remains available while ML is owned by the other seat") {
+        val session = session()
+        session.setControllerAuthority(P2, ControllerAuthorityV1.mlPolicy(1, 42L))
+        session.resetStateForDevScenario(
+            session.getStateForTesting()!!
+                .updateEntity(P1) { it.with(MulliganStateComponent(hasKept = false)) }
+                .updateEntity(P2) { it.with(MulliganStateComponent(hasKept = false)) },
+        )
+
+        session.keepHand(P1).shouldBeTypeOf<GameSession.MulliganActionResult.Success>()
+        session.getStateForTesting()!!.getEntity(P1)
+            ?.get<MulliganStateComponent>()?.hasKept shouldBe true
+        session.getRecordedActions().single().shouldBeTypeOf<KeepHand>()
+    }
+
+    test("ML policy rejects a game-over pregame boundary without mutation") {
+        val session = session()
+        session.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        session.resetStateForDevScenario(session.getStateForTesting()!!.copy(gameOver = true))
+
         shouldThrow<PolicySeatFailure> {
-            bottomSession.captureLivePolicyDecision(P1)
-        }.code shouldBe PolicySeatFailureCode.UNSUPPORTED_MULLIGAN_DECISION
-        bottomSession.policySeatToAct() shouldBe null
-        bottomSession.getRecordedActions().size shouldBe 0
+            session.captureLivePolicyDecision(P1)
+        }.code shouldBe PolicySeatFailureCode.SESSION_NOT_READY
+        session.policySeatToAct() shouldBe null
+        session.getRecordedActions().size shouldBe 0
     }
 }) {
     companion object {
         private val P1 = EntityId("policy-player-1")
         private val P2 = EntityId("policy-player-2")
+        private val HAND_CARD_1 = EntityId("hand-card-1")
+        private val HAND_CARD_2 = EntityId("hand-card-2")
+        private val HAND_CARD_3 = EntityId("hand-card-3")
+
+        private fun mulliganState(
+            session: GameSession,
+            playerState: MulliganStateComponent,
+            duplicateFirstTwo: Boolean = false,
+        ): GameState {
+            var state = session.getStateForTesting()!!
+                .withEntity(
+                    HAND_CARD_1,
+                    ComponentContainer.of(
+                        CardComponent(
+                            cardDefinitionId = if (duplicateFirstTwo) "Forest#POR-211" else "Mountain#POR-211",
+                            name = "Mountain",
+                            manaCost = ManaCost.ZERO,
+                            typeLine = TypeLine(cardTypes = setOf(CardType.LAND)),
+                            ownerId = P1,
+                        ),
+                    ),
+                )
+                .withEntity(
+                    HAND_CARD_2,
+                    ComponentContainer.of(
+                        CardComponent(
+                            cardDefinitionId = "Forest#POR-211",
+                            name = "Forest",
+                            manaCost = ManaCost.ZERO,
+                            typeLine = TypeLine(cardTypes = setOf(CardType.LAND)),
+                            ownerId = P1,
+                        ),
+                    ),
+                )
+                .withEntity(
+                    HAND_CARD_3,
+                    ComponentContainer.of(
+                        CardComponent(
+                            cardDefinitionId = "Plains#POR-211",
+                            name = "Plains",
+                            manaCost = ManaCost.ZERO,
+                            typeLine = TypeLine(cardTypes = setOf(CardType.LAND)),
+                            ownerId = P1,
+                        ),
+                    ),
+                )
+                .copy(
+                    zones = session.getStateForTesting()!!.zones +
+                        (ZoneKey(P1, Zone.HAND) to listOf(HAND_CARD_1, HAND_CARD_2, HAND_CARD_3)),
+                )
+                .updateEntity(P1) { it.with(playerState) }
+                .updateEntity(P2) { it.with(MulliganStateComponent(hasKept = true)) }
+            return state
+        }
 
         private fun session(): GameSession {
             var state = GameState()

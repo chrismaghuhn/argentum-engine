@@ -320,6 +320,10 @@ class GamePlayHandler(
             sender.send(player.webSocketSession, ServerMessage.GameStarted(gameSession.seatInfos(player.playerId)))
             sendMulliganDecision(gameSession, player)
         }
+        // A policy seat has no virtual WebSocket. Start its first pregame decision through the
+        // same long-lived runtime used for gameplay; human and existing AI seats remain on their
+        // established message/callback paths.
+        dispatchPolicyDecision(gameSession)
     }
 
     private fun sendMulliganDecision(gameSession: GameSession, playerSession: PlayerSession) {
@@ -509,6 +513,10 @@ class GamePlayHandler(
                     sender.send(player.webSocketSession, ServerMessage.WaitingForOpponentMulligan)
                 }
             }
+            // Human and existing AI mulligan callbacks do not broadcast a state update while the
+            // other seat is still deciding. A policy seat has no virtual WebSocket, so explicitly
+            // hand the next pregame boundary to the same runtime used by gameplay.
+            dispatchPolicyDecision(gameSession)
         }
     }
 

@@ -8,6 +8,8 @@ import com.wingedsheep.gameserver.persistence.dto.PersistentPlayerInfo
 import com.wingedsheep.gameserver.config.GameProperties
 import com.wingedsheep.gameserver.config.MlPolicyProperties
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.components.player.MulliganStateComponent
+import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
 import com.wingedsheep.gym.contract.LivePolicyDecisionResponseV1
@@ -116,6 +118,76 @@ class PolicyControllerPersistenceTest : FunSpec({
         restored.getPolicySeatState(playerId) shouldBe PolicySeatStateV1.fromAuthority(authority)
         workerStarts.get() shouldBe 1
         manager.closeGame(restored.sessionId)
+    }
+
+    test("rehydrated ML seats resume both pregame decision boundaries with a fresh runtime") {
+        val playerId = EntityId("rehydrated-pregame-policy-seat")
+        val opponentId = EntityId("rehydrated-pregame-opponent")
+        val authority = ControllerAuthorityV1.mlPolicy(seatIndex = 0, policySeed = 42L)
+        val workerStarts = AtomicInteger(0)
+        val manager = PolicySeatRuntimeManager(
+            GameProperties(
+                mlPolicy = MlPolicyProperties(
+                    enabled = true,
+                    checkpointDirectory = "C:/server-owned/checkpoint",
+                ),
+            ),
+            PolicySeatWorkerFactory {
+                workerStarts.incrementAndGet()
+                object : PolicySeatWorker {
+                    override fun decide(request: com.wingedsheep.gym.contract.LivePolicyDecisionRequestV1): LivePolicyDecisionResponseV1 =
+                        error("rehydration boundary test does not infer")
+
+                    override fun close() = Unit
+                }
+            },
+        )
+
+        listOf(false, true).forEachIndexed { index, bottomCards ->
+            val source = GameSession(
+                sessionId = "session-pregame-$index",
+                cardRegistry = CardRegistry().apply { register(TestCards.all) },
+            )
+            source.addPlayer(
+                PlayerSession(ws("pregame-policy-$index"), playerId, "Policy"),
+                mapOf("Forest" to 40),
+            )
+            source.addPlayer(
+                PlayerSession(ws("pregame-opponent-$index"), opponentId, "Opponent"),
+                mapOf("Island" to 40),
+            )
+            source.setControllerAuthority(playerId, authority)
+            source.setPlayerPersistenceInfo(playerId, "Policy", "policy-token")
+            source.setPlayerPersistenceInfo(opponentId, "Opponent", "opponent-token")
+            source.startGame()
+            source.resetStateForDevScenario(
+                source.getStateForTesting()!!.copy(
+                    turnOrder = listOf(playerId, opponentId),
+                    activePlayerId = playerId,
+                    priorityPlayerId = playerId,
+                ),
+            )
+            if (bottomCards) {
+                source.resetStateForDevScenario(
+                    source.getStateForTesting()!!
+                        .updateEntity(playerId) {
+                            it.with(MulliganStateComponent(mulligansTaken = 1, hasKept = true))
+                        }
+                        .updateEntity(opponentId) { it.with(MulliganStateComponent(hasKept = true)) },
+                )
+            }
+
+            val (restored, _) = restoreGameSession(
+                source.toPersistent(null),
+                CardRegistry().apply { register(TestCards.all) },
+            )
+
+            restored.policySeatToAct() shouldBe playerId
+            manager.runtimeFor(restored, playerId).playerId shouldBe playerId
+            manager.closeGame(restored.sessionId)
+        }
+
+        workerStarts.get() shouldBe 2
     }
 
     test("unknown future policy controller-state versions fail closed during session decoding") {

@@ -806,6 +806,15 @@ data class LivePolicyDecisionSnapshotV1(
         require(current.bindingDigest == bindingDigest) {
             "Live policy response exact binding digest is stale"
         }
+        require(current.modelInput == modelInput) {
+            "Live policy response model input is stale"
+        }
+        require(current.candidateFeatureViews == candidateFeatureViews) {
+            "Live policy response candidate features are stale"
+        }
+        require(current.selectionBindingChannel == selectionBindingChannel) {
+            "Live policy response selection channel is stale"
+        }
         return current
     }
 

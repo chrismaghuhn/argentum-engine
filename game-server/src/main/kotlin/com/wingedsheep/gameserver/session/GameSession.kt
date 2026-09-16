@@ -11,6 +11,7 @@ import com.wingedsheep.engine.view.LegalActionInfo
 import com.wingedsheep.gameserver.protocol.ServerMessage
 import com.wingedsheep.gameserver.priority.AutoPassManager
 import com.wingedsheep.engine.core.*
+import com.wingedsheep.engine.handlers.MulliganHandler
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.LegalActionEnumerator
 import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
@@ -30,8 +31,12 @@ import com.wingedsheep.sdk.model.CardEntry
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.gym.contract.ObservationBuilder
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import com.wingedsheep.gameserver.policy.ControllerAuthorityV1
 import com.wingedsheep.gameserver.policy.ControllerKindV1
+import com.wingedsheep.gameserver.policy.LivePregameActionChoice
+import com.wingedsheep.gameserver.policy.LivePregameDecisionSource
 import com.wingedsheep.gameserver.policy.LivePolicySourceAdapter
 import com.wingedsheep.gameserver.policy.LivePolicySourceSnapshot
 import com.wingedsheep.gameserver.policy.PolicySeatDecisionResult
@@ -255,6 +260,8 @@ class GameSession(
     private val legalActionEnricher = LegalActionEnricher(services.manaSolver, cardRegistry)
     /** Shared C1 projection seam; it never sees a client state or invents model features. */
     private val liveObservationBuilder = ObservationBuilder(cardRegistry = cardRegistry)
+    /** Existing Rules-owned source for the normal mulligan and London bottoming decision shapes. */
+    private val mulliganHandler = MulliganHandler(cardRegistry)
 
     /** Explicit server-owned controller authority, separate from WebSocket and legacy AI state. */
     private val controllerAuthorities = mutableMapOf<EntityId, ControllerAuthorityV1>()
@@ -1083,12 +1090,6 @@ class GameSession(
                     "ML policy inference is unavailable after game end",
                 )
             }
-            if (hasPendingMulliganChoice(state)) {
-                throw PolicySeatFailure(
-                    PolicySeatFailureCode.UNSUPPORTED_MULLIGAN_DECISION,
-                    "C1_07C has no complete live contract for mulligan or bottom-card choices",
-                )
-            }
             val policyState = policySeatStates[playerId]
                 ?: throw PolicySeatFailure(
                     PolicySeatFailureCode.CONTROLLER_AUTHORITY_INVALID,
@@ -1142,6 +1143,13 @@ class GameSession(
                 response.selectedSourceBindingOrdinal,
             )
             val actionResult = when (binding) {
+                is com.wingedsheep.gameserver.policy.PolicySeatExactBinding.GameActionBinding ->
+                    executeActionFromController(
+                        playerId,
+                        binding.action,
+                        ControllerKindV1.ML_POLICY,
+                    )
+
                 is com.wingedsheep.gameserver.policy.PolicySeatExactBinding.LegalActionBinding ->
                     executeActionFromController(
                         playerId,
@@ -1196,6 +1204,77 @@ class GameSession(
         playerId: EntityId,
         state: GameState,
     ): LivePolicySourceSnapshot {
+        nextPregameDecisionOwner(state)?.let { decisionOwner ->
+            val effectiveController = state.actorFor(decisionOwner)
+            if (effectiveController != playerId) {
+                throw PolicySeatFailure(
+                    PolicySeatFailureCode.SESSION_NOT_READY,
+                    "ML policy seat is not the current authoritative pregame actor",
+                )
+            }
+            val mulliganState = state.getEntity(decisionOwner)?.get<MulliganStateComponent>()
+                ?: throw PolicySeatFailure(
+                    PolicySeatFailureCode.UNSUPPORTED_MULLIGAN_DECISION,
+                    "pregame decision has no authoritative mulligan state",
+                )
+            val decision = if (!mulliganState.hasKept) {
+                mulliganHandler.createMulliganDecision(state, decisionOwner)
+            } else {
+                mulliganHandler.createBottomCardsDecision(state, decisionOwner)
+            }
+            val orderedHand = stablePregameCardOrder(state, state.getHand(decisionOwner))
+            val choices = try {
+                if (!mulliganState.hasKept) {
+                    buildList<LivePregameActionChoice> {
+                        add(
+                            LivePregameActionChoice(
+                                action = KeepHand(decisionOwner),
+                                selectedCards = emptyList(),
+                            ),
+                        )
+                        if (mulliganState.canMulligan) {
+                            add(
+                                LivePregameActionChoice(
+                                    action = TakeMulligan(decisionOwner),
+                                    selectedCards = orderedHand,
+                                ),
+                            )
+                        }
+                    }
+                } else {
+                    LivePregameDecisionSource.orderedSelections(
+                        options = orderedHand,
+                        count = mulliganState.cardsToBottom,
+                    ).map { selected ->
+                        LivePregameActionChoice(
+                            action = BottomCards(decisionOwner, selected),
+                            selectedCards = selected,
+                        )
+                    }
+                }
+            } catch (failure: PolicySeatFailure) {
+                throw failure
+            } catch (failure: IllegalArgumentException) {
+                throw PolicySeatFailure(
+                    PolicySeatFailureCode.UNSUPPORTED_STRUCTURED_DECISION,
+                    "pregame decision cannot produce a complete source-owned choice domain",
+                    failure,
+                )
+            }
+            return LivePregameDecisionSource.capture(
+                state = state,
+                perspectivePlayerId = decisionOwner,
+                decision = decision,
+                choices = choices,
+                sourceContext = buildJsonObject {
+                    put("decisionKind", if (mulliganState.hasKept) "BOTTOM_CARDS" else "MULLIGAN")
+                    put("mulligansTaken", mulliganState.mulligansTaken)
+                    put("cardsToBottom", mulliganState.cardsToBottom)
+                    put("hasKept", mulliganState.hasKept)
+                },
+                observationBuilder = liveObservationBuilder,
+            )
+        }
         val decisionOwner = state.pendingDecision?.playerId ?: state.priorityPlayerId
         if (decisionOwner == null || state.actorFor(decisionOwner) != playerId) {
             throw PolicySeatFailure(
@@ -1211,6 +1290,23 @@ class GameSession(
         )
         return LivePolicySourceAdapter.fromObservationResult(result)
     }
+
+    private fun nextPregameDecisionOwner(state: GameState): EntityId? =
+        state.turnOrder.firstOrNull { playerId ->
+            state.getEntity(playerId)?.get<MulliganStateComponent>()?.let { mulligan ->
+                !mulligan.hasKept || mulligan.cardsToBottom > 0
+            } == true
+        }
+
+    private fun stablePregameCardOrder(state: GameState, cards: List<EntityId>): List<EntityId> =
+        cards.withIndex()
+            .sortedWith(
+                compareBy<IndexedValue<EntityId>>(
+                    { state.getEntity(it.value)?.get<CardComponent>()?.cardDefinitionId ?: "" },
+                    { it.index },
+                ),
+            )
+            .map { it.value }
 
     private fun aiControllerKindLocked(playerId: EntityId): ControllerKindV1? =
         controllerAuthorities[playerId]?.controllerKind?.takeIf {
@@ -1245,18 +1341,19 @@ class GameSession(
     /** The explicit ML seat currently owning the live decision boundary, if any. */
     internal fun policySeatToAct(): EntityId? = synchronized(stateLock) {
         val state = gameState ?: return@synchronized null
-        if (state.gameOver || hasPendingMulliganChoice(state)) return@synchronized null
+        if (state.gameOver) return@synchronized null
+        nextPregameDecisionOwner(state)?.let { decisionOwner ->
+            val controller = state.actorFor(decisionOwner)
+            return@synchronized controller.takeIf { controllerAuthorities[it]?.isMlPolicy == true }
+        }
         val decisionOwner = state.pendingDecision?.playerId ?: state.priorityPlayerId
             ?: return@synchronized null
         val controller = state.actorFor(decisionOwner)
         controller.takeIf { controllerAuthorities[it]?.isMlPolicy == true }
     }
 
-    private fun hasPendingMulliganChoice(state: GameState): Boolean = state.turnOrder.any { playerId ->
-        state.getEntity(playerId)?.get<MulliganStateComponent>()?.let { mulligan ->
-            !mulligan.hasKept || mulligan.cardsToBottom > 0
-        } == true
-    }
+    private fun hasPendingMulliganChoice(state: GameState): Boolean =
+        nextPregameDecisionOwner(state) != null
 
     internal fun isPolicySeat(playerId: EntityId): Boolean = synchronized(stateLock) {
         controllerAuthorities[playerId]?.isMlPolicy == true

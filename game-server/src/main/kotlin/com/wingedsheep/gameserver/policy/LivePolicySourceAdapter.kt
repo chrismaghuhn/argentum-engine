@@ -12,13 +12,16 @@ import com.wingedsheep.gym.contract.CompleteLegalDomainV1
 import com.wingedsheep.gym.contract.LiveExactSourceBindingEntry
 import com.wingedsheep.gym.contract.LiveExactSourceBindingTable
 import com.wingedsheep.gym.contract.LivePolicyDecisionSnapshotV1
+import com.wingedsheep.gym.contract.LiveStructuredChoiceDomainV1
 import com.wingedsheep.gym.contract.ObservationCanonicalizer
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.TrainingObservation
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 /** JVM-only exact source value selected after the Python ordinal is revalidated. */
 sealed interface PolicySeatExactBinding {
+    data class GameActionBinding(val action: GameAction) : PolicySeatExactBinding
     data class LegalActionBinding(val legalAction: LegalAction) : PolicySeatExactBinding
     data class DecisionResponseBinding(val response: DecisionResponse) : PolicySeatExactBinding
 }
@@ -37,6 +40,7 @@ data class LivePolicySourceSnapshot(
             snapshot.requireCurrent(
                 currentObservation = current.observation,
                 currentExactSourceBindings = current.exactSourceBindings,
+                currentStructuredChoices = current.snapshot.structuredChoiceDomain,
             )
         } catch (failure: IllegalArgumentException) {
             throw PolicySeatFailure(
@@ -61,6 +65,13 @@ object LivePolicySourceAdapter {
         allowStructuredMapKeys = true
         serializersModule = engineSerializersModule
     }
+
+    internal fun semanticGameAction(action: GameAction): kotlinx.serialization.json.JsonObject =
+        exactSerialization.encodeToJsonElement(GameAction.serializer(), action)
+            .jsonObject
+
+    internal fun canonicalExactBinding(binding: PolicySeatExactBinding): String =
+        canonicalizeExactBinding(binding)
 
     fun fromObservationResult(result: ObservationResult): LivePolicySourceSnapshot {
         if (result.diagnostics.isNotEmpty()) {
@@ -146,6 +157,53 @@ object LivePolicySourceAdapter {
         )
     }
 
+    /**
+     * Build a live source snapshot for a source-owned structured choice list. The exact table and
+     * complete alternatives are constructed by the JVM source adapter; this overload only joins
+     * them to the shared observation/snapshot contract and never serializes either exact value.
+     */
+    fun fromStructuredObservationResult(
+        result: ObservationResult,
+        exactSourceBindings: LiveExactSourceBindingTable<PolicySeatExactBinding>,
+        structuredChoices: LiveStructuredChoiceDomainV1,
+    ): LivePolicySourceSnapshot {
+        if (result.diagnostics.isNotEmpty()) {
+            throw PolicySeatFailure(
+                PolicySeatFailureCode.UNSUPPORTED_STRUCTURED_DECISION,
+                "live observation contains unsupported authoritative diagnostics",
+            )
+        }
+        val observation = result.observation as? TrainingObservation
+            ?: throw PolicySeatFailure(
+                PolicySeatFailureCode.SESSION_NOT_READY,
+                "live policy requires a game TrainingObservation",
+            )
+        val snapshot = try {
+            LivePolicyDecisionSnapshotV1.from(
+                observation = observation,
+                exactSourceBindings = exactSourceBindings,
+                structuredChoices = structuredChoices,
+            )
+        } catch (failure: UnsupportedPathFailure) {
+            throw PolicySeatFailure(
+                PolicySeatFailureCode.UNSUPPORTED_STRUCTURED_DECISION,
+                "current live structured decision is not admitted by C1_07A",
+                failure,
+            )
+        } catch (failure: IllegalArgumentException) {
+            throw PolicySeatFailure(
+                PolicySeatFailureCode.EXACT_BINDING_FAILURE,
+                "current live structured decision cannot form a C1_07A snapshot",
+                failure,
+            )
+        }
+        return LivePolicySourceSnapshot(
+            observation = observation,
+            snapshot = snapshot,
+            exactSourceBindings = exactSourceBindings,
+        )
+    }
+
     private fun exactEntries(
         kind: CompleteLegalDomainKind,
         registry: ActionRegistry,
@@ -165,6 +223,11 @@ object LivePolicySourceAdapter {
 
     private fun canonicalizeExactBinding(binding: PolicySeatExactBinding): String =
         when (binding) {
+            is PolicySeatExactBinding.GameActionBinding ->
+                A3SemanticJson.canonicalJson(
+                    semanticGameAction(binding.action),
+                )
+
             is PolicySeatExactBinding.LegalActionBinding ->
                 A3SemanticJson.canonicalJson(
                     exactSerialization.encodeToJsonElement(GameAction.serializer(), binding.legalAction.action),
