@@ -53,16 +53,17 @@ import org.springframework.web.socket.WebSocketSession
  * Operational smoke bounds (generous for a full 40-life Commander game; semantics untouched):
  * wall-clock 30 minutes, 600 ML policy decisions, 2500 total authoritative actions.
  *
- * Known characterization (ARENA_ML_01, 2026-09-16): with game seed 20260916 the exercised game
- * deterministically reaches decision #71 (ML-seat upkeep, turn 2) where the observation contains
- * the trusted [DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED] signal: the engine enumerates Shadowspear's
- * paid {1} activated ability as an affordable legal candidate, but the trusted observation path
- * cannot certify a complete PaymentDomainV5 for it, so [LivePolicySourceAdapter] fails closed. Per
- * the task contract this is a decision-completeness gap to characterize (done here and in the smoke
- * report), never to route around: the primary test asserts the fail-closed outcome (contract held,
- * no fallback, worker clean) and the exact recorded boundary. A later decision-completeness task
- * owns widening PaymentDomainV5 to paid ability activations; when it lands, the primary test's
- * terminal assertions become live again.
+ * Known characterization (ARENA_ML_01, 2026-09-16, narrowed per exact-SHA review): with game
+ * seed 20260916 the exercised game deterministically reaches decision #71 (ML-seat upkeep, turn
+ * 2) where the observation contains the trusted [DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED]
+ * signal. At that exact state, Shadowspear's {1} activation was enumerated as a legal, affordable
+ * candidate, but the trusted observation path did not publish a complete PaymentDomainV5 and
+ * emitted the diagnostic, so [LivePolicySourceAdapter] failed closed. LOWER_LEVEL_ROOT_CAUSE =
+ * UNCHARACTERIZED: this task does not claim why the domain was refused beyond that boundary;
+ * a separate follow-up must create a minimal RED characterization isolating where
+ * paymentDomainV5For(...) returns null before any fix is authorized. Per the task contract the
+ * fail-closed outcome is characterized here, never routed around: the primary test asserts the
+ * fail-closed outcome (contract held, no fallback, worker clean) and the exact recorded boundary.
  */
 class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
     test("REAL CUDA smoke: accepted C1_06 model controls Akiri vs Engine-AI Chevill; fail-closed characterization")
@@ -133,8 +134,9 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
 
         /**
          * Recorded deterministic fail-closed boundary (game seed 20260916): ML-seat turn-2 upkeep
-         * decision #71 — Shadowspear's paid {1} activation is an engine-legal affordable candidate
-         * whose complete PaymentDomainV5 the trusted observation path cannot certify (see the
+         * decision #71 — Shadowspear's paid {1} activation was enumerated as a legal, affordable
+         * candidate, but the trusted observation path did not publish a complete PaymentDomainV5
+         * and emitted PAYMENT_DOMAIN_UNSUPPORTED (lower-level root cause uncharacterized; see the
          * class kdoc). The recorded context continues with the JVM-side legal menu; this prefix
          * pins the semantic boundary, not the review-only menu text.
          */
@@ -277,8 +279,19 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
                 appendLine("GAME_SEED=$GAME_SEED")
                 appendLine("POLICY_SEED=$POLICY_SEED")
                 appendLine("STARTING_PLAYER_INDEX=$STARTING_PLAYER_INDEX (P1 Akiri on the play)")
-                appendLine("MULLIGAN_MODEL_CONTROLLED=${outcome.mlPregameDecisions > 0}")
-                appendLine("BOTTOMING_MODEL_CONTROLLED=${outcome.mlTraces.any { it.pregame }}")
+                // Pregame coverage is derived strictly from the recorded pregame ML action types
+                // (KeepHand / TakeMulligan / BottomCards), never inferred from pregame decision
+                // counts: a first-pull keep never exercises London bottoming.
+                val pregameActions = outcome.mlTraces.filter { it.pregame }.map { it.actionType }
+                appendLine("PREGAME_ML_ACTION_TYPES=${pregameActions.joinToString(",")}")
+                appendLine(
+                    "MULLIGAN_MODEL_CONTROLLED=" +
+                        if (pregameActions.any { it == "KeepHand" || it == "TakeMulligan" }) "YES" else "NO",
+                )
+                appendLine(
+                    "BOTTOMING_MODEL_CONTROLLED=" +
+                        if (pregameActions.any { it == "BottomCards" }) "YES" else "NOT_EXERCISED",
+                )
                 appendLine("FIRST_GAMEPLAY_MODEL_DECISION_REACHED=${outcome.mlGameplayDecisions > 0}")
                 appendLine("ML_PREGAME_DECISIONS=${outcome.mlPregameDecisions}")
                 appendLine("ML_GAMEPLAY_DECISIONS=${outcome.mlGameplayDecisions}")
@@ -292,6 +305,27 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
                 appendLine("TRUNCATION_REASON=${outcome.truncationReason ?: "-"}")
                 appendLine("ZERO_UNSUPPORTED=${outcome.unsupportedCount == 0}")
                 appendLine("UNSUPPORTED_COUNT=${outcome.unsupportedCount}")
+                // Status semantics per ARENA_ML_01 exact-SHA review: the fail-closed truncation is
+                // a successful characterization, not a completed model-vs-engine game. These are
+                // computed task statuses; independent-review verdicts (P1/P2/P3,
+                // CODE_REVIEW_PASS, FINAL_ACCEPTANCE_PASS) are never emitted here.
+                appendLine(
+                    "EXECUTION_PLUMBING_PASS=" +
+                        if (outcome.workerFailures == 0 &&
+                            outcome.staleRejections == 0 &&
+                            outcome.mlPregameDecisions + outcome.mlGameplayDecisions > 0
+                        ) "YES" else "NO",
+                )
+                appendLine(
+                    "REAL_CUDA_CHARACTERIZATION_PASS=" +
+                        if (outcome.unsupportedCount > 0 &&
+                            outcome.rejectionCode == "UNSUPPORTED_STRUCTURED_DECISION" &&
+                            outcome.terminal.not() &&
+                            outcome.workerFailures == 0 &&
+                            outcome.staleRejections == 0
+                        ) "YES" else "NO",
+                )
+                appendLine("COMPLETE_GAME_SMOKE=${if (outcome.terminal) "COMPLETED" else "BLOCKED"}")
                 appendLine("FALLBACK_COUNT=0")
                 appendLine("STALE_REJECTION_COUNT=${outcome.staleRejections}")
                 appendLine("WORKER_FAILURE_COUNT=${outcome.workerFailures}")
@@ -307,9 +341,6 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
                 appendLine("AUTHORITY_REVIEW=ML seat ML_POLICY-exclusive; engine seat ENGINE_AI-only; " +
                     "cross-origin attempts fail closed (see exclusivity test)")
                 appendLine("RUNTIME_CLEANUP_REVIEW=worker closed in finally; post-close decide rejected")
-                appendLine("P1=0")
-                appendLine("P2=0")
-                appendLine("P3=0")
                 appendLine("ML_DECISION_TRACE (first 20):")
                 outcome.mlTraces.take(20).forEach { trace ->
                     appendLine("  #${trace.index} pregame=${trace.pregame} " +
@@ -322,12 +353,13 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
 
             /**
              * ARENA_ML_01 contract assertions: prove the model really played through the accepted
-             * stack and that the stack held its fail-closed contract at the known decision-
-             * completeness boundary (PaymentDomainV5 cannot represent Shadowspear's paid {1}
-             * activation — see the class kdoc characterization). Execution plumbing is proven;
-             * terminal-game completion is blocked by that known boundary and is owned by a later
-             * decision-completeness task, so it is asserted here only as the recorded, exact
-             * fail-closed outcome.
+             * stack and that the stack held its fail-closed contract at the known boundary. At the
+             * exact deterministic decision #71 state, Shadowspear's {1} activation was enumerated
+             * legal/affordable while the trusted observation path did not publish a complete
+             * PaymentDomainV5 and emitted PAYMENT_DOMAIN_UNSUPPORTED (lower-level root cause
+             * uncharacterized here; a separate RED characterization task owns that isolation).
+             * Execution plumbing is proven; the complete-game smoke is blocked by that boundary,
+             * asserted here only as the recorded, exact fail-closed outcome.
              */
             fun assertCharacterizedSmokeOutcome(rendered: String) {
                 // The real runtime stack: accepted checkpoint digests and a probed CUDA
@@ -360,14 +392,29 @@ class ArenaMl01RealModelVsEngineSmokeTest : FunSpec({
                 outcome.rejectionContext.shouldStartWith(KNOWN_BOUNDARY_CONTEXT)
                 outcome.finalPolicyCursor shouldBe 0uL
 
-                // The evidence artifact must carry the characterization verbatim.
-                rendered.shouldContain("TRUNCATION_REASON=ML decision rejected closed: " +
-                    "UNSUPPORTED_STRUCTURED_DECISION")
+                // Pregame evidence must name the actual exercised decisions: this deterministic
+                // run kept on its first pull, so bottoming was never exercised.
+                rendered.shouldContain("PREGAME_ML_ACTION_TYPES=KeepHand")
+                rendered.shouldContain("MULLIGAN_MODEL_CONTROLLED=YES")
+                rendered.shouldContain("BOTTOMING_MODEL_CONTROLLED=NOT_EXERCISED")
+
+                // Status semantics per the exact-SHA review: characterization success, blocked
+                // complete game. Never self-assign review verdicts.
+                rendered.shouldContain("EXECUTION_PLUMBING_PASS=YES")
+                rendered.shouldContain("REAL_CUDA_CHARACTERIZATION_PASS=YES")
+                rendered.shouldContain("COMPLETE_GAME_SMOKE=BLOCKED")
+                rendered.shouldContain("TERMINAL_GAME=false")
+                rendered.shouldContain("ZERO_UNSUPPORTED=false")
                 rendered.shouldContain("UNSUPPORTED_COUNT=1")
                 rendered.shouldContain("FALLBACK_COUNT=0")
                 rendered.shouldContain("WORKER_FAILURE_COUNT=0")
                 rendered.shouldContain("STALE_REJECTION_COUNT=0")
-                rendered.shouldContain("ZERO_UNSUPPORTED=false")
+                rendered.shouldContain("TRUNCATION_REASON=ML decision rejected closed: " +
+                    "UNSUPPORTED_STRUCTURED_DECISION")
+                // No self-assigned review verdicts in the generated artifact.
+                listOf("P1=", "P2=", "P3=", "CODE_REVIEW_PASS", "FINAL_ACCEPTANCE_PASS").forEach { field ->
+                    rendered.lines().filter { it.startsWith(field) } shouldBe emptyList<String>()
+                }
             }
         }
 
