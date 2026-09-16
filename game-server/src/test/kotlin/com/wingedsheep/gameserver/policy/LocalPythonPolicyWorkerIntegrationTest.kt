@@ -11,6 +11,7 @@ import com.wingedsheep.engine.state.components.player.LandDropsComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.player.MulliganStateComponent
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.gameserver.curriculum.CurriculumDeckSourceLoader
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
 import com.wingedsheep.sdk.core.Phase
@@ -51,13 +52,18 @@ class LocalPythonPolicyWorkerIntegrationTest : FunSpec({
         .config(enabled = REAL_WORKER_AVAILABLE) {
             val registry = CardRegistry().apply { register(TestCards.all) }
             val game = GameSession(cardRegistry = registry)
+            game.engineFormat = com.wingedsheep.sdk.core.Format.Commander()
+            val akiri = CurriculumDeckSourceLoader().load("docs/ml/curriculum/akiri-v0.1.txt")
+            val chevill = CurriculumDeckSourceLoader().load("docs/ml/curriculum/chevill-v0.1.txt")
             game.addPlayer(
                 PlayerSession(ws("real-policy"), P1, "Policy"),
-                mapOf("Forest" to 40),
+                akiri.libraryDeckList(),
+                commanderCardName = akiri.commander,
             )
             game.addPlayer(
                 PlayerSession(ws("real-human"), P2, "Human"),
-                mapOf("Island" to 40),
+                chevill.libraryDeckList(),
+                commanderCardName = chevill.commander,
             )
             game.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
             game.startGame()
