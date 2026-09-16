@@ -30,18 +30,32 @@ the Rules-owned provenance classification in its rejection branch and asserts th
 (`BOUNDARY_POOL` line in the rendered report, re-verified on real CUDA for this remediation):
 
 ```text
+turn=7 step=UPKEEP
 white=1, blue=0, black=0, red=0, green=0, colorless=0
 manaBySubtype={Plains=1}
 manaBySource={}
 manaBySourceAndColor={}
-manaByFloatingBucket=[]
+manaByFloatingBucket={}
+manaProvenanceCompleteness=INCOMPLETE
+classification=Ambiguous(reason="source and subtype provenance must both identify the pool")
+```
+
+```text
+white=1, blue=0, black=0, red=0, green=0, colorless=0
+manaBySubtype={Plains=1}
+manaBySource={}
+manaBySourceAndColor={}
+manaByFloatingBucket={}
 manaProvenanceCompleteness=INCOMPLETE
 ```
 
-Akiri's battlefield at that boundary: two tapped Plains, one untapped Mountain, Shadowspear.
-One floated white was spent by the previous accepted ML decision. No War-Room or other
-per-action narrative is claimed here; the durable pool/classification evidence above is the
-complete accepted link from the real run to the root cause.
+Akiri's battlefield at that boundary is understood to have been two tapped Plains, one
+untapped Mountain, and Shadowspear, with one floated white spent by the previous accepted ML
+decision — but these are **historical/derived observations only, not part of the durable
+root-cause evidence**: the committed `BOUNDARY_POOL` assertion pins the pool provenance and
+classification (above), not the battlefield composition or the spending action. The durable
+pool/classification evidence above is the complete accepted link from the real run to the
+root cause.
 
 ## Exact reproducer (minimal, CPU-only, deterministic)
 
@@ -61,7 +75,7 @@ Sequence:
    Because both Plains are already tapped, the legacy auto-tap payment seam spends exactly
    one floated white from the pool.
 3. The post-payment pool is then bit-identical to the L0 boundary pool:
-   `white=1`, `manaBySubtype={Plains=1}`, `manaBySource={}`, `manaByFloatingBucket=[]`,
+   `white=1`, `manaBySubtype={Plains=1}`, `manaBySource={}`, `manaByFloatingBucket={}`,
    `INCOMPLETE`.
 4. `paymentDomainV5For(state, activation)` returns null for the same state/action, and the
    whole-observation build emits `PAYMENT_DOMAIN_UNSUPPORTED`.

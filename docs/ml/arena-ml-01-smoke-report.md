@@ -85,7 +85,10 @@ RUNTIME_CLEANUP_REVIEW=worker closed in finally; post-close decide rejected
 
 ## Fail-closed boundary characterization
 
-- Boundary: ML seat (Akiri) upkeep, its second turn, decision #71. The ML legal menu was
+- Boundary: ML seat (Akiri) upkeep, authoritative turnNumber 7 (Akiri's fourth turn), decision
+  #71 — corrected per the durable BOUNDARY_POOL evidence pinned by
+  `ArenaMl01RealModelVsEngineSmokeTest`; the earlier "second turn" wording here was not
+  evidenced and is superseded. The ML legal menu was
   `PassPriority | {T}: Add {W} | {T}: Add {W} | {T}: Add {R} | Shadowspear {1} ability`.
 - Signal: trusted observation diagnostic `PAYMENT_DOMAIN_UNSUPPORTED`
   (`DiagnosticKind.UNSUPPORTED_DECISION`), raised by `ObservationBuilder`. At the exact
@@ -106,6 +109,13 @@ RUNTIME_CLEANUP_REVIEW=worker closed in finally; post-close decide rejected
   fix authorized. The smoke harness records the exact boundary (`KNOWN_BOUNDARY_CONTEXT` in
   `ArenaMl01RealModelVsEngineSmokeTest`) so the primary smoke test asserts the honest fail-closed
   outcome until that follow-up lands.
+- Follow-up status (2026-09-16, ARENA_ML_01_PAYMENT_DOMAIN_01): the lower-level cause is now
+  characterized (docs/ml/arena-ml-01-payment-domain-01-characterization.md) — the legacy
+  proportional provenance-consumption seam degrades the certified joint pool into a
+  subtype-only shape that `FloatingManaProvenanceClassification.classify` names `Ambiguous`,
+  which the V5 initial-pool admission refuses. The smoke test now durably asserts the exact
+  boundary pool (`BOUNDARY_POOL`). The characterization remains no-fix; no payment repair has
+  landed, so this report's fail-closed disposition still describes the live behavior.
 
 ## Decision trace (first 20 of 70)
 
