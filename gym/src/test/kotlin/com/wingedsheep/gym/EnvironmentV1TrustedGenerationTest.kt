@@ -59,6 +59,7 @@ import com.wingedsheep.gym.trainer.trajectory.TrajectoryV1
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryV1Reader
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryV1Writer
 import com.wingedsheep.gym.trainer.trajectory.PolicyProvenanceV1
+import com.wingedsheep.gym.trainer.actor.WorkloadJobV1
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.AttackMode
 import com.wingedsheep.sdk.core.Format
@@ -109,6 +110,20 @@ private val a9ReplayJson = Json {
     ignoreUnknownKeys = false
 }
 
+/** Internal test support for bounded actor characterization on the accepted A9 schedule. */
+internal data class A9ActorScheduleV1(
+    val jobOrdinal: Int,
+    val seed: Long,
+    val startingPlayerIndex: Int,
+    val seat0: String,
+    val seat1: String,
+)
+
+internal data class A9ActorEpisodeV1(
+    val trajectory: TrajectoryV1,
+    val replayTrajectoryBinding: com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1,
+)
+
 class EnvironmentV1TrustedGenerationTest : FunSpec({
     test("fresh bounded primary matrix crosses Gym, A4, A5, A6, writer, and A7")
         .config(timeout = 8.hours) {
@@ -142,14 +157,69 @@ class EnvironmentV1TrustedGenerationTest : FunSpec({
         }
 })
 
-private object A9TrustedGenerationHarness {
+internal object A9TrustedGenerationHarness {
     private val rosterOrientations = listOf(
         "Akiri" to "Chevill",
         "Chevill" to "Akiri",
     )
     private val startingPlayers = listOf(0, 1)
 
-    fun run(): A9GenerationEvidence {
+    internal fun actorSchedule(limit: Int): List<A9ActorScheduleV1> {
+        require(limit in 1..A9_PRIMARY_EPISODES)
+        return primarySchedule().take(limit).map { spec ->
+            A9ActorScheduleV1(
+                jobOrdinal = spec.ordinal,
+                seed = spec.seed,
+                startingPlayerIndex = spec.startingPlayerIndex,
+                seat0 = spec.seat0,
+                seat1 = spec.seat1,
+            )
+        }
+    }
+
+    internal fun actorRegistry(): CardRegistry = exactPairRegistry()
+
+    internal fun actorPolicySourceIdentity(repositoryRoot: Path): String =
+        policySourceIdentity(repositoryRoot)
+
+    internal fun actorWorkloadJob(
+        schedule: A9ActorScheduleV1,
+        resolver: DeckResolver,
+        engineCommit: String,
+        policySourceIdentity: String,
+    ): WorkloadJobV1 {
+        val spec = schedule.toEpisodeSpec()
+        val config = spec.gameConfig(resolver)
+        return WorkloadJobV1(
+            jobOrdinal = schedule.jobOrdinal,
+            environmentIdentity = environmentIdentityFor(spec, config, engineCommit),
+            policyProvenance = policyProvenanceFor(spec, policySourceIdentity),
+        )
+    }
+
+    internal fun actorGenerateEpisode(
+        schedule: A9ActorScheduleV1,
+        registry: CardRegistry,
+        resolver: DeckResolver,
+        repositoryRoot: Path,
+        policySourceIdentity: String,
+        engineCommit: String,
+    ): A9ActorEpisodeV1 {
+        val generated = generateEpisode(
+            spec = schedule.toEpisodeSpec(),
+            registry = registry,
+            resolver = resolver,
+            repositoryRoot = repositoryRoot,
+            policySourceIdentity = policySourceIdentity,
+            sourceCommit = engineCommit,
+        )
+        return A9ActorEpisodeV1(
+            trajectory = generated.trajectory,
+            replayTrajectoryBinding = generated.binding,
+        )
+    }
+
+    internal fun run(): A9GenerationEvidence {
         val requestedLimit = System.getProperty("a9.episodeLimit")
             ?.toIntOrNull()
             ?.also { require(it in 1..A9_MAX_EPISODES) }
@@ -312,6 +382,7 @@ private object A9TrustedGenerationHarness {
         resolver: DeckResolver,
         repositoryRoot: Path,
         policySourceIdentity: String,
+        sourceCommit: String = A9_BASE_SHA,
     ): GeneratedEpisode {
         val config = spec.gameConfig(resolver)
         val environment = GameEnvironment.create(
@@ -518,11 +589,13 @@ private object A9TrustedGenerationHarness {
 
         val repeatActionIndices = validateRepeatWitnesses(binding)
         val trajectory = buildTrajectory(
+            config = config,
             spec = spec,
             replay = decodedReplay,
             binding = binding,
             closure = closure,
             policySourceIdentity = policySourceIdentity,
+            sourceCommit = sourceCommit,
         )
         check(trajectory.episodeMetadata.environmentIdentity.actionDomainSchemaIdentity ==
             COMPLETE_LEGAL_DOMAIN_SCHEMA_IDENTITY)
@@ -553,45 +626,16 @@ private object A9TrustedGenerationHarness {
     }
 
     private fun buildTrajectory(
+        config: GameConfig,
         spec: A9EpisodeSpec,
         replay: CompactReplay,
         binding: com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1,
         closure: EpisodeClosureV1,
         policySourceIdentity: String,
+        sourceCommit: String = A9_BASE_SHA,
     ): TrajectoryV1 {
-        val config = spec.gameConfig(DeckResolver(exactPairRegistry()))
-        val playerIds = config.players.map { checkNotNull(it.playerId) }
-        val environmentIdentity = EnvironmentIdentityV1(
-            engineCommit = A9_BASE_SHA,
-            cardDefinitionIdentity = A9_CARD_DEFINITION_IDENTITY,
-            akiriDeckIdentity = A9_AKIRI_DECK_SHA256,
-            chevillDeckIdentity = A9_CHEVILL_DECK_SHA256,
-            format = "COMMANDER",
-            attackMode = AttackMode.MULTIPLE.name,
-            startingHandSize = config.startingHandSize,
-            skipMulligans = config.skipMulligans,
-            useHandSmoother = config.useHandSmoother,
-            roster = config.players.mapIndexed { index, player ->
-                RosterSeatV1(
-                    seatIndex = index,
-                    playerId = playerIds[index],
-                    role = player.name.uppercase(Locale.ROOT),
-                    deckIdentity = if (player.name == "Akiri") A9_AKIRI_DECK_SHA256 else A9_CHEVILL_DECK_SHA256,
-                    commanderDefinitionIdentity = player.commanderCardName,
-                )
-            },
-            startingPlayer = playerIds[checkNotNull(config.startingPlayerIndex)],
-            actualEngineSeed = checkNotNull(config.seed),
-        )
-        val policy = PolicyProvenanceV1(
-            behaviorPolicyIdentity = A9_POLICY_IDENTITY,
-            opponentPolicyIdentity = A9_POLICY_IDENTITY,
-            behaviorPolicyRole = "EXTERNAL_CONTROLLER",
-            opponentPolicyRole = "EXTERNAL_CONTROLLER",
-            policyRngIdentity = A9_POLICY_RNG_IDENTITY,
-            policySeed = policySeed(spec),
-            policySourceIdentity = policySourceIdentity,
-        )
+        val environmentIdentity = environmentIdentityFor(spec, config, sourceCommit)
+        val policy = policyProvenanceFor(spec, policySourceIdentity)
         val replayContentIdentity = ReplayContentCanonicalizerV1.identity(replay)
         val link = CompactReplayLinkV1(
             replayVersion = replay.version,
@@ -766,6 +810,49 @@ private object A9TrustedGenerationHarness {
         }
     }
 
+    private fun environmentIdentityFor(
+        spec: A9EpisodeSpec,
+        config: GameConfig,
+        engineCommit: String,
+    ): EnvironmentIdentityV1 {
+        val playerIds = config.players.map { checkNotNull(it.playerId) }
+        return EnvironmentIdentityV1(
+            engineCommit = engineCommit,
+            cardDefinitionIdentity = A9_CARD_DEFINITION_IDENTITY,
+            akiriDeckIdentity = A9_AKIRI_DECK_SHA256,
+            chevillDeckIdentity = A9_CHEVILL_DECK_SHA256,
+            format = "COMMANDER",
+            attackMode = AttackMode.MULTIPLE.name,
+            startingHandSize = config.startingHandSize,
+            skipMulligans = config.skipMulligans,
+            useHandSmoother = config.useHandSmoother,
+            roster = config.players.mapIndexed { index, player ->
+                RosterSeatV1(
+                    seatIndex = index,
+                    playerId = playerIds[index],
+                    role = player.name.uppercase(Locale.ROOT),
+                    deckIdentity = if (player.name == "Akiri") A9_AKIRI_DECK_SHA256 else A9_CHEVILL_DECK_SHA256,
+                    commanderDefinitionIdentity = player.commanderCardName,
+                )
+            },
+            startingPlayer = playerIds[checkNotNull(config.startingPlayerIndex)],
+            actualEngineSeed = checkNotNull(config.seed),
+        )
+    }
+
+    private fun policyProvenanceFor(
+        spec: A9EpisodeSpec,
+        policySourceIdentity: String,
+    ): PolicyProvenanceV1 = PolicyProvenanceV1(
+        behaviorPolicyIdentity = A9_POLICY_IDENTITY,
+        opponentPolicyIdentity = A9_POLICY_IDENTITY,
+        behaviorPolicyRole = "EXTERNAL_CONTROLLER",
+        opponentPolicyRole = "EXTERNAL_CONTROLLER",
+        policyRngIdentity = A9_POLICY_RNG_IDENTITY,
+        policySeed = policySeed(spec),
+        policySourceIdentity = policySourceIdentity,
+    )
+
     private fun A9EpisodeSpec.gameConfig(resolver: DeckResolver): GameConfig {
         val locked = mapOf(
             "Akiri" to readLockedDeck("akiri-v0.1.txt"),
@@ -840,7 +927,15 @@ private object A9TrustedGenerationHarness {
         .fold(0) { total, entry -> total + entry.value }
 }
 
-private data class A9EpisodeSpec(
+private fun A9ActorScheduleV1.toEpisodeSpec(): A9EpisodeSpec = A9EpisodeSpec(
+    ordinal = jobOrdinal,
+    seed = seed,
+    startingPlayerIndex = startingPlayerIndex,
+    seat0 = seat0,
+    seat1 = seat1,
+)
+
+internal data class A9EpisodeSpec(
     val ordinal: Int,
     val seed: Long,
     val startingPlayerIndex: Int,
@@ -862,7 +957,7 @@ private data class GeneratedEpisode(
     val binding: com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1,
 )
 
-private data class EpisodeSummary(
+internal data class EpisodeSummary(
     val spec: A9EpisodeSpec?,
     val transitions: Int,
     val closureKind: EpisodeClosureV1.Kind,
@@ -887,7 +982,7 @@ private data class EpisodeSummary(
             repeatActionIndices == other.repeatActionIndices
 }
 
-private data class A9GenerationEvidence(
+internal data class A9GenerationEvidence(
     val baseSha: String,
     val repositoryRoot: Path,
     val outputRoot: Path,
@@ -976,6 +1071,7 @@ private data class A9GenerationEvidence(
         appendLine("C0_AUTHORIZED=NO")
         appendLine("TRAINING_AUTHORIZED=NO")
     }
+
 }
 
 private fun formatA9Counts(counts: Map<String, Int>): String = counts
