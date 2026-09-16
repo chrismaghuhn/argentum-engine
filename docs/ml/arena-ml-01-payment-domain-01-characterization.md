@@ -1,10 +1,13 @@
 # ARENA_ML_01_PAYMENT_DOMAIN_01 — PaymentDomainV5 RED Characterization
 
 Characterization only. No fix, no behavior change, no production code change in this task.
+Remediated per first exact-SHA review (2026-09-16): boundary pool evidence is now durable
+(test-only assertion inside the accepted ARENA_ML_01 smoke), the turn count was corrected
+to the authoritative value, and L3 wording was narrowed to the actual evidence strength.
 
 ```text
 TASK = ARENA_ML_01_PAYMENT_DOMAIN_01
-BASE_SHA = 77058bc97e6c7bde68acf6560605625dee8b38ca  (fork main; merge of PR #207)
+BASE_SHA = 77058bc97e6c7bde68acf6560605625dee8b38ca  (fork main at task creation)
 BRANCH = chris/arena-ml-01-payment-domain-01-characterization-20260916
 PAYMENT_LOWER_LEVEL_ROOT_CAUSE = CHARACTERIZED (see L5)
 ```
@@ -14,15 +17,17 @@ PAYMENT_LOWER_LEVEL_ROOT_CAUSE = CHARACTERIZED (see L5)
 Source: ARENA_ML_01 smoke (PR #207, `docs/ml/arena-ml-01-smoke-report.md`), deterministic game
 seed 20260916, policy seed 20260901, starting player P1 (Akiri on the play).
 
-At decision #71 — ML seat (Akiri) priority, `phase=BEGINNING`, `step=UPKEEP`, turn 7 —
-Shadowspear's paid `{1}` activated ability was present in the legal/affordable action menu while
-the trusted observation carried `PAYMENT_DOMAIN_UNSUPPORTED`, and `LivePolicySourceAdapter`
-failed closed with `UNSUPPORTED_STRUCTURED_DECISION`. No model request was sent for the
-rejected boundary; no fallback was used.
+At decision #71 — ML seat (Akiri) priority, `phase=BEGINNING`, `step=UPKEEP`, authoritative
+`turnNumber=7` (Akiri's fourth turn) — Shadowspear's paid `{1}` activated ability was present
+in the legal/affordable action menu while the trusted observation carried
+`PAYMENT_DOMAIN_UNSUPPORTED`, and `LivePolicySourceAdapter` failed closed with
+`UNSUPPORTED_STRUCTURED_DECISION`. No model request was sent for the rejected boundary; no
+fallback was used.
 
-The authoritative serialized GameState at that exact boundary (captured once during this
-characterization via a temporary, never-committed dump harness; the file was removed
-afterwards) records Akiri's pool as:
+The provenance state of Akiri's pool at that exact boundary is now **durable, committed
+evidence**: the accepted ARENA smoke test captures the acting seat's `ManaPoolComponent` plus
+the Rules-owned provenance classification in its rejection branch and asserts the exact values
+(`BOUNDARY_POOL` line in the rendered report, re-verified on real CUDA for this remediation):
 
 ```text
 white=1, blue=0, black=0, red=0, green=0, colorless=0
@@ -33,9 +38,10 @@ manaByFloatingBucket=[]
 manaProvenanceCompleteness=INCOMPLETE
 ```
 
-Akiri's battlefield: two tapped Plains, one untapped Mountain, Shadowspear. The one floated
-white was spent by the previous accepted decision (#70), which activated War Room's `{T}`
-mana ability to draw (Engine-AI trace line: "put Card into Hand (War Room)").
+Akiri's battlefield at that boundary: two tapped Plains, one untapped Mountain, Shadowspear.
+One floated white was spent by the previous accepted ML decision. No War-Room or other
+per-action narrative is claimed here; the durable pool/classification evidence above is the
+complete accepted link from the real run to the root cause.
 
 ## Exact reproducer (minimal, CPU-only, deterministic)
 
@@ -66,10 +72,10 @@ No CUDA, no model, no worker. No card-name special case exists in production cod
 
 | Layer | Status | Evidence |
 | --- | --- | --- |
-| L0 ARENA boundary | PROVEN | Accepted smoke + serialized boundary state (pool shape above) |
+| L0 ARENA boundary | PROVEN | Accepted smoke + **durable committed evidence**: the smoke test itself asserts the exact boundary pool shape and `Ambiguous` classification at decision #71 (`BOUNDARY_POOL`), re-verified on real CUDA |
 | L1 minimal state | PROVEN | Fixture above; engine-legal menu at precombat main |
 | L2 legal action | PROVEN | Menu contains exactly one `ActivateAbility` for `sourceId`/`abilityId`; `affordable=true`, `manaCostString="{1}"` (the live menu is the engine's affordability evidence here) |
-| L3 payment request / context | PROVEN | `paymentDomainFor` (V4) — which shares the private `paymentDomainRequestFor` seam with V5 — publishes a non-null domain for the identical action at the pre-payment state (same request inputs). At the boundary state V4 also returns null, but only because V4's pool admission rejects the same degraded provenance; the discriminator proves the request seam itself succeeds for this action |
+| L3 payment request / context | PROVEN_BY_CODE_PATH + PRESTATE_DISCRIMINATOR | `paymentDomainFor` (V4) — which shares the private `paymentDomainRequestFor` seam with V5 — publishes a non-null domain for the identical action at the pre-payment state (same request inputs). At the boundary state V4 also returns null, because V4's own pool admission rejects the same degraded provenance; the discriminator therefore proves the request seam works for this action, while that the request is constructed at the boundary state itself rests on the shared code path (static evidence), not on an independent empirical probe |
 | L4 V5 builder entry | PROVEN | Refusal isolated below request: V5-specific `reservedOuterLifePaymentForV5` and request succeed; null comes from the initial-pool admission inside `buildV5` |
 | L5 exact rejecting condition | PROVEN | `ManaPoolComponent.toV5InitialPoolBuckets` (gym, `PaymentDomain.kt`) classifies the pool via `FloatingManaProvenanceClassification.classify` (rules-engine, `FloatingManaProvenance.kt`). The boundary shape (`manaBySubtype` non-empty, `manaBySource` empty) hits `Ambiguous("source and subtype provenance must both identify the pool")`; the `Ambiguous` arm maps to `null`. Test asserts the exact reason string and the exact pool shape |
 | L6 diagnostic propagation | PROVEN | `ObservationBuilder.build` marks every affordable action with non-null `manaCostString` whose `paymentDomainV5For(...) == null` and adds `DiagnosticSignal(PAYMENT_DOMAIN_UNSUPPORTED)` to the whole observation — reproduced in the RED L6 test |
@@ -88,6 +94,8 @@ FAILURE_VALUE_OR_MISSING_INPUT = manaBySource is empty while manaBySubtype={Plai
 ADMISSION_SITE = gym/.../contract/PaymentDomain.kt, ManaPoolComponent.toV5InitialPoolBuckets,
     `is FloatingManaProvenanceClassification.Ambiguous -> null`
 PROPAGATION = gym/.../contract/ObservationBuilder.kt build() -> PAYMENT_DOMAIN_UNSUPPORTED
+DURABLE_L0_LINK = game-server ArenaMl01RealModelVsEngineSmokeTest asserts the exact
+    BOUNDARY_POOL (pool shape + classification) at decision #71 on real CUDA
 ```
 
 ### How the subtype-only shape is produced (engine-authentic, proven by the reproducer)
@@ -108,6 +116,10 @@ degrade a fully certified joint pool into a shape that no certified classificati
 `CertifiedHomogeneous`/`Heterogeneous` require source detail, which the seam drops; the
 subtype-only remainder is classified `Ambiguous`), while the engine's own payment execution
 continues to function. Payment-domain publication then refuses the whole candidate.
+
+The real ARENA run reached exactly this state: the durable `BOUNDARY_POOL` assertion (above)
+proves the decision-#71 pool had precisely the degraded shape, classified `Ambiguous` with the
+exact reason, closing the L0→L5 chain with committed, re-runnable evidence.
 
 ## Prior-hypothesis correction
 
@@ -148,9 +160,10 @@ CARD_DEFINITION_CHANGED = NO
 ML_CHANGED = NO
 ```
 
-Files changed in this task: the characterization test (gym test sourceset) and this report.
-No production file is touched. The once-only boundary dump harness was temporary
-(never committed) and has been removed.
+Files changed in this task: the characterization test (gym test sourceset), the smoke test's
+test-only durable boundary-pool assertion (game-server test sourceset), and this report. No
+production file is touched; the smoke change is evidence capture/assertion inside the existing
+test only.
 
 ## Likely fix ownership (diagnostic label only, no fix implemented)
 
