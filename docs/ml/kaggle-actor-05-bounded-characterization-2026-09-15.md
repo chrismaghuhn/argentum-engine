@@ -150,10 +150,12 @@ Measured inside the provider actor (`availableProcessors = 4`).
 | decisions per second | 5.2325 |
 
 The run used the raised heap limit from the exact implementation SHA (`9a918a6a69…`).
-Heap peaked at ≈ 8.1 GB on a 4-vCPU instance; ~57 % of the wall window is GC time. The
-gap between the actor window (65.7 min) and the characterization wall time (99.7 min) is
-recorded here without over-interpretation; the run-level numbers below are the
-authoritative fixed windows.
+Heap peaked at ≈ 8.1 GB on a 4-vCPU instance. GC time (563,276 ms ≈ 563.3 s) is ≈ 9.4 %
+of the characterization wall time (5,979.4 s ≈ 99.7 min), and ≈ 14.3 % of the narrower
+actor window (65.7 min = 3,942 s). The two time bases are kept separate: the
+characterization wall time is the provider-side run window, the actor window is the
+status-derived envelope. The gap between them is recorded here without
+over-interpretation; the run-level numbers below are the authoritative fixed windows.
 
 ## Failure incidence
 
@@ -214,7 +216,7 @@ where a case could not fire in this run it is marked not applicable rather than 
 | rung | status |
 |---|---|
 | 16 episodes, c1 | MEASURED — PASS, evidence above |
-| 32 episodes | NOT_RUN — blocked by instruction; projected ≈ 2 × wall (≈ 3.3 h) and heap toward the measured instance ceiling; see recommendation |
+| 32 episodes | NOT_RUN — blocked by instruction; ~2 × the measured wall time if per-episode throughput held (≈ 3.3 h) is a DERIVED linear extrapolation from the single 16-episode session and is UNMEASURED; heap could approach the measured instance ceiling, see recommendation |
 | 64 episodes | NOT_RUN — KA05 #25 stop condition "64-episode rung exceeds measured safe budget" applies by derivation |
 
 Concurrency ladder: c1 MEASURED (this run). c2/c4 were deliberately not re-run as
@@ -229,8 +231,9 @@ otherwise; per KA05 #24 a single Kaggle session is not a universal hardware cons
 - **Recommended bounded assignment size for a future scaling phase: 16.** MEASURED:
   16 closed episodes in a single provider session stay within the measured heap/CPU
   budget with 0 failures. 32 is not recommended on this 4-vCPU / ≈ 17 GB RAM instance
-  class without first confirming a larger heap ceiling; doubling the run quadruples the
-  GC pressure and RSS growth observed here (DERIVED).
+  class without first confirming a larger heap ceiling. Any GC/RSS growth factor for a
+  doubled or quadrupled run is UNMEASURED — a single 16-episode session supports no
+  scaling curve (HYPOTHESIS, single-session evidence only).
 - **Recommended shard policy: 1 episode per shard.** MEASURED: 16/16 shards held exactly
   one episode at 55.8–112.2 MB canonical. DERIVED follow-up: a shard-policy range of
   ~30–60 episodes (~3–6.7 GB) would keep shards inside a comfortable bucket size if a
