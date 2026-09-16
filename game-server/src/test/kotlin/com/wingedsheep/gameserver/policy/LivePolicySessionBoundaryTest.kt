@@ -274,6 +274,27 @@ class LivePolicySessionBoundaryTest : FunSpec({
         mulliganSession.getPolicySeatState(P1)?.cursor shouldBe 0uL
     }
 
+    test("accepted ML pregame selection commits the returned PolicyTieRng state once") {
+        val session = session()
+        session.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+        session.resetStateForDevScenario(mulliganState(session, MulliganStateComponent()))
+        val capture = session.captureLivePolicyDecision(P1)
+        val request = capture.toRequest("pregame-rng-request")
+        val response = LivePolicyDecisionResponseV1(
+            requestId = request.requestId,
+            selectedSourceBindingOrdinal = 0,
+            policyRngState = request.policyRngState.copy(cursor = 1uL),
+            rngCursorBefore = request.policyRngState.cursor,
+            rngCursorAfter = 1uL,
+            rngDrawCount = 1uL,
+        )
+
+        session.acceptLivePolicyDecision(capture, request, response)
+            .shouldBeTypeOf<PolicySeatDecisionResult.Accepted>()
+        session.getPolicySeatState(P1)?.cursor shouldBe 1uL
+        session.getRecordedActions().single().shouldBeTypeOf<KeepHand>()
+    }
+
     test("ML mulligan domain omits TakeMulligan when the authoritative state disallows it") {
         val session = session()
         session.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
