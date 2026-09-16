@@ -1,5 +1,6 @@
 package com.wingedsheep.gameserver.policy
 
+import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
