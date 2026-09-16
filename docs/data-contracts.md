@@ -1347,9 +1347,32 @@ not execute an action and do not advance persisted PolicyTieRng state.
 automatic-payment, or auto-pass fallback. Human and existing Engine-AI routes remain on their
 existing paths. Runtime teardown is coupled to repository/session disposal, and rehydration creates
 a fresh worker from the persisted authority/state. The current server configuration is disabled by
-default and accepts only server-owned operational Python/checkpoint locators; no public Arena ML
-launcher is part of C1_07C. The current C1_07A/B live contract does not represent the separate
-GameSession mulligan or London bottom-card messages. An ML seat therefore fails closed with a typed
-unsupported-mulligan outcome during either phase; it never uses an implicit keep, random choice, or
-first-card bottoming. A generic model-facing mulligan/BottomCards contract and its source-owned
-binding adapter are required before a normal ML match can start through that lifecycle.
+default and accepts only server-owned operational Python/checkpoint locators.
+
+The C1_07C live contract additionally represents the two model-facing pregame decision
+boundaries — Mulligan and London BottomCards — through the generic source-owned
+`LivePregameDecisionSource` adapter over the engine's existing `SelectCardsDecision` primitive
+and the authoritative `KeepHand` / `TakeMulligan` / `BottomCards` actions:
+
+- The Mulligan boundary publishes the complete currently legal domain: `KeepHand` is always
+  offered, and `TakeMulligan` is offered exactly when the authoritative mulligan state
+  allows another mulligan.
+- The BottomCards boundary publishes the complete ordered domain for the exact required
+  bottom-card cardinality; ordering is explicit because it determines the resulting
+  bottom-of-library order. A domain beyond the explicit alternative bound fails closed with
+  a typed unsupported-structured-decision outcome instead of being truncated, as does a
+  pregame boundary without authoritative mulligan state.
+- Model-facing data uses stable semantic addressing only: per-request entity aliases
+  (identical physical hand cards keep full multiplicity under distinct aliases), the
+  complete C1 domain projection, source-binding ordinals, and authoritative semantic
+  bindings. Raw `EntityId`s, `GameState`, exact JVM bindings, and `bindingDigest` never
+  cross to Python; the exact `KeepHand` / `TakeMulligan` / `BottomCards` values stay in
+  the JVM-only binding table.
+- A worker response is revalidated against a freshly rebuilt authoritative source snapshot
+  (observation/domain/binding/RNG identity) before execution; the ordinal maps to the exact
+  current JVM binding and executes through the ordinary `GameSession` action path. Stale,
+  invalid, or unsupported responses fail closed without executing an action. The returned
+  PolicyTieRng state is staged and committed only after accepted authoritative execution.
+- There is no random, first-card, implicit-keep, Engine-AI, auto-pass, or other fallback on
+  any ML path. A normal ML seat can now progress from initial `GameSession` start through
+  pregame into gameplay. No Arena ML launcher or UI is part of C1_07C.
