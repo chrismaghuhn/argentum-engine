@@ -8,6 +8,8 @@ import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.identity.PlayerComponent
 import com.wingedsheep.engine.state.components.player.LandDropsComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
+import com.wingedsheep.engine.state.components.player.MulliganStateComponent
+import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
 import com.wingedsheep.sdk.core.Phase
@@ -16,6 +18,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.ints.shouldBeGreaterThan
 import io.kotest.matchers.types.shouldBeTypeOf
 import io.mockk.every
 import io.mockk.mockk
@@ -38,6 +41,80 @@ class LocalPythonPolicyWorkerIntegrationTest : FunSpec({
                 accepted.actionResult.shouldBeTypeOf<GameSession.ActionResult.Success>()
                 game.getRecordedActions().size shouldBe 1
                 game.getPolicySeatState(P1)?.cursor shouldBe 0uL
+            } finally {
+                runtime.close()
+            }
+        }
+
+    test("real ML seat progresses from normal game start through pregame to gameplay")
+        .config(enabled = REAL_WORKER_AVAILABLE) {
+            val registry = CardRegistry().apply { register(TestCards.all) }
+            val game = GameSession(cardRegistry = registry)
+            game.addPlayer(
+                PlayerSession(ws("real-policy"), P1, "Policy"),
+                mapOf("Forest" to 40),
+            )
+            game.addPlayer(
+                PlayerSession(ws("real-human"), P2, "Human"),
+                mapOf("Island" to 40),
+            )
+            game.setControllerAuthority(P1, ControllerAuthorityV1.mlPolicy(0, 42L))
+            game.startGame()
+
+            val runtime = PolicySeatRuntime(game, P1, LocalPythonPolicyWorker.start(realConfiguration()))
+            try {
+                var mlPregameDecisions = 0
+                while (!game.allMulligansComplete) {
+                    if (game.policySeatToAct() == P1) {
+                        val result = runtime.decide()
+                        result.shouldBeTypeOf<PolicySeatDecisionResult.Accepted>()
+                        mlPregameDecisions++
+                    } else {
+                        val state = game.getStateForTesting()!!
+                        val owner = state.turnOrder.first { playerId ->
+                            state.getEntity(playerId)?.get<MulliganStateComponent>()?.let {
+                                !it.hasKept || it.cardsToBottom > 0
+                            } == true
+                        }
+                        owner shouldBe P2
+                        val mulligan = state.getEntity(P2)!!.get<MulliganStateComponent>()!!
+                        if (!mulligan.hasKept) {
+                            when (val keep = game.keepHand(P2)) {
+                                is GameSession.MulliganActionResult.NeedsBottomCards ->
+                                    game.chooseBottomCards(P2, game.getHand(P2).take(keep.count))
+                                        .shouldBeTypeOf<GameSession.MulliganActionResult.Success>()
+                                is GameSession.MulliganActionResult.Success -> Unit
+                                is GameSession.MulliganActionResult.Failure ->
+                                    error("human pregame keep failed: ${keep.reason}")
+                            }
+                        } else {
+                            game.chooseBottomCards(P2, game.getHand(P2).take(mulligan.cardsToBottom))
+                                .shouldBeTypeOf<GameSession.MulliganActionResult.Success>()
+                        }
+                    }
+                    check(mlPregameDecisions < 20) {
+                        "real ML pregame smoke exceeded the bounded decision count"
+                    }
+                }
+
+                mlPregameDecisions shouldBeGreaterThan 0
+                val actionsBeforeGameplay = game.getRecordedActions().size
+                var humanPasses = 0
+                while (game.policySeatToAct() != P1) {
+                    val state = game.getStateForTesting() ?: error("game state disappeared")
+                    val priority = state.priorityPlayerId ?: error("game has no gameplay priority")
+                    state.actorFor(priority) shouldBe P2
+                    game.executeAction(P2, PassPriority(priority))
+                        .shouldBeTypeOf<GameSession.ActionResult.Success>()
+                    humanPasses++
+                    check(humanPasses < 20) {
+                        "real ML gameplay smoke could not reach the ML seat"
+                    }
+                }
+
+                val gameplay = runtime.decide()
+                gameplay.shouldBeTypeOf<PolicySeatDecisionResult.Accepted>()
+                game.getRecordedActions().size shouldBeGreaterThan actionsBeforeGameplay
             } finally {
                 runtime.close()
             }
