@@ -14,6 +14,11 @@ learner = [
     "torch==2.14.0",
     "safetensors==0.8.0",
     "trackio==0.37.1",
+    # Pinned to the exact huggingface-hub release proven green with trackio==0.37.1 in
+    # hosted CI run 35180540943; 1.32.0 broke the trackio import chain
+    # (ImportError: cannot import name 'CommitOperationAdd' from 'huggingface_hub.hf_api',
+    # hosted CI run 35285396688). Reproducible dependency closure, not an upgrade.
+    "huggingface-hub==1.31.0",
 ]
 
 [tool.setuptools.packages.find]
