@@ -46,6 +46,7 @@ Answer: **YES, for the current durable artifact set, at the minimal locked-pair 
 | B tampered semantic choice | a different CURRENT legal action substituted at one boundary | rejected (fresh semantic choice diverges from the transported claimant; detectable, never silently accepted) |
 | C truncated choice range | trailing transported choice dropped | rejected (fresh range shrinks; complete-range/closure agreement impossible; error, never EXACT) |
 | D wrong environment identity | `cardDefinitionIdentity` replaced | rejected-before-exact (repository re-derivation cannot match the wrong digest) |
+| F tampered engine commit (P1) | durable `engineCommit` replaced with a syntactically valid foreign SHA | rejected-before-exact (verifier source authentication fails before any reconstruction; no replay is built) |
 | E wrong replay content identity | claimant link value replaced | rejected (rebuilt identity comparison fails closed) |
 
 ## 3. Reconstruction call chain (verifier process B)
@@ -53,6 +54,12 @@ Answer: **YES, for the current durable artifact set, at the minimal locked-pair 
 ```
 LocalPublicationEnvelopeV1.reimport(dir)                 // strict re-import of durable bytes only
   → TrajectoryV1Validator.validate(trajectory)           // A5 fail-closed claimant validation
+  → source-identity authentication (P1 remediation)      // LocalSourceBootstrapV1.verify(claimant
+                                                         //   engineCommit): git HEAD == claimant,
+                                                         //   clean tracked tree, pins present — the
+                                                         //   verifier's executed code revision is proven
+                                                         //   equal to the durable engineCommit BEFORE any
+                                                         //   reconstruction; mismatch ⇒ stop, never EXACT
   → deriveEnvironmentIdentity(durableIdentity)           // repository authority: locked curriculum decks
                                                          //   (CurriculumDeckSourceLoader → sourceDigest),
                                                          //   card catalog (CardRegistry + MtgSetCatalog) →
@@ -84,7 +91,7 @@ LocalPublicationEnvelopeV1.reimport(dir)                 // strict re-import of 
 ## 5. Process-boundary review (§29)
 
 * Process B is a real OS process (fresh JVM via `ProcessBuilder` on the JVM test classpath). It receives three strings: mode, envelope path, exit-file path.
-* No producer `GameState`, `GameEnvironment`, `GameSession`, RNG, replay fold, exact action objects, bindings, policy state, or transient IDs cross the boundary in memory. The only shared artifacts are the durable envelope files (the transport contract itself) and the repository working tree (the runtime configuration the durable identity permits, §6/§21).
+* No producer `GameState`, `GameEnvironment`, `GameSession`, RNG, replay fold, exact action objects, bindings, policy state, or transient IDs cross the boundary in memory. The only shared artifacts are the durable envelope files (the transport contract itself) and the repository working tree (the runtime configuration the durable identity permits, §6/§21). The working tree is not merely assumed: the verifier authenticates it against the durable engineCommit through the accepted source-bootstrap doctrine before reconstruction (P1 remediation).
 * The test JVM never executes a verifier mode function; the worker never receives producer objects.
 * `PROCESS_BOUNDARY_LEAKS = NONE`.
 
@@ -98,7 +105,7 @@ LocalPublicationEnvelopeV1.reimport(dir)                 // strict re-import of 
 
 | FIELD | SOURCE | DURABLE? | USED AS AUTHORITY? | REGENERATED? | RESULT |
 | --- | --- | --- | --- | --- | --- |
-| engine commit | trajectory.environmentIdentity.engineCommit = runtime HEAD (bootstrap-verified) | DURABLE | yes (historical-source tie) | no | PRESENT_DURABLY |
+| engine commit | durable claimant `trajectory.environmentIdentity.engineCommit`, authenticated by the verifier against its own executed revision via the accepted source-bootstrap doctrine (`LocalSourceBootstrapV1` + `GitSourceBootstrapProbeV1`: `git rev-parse HEAD` == claimant, clean tracked tree, pins present) BEFORE any reconstruction | DURABLE claimant + VERIFIED at verification time | yes (authenticated authority, not pass-through) | authenticated, not recomputed | PRESENT_DURABLY + VERIFIER_AUTHENTICATED |
 | card-definition identity | accepted locked-pair digest recipe over CardRegistry + MtgSetCatalog | DERIVED (repository authority) | yes, re-derived by verifier | yes | DERIVABLE_FROM_DURABLE_INPUT |
 | deck identities | locked curriculum source digests (akiri-v0.1 / chevill-v0.1) | DERIVED (repository authority) | yes, re-derived | yes | DERIVABLE_FROM_DURABLE_INPUT |
 | format / attack mode / hand size / mulligan / smoother | environmentIdentity | DURABLE | yes (pass-through claimant, re-compared) | no | PRESENT_DURABLY |
@@ -119,6 +126,8 @@ LocalPublicationEnvelopeV1.reimport(dir)                 // strict re-import of 
 ## 8. OfflineAdmission probe (§23, test-only)
 
 * With an independent verifier wired into `OfflineAdmissionV1.admit`: `offlineReplayReverification = VERIFIED`, `datasetEligible = true`, one accepted source — proving a newly and independently produced `ReplayTrajectoryBindingV1` is structurally acceptable to the existing offline admission contract, including `repackAcceptedSources` preconditions.
+* The probe adapter binds its verification result to the exact requested trajectory — `trajectoryId`, `semanticEpisodeId`, claimant `replayContentIdentity`, and `replayActionCount` must all match before the fresh binding is returned (P2 remediation). A verification of a different trajectory identity cannot satisfy a request.
+* Scope limit: this adapter is a test-only structural probe, NOT a production verifier. `_02` must not adopt it as-is; a production adapter needs its own request→verification binding per the accepted canonical identity contract.
 * Without a verifier: `NO_INDEPENDENT_PROOF`, `datasetEligible = false`, zero accepted — the production default is preserved.
 * `PRODUCTION_ADMISSION_CHANGED = NO`. `DATASET_ELIGIBILITY_DEFAULT_CHANGED = NO`. No real dataset was admitted.
 
@@ -127,13 +136,13 @@ LocalPublicationEnvelopeV1.reimport(dir)                 // strict re-import of 
 * `PRODUCTION_FILES_CHANGED = 0` semantic production changes. `gym/build.gradle.kts` changed only to register the opt-in `kaggleActor06CharacterizationTest` task, forward the `ka06.repositoryRoot` control, and exclude the heavy gate from the default `test` task — the exact pattern of A9/KA04/KA05. All logic is test-source only.
 * `TRAJECTORY_SCHEMA_CHANGED = NO`; `REPLAY_SCHEMA_CHANGED = NO`; `ML_CHANGED = NO`; `RULES_CHANGED = NO`; `DECKS_CHANGED = NO`; no fallback paths added; no hidden-information reveal path.
 * `REAL_KAGGLE_RUN = NO`; `PROVIDER_SCALE_RUN = NO`; `CUDA_USED = NO`. The historical KA05 artifact was not used (§22). The old `KA05_DOWNLOAD_ROOT` is not referenced.
-* §21: the episode ties to the current source revision (runtime HEAD); historical-source provisioning for old shards remains an open follow-up (noted below) and was deliberately not solved here.
+* §21: the episode ties to the current source revision, now actively enforced — the verifier authenticates its executed revision against the durable engineCommit via the accepted source-bootstrap doctrine (HEAD equality, clean tracked tree, pins) before any reconstruction. Historical-source checkout/provisioning for verifying old shards from their recorded commit remains a separate follow-up (SOURCE_PROVISIONING_01) and was deliberately not solved here.
 
 ## 10. Regression scope (§33)
 
 | Suite | Result |
 | --- | --- |
-| `:gym:kaggleActor06CharacterizationTest` (focused new gate) | PASS (2 tests: positive characterization incl. repetition, controls, admission probe; fail-closed worker plumbing) |
+| `:gym:kaggleActor06CharacterizationTest` (focused new gate) | PASS (2 tests: positive characterization incl. repetition, controls A–F incl. tampered-engine-commit, admission probe; fail-closed worker plumbing) — re-run green at the remediated delivery SHA |
 | `:gym:test` (surrounding Gym, incl. replay/closure/perspective/history suites) | PASS |
 | `:game-server:test` (676 tests: CompactReplay reconstruction, chosen-input binding integration, replay content identity, payment replay V5/V6) | PASS, 0 failures |
 | `:gym-trainer:test` (185 tests: trajectory + actor + admission suites) | PASS, 0 failures |
@@ -149,6 +158,14 @@ Smaller auxiliary follow-ups observed during the work (do not prejudge priority)
 
 * `SOURCE_PROVISIONING_01` — historical-source checkout/provisioning for verifying old shards against their recorded `engineCommit` (§21).
 * Worker-process exit reporting currently collapses worker failures to a message string; `_02` should consider a structured, bounded failure-code channel for production admission tooling.
+
+## 12. Revision history
+
+* `af8068840925d935ebd0be40231a5e9f396f405e` — original characterization delivery.
+* Review remediation (this head):
+  * P1 — the fresh verifier now authenticates its own executed source revision against the durable `engineCommit` (accepted source-bootstrap doctrine: `LocalSourceBootstrapV1` + `GitSourceBootstrapProbeV1`) BEFORE any reconstruction; a mismatch stops the verification before any EXACT claim. Added §20 control F `tampered-engine-commit` (rejected-before-exact, failure pinned to the authority check). The prior wording "pass-through historical source tie" was wrong for that head and is corrected: at `af806884` the commit was claimant pass-through; at this head it is verifier-authenticated authority.
+  * P2 — the test-only OfflineAdmission probe adapter now binds its verification to the exact requested trajectory (`trajectoryId`, `semanticEpisodeId`, `replayContentIdentity`, `replayActionCount`) before returning a fresh binding; the report states explicitly that the adapter is not production-safe and that `_02` must not adopt it without its own request→verification binding checks.
+  * Consequence: at `af806884` the correct verdict was `DURABLE_INPUT_SUFFICIENCY = NOT_YET_PROVEN`; the PROVEN claim is re-established only at this remediated head.
 
 P1 = DO_NOT_SELF_ASSIGN
 P2 = DO_NOT_SELF_ASSIGN

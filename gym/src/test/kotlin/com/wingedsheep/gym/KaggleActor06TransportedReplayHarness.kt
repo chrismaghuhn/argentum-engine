@@ -31,6 +31,8 @@ import com.wingedsheep.gym.trainer.actor.ActorEpisodeOutcome
 import com.wingedsheep.gym.trainer.actor.ActorStateV1
 import com.wingedsheep.gym.trainer.actor.AtomicActorStatusFileSink
 import com.wingedsheep.gym.trainer.actor.ExecutionAttemptIdentityV1
+import com.wingedsheep.gym.trainer.actor.GitSourceBootstrapProbeV1
+import com.wingedsheep.gym.trainer.actor.LocalSourceBootstrapV1
 import com.wingedsheep.gym.trainer.actor.FileStoreStorageCapacityProbeV1
 import com.wingedsheep.gym.trainer.actor.LocalActorExecutionRequestV1
 import com.wingedsheep.gym.trainer.actor.LocalActorExecutionV1
@@ -113,6 +115,9 @@ internal const val KA06_POLICY_IDENTITY = "ka06-transported-replay-reference-pol
 internal const val KA06_POLICY_RNG_IDENTITY = "explicit-seed/kotlin-policy-state-v1"
 internal const val KA06_COMMANDER_STARTING_LIFE = 40
 internal const val KA06_LINK_REPLAY_SCHEMA_IDENTITY = "argentum-compact-replay@v6"
+
+/** Syntactically valid 40-hex commit for the §20 control F injection (never a real object). */
+internal val KA06_WRONG_ENGINE_COMMIT = "f".repeat(40)
 
 /**
  * KA06 transported-replay reconstruction authority characterization harness.
@@ -494,6 +499,7 @@ internal object KaggleActor06TransportedReplayHarness {
                 "tampered-choice" -> ka06TamperedChoiceMode(envelopeDirectory)
                 "truncated-range" -> ka06TruncatedRangeMode(envelopeDirectory)
                 "wrong-environment" -> ka06WrongEnvironmentMode(envelopeDirectory)
+                "tampered-engine-commit" -> ka06TamperedEngineCommitMode(envelopeDirectory)
                 "wrong-replay-identity" -> ka06WrongReplayIdentityMode(envelopeDirectory)
                 "admission-probe-verifier" ->
                     ka06AdmissionProbeMode(envelopeDirectory, withVerifier = true)
@@ -585,6 +591,20 @@ internal object KaggleActor06TransportedReplayHarness {
         return singleControl("wrong-environment", "rejected-before-exact")
     }
 
+    /** §20 control F: a wrong durable engine commit must be rejected before any EXACT claim. */
+    private fun ka06TamperedEngineCommitMode(envelopeDirectory: Path): JsonObject {
+        val episode = readFirstReimportedEpisode(envelopeDirectory)
+        val wrongCommit = KA06_WRONG_ENGINE_COMMIT
+        check(wrongCommit != episode.identity.engineCommit) {
+            "Tampered-engine-commit control must not reuse the durable commit"
+        }
+        val rejected = runCatching {
+            verifyTransportedEpisode(envelopeDirectory, engineCommitOverride = wrongCommit)
+        }.isFailure
+        check(rejected) { "Verification must fail for a wrong durable engine commit" }
+        return singleControl("tampered-engine-commit", "rejected-before-exact")
+    }
+
     /** §20 control E: a wrong claimant replay content identity must block the verifier. */
     private fun ka06WrongReplayIdentityMode(envelopeDirectory: Path): JsonObject {
         val episode = readFirstReimportedEpisode(envelopeDirectory)
@@ -604,12 +624,27 @@ internal object KaggleActor06TransportedReplayHarness {
         val reimported = LocalPublicationEnvelopeV1.reimport(envelopeDirectory)
         val verifier: OfflineReplayVerifierV1? = if (withVerifier) {
             val verifierLambda = OfflineReplayVerifierV1 { trajectory ->
+                // P2 remediation: bind the verification to the exact requested trajectory, not
+                // merely its semantic episode id — the probe may only hand out a binding that
+                // was produced for THIS trajectory identity (id, semantic episode, replay
+                // content identity, and complete action range), per the accepted canonical
+                // identity contract.
                 val verification = verifyTransportedEpisode(envelopeDirectory)
+                val link = trajectory.episodeMetadata.compactReplayLink
+                require(verification.trajectoryId == trajectory.trajectoryId) {
+                    "Admission verifier verified a different trajectory id"
+                }
+                require(verification.semanticEpisodeId == trajectory.semanticEpisodeId) {
+                    "Admission verifier verified a different semantic episode"
+                }
+                require(verification.replayContentIdentity == link.replayContentIdentity) {
+                    "Admission verifier verified a different replay content identity"
+                }
+                require(verification.replayActionCount == link.replayActionCount) {
+                    "Admission verifier verified a different replay action range"
+                }
                 val freshBinding = verification.freshBinding
                 if (freshBinding != null) {
-                    require(verification.semanticEpisodeId == trajectory.semanticEpisodeId) {
-                        "Admission verifier verified a different semantic episode"
-                    }
                     OfflineReplayVerificationResultV1.Verified(freshBinding)
                 } else {
                     OfflineReplayVerificationResultV1.Unavailable(
@@ -683,6 +718,7 @@ internal object KaggleActor06TransportedReplayHarness {
         contentIdentityOverride: String? = null,
         tamperActionIndex: Int? = null,
         truncateTrailingChoices: Int = 0,
+        engineCommitOverride: String? = null,
     ): Ka06VerificationReport {
         val episode = readFirstReimportedEpisode(envelopeDirectory)
         val durableIdentity = episode.identity
@@ -696,6 +732,28 @@ internal object KaggleActor06TransportedReplayHarness {
             is TrajectoryValidationResult.QuarantineEligible,
             is TrajectoryValidationResult.Rejected,
             -> error("Transported claimant trajectory failed A5 validation")
+        }
+
+        // Source-identity authority (P1 remediation): the verifier must authenticate its own
+        // executed source revision against the durable engineCommit BEFORE any reconstruction.
+        // Without this check the claimant commit is copied through and a verifier running code
+        // from a different revision could still report EXACT.
+        val expectedEngineCommit = engineCommitOverride ?: durableIdentity.engineCommit
+        val verifierSource = LocalSourceBootstrapV1(
+            GitSourceBootstrapProbeV1(
+                repositoryRoot = ka06RepositoryRoot(),
+                requiredPinnedPaths = listOf(
+                    "gradlew",
+                    "gradle/wrapper/gradle-wrapper.properties",
+                    "gradle/libs.versions.toml",
+                ),
+            ),
+        ).verify(expectedEngineCommit)
+        check(verifierSource.verified) {
+            "Verifier source revision is not the durable engineCommit " +
+                "(expected=$expectedEngineCommit, " +
+                "actual=${verifierSource.actualRuntimeSourceCommit ?: "unavailable"}, " +
+                "failure=${verifierSource.failureCode})"
         }
 
         // Re-derive the environment identity from repository authority; the durable identity is

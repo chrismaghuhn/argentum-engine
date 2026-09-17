@@ -83,6 +83,15 @@ class KaggleActor06TransportedReplayCharacterizationTest : FunSpec({
         check(wrongEnvironment.success) { "wrong-environment worker failed: ${wrongEnvironment.workerFailure}" }
         wrongEnvironment.field("result") shouldBe "rejected-before-exact"
 
+        // ---- §20 negative control F: tampered engine commit (P1 remediation) ----
+        // The verifier must authenticate its own executed source revision against the durable
+        // engineCommit and stop BEFORE any reconstruction/EXACT claim when they disagree.
+        val tamperedCommit = runVerifier(transport.envelopeDirectory, "tampered-engine-commit")
+        check(tamperedCommit.success) {
+            "tampered-engine-commit worker failed: ${tamperedCommit.workerFailure}"
+        }
+        tamperedCommit.field("result") shouldBe "rejected-before-exact"
+
         // ---- §20 negative control E: wrong replay content identity ----
         val wrongReplayIdentity = runVerifier(transport.envelopeDirectory, "wrong-replay-identity")
         check(wrongReplayIdentity.success) {
@@ -91,6 +100,10 @@ class KaggleActor06TransportedReplayCharacterizationTest : FunSpec({
         wrongReplayIdentity.field("result") shouldBe "rejected"
 
         // ---- §23 OfflineAdmission test-only probe (positive + fail-closed) ----
+        // The probe adapter binds its verification to the exact requested trajectory (P2
+        // remediation) but remains a test-only structural probe: it is NOT the production
+        // verifier, and _02 must not adopt the adapter without its own request→verification
+        // binding per the accepted canonical identity contract.
         val admissionVerified = runVerifier(transport.envelopeDirectory, "admission-probe-verifier")
         check(admissionVerified.success) {
             "admission-probe-verifier worker failed: ${admissionVerified.workerFailure}"
