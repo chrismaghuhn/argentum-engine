@@ -78,14 +78,6 @@ tasks.register<Test>("kaggleActor06CharacterizationTest") {
     maxHeapSize = "8g"
 }
 
-// The KA06 verifier worker main must be reachable through the JVM test classpath; also forward
-// its repository-root control like the other opt-in characterizations.
-tasks.withType<Test>().configureEach {
-    if (System.getProperty("ka06.repositoryRoot") != null) {
-        systemProperty("ka06.repositoryRoot", System.getProperty("ka06.repositoryRoot"))
-    }
-}
-
 // B1 performance/scaling characterization is opt-in test-only work. Forward its controls to the
 // test worker so Gradle's daemon properties cannot silently leave a measurement disabled or stale.
 tasks.withType<Test>().configureEach {
