@@ -36,7 +36,7 @@ class KaggleActor06TransportedReplayCharacterizationTest : FunSpec({
             transport.envelopeDirectory,
             "verify",
         )
-        verify.success shouldBe true
+        check(verify.success) { "verify worker failed: ${verify.workerFailure}" }
         verify.status shouldBe "VERIFIED"
 
         val verifierSemanticEpisodeId = checkNotNull(verify.field("verifierSemanticEpisodeId"))
@@ -54,7 +54,7 @@ class KaggleActor06TransportedReplayCharacterizationTest : FunSpec({
 
         // ---- §28 determinism repetition: second independent verifier run agrees ----
         val verifyAgain = runVerifier(transport.envelopeDirectory, "verify")
-        verifyAgain.success shouldBe true
+        check(verifyAgain.success) { "second verify worker failed: ${verifyAgain.workerFailure}" }
         verifyAgain.field("verifierTrajectoryId") shouldBe verifierTrajectoryId
         verifyAgain.field("verifierContentIdentity") shouldBe verifierContentIdentity
         verifyAgain.field("verifierSemanticEpisodeId") shouldBe verifierSemanticEpisodeId
@@ -65,38 +65,44 @@ class KaggleActor06TransportedReplayCharacterizationTest : FunSpec({
 
         // ---- §20 negative control A: tampered engine seed ----
         val tamperedSeed = runVerifier(transport.envelopeDirectory, "tampered-seed")
-        tamperedSeed.success shouldBe true
+        check(tamperedSeed.success) { "tampered-seed worker failed: ${tamperedSeed.workerFailure}" }
         tamperedSeed.field("result") shouldBe "rejected"
 
         // ---- §20 negative control B: tampered semantic choice ----
         val tamperedChoice = runVerifier(transport.envelopeDirectory, "tampered-choice")
-        tamperedChoice.success shouldBe true
+        check(tamperedChoice.success) { "tampered-choice worker failed: ${tamperedChoice.workerFailure}" }
         tamperedChoice.field("result") shouldBe "rejected"
 
         // ---- §20 negative control C: truncated choice range ----
         val truncated = runVerifier(transport.envelopeDirectory, "truncated-range")
-        truncated.success shouldBe true
+        check(truncated.success) { "truncated-range worker failed: ${truncated.workerFailure}" }
         truncated.field("result") shouldBe "rejected"
 
         // ---- §20 negative control D: wrong deck / environment identity ----
         val wrongEnvironment = runVerifier(transport.envelopeDirectory, "wrong-environment")
-        wrongEnvironment.success shouldBe true
+        check(wrongEnvironment.success) { "wrong-environment worker failed: ${wrongEnvironment.workerFailure}" }
         wrongEnvironment.field("result") shouldBe "rejected-before-exact"
 
         // ---- §20 negative control E: wrong replay content identity ----
         val wrongReplayIdentity = runVerifier(transport.envelopeDirectory, "wrong-replay-identity")
-        wrongReplayIdentity.success shouldBe true
+        check(wrongReplayIdentity.success) {
+            "wrong-replay-identity worker failed: ${wrongReplayIdentity.workerFailure}"
+        }
         wrongReplayIdentity.field("result") shouldBe "rejected"
 
         // ---- §23 OfflineAdmission test-only probe (positive + fail-closed) ----
         val admissionVerified = runVerifier(transport.envelopeDirectory, "admission-probe-verifier")
-        admissionVerified.success shouldBe true
+        check(admissionVerified.success) {
+            "admission-probe-verifier worker failed: ${admissionVerified.workerFailure}"
+        }
         admissionVerified.status shouldBe OfflineReplayReverificationStatusV1.VERIFIED.name
         admissionVerified.field("datasetEligible") shouldBe "true"
         admissionVerified.field("acceptedCount") shouldBe "1"
 
         val admissionNoProof = runVerifier(transport.envelopeDirectory, "admission-probe-no-proof")
-        admissionNoProof.success shouldBe true
+        check(admissionNoProof.success) {
+            "admission-probe-no-proof worker failed: ${admissionNoProof.workerFailure}"
+        }
         admissionNoProof.status shouldBe OfflineReplayReverificationStatusV1.NO_INDEPENDENT_PROOF.name
         admissionNoProof.field("datasetEligible") shouldBe "false"
         admissionNoProof.field("acceptedCount") shouldBe "0"
