@@ -95,6 +95,13 @@ CURRENT_ORIGIN_MAIN=1251f0666d9961ea566e7f1c9f4aab0ceb25087d
   = merge commit of PR #210 (ARENA_ML_01_PAYMENT_DOMAIN_02)
 PARENTS = 8db093024ef2462c1e097d2c2adde69d99cb9cef (post PR #209) + 8e77d5fcb3922134ec1004b053f5aaaf1e40cd9c (_02 report branch)
 WORKTREE = clean dedicated worktree at base 1251f0666d
+
+MAIN DRIFT NOTE (recorded at push time, 2026-09-17):
+  During this slice, origin/main moved to f22d2fc468 (PR #211, KA06 — unrelated transported-replay
+  characterization). The branch remains on the task-accepted base 1251f0666d: no rebase was
+  performed (history-rewriting-adjacent operations are out of contract here). Verified: the
+  KA06 commits touch none of this slice's two files, and git merge-tree reports zero conflict
+  hunks between HEAD and origin/main — the eventual PR merge is trivial.
 ```
 
 ## 3. Accepted predecessor chain
