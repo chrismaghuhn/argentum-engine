@@ -6,6 +6,12 @@ BASE_SHA=1251f0666d9961ea566e7f1c9f4aab0ceb25087d
 CURRENT_ORIGIN_MAIN_AT_WRITE_TIME=1251f0666d9961ea566e7f1c9f4aab0ceb25087d (re-fetched and verified)
 BRANCH=chris/c1-live-payment-choice-boundary-01-20260917
 OUTCOME=CHARACTERIZATION_AND_DESIGN_ONLY — no production behavior changed
+REMEDIATION=2nd commit per review of 6c5b0d7ef3: P2-1 cardinality 425→6,330/75,972 (re-verified
+  arithmetically) + all dependent statements corrected; P2-2 design confrontation A1 (hierarchical
+  + full plan enumeration) vs A2 (hierarchical + sequential construction) added with evidence,
+  recommendation changed to RECOMMEND_HIERARCHICAL_SEQUENTIAL_PAYMENT_CONSTRUCTION; P2-3 causal
+  wording corrected to CAUSAL_MECHANISM=PROVEN / EXACT_CAUSAL_INDEX=NOT_DURABLY_PINNED /
+  NUMBER_OF_PRIOR_PAYMENTS=NOT_DURABLY_PROVEN. The six characterization tests are unchanged.
 ```
 
 ## 1. Executive finding
@@ -46,15 +52,21 @@ The new decisive evidence of this slice:
    cost orders. A production enumerator is therefore derivable from public data without touching
    private provenance — but it does not exist today and must not be assumed.
 
-4. **Recommendation: `RECOMMEND_HIERARCHICAL_PAYMENT_DECISION`**, expressed through the existing
-   generic `LiveStructuredChoiceDomainV1` machinery (outer action ordinal → source-owned payment
-   sub-domain from the current `PaymentDomainV5` → policy selects a semantic payment alternative →
-   JVM materializes `PaymentStrategy.ExplicitV3` → `ActionPaymentPlanValidator`/`PaymentPlanValidator`
-   preflight → one atomic Rules transition). Flattened complete-action alternatives are rejected:
-   no complete enumerator exists in production and the cross-product growth is real (§9).
-   The "pending mana payment decision" route (`SelectManaSourcesDecision`) is rejected for now:
-   its public surface is a legacy aggregate source list with an `autoPaySuggestion` — explicitly
-   not a complete plan domain — and partial mana-source domains already emit typed unsupported
+4. **Recommendation: `RECOMMEND_HIERARCHICAL_SEQUENTIAL_PAYMENT_CONSTRUCTION`** (remediated per
+   review; full analysis §15): outer action ordinal → source-owned payment sub-domain from the
+   current `PaymentDomainV5` → the policy builds the `PaymentPlanV3` through a bounded sequence
+   of witness-complete semantic construction steps (source/bucket → production → activation-cost
+   allocation → next activation / finalize) → JVM materializes `PaymentStrategy.ExplicitV3` →
+   `ActionPaymentPlanValidator`/`PaymentPlanValidator` preflight → one atomic Rules transition.
+   Full single-decision plan listing (§15 variant A1) is retained only as the single-step
+   degenerate case: complete plan enumeration is NOT realistically bounded within the repo's own
+   established fail-closed alternative bound (§11: 6,330 complete programs for five dual
+   sources, 75,972 for six — and Akiri's own curriculum runs nine multi-production lands, so
+   such boards are ordinary). Flattened complete-action alternatives are rejected: no complete
+   enumerator exists in production and the cross-product growth is real (§11–§13). The "pending
+   mana payment decision" route (`SelectManaSourcesDecision`) is rejected for now: its public
+   surface is a legacy aggregate source list with an `autoPaySuggestion` — explicitly not a
+   complete plan domain — and partial mana-source domains already emit typed unsupported
    diagnostics under the C1_07A contract.
 
 5. **Cause vs detection (§6).** The durable trace pins **detection** at decision #71. The full
@@ -62,12 +74,19 @@ The new decisive evidence of this slice:
    smoke report; the test system-out artifact was later overwritten by the boundary-dump run).
    Decision **#19** — `BEGINNING/UPKEEP, legal=3, ordinal=2, action=ActivateAbility` — is the
    earliest ML-chosen paid-action candidate in the surviving durable prefix, but the pre-payment
-   pool state at #19 is not durably recorded, so the causal index cannot be uniquely claimed from
-   durable evidence. The `_01` reproducer proves the degradation mechanism (proportional
-   `consumeProvenance` zeroing two source buckets for one spent unit) and therefore proves the
-   causal *class*: exactly one ML-seat paid action between game start and #71 consumed one unit
-   from a two-bucket certified pool. The committed test-only fixture reproduces that boundary
-   deterministically without production changes, as §6 permits.
+   pool state at #19 is not durably recorded. The causal claim is bounded exactly as the evidence
+   supports (§4):
+
+   CAUSAL_MECHANISM = PROVEN — the `_01` reproducer deterministically produces the observed
+     degraded shape from (legacy proportional seam + two certified buckets + one unit spend).
+     This is a sufficient reproduced cause, not a proven-exclusive one.
+   EXACT_CAUSAL_DECISION = NOT_DURABLY_PINNED — decisions #21–#70 are not durably preserved.
+   EARLIEST_SURVIVING_CANDIDATE = #19.
+   NUMBER_OF_CAUSAL/PRIOR_PAYMENTS = NOT_DURABLY_PROVEN — multiple qualifying payments are
+     possible in principle; the surviving evidence does not exclude them.
+
+   The committed test-only fixture reproduces that boundary deterministically without production
+   changes, as §6 permits.
 
 ## 2. Current exact base
 
@@ -112,11 +131,15 @@ Surviving durable trace prefix (docs/ml/arena-ml-01-smoke-report.md, first 20 of
   #5  PRECOMBAT_MAIN CastSpell        (turn 1: floating pool necessarily empty; cannot degrade provenance)
   #19 BEGINNING/UPKEEP ActivateAbility (earliest ML-chosen paid-action candidate; pool state not durable)
   #71 = detection (degraded pool proven)
-Reasoning: the degraded boundary shape (manaBySource zeroed while one unit remains) is producible
-ONLY by the legacy proportional seam spending one unit from a two-bucket certified pool (_01
-reproducer), and only an Akiri-seat (ML) payment mutates Akiri's pool. So exactly one ML-seat paid
-action before #71 is causal; the surviving durable evidence narrows it to a candidate set whose
-earliest member is #19, but cannot uniquely pin the index without a test-only full-trace rerun.
+Reasoning: the degraded boundary shape (manaBySource zeroed while one unit remains) is reproduced
+by the legacy proportional seam spending one unit from a two-bucket certified pool (_01
+reproducer) — a sufficient, deterministic cause. Only an Akiri-seat (ML) payment mutates Akiri's
+pool, so at least one ML-seat paid action before #71 spent from a multi-bucket certified pool
+*if* the proportional seam is the only producer of this shape — which the surviving evidence does
+NOT prove (other paths, e.g. repeated partial proportional spends over mixed provenance maps, are
+not excluded by committed evidence). Therefore: causal mechanism proven; exact causal index and
+the number of qualifying prior payments NOT durably pinned; earliest surviving candidate #19. A
+test-only full-trace rerun would be required to pin them.
 ```
 
 Per §6, the test-only deterministic characterization substitutes for the missing durable trace and
@@ -335,20 +358,40 @@ Concrete small cases (no synthetic capabilities invented; each maps to a publish
 ```text
 CANDIDATE_CARDINALITY_FINDING = polynomial-to-factorial in the number of activated sources;
   bounded per published action but NOT bounded by a production witness (no enumerator exists)
-CANDIDATE_EXPLOSION_RISK (quantified, §12):
+CANDIDATE_EXPLOSION_RISK (quantified, §12; arithmetic re-verified per review):
   flattened complete-alternative design across the outer menu:
       |outer candidates| × |target variants| × |mode/X variants| × |payment plans|
   example measured fixture: 1 outer paid action × 2 plans = 2 (harmless);
-  but with 5 untapped dual lands + a 2-generic cost the plan count alone is
-  Σ_{k=1..5} C(5,k)·2^k·k! = 425 distinct programs for ONE outer action; a 15-candidate outer
-  menu multiplies that by 15 => flattened enumeration of complete action+plan bindings is
+  with 5 untapped dual lands + a 2-generic cost the plan count alone is
+  Σ_{k=1..5} C(5,k)·2^k·k! = 10 + 80 + 480 + 1920 + 3840 = 6,330 distinct complete programs
+  for ONE outer action (six dual lands: Σ_{k=1..6} = 75,972); a 15-candidate outer menu
+  multiplies that by 15 => flattened enumeration of complete action+plan bindings is
   unacceptable as the general channel, and the outer candidate card must stay plan-free
   (the committed test pins: exactly one live binding per action today).
+
+Realism check against the accepted curriculum (evidence, not hand-waving):
+  Akiri v0.1 (docs/ml/curriculum/akiri-v0.1.txt) runs 36 lands: 17 Plains + 10 Mountain
+  (single-production) and NINE multi-production lands (Command Tower, Clifftop Retreat,
+  Battlefield Forge, Inspiring Vantage, Sacred Foundry, Temple of Triumph, Boros Garrison,
+  Sunhome, Slayers' Stronghold; e.g. Clifftop Retreat = "{T}: Add {R} or {W}" — two
+  ProductionChoices in the card definition). Boards with 5–6 dual-capable untapped sources are
+  therefore ORDINARY mid-game states in exactly the curriculum the ML seat plays — the
+  6,330–75,972 program counts are realistic, not adversarial.
+Repo precedent for a cardinality bound (the pattern any flat alternative set must respect):
+  LivePregameDecisionSource.MAX_EXPLICIT_ALTERNATIVES = 10_000, and a domain beyond that bound
+  fails closed with a typed unsupported-structured-decision outcome instead of being truncated
+  (docs/data-contracts.md:1362). 6,330 fits under that bound; 75,972 does NOT — so even inside
+  ONE action's payment sub-domain, full plan listing fails closed on ordinary boards. That is
+  decision incompleteness by cardinality — the same failure class the live seat already exhibits
+  at the outer boundary, recreated one level down if the sub-domain itself is a flat complete
+  plan list.
 ```
 
 Therefore: the *channel* must not multiply the outer candidate set. The *payment sub-domain* is
-only derived for the ONE selected outer action, where its cardinality is bounded by that action's
-published V5 domain and every alternative is a real, policy-distinct choice.
+only derived for the ONE selected outer action — but its own cardinality is NOT inherently
+bounded (§11: up to 75,972 on ordinary boards), so the sub-domain's internal representation
+decision (A1 flat listing vs A2 sequential construction, §15) is the central design question,
+not a settled detail.
 
 ## 12. Hierarchical design analysis (Candidate A)
 
@@ -369,7 +412,11 @@ NO HIDDEN POLICY   the JVM never picks; unique-alternative collapse is the only 
                   a proven equivalence (single candidate = no choice exists).
 C1 FIT            reuses the entire C1_07A/07B/07C snapshot/projection/ordinal/staged-RNG contract;
                   the second decision is just another structured domain through the same runtime.
-EXPLOSION         none across the outer set; per-action sub-domain only (§11).
+EXPLOSION         none across the outer set; but the per-action sub-domain itself carries the full
+                  factorial plan count (§11: 6,330–75,972 for ordinary boards). A flat sub-domain
+                  listing therefore breaches the repo's own 10,000-alternative fail-closed bound
+                  on realistic states. Remediated: the hierarchical family splits into A1 vs A2
+                  (§15); A1 alone is insufficient as the general channel.
 JVM-ONLY BINDINGS  exact table stores the outer action + the exact selected plan; nothing serialized
                   to Python except model-facing views and ordinals.
 STALE SAFETY      the existing requireCurrent revalidation (observation/domain/binding/RNG) plus a
@@ -377,9 +424,10 @@ STALE SAFETY      the existing requireCurrent revalidation (observation/domain/b
 REPLAY            the final materialized ExplicitV3 action is already a replay-authoritative carrier
                   (v5/v6); no replay schema change.
 CHECKPOINT        channel is ADAPTER_ONLY (§20); no architecture change needed to *represent*.
-COSTS             two policy round-trips per payment-relevant paid action; a new gameplay structured
+COSTS             two policy round-trips per payment-relevant paid action (A1) or k+1 round-trips
+                  for k construction steps (A2, typically ≤ |sources|+1); a new gameplay structured
                   source must be written (the one genuinely new component); the model must learn
-                  that decision 2 exists (quality caveat, §20).
+                  that the payment decision(s) exist (quality caveat, §20).
 ```
 
 ## 13. Flattened design analysis (Candidate B)
@@ -390,7 +438,8 @@ SHAPE   outer menu publishes complete bindings: (action × target × mode/X × f
 COMPLETENESS   requires enumerating every legal PaymentPlanV3 per action — the production
                enumerator does NOT exist (§10-B). Building it is feasible (public-data derivation
                is proven by the test support) but §30 forbids it here, and its output multiplies
-               the outer candidate card (§11: 425 programs for one realistic action; × outer menu).
+               the outer candidate card (§11: 6,330 complete programs for one realistic
+               five-dual action; × outer menu).
 DETERMINISM    fine in principle (canonical plan identity).
 C1 FIT         poor: the outer decision's candidate feature views would have to encode payment
                internals (bucket aliases, allocations) to remain semantically distinct — a large
@@ -428,46 +477,177 @@ DISPOSITION: revisit only if a later slice needs mid-window payment interactions
   reaches the same atomicity without touching Rules flow.
 ```
 
-## 15. Chosen recommendation
+## 15. Design confrontation: A1 vs A2, and chosen recommendation (remediated per review)
 
-```text
-RECOMMENDATION = RECOMMEND_HIERARCHICAL_PAYMENT_DECISION
-  via the EXISTING generic LiveStructuredChoiceDomainV1 machinery — not a new framework:
-    outer ordinal accepted (unchanged flat channel)
-    -> source-owned LivePaymentChoiceSource derives the payment sub-domain from the CURRENT
-       public PaymentDomainV5 of the selected action (fresh, under the state lock)
-    -> alternatives enumerated from public domain data only; uniqueness-collapse when |alternatives|=1
-    -> LiveStructuredChoiceDomainV1 with completeness witness + JVM-only exact table of
-       (outer action, selected plan) bindings
-    -> policy selects a semantic alternative (feature view: canonical bucket aliases, colors,
-       amounts, source aliases — nothing raw)
-    -> fresh revalidation: outer action still legal, V5 domain semantically equal, selected
-       alternative within the fresh domain, PaymentPlanValidator preflight against current state
-    -> JVM materializes PaymentStrategy.ExplicitV3(plan) over the bound template
-    -> ActionPaymentPlanValidator.requireOrdinary / requireTargetPaymentPlan (the SAME trusted seam)
-    -> one authoritative Rules transition; staged PolicyTieRng commits only after acceptance
-```
+The review correctly identified that the original recommendation conflated two distinct designs
+inside "hierarchical". They are analyzed separately now, against the corrected cardinality
+evidence (§11: 6,330 complete programs for five dual sources; 75,972 for six; Akiri's own
+curriculum runs nine multi-production lands, so such boards are ordinary).
 
-Why it satisfies §9: completeness (source-witnessed domain), determinism (canonical keyed
-identities, §17), no hidden policy (only a uniqueness proof collapses alternatives), C1 fit (same
-machinery as pregame structured decisions), bounded candidate growth (per-action sub-domain),
-JVM-only exact bindings (existing table type), stale-safe (existing requireCurrent + fresh-domain
-equality + plan preflight), replay-exact (final ExplicitV3 carrier, v5/v6), checkpoint impact
-limited to a new alternative feature-view family (no architecture change).
+### A1 — hierarchical + full PaymentPlanV3 enumeration
+
+One structured payment decision whose alternatives are ALL semantic complete PaymentPlanV3
+programs of the selected action's current V5 domain.
+
+  COMPLETENESS      the enumerated set IS the completeness witness (injective canonical plan
+                    identities); complete by construction if the enumerator is correct.
+  BRANCHING         one decision with |complete programs| candidates: 6,330–75,972 on ordinary
+                    curriculum boards (§11).
+  CANONICAL IDENTITY canonical full-plan JSON per §17; the existing canonicalizer applies.
+  STALE REVALIDATION re-derive the full plan set from the fresh domain; identity match; preflight.
+  ATOMICITY         unchanged: one Rules transition after selection.
+  POLICYTIE.RNG     one staged decision; single cursor commit after acceptance.
+  C1_06 SCORER      mechanically representable (stateless per-candidate scoring), but a single
+                    candidate card of 75,972 feature views per payment decision is not a
+                    meaningful model contract; the model would have to search the factorial
+                    space through one softmax.
+  BOUND CHECK       against the repo's own precedent (MAX_EXPLICIT_ALTERNATIVES = 10_000,
+                    fail-closed beyond): 5 dual sources fit (6,330), 6 do not (75,972). An
+                    ordinary Akiri board crosses the bound => typed fail-closed => the model
+                    cannot pay in exactly the states that motivated this task.
+  VERDICT           viable ONLY for small, witness-provable plan sets. Insufficient as the
+                    general channel.
+
+### A2 — hierarchical + structured/sequential plan construction
+
+The policy builds the PaymentPlanV3 through a bounded sequence of semantic construction steps,
+each a small witness-complete structured decision; no Rules mutation occurs until the final
+validated plan crosses the boundary:
+
+    outer action selected (flat channel, unchanged)
+        ↓
+    JVM derives the first construction step's sub-domain from the CURRENT public V5 domain
+    (fresh, under the state lock)
+        ↓
+    policy selects one semantic step: activate source X / production c / activation-cost
+    allocation a / next activation vs finalize
+        ↓
+    JVM appends the step to the staged partial plan (JVM-only) and revalidates against the
+    fresh snapshot (outer action still legal, V5 equal, staged prefix consistent)
+        ↓
+    repeat from the fresh domain of the REMAINING construction problem
+        ↓
+    finalize: complete PaymentPlanV3 assembled JVM-side from the staged steps
+        ↓
+    PaymentPlanValidator preflight against current state
+        ↓
+    JVM materializes PaymentStrategy.ExplicitV3(plan) over the bound template
+        ↓
+    ActionPaymentPlanValidator.requireOrdinary / requireTargetPaymentPlan (the SAME trusted seam)
+        ↓
+    ONE authoritative Rules transition; staged RNG commits only after acceptance
+
+  COMPLETENESS      step-local witnesses: each step's alternative set is derived from published
+                    domain data of the remaining construction problem, and the FINAL assembled
+                    plan is never trusted on construction alone — it still passes the full
+                    PaymentPlanValidator preflight. Any incompleteness in the step grammar
+                    surfaces as a typed validation failure, never as hidden policy.
+  BRANCHING         per step, tens — not tens of thousands: options = untapped published source
+                    options (× production choices × cost orders) × allocation targets (pool
+                    buckets + earlier outputs). Depth ≤ |sources| + 1 (a source activates at
+                    most once — usedSources tracking). The factorial PATH count is distributed
+                    over small sequential DECISIONS: the model faces small candidate cards,
+                    never the product.
+  CANONICAL IDENTITY the JVM-only partial plan carries a canonical prefix identity (§17); step
+                    alternatives are identified by (step kind + canonical step content).
+  STALE REVALIDATION every step revalidated against a fresh snapshot; any drift => STALE_INFERENCE,
+                    staged plan discarded entirely, nothing executed, no RNG commit.
+  ATOMICITY         unchanged and strict: the staged partial plan is pure JVM policy state —
+                    there is NO intermediate Magic state and NO authoritative mutation before
+                    the single final transition (this is NOT a fake staged game state; the game
+                    state remains frozen throughout construction).
+  POLICYTIE.RNG     one stream; every step's returned RNG state is staged; the persisted cursor
+                    commits only after the final transition is accepted; a rejection anywhere
+                    in the sequence commits nothing.
+  C1_06 SCORER      best fit: each step is a small candidate-scoring decision over the same
+                    feature-view contract; no per-decision candidate explosion; the partial-plan
+                    context reaches the model only through its step feature views (the exact
+                    staged plan stays JVM-side).
+  TRAJECTORY        either one typed sample per step (k+1 samples) or one hierarchical sample
+                    with nested step responses — decided in the trajectory follow-up; both
+                    preserve complete domain + chosen response + replay correspondence
+                    (the final ExplicitV3 action).
+  COSTS             k+1 round-trips and k+1 staged snapshots per payment-relevant paid action;
+                    new orchestration loop; the most new code of the variants.
+
+### Recommendation
+
+  RECOMMENDATION = RECOMMEND_HIERARCHICAL_SEQUENTIAL_PAYMENT_CONSTRUCTION (A2),
+  with A1 retained as the single-step degenerate case: when the remaining construction problem
+  after some prefix has exactly one step and its witness is small (the committed two-bucket
+  blocker fixture is exactly this — one finalize step with two bucket alternatives), the step
+  sequence collapses to precisely the A1 flat structured domain — same machinery, same
+  contracts.
+
+  Evidence for choosing A2 over A1 (not a default; the review required this decision to be made
+  on evidence):
+  1. A1's own cardinality audit (§11) shows full plan listing crosses the repo's established
+     10,000-alternative fail-closed bound on ordinary curriculum boards (six dual sources of
+     Akiri's nine) — A1 would recreate decision incompleteness at the payment sub-domain, the
+     same failure class this task exists to remove, one level down.
+  2. A2's per-step branching is small and bounded by published domain data per step; the model
+     contract stays within what the accepted C1_06 scorer meaningfully consumes.
+  3. A2 strictly preserves every established safety property: no intermediate mutation, staged
+     RNG, fail-closed staleness, final preflight, JVM-only exact state.
+  4. The task's own §10 explicitly allowed this outcome: "the domain is naturally better
+     represented as a structured/sequential choice rather than a flat complete plan list" —
+     after the corrected cardinality evidence, that is what the audit shows.
+
+  Honest cost of A2: the step grammar and its orchestration loop are genuinely new; completeness
+  of the step grammar itself must be argued per step kind (§24 _02A), and a wrong step grammar
+  fails closed (final validation) rather than silently. A1 is simpler to build and provably
+  complete where it fits; A2 is the only variant that fits the real curriculum.
+
+  DESIGN_RECOMMENDATION_READY = YES (this recommendation; supersedes the pre-remediation
+  RECOMMEND_HIERARCHICAL_PAYMENT_DECISION wording).
+
+### Proposed dataflow (decision-boundary diagram, §40)
+
+  Authoritative state (frozen; no mutation during construction)
+      ↓
+  PlayerObservation + outer action domain (existing flat channel)
+      ↓
+  model selects outer ordinal
+      ↓
+  JVM exact rebind (existing binding table; outer candidate BOUND, not executed)
+      ↓
+  loop [step i = 1..k]:
+      source-owned step sub-domain from CURRENT public PaymentDomainV5 + staged prefix:
+        remaining outer cost units · unspent certified buckets (canonical keys) · untapped
+        published source options with production/cost-order domains · fixed self-damage budget
+      ↓
+      model selects the step's semantic response (small ordinal domain)
+      ↓
+      JVM revalidates: outer action still legal · V5 semantically equal · staged prefix
+        consistent · step response inside the fresh step domain
+      ↓
+      staged partial plan extended (JVM-only, canonical prefix identity)
+  ↓
+  finalize: complete PaymentPlanV3 assembled from staged steps
+      ↓
+  PaymentPlanValidator preflight (fresh state; rejects before mutation)
+      ↓
+  materialize PaymentStrategy.ExplicitV3 over the exact outer binding
+      ↓
+  ActionPaymentPlanValidator.requireOrdinary / requireTargetPaymentPlan
+      ↓
+  ONE authoritative Rules transition
+      ↓
+  staged PolicyTieRng cursor(s) committed (only now)
 
 ## 16. Required comparison table (§39)
 
-| Property | Hierarchical (A) | Flattened (B) | Pending-decision (C) |
-|---|---|---|---|
-| Complete | yes — sub-domain from authoritative V5 + witness | only if a complete enumerator is built (none exists) | no — current decision surface is aggregate/partial (typed unsupported today) |
-| Candidate growth | none across outer set; per-action sub-domain | \|outer\| × \|targets\| × \|modes/X\| × \|plans\| (425 plans for one realistic action) | none across outer set; single pause per payment |
-| Existing contract reuse | maximal — structured-choice machinery, validator, executor, replay carriers all exist | needs new production enumerator + new candidate feature encoding | response carrier + replay v6 exist; decision primitive does not |
-| JVM-only exact binding | existing `LiveExactSourceBindingTable` + one new binding variant | same table, but \|plans\|× more entries | existing `DecisionResponseBinding` |
-| C1_06 compatibility | ADAPTER_ONLY (new alternative feature-view family; no architecture change) | changes existing candidate semantics (risk to accepted checkpoint behavior) | ADAPTER_ONLY |
-| Stale revalidation | existing requireCurrent + fresh-domain equality + plan preflight | domain-cards must be re-derived wholesale | decision id rebind exists; domain completeness still missing |
-| Replay impact | none — final ExplicitV3 already carried (v5/v6) | none for actions; new digest-relevant candidate data | none — pending paymentPlan already v6 |
-| Trajectory clarity | two typed samples: outer choice + payment choice (§19) | one sample, payment internals hidden inside a candidate | response-shaped sample; missing domain witness |
-| Implementation complexity | one new source + adapter seam + atomic pair commit | enumerator + candidate-model changes | Rules flow change + decision redesign |
+| Property | A1: hierarchical + full plan enumeration | A2: hierarchical + sequential construction | Flattened (B) | Pending-decision (C) |
+|---|---|---|---|---|
+| Complete | where under the 10,000-alternative bound; fail-closed beyond (6 dual sources breach it) | yes — per-step witnesses + final PaymentPlanValidator preflight; any grammar gap fails typed | only if a complete enumerator is built (none exists) | no — current decision surface is aggregate/partial (typed unsupported today) |
+| Candidate growth | none across outer set; per-action card up to 75,972 on ordinary boards | none across outer set; per-step cards of tens, depth ≤ \|sources\|+1 | \|outer\| × \|targets\| × \|modes/X\| × \|plans\| (6,330 plans for one realistic five-dual action) | none across outer set; single pause per payment |
+| Existing contract reuse | maximal — one structured domain through existing machinery | same machinery + one new construction-loop orchestration | needs new production enumerator + new candidate feature encoding | response carrier + replay v6 exist; decision primitive does not |
+| JVM-only exact binding | existing `LiveExactSourceBindingTable` + one new binding variant | staged JVM-only partial plan + same binding variant at finalize | same table, but \|plans\|× more entries | existing `DecisionResponseBinding` |
+| C1_06 compatibility | ADAPTER_ONLY, but a 75,972-candidate card is not a meaningful model contract | ADAPTER_ONLY; small per-step cards are the best fit | changes existing candidate semantics (risk to accepted checkpoint behavior) | ADAPTER_ONLY |
+| Stale revalidation | re-derive whole plan set; identity match; preflight | per-step fresh revalidation + staged-prefix consistency; whole plan discarded on any drift | domain-cards must be re-derived wholesale | decision id rebind exists; domain completeness still missing |
+| Replay impact | none — final ExplicitV3 already carried (v5/v6) | none — final ExplicitV3 already carried (v5/v6) | none for actions; new digest-relevant candidate data | none — pending paymentPlan already v6 |
+| Trajectory clarity | two typed samples: outer + one large payment decision | outer + per-step typed samples (or one nested sample) | one sample, payment internals hidden inside a candidate | response-shaped sample; missing domain witness |
+| Implementation complexity | enumerator + witness + adapter seam | step grammar + construction loop + adapter seam (most new code) | enumerator + candidate-model changes | Rules flow change + decision redesign |
 
 ## 17. Semantic payment equivalence (§17) and stable identity (§18)
 
@@ -495,6 +675,10 @@ model-facing = alias-validated feature views (existing requireModelFacingFeature
                pattern proven by the pregame source (§10) — no second address system
 rebind       = on revalidation the source re-derives alternatives from the fresh domain and matches
                by canonical identity; identity mismatch => STALE_INFERENCE, never reinterpretation
+partial plan = sequential construction (§15 A2) stages a JVM-only partial plan whose canonical
+               prefix identity is the canonical JSON of its completed steps; each step's
+               alternatives are identified by (step kind + canonical step content); the prefix
+               must re-match the fresh domain's remaining construction problem at every step
 ```
 
 ## 18. Privacy contract (§19)
@@ -520,36 +704,45 @@ Before the single Rules transition, the JVM must prove, against the *fresh* curr
    already enforces: registered == current)
 4. the selected alternative is a member of the fresh sub-domain (canonical identity match)
 5. the materialized PaymentPlanV3 passes PaymentPlanValidator preflight against current state
+6. sequential construction (§15 A2): EVERY construction step is revalidated at its own boundary
+   against a fresh snapshot (outer action legal, V5 semantically equal, staged prefix consistent
+   with the fresh remaining problem); a failure at ANY step discards the whole staged plan
 Any failure => STALE_INFERENCE (or the already-typed UNSUPPORTED diagnostic) with NO execution,
-NO fallback (no AutoPay, no other plan, no first-valid, no Engine AI, no random), and NO PolicyTieRng
-commit. The existing capture.requireCurrent pipeline already implements the shape of 1–3; 4–5 are
-the new, equally fail-closed additions.
+NO fallback (no AutoPay, no other plan, no first-valid, no Engine AI, no random), NO partial
+construction, and NO PolicyTieRng commit. The existing capture.requireCurrent pipeline already
+implements the shape of 1–3; 4–6 are the new, equally fail-closed additions.
 ```
 
 ## 20. Atomicity (§21), PolicyTieRng (§24), trajectory semantics (§22)
 
 **Atomicity — hierarchical but ONE Rules mutation.** The outer choice never partially executes:
 selection of the outer ordinal only *binds a candidate*; the authoritative state remains frozen
-until the payment alternative is selected, revalidated, materialized, preflighted, and executed in
-one transition. There is no intermediate Magic state. (This is already true of the live runtime's
-capture→infer→revalidate→execute shape; the design adds the payment stage *inside* the same
-atomic window.)
+until the payment plan is selected (A1: one decision; A2 §15: a staged JVM-side step sequence),
+revalidated, materialized, preflighted, and executed in one transition. There is no intermediate
+Magic state — the staged partial plan of A2 is pure JVM policy state, not a fake staged game
+state. (This is already true of the live runtime's capture→infer→revalidate→execute shape; the
+design adds the payment stage(s) *inside* the same atomic window.)
 
-**PolicyTieRng.** Both decisions share the seat's single stream. The outer decision's returned RNG
-state and the payment decision's returned RNG state are **staged**, and the persisted cursor
-commits only after the atomic transition is accepted. If the payment decision is stale/rejected,
-*neither* the outer nor the payment cursor advances (staged states discarded) — preserving the
-existing committed semantics (cursor advances only on accepted execution; never advances on
-rejection). Same seed + same canonical domain ⇒ same tie behavior; no JVM-side tie selection.
+**PolicyTieRng.** All decisions of one paid action share the seat's single stream. The outer
+decision's returned RNG state and every payment decision's returned RNG state (A1: one; A2: one
+per construction step) are **staged**, and the persisted cursor commits only after the atomic
+transition is accepted. If any payment decision is stale/rejected, *neither* the outer nor any
+payment cursor advances (all staged states discarded) — preserving the existing committed
+semantics (cursor advances only on accepted execution; never advances on rejection; the response
+contract's exact cursor-before/after/draw-count accounting applies unchanged to every staged
+step). Same seed + same canonical domain ⇒ same tie behavior; no JVM-side tie selection.
 
-**Trajectory semantics (design, not implemented).** Option 1 (two typed samples) is the
+**Trajectory semantics (design, not implemented).** Option 1 (typed samples per decision) is the
 recommendation: sample A = observation + outer candidates + chosen outer action (existing shape);
-sample B = the same authoritative pre-action information set + the payment sub-domain +
-the chosen payment semantic response — each with its decision type, complete legal domain,
-chosen response, source authority, and replay correspondence (B corresponds to the same final
-ExplicitV3 action, so replay linkage stays 1 action : 2 samples). Option 2 (one combined sample)
-collapses two distinct decision types into one candidate space and would change the meaning of
-existing samples; rejected. No trajectory schema is changed in this slice.
+sample B = the same authoritative pre-action information set + the payment domain + the chosen
+payment semantic response — each with its decision type, complete legal domain, chosen response,
+source authority, and replay correspondence (B corresponds to the same final ExplicitV3 action).
+Under A2 (§15), sample B generalizes to one typed sample per construction step (each step's own
+complete step domain + chosen step response), or one hierarchical sample with nested step
+responses — that representation choice is a downstream trajectory-contract decision; either way
+replay linkage stays 1 final action : N typed samples. Option 2 (one combined sample per game
+action) collapses distinct decision types into one candidate space and would change the meaning
+of existing samples; rejected. No trajectory schema is changed in this slice.
 
 ## 21. C1_06 checkpoint compatibility (§23)
 
@@ -561,6 +754,10 @@ pregame structured channel feeds the same projection contract). Payment alternat
 family of feature views (bucket aliases, colors, amounts, production/cost/order domains) —
 representable with the existing schema-open, alias-validated feature-view contract; no new
 architecture, no new feature *fields*, no checkpoint/weights/learner change.
+Per variant (§15): A1 would present the WHOLE plan set as one candidate card (up to 75,972
+candidates on ordinary boards — mechanically consumable, not a meaningful model contract); A2
+presents small per-step candidate cards with the partial-plan context encoded only in the step
+feature views — the better fit for the same checkpoint.
 Honest caveat: the accepted checkpoint has never scored payment alternatives; its scores on that
 family are unvalidated. Until evaluated (a later slice), a payment-choice inference must not be
 interpreted as meaningful quality — but the channel itself is contract-correct and fail-closed.
@@ -613,26 +810,36 @@ downstream trajectory dependency — not a replay schema change.
 ## 24. Implementation decomposition (§33)
 
 ```text
-_02A  PAYMENT-CHOICE SOURCE PRIMITIVE (contract + derivation, test-visible)
-      scope:      derive canonical semantic payment alternatives + completeness witness from a
-                  current PaymentDomainV5 (public data only); uniqueness-collapse rule; canonical
+_02A  PAYMENT-CONSTRUCTION GRAMMAR + SOURCE PRIMITIVE (contract + derivation, test-visible)
+      scope:      define the step grammar of the sequential construction (§15 A2): step kinds
+                  (activate source with production choice + cost order / allocate activation-cost
+                  unit / finalize), per-step witness-complete alternative derivation from a current
+                  PaymentDomainV5 + the staged JVM-side prefix (public data only); single-step
+                  collapse rule (A1 degenerate case); uniqueness-collapse rule; canonical
                   identity/ordering per §17; target-payment composition per §22
       modules:    gym (next to PaymentDomain / ActionPaymentPlanValidator)
-      tests:      enumeration for the §11 shapes 1–8 that the V5 slice actually supports;
-                  witness injectivity; determinism across repeated derivations
-      acceptance: complete, canonical, public-data-only derivation; no GameState/strategy access
+      tests:      per-step derivation for the §11 shapes 1–8 that the V5 slice actually supports;
+                  step-witness injectivity; determinism across repeated derivations;
+                  whole-plan equivalence of staged construction vs flat enumeration (A1 vs A2
+                  cross-check on small domains where both fit)
+      acceptance: complete per-step, canonical, public-data-only derivation; no GameState/
+                  strategy access; every incompleteness surfaces as a typed validation failure
       dependency: none
 
 _02B  LIVE MATERIALIZATION + REVALIDATION (game-server)
-      scope:      gameplay structured channel: source-owned payment sub-domain for the selected
-                  outer action; LiveStructuredChoiceDomainV1 + exact table; new PolicySeatExactBinding
-                  variant (outer action + plan); staged-RNG atomic pair commit; fresh-domain equality +
-                  plan preflight; materialize ExplicitV3 through the SAME ActionPaymentPlanValidator seam
+      scope:      gameplay structured channel: the construction loop of §15 A2 for the selected
+                  outer action — per-step LiveStructuredChoiceDomainV1 + exact table; JVM-only
+                  staged partial plan; new PolicySeatExactBinding variant (outer action + final
+                  plan); staged-RNG commit across the whole sequence only after acceptance;
+                  per-step fresh-domain equality + final plan preflight; materialize ExplicitV3
+                  through the SAME ActionPaymentPlanValidator seam
       modules:    game-server policy/session (plus _02A)
-      tests:      the committed two-bucket fixture end-to-end through a live policy seat; stale plan
-                  rejected with no RNG commit; id-only/AutoPay submission still fail closed
-      acceptance: LIVE_C1_CAN_SELECT_PLAN flips to YES with zero hidden policy; existing live-policy
-                  suites stay green
+      tests:      the committed two-bucket fixture end-to-end through a live policy seat
+                  (single-step case); a multi-step fixture (pool + one source) through the loop;
+                  stale step rejected with no RNG commit and no mutation; id-only/AutoPay
+                  submission still fail closed
+      acceptance: LIVE_C1_CAN_SELECT_PLAN flips to YES with zero hidden policy; existing
+                  live-policy suites stay green
       dependency: _02A
 
 _02C  ARENA INTEGRATION
@@ -656,8 +863,10 @@ no "two buckets → pick first" (§31) in any form.
 ## 26. Acceptance criteria for implementation follow-ups
 
 ```text
-1. _02A derivation uses only published V5 domain data; a witness proves alternative-set
-   completeness for the supported slice; output is canonically ordered and stable across runs.
+1. _02A derivation uses only published V5 domain data + the staged JVM-side prefix; each step
+   carries a witness proving its alternative-set completeness; output is canonically ordered and
+   stable across runs; on small domains the staged construction reaches exactly the set a full
+   enumeration (A1) would produce.
 2. _02B flips the committed characterization's LIVE_C1_CAN_SELECT_PLAN to YES end-to-end while
    tests 1–3, 6 (trusted semantics) remain green unchanged.
 3. Stale/rejected payment inference never mutates state and never advances PolicyTieRng.
