@@ -2,10 +2,24 @@
 
 Status: **IMPLEMENTATION_PASS = NO — FIX_BLOCKED_BY_DECISION_COMPLETENESS_GAP = YES**
 
-Outcome per task §42: the authoritative live-policy payment path for activated abilities does
-not carry exact spend identity, and the remaining provenance-distinct alternatives in the
-accepted reproducer are **not** provably semantically equivalent. No heuristic was invented.
-No production code was changed. This report is the authorized slice.
+Outcome per task §42: the C1 live seat cannot express an exact floating-bucket payment
+choice, and the remaining provenance-distinct alternatives in the accepted reproducer are
+**not** provably semantically equivalent. No heuristic was invented. No production code was
+changed. This report is the authorized slice; it was remediated after independent code
+review (2 × P2, 1 × P3 — verdict unchanged, see §10).
+
+Precise authority finding (reviewed):
+
+```text
+PAYMENT_DOMAIN_AUTHORITY = PRESENT
+EXACT_PAYMENT_EXECUTION_AUTHORITY = PRESENT
+LIVE_C1_PAYMENT_SELECTION_CHANNEL = MISSING
+LIVE_C1_EXPLICIT_V3_MATERIALIZATION = MISSING
+```
+
+The engine already owns the payment semantics and the exact executor; what is missing is the
+controller/policy boundary that turns the published `PaymentDomainV5` choice domain into an
+externally chosen `PaymentStrategy.ExplicitV3` execution on the live C1 path.
 
 ---
 
@@ -41,9 +55,9 @@ provenance and leaves the subtype-only `INCOMPLETE` shape that
 `UNSUPPORTED_STRUCTURED_DECISION`. The fail-closed behavior is correct; the information loss
 upstream is the defect.
 
-## 3. Exact spend authority audit (task §6)
+## 3. Payment authority audit by layer (task §6)
 
-### 3.1 Where exact authority EXISTS today
+### 3.1 Authority layers PRESENT today
 
 1. **`PaymentStrategy.ExplicitV3` + `PaymentPlanV3`** (rules-engine `core/GameAction.kt:333-382`):
    carries an explicit ordered payment program including exact certified floating bucket keys.
@@ -59,19 +73,34 @@ upstream is the defect.
 5. **Engine doctrine** (`docs/data-contracts.md:1147`): pool spends "never delegate the
    external choice to greedy `consumeProvenance()`"; multi-bucket certified pools must identify
    every requested bucket.
+6. **`PaymentDomainV5` publishes the complete choice domain** (gym
+   `contract/PaymentDomain.kt:367`, `initialPoolBuckets`): the model-facing candidate surface
+   already contains the exact certified pool buckets an external choice would name.
+7. **The trusted gym boundary proves the end-to-end pattern**: the raw `LegalAction` is only a
+   template; the external structured payload must carry `PaymentStrategy.ExplicitV3` —
+   `ActionPaymentPlanValidator` rejects `AutoPay`, `FromPool`, and legacy `Explicit` there
+   (gym `ActionPaymentPlanValidator.kt:90-143`), and `GameGymEnv.materializeAction` overlays
+   the payload on the template before plan validation (`GameGymEnv.kt:636, 688`). Doctrine:
+   the trusted external-policy path is required to submit `ExplicitV3` with a complete plan
+   (`docs/data-contracts.md:1198`).
 
-So the engine already owns a complete, generic, doctrine-endorsed exact-payment protocol.
+So the engine already owns a complete, generic, doctrine-endorsed exact-payment protocol —
+including the public choice domain and a proven template+payload submission pattern in the
+trusted gym.
 
-### 3.2 Where the authority is MISSING (the actual defect path)
+### 3.2 Which layer is MISSING (live C1 selection/materialization — the actual defect path)
 
-- **Legal-action enumeration never constructs it.** The paid-ability enumerators build
-  `ActivateAbility(...)` with the **default** `PaymentStrategy.AutoPay`
-  (e.g. `legalactions/enumerators/ActivatedAbilityEnumerator.kt:766` and the other 12
-  construction sites — none pass `paymentStrategy`). No `ExplicitV3` variant is enumerated.
+- **The live C1 seat has no payment-payload layer.** The raw `LegalAction` is only a template:
+  the paid-ability enumerators build `ActivateAbility(...)` with the **default**
+  `PaymentStrategy.AutoPay` (e.g.
+  `legalactions/enumerators/ActivatedAbilityEnumerator.kt:766` and the other 12 construction
+  sites — none pass `paymentStrategy`). The trusted gym overlays an external structured
+  payload on exactly such templates; the C1 live path has no equivalent overlay.
 - **The ARENA live seat executes the enumerated action directly.** `GameSession.executeAction`
   (game-server `session/GameSession.kt:931/972`) runs `LegalAction.action` as-is; the
   `LivePolicySourceAdapter` submits decisions against that menu. There is no layer between the
-  menu and the handler that upgrades `AutoPay` into an explicit plan.
+  menu and the handler that upgrades `AutoPay` into an explicit plan — the gym boundary's
+  `ActionPaymentPlanValidator` counterpart does not exist on this path.
 - **The auto path then degrades provenance.** `ActivateAbilityHandler` falls through to
   `poolBeforeCostPayment.consumeProvenance(unrestrictedSpentDuringCost)`
   (`handlers/actions/ability/ActivateAbilityHandler.kt:1717`; same seam at 1392/2220/2635;
@@ -83,17 +112,26 @@ So the engine already owns a complete, generic, doctrine-endorsed exact-payment 
 
 ### 3.3 §6 verdict
 
-**Answer B (PARTIALLY):** color/amount is known, but multiple provenance-distinct floating
-units remain possible — and in the accepted reproducer they demonstrably do
-(`manaBySource={e5:1, e12:1}`, two distinct certified buckets for one white).
+**Answer B (PARTIALLY) on the live C1 execution path:** the aggregate execution knows
+color/amount only, while multiple provenance-distinct floating units remain possible — and in
+the accepted reproducer they demonstrably do (`manaBySource={e5:1, e12:1}`, two distinct
+certified buckets for one white). In the layered terms of §3.1/§3.2: the choice domain and
+the exact executor exist; the execution degrades to aggregate knowledge because the live
+selection channel that would carry the choice is missing.
 
 The alternatives are **not** provably semantically equivalent (task §7/§16):
 
-- `SpentManaProvenance.sourceIds` is published on `SpellCastEvent.spentManaSourceIds`
-  (`core/GameEvent.kt:673`) and consumed by real rules predicates:
-  `TriggerMatcher` (`event/TriggerMatcher.kt:1982`) evaluates
+- The boundary payment is an **ability** payment, and the ability path emits no
+  `SpellCastEvent` (zero occurrences in `ActivateAbilityHandler`) — the observable
+  consequence runs through the remaining pool, not through this activation. The explicit
+  evidence chain:
+  `ability payment chooses which source-tagged floating unit is consumed` →
+  `determines which exact source-tagged unit remains` → `a later payment (e.g. a spell cast)
+  may consume that remainder` → `SpellCastEvent records the producing source in
+  spentManaSourceIds` (`core/GameEvent.kt:673`) → `TriggerMatcher` evaluates
   `SpellCastPredicate.PaidWithManaFromSource -> sourceId in event.spentManaSourceIds`
-  (e.g. Tecutlan-style "if mana from this source was spent" triggers).
+  (`event/TriggerMatcher.kt:1982`; e.g. Tecutlan-style "if mana from this source was spent"
+  triggers).
 - The two units originate from different permanents (`e5` vs `e12`), so source identity,
   subtype-snapshot riders, and spent-from-source downstream semantics can differ.
 - Therefore choosing `e5` over `e12` (or vice versa) is **POLICY_RELEVANT**, not
@@ -106,7 +144,7 @@ The alternatives are **not** provably semantically equivalent (task §7/§16):
 | Auto-select "first" bucket / sorted `EntityId` / any deterministic order in `consumeProvenance` or its callers | forbidden hidden policy (§23); changes observable `PaidWithManaFromSource` outcomes |
 | Proportional allocation (status quo) | destroys provenance — the accepted defect |
 | Uniqueness-proof-only fix (consume exactly when a single bucket matches, else degrade) | does **not** clear the accepted boundary: the reproducer pool has two distinct buckets, so decision #71 would still fail (§31 result C); also leaves a second-class silent-degradation path |
-| Extend legal-action enumeration to publish `ExplicitV3` payment variants for paid abilities | correct end-state, but it **adds a new externally controlled semantic payment decision** on the live seat path — explicitly out of scope for this slice (§24: "If the fix requires a NEW externally controlled semantic payment decision: STOP") |
+| Pin the follow-up channel shape prematurely — e.g. "enumerator emits one `ExplicitV3` `LegalAction` per payment variant" | that is only one candidate shape; it would multiply the outer candidate set (combinatorial bloat) and duplicate the gym's existing template+payload separation. The C1 channel shape (hierarchical second decision vs flattened structured alternatives) is itself the design decision reserved for the follow-up slice; any shape adds a new externally controlled semantic payment decision, out of scope here (§24) |
 | Weaken `PaymentDomainV5` / accept `Ambiguous` | forbidden (§4, §22) |
 
 ## 4. Why no RED test was written (task §13/§14)
@@ -114,7 +152,7 @@ The alternatives are **not** provably semantically equivalent (task §7/§16):
 §13 requires a RED expressing "payment retains exact remaining provenance"; §14 forbids a RED
 that assumes `sourceA` merely because it is first. Any executable post-fix assertion on the
 live `AutoPay` path must name which of `e5`/`e12` was spent — that naming **is** the missing
-decision boundary. Encoding any choice in a test would bake hidden policy into the expected
+live C1 payment-selection channel. Encoding any choice in a test would bake hidden policy into the expected
 behavior. Per §14 this is evidence for the blocked finding, not a skipped step. The pre-fix
 defect itself is already fully characterized by the accepted `_01` RED suite (green controls +
 defect-path tests), which was re-run at base.
@@ -141,23 +179,34 @@ same aggregate amount, which source's unit(s) does the player spend?*
 
 `MINIMAL_REQUIRED_FOLLOW_UP` (focused, reusable, no card specifics):
 
-1. Extend paid-ability legal-action enumeration (activated abilities; then the spell path for
-   parity) to publish **decision-complete payment variants** built from the already-certified
-   V5 pool: for each distinct legal pool-bucket assignment, one `ExplicitV3` variant (with
-   existing uniqueness-proof collapse for single-bucket pools). The trusted menu then contains
-   the exact selection instead of a single aggregate `AutoPay` action.
-2. Reuse `OrderedPaymentProgramExecutor` + `consumeCertifiedJoint` unchanged for execution —
-   the exact consumption seam already exists and is tested.
-3. Keep `PaymentDomainV5` admission and `Ambiguous` fail-closed classification untouched;
-   V5 publication of candidate payment choices is the existing stable semantic surface for the
-   model-facing disambiguation (task §25), so no internal EntityId needs to leak.
-4. Only after (1): the `_01` Category A defect-path tests legitimately flip to "V5 publishes
-   for the post-payment pool", while every `_01` Category B safety test must remain green.
+1. **Characterize/design the C1 live payment-choice boundary** — focused, reusable, no card
+   specifics — reusing the existing authorities instead of inventing new payment semantics:
+   `PaymentDomainV5` publication (complete `initialPoolBuckets`), the `ExplicitV3` /
+   `PaymentPlanV3` carrier, the `ActionPaymentPlanValidator` rejection contract
+   (`AutoPay`/`FromPool`/legacy `Explicit` refused where payment is required), and the
+   `OrderedPaymentProgramExecutor` + `consumeCertifiedJoint` execution seam. The trusted gym
+   already proves the pattern `LegalAction template + external structured payment payload` on
+   its boundary; the live C1 seat lacks exactly that payload layer.
+2. **Decide the channel shape in the follow-up slice**: a hierarchical second decision
+   (action chosen, then semantic payment alternative chosen) or flattened complete structured
+   alternatives. Either way the repo contract requires structured alternatives to be fully
+   enumerated by the authoritative source with a completeness witness; template-level
+   `AutoPay` defaults must not be relied upon.
+3. **Do not prematurely multiply rules-enumerator `ActivateAbility` variants**: without a
+   characterized C1 boundary this would bloat the outer candidate set combinatorially and
+   duplicate the gym's template/payload separation.
+4. **Keep `PaymentDomainV5` admission and the `Ambiguous` fail-closed classification
+   untouched**; model-facing disambiguation stays on the stable semantic payment-domain
+   surface (task §25), so no internal `EntityId` needs to leak.
+5. Only after the boundary exists: the `_01` Category A defect-path tests legitimately flip
+   to "V5 publishes for the post-payment pool", while every `_01` Category B safety test must
+   remain green.
 
-Estimated blast radius for the follow-up: legal-action enumerators + gym menu/action-schema
-surfaces + `_01` Category A expectations. It intentionally does **not** touch
-`PaymentDomainV5`, `FloatingManaProvenanceClassification`, decks, cards, ML, or replay schemas
-beyond the new action variant already implied by the existing `ExplicitV3` serialization.
+Estimated blast radius for the follow-up: the C1 live-seat controller/session layer
+(candidate submission / payload materialization) plus gym-adjacent schema surfaces and `_01`
+Category A expectations; enumerator multiplication is **not** assumed. It intentionally does
+**not** touch `PaymentDomainV5`, `FloatingManaProvenanceClassification`, decks, cards, ML, or
+replay schemas beyond what the existing `ExplicitV3` serialization already supports.
 
 ## 7. Verification performed (no claims beyond evidence)
 
@@ -169,6 +218,12 @@ beyond the new action variant already implied by the existing `ExplicitV3` seria
   (`ActivateAbilityHandler` ×4, `CastPaymentProcessor` ×3, `CostPaymentService` ×1).
 - Downstream consumer of spent-source identity confirmed in current code
   (`GameEvent.kt:673`, `TriggerMatcher.kt:1982`).
+- Review-verified precision: `ActionPaymentPlanValidator` requires `ExplicitV3` and rejects
+  `AutoPay`/`FromPool`/legacy `Explicit` on the trusted gym boundary (lines 90-143);
+  `GameGymEnv.materializeAction` overlays the external payload on the legal-action template
+  (lines 636, 688); `docs/data-contracts.md:1198` mandates `ExplicitV3` on the trusted
+  external-policy path; `ActivateAbilityHandler` contains zero `SpellCastEvent` references,
+  confirming the ability path itself records no spent-source event.
 - No production or test files were modified; worktree contains only this report.
 
 ## 8. Scope review
@@ -185,7 +240,31 @@ beyond the new action variant already implied by the existing `ExplicitV3` seria
 ## 9. Conclusion
 
 The safety boundary is correct and must not be relaxed. The defect is real, generic, and
-upstream — but its complete fix requires a decision-complete payment menu on the trusted live
-path, which is a new externally controlled semantic payment decision and therefore outside this
-slice by the task's own gating rules (§6 B, §14, §16, §23, §24). The blocker is precisely
-characterized in §6 for independent review and the focused follow-up in §42 format below.
+upstream — and it is a **decision-completeness** gap at the controller/policy layer, not a
+missing mana mechanism: the engine already publishes the complete choice domain
+(`PaymentDomainV5`) and executes exact choices (`ExplicitV3` → `consumeCertifiedJoint`);
+the C1 live seat simply cannot express that choice yet. Building that channel is a new
+externally controlled semantic payment decision and therefore outside this slice by the
+task's own gating rules (§6 B, §14, §16, §23, §24). The blocker is precisely characterized
+in §3/§6 for independent review and the focused follow-up in §42 format below.
+
+## 10. Independent review remediation record
+
+Independent code review of `2058c9ab96` confirmed the blocked verdict
+(`DECISION_COMPLETENESS_BLOCKER = CONFIRMED`, `BLOCKED_FINDING_VALID = YES`,
+`PAYMENT_DOMAIN_V5_FAIL_CLOSED = CORRECT`) and raised 2 × P2 + 1 × P3, all report/ownership
+findings:
+
+- **P2-1 (addressed):** `EXACT_SPEND_AUTHORITY` differentiated into the four-line layered
+  finding (header; §3.1/§3.2): payment-domain authority and exact execution authority are
+  PRESENT; the live C1 payment-selection channel and `ExplicitV3` materialization are MISSING.
+- **P2-2 (addressed):** the minimal follow-up no longer pins the fix to enumerator-emitted
+  `ExplicitV3` legal-action variants; it is now a focused C1 live payment-choice boundary
+  characterization/design reusing `PaymentDomainV5` + `ExplicitV3` +
+  `ActionPaymentPlanValidator` (§6), with the channel shape explicitly reserved for that
+  slice and the candidate-set bloat risk documented (§3.4).
+- **P3 (addressed):** the policy-relevance evidence chain now explicitly runs ability payment
+  → remaining source-tagged unit → later cast → `SpellCastEvent` → `PaidWithManaFromSource`,
+  instead of implying the ability activation itself emits `SpellCastEvent` (§3.3).
+
+No code or tests were changed by this remediation; only this report was updated.
