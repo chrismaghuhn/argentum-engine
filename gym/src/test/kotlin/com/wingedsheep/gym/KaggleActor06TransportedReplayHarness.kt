@@ -162,7 +162,15 @@ internal object KaggleActor06TransportedReplayHarness {
             val engineCommit = checkNotNull(ka06GitHead(repositoryRoot)) {
                 "KA06 producer requires the repository HEAD to derive the durable engine commit"
             }
-            val plan = ka06WorkloadPlan(engineCommit, akiri.sourceDigest, chevill.sourceDigest)
+            // The card-definition identity must be derived BEFORE the workload plan: the plan's
+            // expected semantic episode id is a digest of the environment identity.
+            val cardDefinitionIdentity = ka06LockedCardDefinitionDigest(akiri, chevill, registry)
+            val plan = ka06WorkloadPlan(
+                engineCommit = engineCommit,
+                cardDefinitionIdentity = cardDefinitionIdentity,
+                akiriDigest = akiri.sourceDigest,
+                chevillDigest = chevill.sourceDigest,
+            )
             val fullAssignment = WorkAssignmentV1.from(plan, (0 until KA06_JOB_COUNT).toList())
             val item = fullAssignment.items.single()
             val episode = generateEpisode(item, registry, akiri, chevill)
@@ -236,6 +244,7 @@ internal object KaggleActor06TransportedReplayHarness {
 
     internal fun ka06WorkloadPlan(
         engineCommit: String,
+        cardDefinitionIdentity: String,
         akiriDigest: String,
         chevillDigest: String,
     ): WorkloadPlanV1 = WorkloadPlanV1(
@@ -247,7 +256,7 @@ internal object KaggleActor06TransportedReplayHarness {
             WorkloadJobV1(
                 jobOrdinal = ordinal,
                 environmentIdentity = ka06EnvironmentIdentity(
-                    ordinal, engineCommit, akiriDigest, chevillDigest,
+                    ordinal, engineCommit, cardDefinitionIdentity, akiriDigest, chevillDigest,
                 ),
                 policyProvenance = ka06PolicyProvenance(ordinal),
             )
@@ -257,13 +266,14 @@ internal object KaggleActor06TransportedReplayHarness {
     internal fun ka06EnvironmentIdentity(
         ordinal: Int,
         engineCommit: String,
+        cardDefinitionIdentity: String,
         akiriDigest: String,
         chevillDigest: String,
     ): EnvironmentIdentityV1 {
         val players = listOf(EntityId(KA06_SEAT0_PLAYER_ID), EntityId(KA06_SEAT1_PLAYER_ID))
         return EnvironmentIdentityV1(
             engineCommit = engineCommit,
-            cardDefinitionIdentity = ka06LockedCardDefinitionDigestPlaceholder(),
+            cardDefinitionIdentity = cardDefinitionIdentity,
             akiriDeckIdentity = akiriDigest,
             chevillDeckIdentity = chevillDigest,
             format = "COMMANDER",
@@ -304,12 +314,6 @@ internal object KaggleActor06TransportedReplayHarness {
 
     private const val KA06_AKIRI_COMMANDER = "Akiri, Fearless Voyager"
     private const val KA06_CHEVILL_COMMANDER = "Chevill, Bane of Monsters"
-
-    /**
-     * Placeholder card-definition identity used only to reserve the identity slot; the producer
-     * fills the accepted locked-pair digest before the trajectory identity is recomputed.
-     */
-    private fun ka06LockedCardDefinitionDigestPlaceholder(): String = "0".repeat(64)
 
     private data class Ka06Episode(
         val trajectory: TrajectoryV1,
@@ -468,9 +472,6 @@ internal object KaggleActor06TransportedReplayHarness {
                 replayIdentity = replayIdentity,
                 binding = binding,
                 closure = closure,
-                registry = registry,
-                akiri = akiri,
-                chevill = chevill,
             ),
             binding = binding,
         )
@@ -1312,16 +1313,11 @@ internal object KaggleActor06TransportedReplayHarness {
         replayIdentity: ReplayContentIdentityV1,
         binding: ReplayTrajectoryBindingV1,
         closure: EpisodeClosureV1,
-        registry: CardRegistry,
-        akiri: CurriculumDeckSourceV1,
-        chevill: CurriculumDeckSourceV1,
     ): TrajectoryV1 {
         val metadataBase = EpisodeMetadataV1(
             semanticEpisodeId = "0".repeat(64),
             collectionJobId = "0".repeat(64),
-            environmentIdentity = identity.copy(
-                cardDefinitionIdentity = ka06LockedCardDefinitionDigest(akiri, chevill, registry),
-            ),
+            environmentIdentity = identity,
             policyProvenance = item.policyProvenance,
             compactReplayLink = CompactReplayLinkV1(
                 replayVersion = replay.version,
