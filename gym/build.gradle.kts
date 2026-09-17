@@ -15,6 +15,9 @@ tasks.named<Test>("test") {
     exclude("**/EnvironmentV1DecisionFamilyClosureAuditTest*")
     // Pending-payment contract tests read the immutable locked Commander artifact directly.
     inputs.file(rootProject.layout.projectDirectory.file("docs/ml/curriculum/akiri-v0.1.txt"))
+    // The KA06 transported-replay characterization is an explicit opt-in trust gate that spawns
+    // its own verifier JVM processes. Run it through :kaggleActor06CharacterizationTest.
+    exclude("**/KaggleActor06TransportedReplayCharacterizationTest*")
 }
 
 tasks.register<Test>("environmentV1AcceptanceTest") {
@@ -64,6 +67,17 @@ tasks.register<Test>("kaggleActor05CharacterizationTest") {
     maxHeapSize = "8g"
 }
 
+tasks.register<Test>("kaggleActor06CharacterizationTest") {
+    description = "Runs the opt-in transported-replay reconstruction authority characterization."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/KaggleActor06TransportedReplayCharacterizationTest*")
+    // The producer and two verifier worker JVMs each load the full card catalog and rebuild
+    // replay state; give this opt-in trust gate the same heap as the A9 generation gate.
+    maxHeapSize = "8g"
+}
+
 // B1 performance/scaling characterization is opt-in test-only work. Forward its controls to the
 // test worker so Gradle's daemon properties cannot silently leave a measurement disabled or stale.
 tasks.withType<Test>().configureEach {
@@ -109,6 +123,7 @@ tasks.withType<Test>().configureEach {
         "ka05.initialBytesPerEpisodeEstimate",
         "ka05.providerOutputCapBytes",
         "ka05.initialScratchEstimateBytes",
+        "ka06.repositoryRoot",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }
