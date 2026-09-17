@@ -111,11 +111,18 @@ open class ProductionOfflineReplayVerifierV1(
         }
 
         return when (result.status) {
-            VerifierWorkerStatusV1.UNAVAILABLE ->
-                // Typed worker failure: fail closed with the worker's exact cause.
-                OfflineReplayVerificationResultV1.Unavailable(
-                    result.failureCode ?: OfflineReplayFailureCodeV1.INTERNAL_VERIFIER_FAILURE,
-                )
+            VerifierWorkerStatusV1.UNAVAILABLE -> {
+                // Typed worker failure: fail closed with the worker's exact cause. Diagnostics
+                // are observability only; the typed failure code is the trust state.
+                val code = result.failureCode ?: OfflineReplayFailureCodeV1.INTERNAL_VERIFIER_FAILURE
+                runCatching {
+                    System.err.println(
+                        "[offline-replay-verifier] worker unavailable code=$code " +
+                            "diagnostics=${result.diagnostics}",
+                    )
+                }
+                OfflineReplayVerificationResultV1.Unavailable(code)
+            }
 
             VerifierWorkerStatusV1.VERIFIED ->
                 boundResult(trajectory, result)
