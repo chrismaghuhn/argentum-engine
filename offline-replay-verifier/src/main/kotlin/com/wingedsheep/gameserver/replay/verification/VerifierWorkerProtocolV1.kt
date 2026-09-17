@@ -144,8 +144,9 @@ object TransportedReplayVerifierWorkerMain {
         val responseFile: Path = Path.of(requireArg(args, "--response"))
         val result: VerifierWorkerResultV1 = runCatching {
             val repositoryRoot = Path.of(requireArg(args, "--repository-root"))
+            // The request travels as a file path (Java @argfile launch); read and decode it here.
             val request = VerifierWorkerProtocolV1Json.decodeRequest(
-                String(Base64.getDecoder().decode(requireArg(args, "--request")), StandardCharsets.UTF_8),
+                Files.readString(Path.of(requireArg(args, "--request")), StandardCharsets.UTF_8),
             )
             performVerification(repositoryRoot, request)
         }.getOrElse { failure ->
