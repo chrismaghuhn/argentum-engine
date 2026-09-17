@@ -15,9 +15,10 @@ tasks.named<Test>("test") {
     exclude("**/EnvironmentV1DecisionFamilyClosureAuditTest*")
     // Pending-payment contract tests read the immutable locked Commander artifact directly.
     inputs.file(rootProject.layout.projectDirectory.file("docs/ml/curriculum/akiri-v0.1.txt"))
-    // The KA06 transported-replay characterization is an explicit opt-in trust gate that spawns
-    // its own verifier JVM processes. Run it through :kaggleActor06CharacterizationTest.
-    exclude("**/KaggleActor06TransportedReplayCharacterizationTest*")
+    // The KA06 transported-replay characterization (=_01 oracle) and the _02 production-verifier
+    // integration spec are explicit opt-in trust gates that spawn their own verifier JVM
+    // processes. Run them through :kaggleActor06CharacterizationTest.
+    exclude("**/KaggleActor06*")
 }
 
 tasks.register<Test>("environmentV1AcceptanceTest") {
@@ -73,6 +74,7 @@ tasks.register<Test>("kaggleActor06CharacterizationTest") {
     testClassesDirs = sourceSets["test"].output.classesDirs
     classpath = sourceSets["test"].runtimeClasspath
     include("**/KaggleActor06TransportedReplayCharacterizationTest*")
+    include("**/KaggleActor06ProductionVerifierIntegrationTest*")
     // The producer and two verifier worker JVMs each load the full card catalog and rebuild
     // replay state; give this opt-in trust gate the same heap as the A9 generation gate.
     maxHeapSize = "8g"
@@ -155,6 +157,10 @@ dependencies {
         isTransitive = false
     }
     testImplementation(project(":gym-trainer"))
+    // KA06 _02 integration: the production process-isolated verifier composes game-server replay
+    // infrastructure with gym-trainer admission contracts in a leaf module. Test-source-only use,
+    // following the established non-transitive integration pattern above.
+    testImplementation(project(":offline-replay-verifier"))
     testImplementation(libs.kotestRunner)
     testImplementation(libs.kotestAssertions)
     testImplementation(libs.kotestProperty)

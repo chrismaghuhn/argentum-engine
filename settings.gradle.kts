@@ -66,6 +66,10 @@ include(":ai")
 include(":gym")
 include(":gym-server")
 include(":gym-trainer")
+// Production transported-replay verification composition (KA06 _02): leaf module owning the
+// OfflineReplayVerifierV1 seam between gym-trainer admission contracts and game-server replay
+// infrastructure without making game-server depend on gym-trainer.
+include(":offline-replay-verifier")
 include(":mtgish-tooling")
 
 // Argentum Assay — the first-party Oracle-text parser (docs/oracle-assay.md). Depends on :mtg-sdk
