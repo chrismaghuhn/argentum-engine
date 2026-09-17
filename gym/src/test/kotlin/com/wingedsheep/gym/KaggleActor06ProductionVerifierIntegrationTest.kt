@@ -10,6 +10,7 @@ import com.wingedsheep.gym.trainer.actor.OfflineReplayReverificationStatusV1
 import com.wingedsheep.gym.trainer.actor.OfflineReplayVerificationResultV1
 import com.wingedsheep.gym.trainer.actor.OfflineReplayVerifierV1
 import com.wingedsheep.gym.trainer.actor.WorkAssignmentV1
+import com.wingedsheep.gym.trainer.trajectory.DatasetMetadataV1
 import com.wingedsheep.gameserver.replay.verification.ProductionOfflineReplayVerifierV1
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -125,8 +126,20 @@ class KaggleActor06ProductionVerifierIntegrationTest : FunSpec({
                 replayVerifier = partiallyFailingVerifier,
             ),
         )
+        // Existing authority semantics (§24): verifier failure flips the request-global status
+        // to BLOCKED and kills dataset eligibility, while the ledger keeps per-item membership
+        // of the trajectories that did verify. The fail-closed gate is datasetEligible / repack.
         admission.offlineReplayReverification shouldBe OfflineReplayReverificationStatusV1.BLOCKED
         admission.datasetEligible shouldBe false
-        admission.acceptedSources shouldBe emptyList()
+        runCatching {
+            OfflineAdmissionV1.repackAcceptedSources(
+                admission = admission,
+                outputDirectory = tempdir(),
+                metadata = DatasetMetadataV1(),
+            )
+        }.isFailure shouldBe true
     }
 })
+
+private fun tempdir(): java.nio.file.Path =
+    java.nio.file.Files.createTempDirectory("ka06-negative-repack")
