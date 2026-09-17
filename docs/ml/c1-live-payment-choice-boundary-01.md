@@ -4,6 +4,8 @@
 TASK=C1_LIVE_PAYMENT_CHOICE_BOUNDARY_01
 BASE_SHA=1251f0666d9961ea566e7f1c9f4aab0ceb25087d
 CURRENT_ORIGIN_MAIN_AT_WRITE_TIME=1251f0666d9961ea566e7f1c9f4aab0ceb25087d (re-fetched and verified)
+CURRENT_ORIGIN_MAIN_AT_REMEDIATION_4=f22d2fc46871d96ff6d175bfcfce110594d9ec1a (merged into the
+  branch normally — a parent of the integrated head; see §2 BRANCH_INTEGRATION)
 BRANCH=chris/c1-live-payment-choice-boundary-01-20260917
 OUTCOME=CHARACTERIZATION_AND_DESIGN_ONLY — no production behavior changed
 REMEDIATION=2nd commit per review of 6c5b0d7ef3: P2-1 cardinality 425→6,330/75,972 (re-verified
@@ -31,6 +33,14 @@ REMEDIATION_3=4th commit per review of 0f1a6622f7: the 6,330 / 75,972 figures re
   additional degrees of freedom omitted for k>2. All dependent statements weakened to
   growth-class arguments; the exact flat terminal-plan count is NOT_YET_MEASURED and _02A must
   measure it on bounded fixtures and establish its own alternative bound. The six
+  characterization tests are unchanged.
+REMEDIATION_4=5th commit per review of 2e0e63f63c (consistency pass on the cardinality doctrine):
+  §16 A1 "Complete" cell no longer claims six multi-choice sources exceed the 10,000 pregame
+  bound (only the illustrative path count does; the exact legal-plan count is NOT_YET_MEASURED);
+  the "A2 is the only direction that fits the reachable state envelope" claim weakened to the
+  recommended direction — _02A still proves A2's grammar and bounds and measures whether A1
+  remains viable on bounded reachable fixtures; §2 base block updated (f22d2fc468 / PR #211 is
+  merged into the branch and a parent of the integrated head). Report-only; the six
   characterization tests are unchanged.
 ```
 
@@ -111,20 +121,32 @@ The new decisive evidence of this slice:
    The committed test-only fixture reproduces that boundary deterministically without production
    changes, as §6 permits.
 
-## 2. Current exact base
+## 2. Current exact base (updated per review of 2e0e63f63c)
 
 ```text
-CURRENT_ORIGIN_MAIN=1251f0666d9961ea566e7f1c9f4aab0ceb25087d
-  = merge commit of PR #210 (ARENA_ML_01_PAYMENT_DOMAIN_02)
-PARENTS = 8db093024ef2462c1e097d2c2adde69d99cb9cef (post PR #209) + 8e77d5fcb3922134ec1004b053f5aaaf1e40cd9c (_02 report branch)
-WORKTREE = clean dedicated worktree at base 1251f0666d
+TASK_BASE_SHA = 1251f0666d9961ea566e7f1c9f4aab0ceb25087d
+  = merge commit of PR #210 (ARENA_ML_01_PAYMENT_DOMAIN_02); base of the original
+    characterization work (the §6 evidence and §9 tests were produced against it)
+  PARENTS = 8db093024ef2462c1e097d2c2adde69d99cb9cef (post PR #209) +
+            8e77d5fcb3922134ec1004b053f5aaaf1e40cd9c (_02 report branch)
 
-MAIN DRIFT NOTE (recorded at push time, 2026-09-17):
-  During this slice, origin/main moved to f22d2fc468 (PR #211, KA06 — unrelated transported-replay
-  characterization). The branch remains on the task-accepted base 1251f0666d: no rebase was
-  performed (history-rewriting-adjacent operations are out of contract here). Verified: the
-  KA06 commits touch none of this slice's two files, and git merge-tree reports zero conflict
-  hunks between HEAD and origin/main — the eventual PR merge is trivial.
+CURRENT_ORIGIN_MAIN = f22d2fc46871d96ff6d175bfcfce110594d9ec1a
+  = merge commit of PR #211 (KA06 — unrelated transported-replay characterization)
+
+BRANCH_INTEGRATION (current):
+  f22d2fc468 is MERGED INTO this branch — a normal merge commit (no rebase;
+  history-rewriting-adjacent operations remain out of contract) and a parent of the integrated
+  head. Verified before merging: the KA06 commits touch none of this slice's two files, and
+  git merge-tree reported zero conflict hunks. The integrated head therefore CONTAINS current
+  origin/main (behind=0); the drift recorded below is resolved.
+
+WORKTREE = clean dedicated worktree
+
+MAIN DRIFT NOTE (recorded at push time, 2026-09-17; SUPERSEDED by BRANCH_INTEGRATION above):
+  During the original slice, origin/main moved from 1251f0666d to f22d2fc468 while the branch
+  was in flight; the branch initially stayed on the task-accepted base 1251f0666d and this note
+  documented the divergence. Per the review of 8b2d617fe4, f22d2fc468 was later merged normally
+  into the branch — see BRANCH_INTEGRATION above.
 ```
 
 ## 3. Accepted predecessor chain
@@ -718,8 +740,10 @@ validated plan crosses the boundary:
   proof above (flat reference enumeration on small domains; structural coverage per transition
   on large ones) — this is _02A's central acceptance gate, not a detail. A wrong grammar fails
   the _02A gate rather than shipping hidden policy. A1 is simpler to build and provably
-  complete where its candidate card stays small; A2 is the only direction that fits the
-  reachable state envelope.
+  complete where its candidate card stays small; A2 is the RECOMMENDED direction for the
+  reachable state envelope — the report does NOT claim A1 is impossible there. _02A must still
+  prove A2's grammar and bounds, and measure whether A1 remains viable on bounded reachable
+  fixtures (its own explicit bound, or typed fail-closed above it).
 
   DESIGN_RECOMMENDATION_READY = YES as an ARCHITECTURE DIRECTION only:
     recommended architecture direction = RECOMMEND_HIERARCHICAL_SEQUENTIAL_PAYMENT_CONSTRUCTION
@@ -766,7 +790,7 @@ validated plan crosses the boundary:
 
 | Property | A1: hierarchical + full plan enumeration | A2: hierarchical + sequential construction | Flattened (B) | Pending-decision (C) |
 |---|---|---|---|---|
-| Complete | where under the pregame precedent bound; fail-closed beyond (6 multi-choice sources exceed it; beyond six, no bound witness exists) | DIRECTION ONLY — per-step witnesses + final preflight prove legality, NOT grammar completeness; STEP_GRAMMAR_COMPLETENESS = NOT_YET_PROVEN with a two-tier proof required in _02A | only if a complete enumerator is built (none exists) | no — current decision surface is aggregate/partial (typed unsupported today) |
+| Complete | only where a complete flat enumerator proves the full canonical plan set within A1's OWN explicit bound; the exact six-source legal-plan count is NOT_YET_MEASURED (§11 — only the illustrative path count is known); above the eventual A1 bound: typed fail-closed | DIRECTION ONLY — per-step witnesses + final preflight prove legality, NOT grammar completeness; STEP_GRAMMAR_COMPLETENESS = NOT_YET_PROVEN with a two-tier proof required in _02A | only if a complete enumerator is built (none exists) | no — current decision surface is aggregate/partial (typed unsupported today) |
 | Candidate growth | none across outer set; per-action construction path space illustratively 6,330–75,972 (§11), exact legal-plan count NOT_YET_MEASURED | none across outer set; local step domains EXPECTED substantially smaller; exact branching max NOT_YET_PROVEN (explicit _02A deliverable) | \|outer\| × \|targets\| × \|modes/X\| × \|plans\| (illustrative path count 6,330 for one reachable five-multi-choice action; exact count NOT_YET_MEASURED) | none across outer set; single pause per payment |
 | Existing contract reuse | maximal — one structured domain through existing machinery | same machinery + one new construction-loop orchestration | needs new production enumerator + new candidate feature encoding | response carrier + replay v6 exist; decision primitive does not |
 | JVM-only exact binding | existing `LiveExactSourceBindingTable` + one new binding variant | staged JVM-only partial plan + same binding variant at finalize | same table, but \|plans\|× more entries | existing `DecisionResponseBinding` |
