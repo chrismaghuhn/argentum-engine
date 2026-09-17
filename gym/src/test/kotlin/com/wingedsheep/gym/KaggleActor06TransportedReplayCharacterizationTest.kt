@@ -103,11 +103,12 @@ class KaggleActor06TransportedReplayCharacterizationTest : FunSpec({
     }
 
     test("worker failure surfaces as a failed verifier process") {
-        // An envelope path that cannot exist must fail the worker (fail-closed plumbing check).
+        // An envelope path that cannot exist must produce a failed worker exit (fail-closed
+        // plumbing check), not a silent success.
         val missing = Files.createTempDirectory("ka06-missing-").resolve("no-envelope")
-        runCatching {
-            runVerifier(missing, "verify", timeoutMinutes = 10)
-        }.isFailure shouldBe true
+        val exit = runVerifier(missing, "verify", timeoutMinutes = 10)
+        exit.success shouldBe false
+        checkNotNull(exit.workerFailure)
     }
 }) {
     companion object
