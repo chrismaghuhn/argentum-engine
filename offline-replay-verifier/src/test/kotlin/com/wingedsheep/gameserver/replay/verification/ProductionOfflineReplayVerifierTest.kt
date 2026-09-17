@@ -2,12 +2,21 @@ package com.wingedsheep.gameserver.replay.verification
 
 import com.wingedsheep.gym.EpisodeClosureV1
 import com.wingedsheep.gym.contract.A3SemanticJson
+import com.wingedsheep.gym.contract.CandidateDomainDigestV1
+import com.wingedsheep.gym.contract.CompleteLegalDomainKind
+import com.wingedsheep.gym.contract.CompleteLegalDomainV1
+import com.wingedsheep.gym.contract.ManaPoolView
+import com.wingedsheep.gym.contract.PlayerObservationV1
+import com.wingedsheep.gym.contract.PlayerView
 import com.wingedsheep.gym.contract.ReplayContentIdentityV1
 import com.wingedsheep.gym.contract.ReplayFidelity
 import com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1
 import com.wingedsheep.gym.contract.ReplayVerificationBindingV1
 import com.wingedsheep.gym.contract.ReplayChosenInputBindingV1
+import com.wingedsheep.gym.contract.VerifiedReplayFrame
 import com.wingedsheep.gym.contract.VerifiedReplayVerification
+import com.wingedsheep.gameserver.curriculum.CurriculumAiTournamentPreset
+import com.wingedsheep.gameserver.curriculum.CurriculumDeckSourceLoader
 import com.wingedsheep.gym.trainer.actor.OfflineReplayFailureCodeV1
 import com.wingedsheep.gym.trainer.actor.OfflineReplayVerificationResultV1
 import com.wingedsheep.gym.trainer.trajectory.PolicyProvenanceV1
@@ -115,7 +124,7 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
     }
 
     test("request binding: a worker result for a different trajectory id is rejected") {
-        val verifier = CrossBindingProbeVerifier()
+        val verifier = CrossBindingProbeVerifier(testLaunchOverrides())
         val trajectory = fabricatedTrajectory()
 
         val forged = VerifierWorkerResultV1(
@@ -134,7 +143,7 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
     }
 
     test("request binding: every identity field participates") {
-        val verifier = CrossBindingProbeVerifier()
+        val verifier = CrossBindingProbeVerifier(testLaunchOverrides())
         val trajectory = fabricatedTrajectory()
         val link = trajectory.episodeMetadata.compactReplayLink
         val binding = fabricatedBinding()
@@ -166,14 +175,14 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
     }
 
     test("worker exits nonzero without a response file when its output path is unwritable") {
-        val crashVerifier = CrashingWorkerVerifier()
+        val crashVerifier = CrashingWorkerVerifier(testLaunchOverrides())
         val exit = crashVerifier.launchAndAwait(fabricatedTrajectory())
         exit shouldBe 1
     }
 
     test("bounded timeout produces a typed VERIFIER_TIMEOUT, never VERIFIED") {
         val trajectory = fabricatedTrajectory()
-        val verifier = TimedOutWorkerVerifier()
+        val verifier = TimedOutWorkerVerifier(testLaunchOverrides())
         val result = verifier.verify(trajectory)
         result.shouldBeInstanceOf<OfflineReplayVerificationResultV1.Unavailable>()
     }
@@ -191,21 +200,106 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
         }
     }
 
-    test("same-revision authentication precedes reconstruction in the worker contract") {
-        // The worker entrypoint authenticates the source BEFORE consulting any engine type:
-        // with a claimant commit that cannot equal this checkout's HEAD, performVerification
-        // must return the typed SOURCE_REVISION failure and never attempt a rebuild.
+    test("tampered claimant engine commit is rejected by the sealed authentication flow") {
+        // Sealed worker flow (P1): the worker's performVerification only exposes the
+        // authenticate-then-reconstruct seam. With a syntactically valid commit that cannot
+        // equal this checkout's HEAD, the sealed seam throws before any reconstruction. The
+        // non-git probe repository yields the bootstrap-doctrine failure, matching the real
+        // worker contract (a HEAD mismatch against a real checkout maps to
+        // SOURCE_REVISION_MISMATCH via the failure taxonomy).
         val repositoryRoot = Files.createTempDirectory("ka06-02-repo-probe-")
         try {
-            val claimant = fabricatedTrajectory(engineCommit = "f".repeat(40))
-            val result = TransportedReplayVerifierWorkerMain.performVerification(
-                repositoryRoot = repositoryRoot,
-                request = VerifierWorkerRequestV1.of(claimant),
-            )
-            result.status shouldBe VerifierWorkerStatusV1.UNAVAILABLE
-            result.failureCode shouldBe OfflineReplayFailureCodeV1.SOURCE_REVISION_UNVERIFIED
+            io.kotest.assertions.throwables.shouldThrow<TransportedReplayReconstructionException> {
+                TransportedReplayReconstructorV1.authenticate(
+                    repositoryRoot = repositoryRoot,
+                    expectedEngineCommit = "f".repeat(40),
+                )
+            }
         } finally {
             repositoryRoot.toFile().deleteRecursively()
+        }
+    }
+
+    test("a syntactically valid but non-EXACT binding can never surface as VERIFIED (P2)") {
+        // P2 negative control: the outer four identity fields all match, but the returned
+        // binding carries UNVERIFIED fidelity — the request/result seam must reject it before
+        // any Verified result can exist.
+        val verifier = CrossBindingProbeVerifier(testLaunchOverrides())
+        val trajectory = fabricatedTrajectory()
+        val forged = VerifierWorkerResultV1(
+            status = VerifierWorkerStatusV1.VERIFIED,
+            verifiedResult = VerifiedWorkerVerificationV1(
+                verifiedTrajectoryId = trajectory.trajectoryId,
+                verifiedSemanticEpisodeId = trajectory.semanticEpisodeId,
+                verifiedReplayContentIdentity =
+                    trajectory.episodeMetadata.compactReplayLink.replayContentIdentity,
+                verifiedReplayActionCount = trajectory.episodeMetadata.compactReplayLink.replayActionCount,
+                replayTrajectoryBinding = fabricatedBinding(), // UNVERIFIED fidelity by default
+            ),
+        )
+        verifier.crossBindingCheck(trajectory, forged)
+            .shouldBeInstanceOf<OfflineReplayVerificationResultV1.Unavailable>()
+    }
+
+    test("an EXACT binding with internally mismatched identities is rejected (P2)") {
+        // P2 negative control: the binding claims EXACT but its internal replay content
+        // identity disagrees with the outer verified identity.
+        val verifier = CrossBindingProbeVerifier(testLaunchOverrides())
+        val trajectory = fabricatedTrajectory()
+        val outerIdentity = trajectory.episodeMetadata.compactReplayLink.replayContentIdentity
+        val binding = fabricatedBinding(fidelity = ReplayFidelity.EXACT, replayActionCount = 0)
+        val withMismatchedIdentity = binding.copy(
+            verificationBinding = binding.verificationBinding.copy(
+                replayContentIdentity = binding.verificationBinding.replayContentIdentity.copy(
+                    value = "d".repeat(64),
+                ),
+            ),
+        )
+        val forged = VerifierWorkerResultV1(
+            status = VerifierWorkerStatusV1.VERIFIED,
+            verifiedResult = VerifiedWorkerVerificationV1(
+                verifiedTrajectoryId = trajectory.trajectoryId,
+                verifiedSemanticEpisodeId = trajectory.semanticEpisodeId,
+                verifiedReplayContentIdentity = outerIdentity,
+                verifiedReplayActionCount = trajectory.episodeMetadata.compactReplayLink.replayActionCount,
+                replayTrajectoryBinding = withMismatchedIdentity,
+            ),
+        )
+        verifier.crossBindingCheck(trajectory, forged)
+            .shouldBeInstanceOf<OfflineReplayVerificationResultV1.Unavailable>()
+    }
+
+    test("environment identity repository re-derivation rejects wrong card/deck digests (P1)") {
+        // P1 negative control with REAL curriculum deck authority: the re-derived card and deck
+        // digests come from the accepted locked-pair curriculum sources, so a claimant carrying
+        // fabricated digests fails before any reconstruction.
+        val root = repositoryRoot()
+        try {
+            val akiri = CurriculumDeckSourceLoader(root)
+                .load(CurriculumAiTournamentPreset.AKIRI_CHEVILL.sourcePaths[0])
+            val chevill = CurriculumDeckSourceLoader(root)
+                .load(CurriculumAiTournamentPreset.AKIRI_CHEVILL.sourcePaths[1])
+            val reconstructor = TransportedReplayReconstructorV1(repositoryRoot = root)
+            val cardDigest = reconstructor.lockedCardDefinitionDigest(akiri, chevill)
+            check(cardDigest.length == 64) { "real card digest should be sha256 hex" }
+
+            val wrongClaimant = fabricatedTrajectory(
+                akiriDigest = "e".repeat(64),
+                chevillDigest = "d".repeat(64),
+            )
+            io.kotest.assertions.throwables.shouldThrow<TransportedReplayReconstructionException> {
+                reconstructor.deriveEnvironmentIdentity(wrongClaimant.episodeMetadata.environmentIdentity)
+            }
+
+            // The positive pole: the real digests re-derive without failure.
+            reconstructor.deriveEnvironmentIdentity(
+                fabricatedTrajectory(
+                    akiriDigest = akiri.sourceDigest,
+                    chevillDigest = chevill.sourceDigest,
+                ).episodeMetadata.environmentIdentity,
+            )
+        } finally {
+            root.toFile().deleteRecursively()
         }
     }
 })
@@ -214,30 +308,50 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
 // Focused verifier probes (same module internals, no real worker launches)
 // ---------------------------------------------------------------------------
 
-/** Exposes the internal request/result binding seam for direct assertion. */
-private class CrossBindingProbeVerifier :
-    ProductionOfflineReplayVerifierV1(repositoryRoot = Path.of(".")) {
+/** The module's own runtime classpath + java executable, for test-only launch overrides. */
+private fun testLaunchOverrides(): WorkerLaunchOverridesV1 {
+    val javaBin = Path.of(System.getProperty("java.home")).resolve("bin").let { bin ->
+        if (System.getProperty("os.name").lowercase().contains("windows")) bin.resolve("java.exe") else bin.resolve("java")
+    }
+    return WorkerLaunchOverridesV1(
+        workerClasspath = System.getProperty("java.class.path")
+            ?: error("test requires the JVM classpath"),
+        javaExecutable = javaBin,
+        workerMaxHeap = "-Xmx6g",
+    )
+}
+
+/**
+ * Exposes the request/result binding seam for direct assertion. This is the boundary that must
+ * be self-validating (P2): a syntactically valid worker result must also be semantically
+ * consistent before it surfaces as VERIFIED. Wraps the final verifier class (never a subclass).
+ */
+private class CrossBindingProbeVerifier(launch: WorkerLaunchOverridesV1) {
+    private val verifier = ProductionOfflineReplayVerifierV1(
+        repositoryRoot = Path.of("."),
+        timeout = VerifierTimeoutV1(),
+        launchOverrides = launch,
+    )
+
     fun crossBindingCheck(
         trajectory: TrajectoryV1,
         result: VerifierWorkerResultV1,
-    ): OfflineReplayVerificationResultV1 = boundResult(trajectory, result)
-
-    public override fun boundResult(
-        trajectory: TrajectoryV1,
-        result: VerifierWorkerResultV1,
-    ): OfflineReplayVerificationResultV1 = super.boundResult(trajectory, result)
+    ): OfflineReplayVerificationResultV1 = verifier.invokeBoundResultForTest(trajectory, result)
 }
 
 /** Forces the bounded-timeout path deterministically. */
-private class TimedOutWorkerVerifier :
-    ProductionOfflineReplayVerifierV1(
+private class TimedOutWorkerVerifier(launch: WorkerLaunchOverridesV1) {
+    private val verifier = ProductionOfflineReplayVerifierV1(
         repositoryRoot = Path.of("."),
         timeout = VerifierTimeoutV1(duration = 1, unit = TimeUnit.MICROSECONDS),
+        launchOverrides = launch,
     )
 
+    fun verify(trajectory: TrajectoryV1): OfflineReplayVerificationResultV1 = verifier.verify(trajectory)
+}
+
 /** Launches the fixed worker with an unwritable response path to force a real nonzero exit. */
-private class CrashingWorkerVerifier :
-    ProductionOfflineReplayVerifierV1(repositoryRoot = Path.of(".")) {
+private class CrashingWorkerVerifier(private val launch: WorkerLaunchOverridesV1) {
     fun launchAndAwait(trajectory: TrajectoryV1): Int {
         val request = VerifierWorkerRequestV1.of(trajectory)
         val workDirectory = Files.createTempDirectory("ka06-02-crash-probe-")
@@ -248,10 +362,10 @@ private class CrashingWorkerVerifier :
         Files.writeString(
             argFile,
             listOf(
-                workerMaxHeap,
+                launch.workerMaxHeap,
                 "-cp",
-                quoted(workerClasspath),
-                WORKER_MAIN_CLASS,
+                quoted(launch.workerClasspath),
+                ProductionOfflineReplayVerifierV1.WORKER_MAIN_CLASS,
                 "--request",
                 quoted(
                     workDirectory.resolve("request.json").toAbsolutePath().toString(),
@@ -272,7 +386,7 @@ private class CrashingWorkerVerifier :
             StandardCharsets.UTF_8,
         )
         val process = ProcessBuilder(
-            listOf(javaExecutable.toString(), "@" + argFile.toAbsolutePath().toString()),
+            listOf(launch.javaExecutable.toString(), "@" + argFile.toAbsolutePath().toString()),
         ).redirectErrorStream(true).start()
         process.waitFor(2, TimeUnit.MINUTES)
         workDirectory.toFile().deleteRecursively()
@@ -286,14 +400,21 @@ private class CrashingWorkerVerifier :
 
 private fun sha256Hex(seed: String): String = A3SemanticJson.sha256(seed.toByteArray(StandardCharsets.UTF_8))
 
-private fun fabricatedEnvironmentIdentity(engineCommit: String): EnvironmentIdentityV1 {
+/** The engine repository root: the running checkout itself (tests may not mutate it). */
+private fun repositoryRoot(): Path = Path.of(System.getProperty("user.dir")).toAbsolutePath()
+
+private fun fabricatedEnvironmentIdentity(
+    engineCommit: String,
+    akiriDigest: String = sha256Hex("akiri-deck"),
+    chevillDigest: String = sha256Hex("chevill-deck"),
+): EnvironmentIdentityV1 {
     val seat0 = EntityId("verifier-seat-0")
     val seat1 = EntityId("verifier-seat-1")
     return EnvironmentIdentityV1(
         engineCommit = engineCommit,
         cardDefinitionIdentity = sha256Hex("card-definition"),
-        akiriDeckIdentity = sha256Hex("akiri-deck"),
-        chevillDeckIdentity = sha256Hex("chevill-deck"),
+        akiriDeckIdentity = akiriDigest,
+        chevillDeckIdentity = chevillDigest,
         format = "COMMANDER",
         attackMode = "MULTIPLE",
         startingHandSize = 7,
@@ -304,14 +425,14 @@ private fun fabricatedEnvironmentIdentity(engineCommit: String): EnvironmentIden
                 seatIndex = 0,
                 playerId = seat0,
                 role = "AKIRI",
-                deckIdentity = sha256Hex("akiri-deck"),
+                deckIdentity = akiriDigest,
                 commanderDefinitionIdentity = "Akiri, Fearless Voyager",
             ),
             RosterSeatV1(
                 seatIndex = 1,
                 playerId = seat1,
                 role = "CHEVILL",
-                deckIdentity = sha256Hex("chevill-deck"),
+                deckIdentity = chevillDigest,
                 commanderDefinitionIdentity = "Chevill, Bane of Monsters",
             ),
         ),
@@ -320,8 +441,12 @@ private fun fabricatedEnvironmentIdentity(engineCommit: String): EnvironmentIden
     )
 }
 
-private fun fabricatedTrajectory(engineCommit: String = sha256Hex("fabricated-commit")): TrajectoryV1 {
-    val identity = fabricatedEnvironmentIdentity(engineCommit)
+private fun fabricatedTrajectory(
+    engineCommit: String = sha256Hex("fabricated-commit"),
+    akiriDigest: String = sha256Hex("akiri-deck"),
+    chevillDigest: String = sha256Hex("chevill-deck"),
+): TrajectoryV1 {
+    val identity = fabricatedEnvironmentIdentity(engineCommit, akiriDigest, chevillDigest)
     val metadata = EpisodeMetadataV1(
         semanticEpisodeId = sha256Hex("semantic-episode"),
         collectionJobId = sha256Hex("collection-job"),
@@ -367,27 +492,94 @@ private fun fabricatedPlan(trajectory: TrajectoryV1): WorkloadPlanV1 {
 @Suppress("unused")
 private fun planReference(): WorkloadPlanV1 = fabricatedPlan(fabricatedTrajectory())
 
-private fun fabricatedBinding(): ReplayTrajectoryBindingV1 {
+private fun fabricatedBinding(): ReplayTrajectoryBindingV1 =
+    fabricatedBinding(fidelity = ReplayFidelity.UNVERIFIED, replayActionCount = 0)
+
+/**
+ * Binding fixture over the 0-action range. EXACT requires the full frame evidence chain; the
+ * single frame carries a minimal, digest-consistent observation/domain pair. This fixture is
+ * the carrier for the P2 negative control: an outer-VERIFIED result whose binding is not EXACT
+ * must be rejected by the request/result binding seam.
+ */
+private fun fabricatedBinding(fidelity: ReplayFidelity, replayActionCount: Int): ReplayTrajectoryBindingV1 {
     val contentIdentity = ReplayContentIdentityV1(
         replayVersion = CompactReplay.CURRENT_VERSION,
         value = sha256Hex("replay-content"),
     )
-    // UNVERIFIED fidelity: this fixture carries identity/range fields for protocol and binding
-    // tests, not an EXACT claim — EXACT would require full frame evidence by contract.
+    val seat0 = EntityId("verifier-seat-0")
+    val seat1 = EntityId("verifier-seat-1")
+    val domain = CompleteLegalDomainV1(kind = CompleteLegalDomainKind.ACTION_CANDIDATES)
+    val frame = VerifiedReplayFrame(
+        replayActionIndex = 0,
+        perspectivePlayerId = seat0,
+        observation = PlayerObservationV1(
+            wireSchemaHash = com.wingedsheep.gym.contract.SchemaHash.CURRENT,
+            perspectivePlayerId = seat0,
+            agentToAct = null,
+            turnNumber = 1,
+            phase = com.wingedsheep.sdk.core.Phase.BEGINNING,
+            step = com.wingedsheep.sdk.core.Step.UNTAP,
+            activePlayerId = seat0,
+            priorityPlayerId = seat0,
+            players = listOf(
+                PlayerView(
+                    id = seat0,
+                    name = "Akiri",
+                    lifeTotal = 40,
+                    handSize = 0,
+                    librarySize = 0,
+                    graveyardSize = 0,
+                    exileSize = 0,
+                    manaPool = ManaPoolView(),
+                    isPerspective = true,
+                    isActive = true,
+                    hasPriority = true,
+                    hasLost = false,
+                ),
+                PlayerView(
+                    id = seat1,
+                    name = "Chevill",
+                    lifeTotal = 40,
+                    handSize = 0,
+                    librarySize = 0,
+                    graveyardSize = 0,
+                    exileSize = 0,
+                    manaPool = ManaPoolView(),
+                    isPerspective = false,
+                    isActive = false,
+                    hasPriority = false,
+                    hasLost = false,
+                ),
+            ),
+            zones = emptyList(),
+            stack = emptyList(),
+            pendingDecision = null,
+            terminated = false,
+            truncated = false,
+            winnerId = null,
+            observationDigest = "0".repeat(64),
+        ),
+        domain = domain,
+        candidateDomainDigest = CandidateDomainDigestV1.from(domain),
+    )
     return ReplayTrajectoryBindingV1(
         verificationBinding = ReplayVerificationBindingV1(
             replayContentIdentity = contentIdentity,
             verification = VerifiedReplayVerification(
                 replayVersion = CompactReplay.CURRENT_VERSION,
-                replayActionCount = 0,
-                verifiedActionCount = 0,
-                fidelity = ReplayFidelity.UNVERIFIED,
+                replayActionCount = replayActionCount,
+                verifiedActionCount = replayActionCount,
+                fidelity = fidelity,
+                frames = if (fidelity == ReplayFidelity.EXACT) listOf(frame) else emptyList(),
+                initialCheckpointVerified = fidelity == ReplayFidelity.EXACT,
+                intermediateCheckpointsVerified = fidelity == ReplayFidelity.EXACT,
+                tailCheckpointVerified = fidelity == ReplayFidelity.EXACT,
                 closure = EpisodeClosureV1.GameTerminal(stepCount = 0, winnerId = null),
             ),
         ),
         chosenInputBinding = ReplayChosenInputBindingV1(
             replayContentIdentity = contentIdentity,
-            replayActionCount = 0,
+            replayActionCount = replayActionCount,
             chosenInputs = emptyList(),
         ),
     )

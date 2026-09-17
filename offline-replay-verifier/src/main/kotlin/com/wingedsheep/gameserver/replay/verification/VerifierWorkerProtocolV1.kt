@@ -175,12 +175,16 @@ object TransportedReplayVerifierWorkerMain {
         repositoryRoot: Path,
         request: VerifierWorkerRequestV1,
     ): VerifierWorkerResultV1 = try {
-        val reconstructor = TransportedReplayReconstructorV1(repositoryRoot = repositoryRoot)
         val claimant = request.claimantTrajectory()
-        val authenticated = reconstructor.authenticateSource(
-            claimant.episodeMetadata.environmentIdentity.engineCommit,
+        // Sealed authority flow (KA06_02_REMEDIATION_01 P1): the only reconstruction seam takes
+        // the authenticated source proof and re-derives the repository-owned environment identity
+        // before any execution. No unauthenticated path exists.
+        val authenticated = TransportedReplayReconstructorV1.authenticate(
+            repositoryRoot = repositoryRoot,
+            expectedEngineCommit = claimant.episodeMetadata.environmentIdentity.engineCommit,
+            claimantReplayActionCount = claimant.episodeMetadata.compactReplayLink.replayActionCount,
         )
-        val reconstruction = reconstructor.reconstruct(claimant)
+        val reconstruction = authenticated.reconstruct(claimant)
         VerifierWorkerResultV1(
             status = VerifierWorkerStatusV1.VERIFIED,
             verifiedResult = VerifiedWorkerVerificationV1(
@@ -191,7 +195,7 @@ object TransportedReplayVerifierWorkerMain {
                 replayTrajectoryBinding = reconstruction.freshBinding,
             ),
             diagnostics = listOf(
-                "authenticatedSourceCommit=${authenticated.actualSourceCommit}",
+                "authenticatedSourceCommit=${authenticated.authenticatedSource.actualSourceCommit}",
             ),
         )
     } catch (reconstructionFailure: TransportedReplayReconstructionException) {

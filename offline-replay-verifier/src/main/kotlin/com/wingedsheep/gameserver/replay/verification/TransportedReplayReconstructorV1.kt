@@ -80,13 +80,25 @@ import java.nio.file.Path
 class TransportedReplayReconstructorV1(
     /** Repository root supplying the locked curriculum deck authority and git bootstrap probe. */
     val repositoryRoot: Path,
+    /**
+     * Durable claimant replay range for horizon derivation; supplied per verification by the
+     * worker (the reconstructor instance is repository-scoped, not trajectory-scoped).
+     */
+    claimantReplayActionCountOrNull: Int? = null,
     /** Deck source loading authority; defaults to the accepted curriculum loader. */
     private val deckSourceLoader: (repositoryRoot: Path, sourcePath: String) -> CurriculumDeckSourceV1 =
         { root, sourcePath -> CurriculumDeckSourceLoader(root).load(sourcePath) },
-    /** Bounded replay horizon for fresh execution; must cover the producer's own horizon. */
-    private val maxReplaySteps: Int = DEFAULT_MAX_REPLAY_STEPS,
     /** Canonical source pins required by the bootstrap doctrine. */
     private val requiredPinnedPaths: List<String> = DEFAULT_REQUIRED_PINS,
+    /** Explicit horizon override (test seam only); production uses the derived contract. */
+    private val replayHorizonOverride: Int? = null,
+    /**
+     * Bounded fresh-execution horizon, derived by [computeReplayHorizon]: durable claimant range
+     * plus fixed headroom (setup/mulligan action headroom), under the hard-owned production
+     * ceiling [MAX_REPLAY_STEPS_CEILING]. A claimant range beyond the ceiling cannot be
+     * reconstructed and fails closed — it must never be truncated silently.
+     */
+    private val maxReplaySteps: Int = computeReplayHorizon(claimantReplayActionCountOrNull, replayHorizonOverride),
 ) {
     /** Accepted locked-pair deck authority, loaded once per reconstructor instance. */
     private val deckSources: Pair<CurriculumDeckSourceV1, CurriculumDeckSourceV1> by lazy {
@@ -160,12 +172,30 @@ class TransportedReplayReconstructorV1(
     }
 
     /**
-     * Reconstruct the episode and produce fresh verification evidence. The claimant trajectory
-     * is used only as the source of durable identity + ordered semantic choices and as the
-     * comparison target for regenerated boundaries.
+     * Reconstruct the episode and produce fresh verification evidence — sealed authority flow:
+     * repository environment re-derivation (P1: card/deck digests against repository authority),
+     * A5 validation, fresh execution, fresh A4 fold, and full request binding. Claimant data is
+     * used only as durable identity + ordered semantic choices and as comparison targets.
+     *
+     * [authenticated] must come from [authenticateSource] on this same instance: reconstruction
+     * is not callable without a successful source-authority proof, so no caller can skip or
+     * reorder source authentication.
      */
-    fun reconstruct(claimant: TrajectoryV1): TransportedReconstructionV1 {
-        val identity = claimant.episodeMetadata.environmentIdentity
+    internal fun reconstruct(
+        authenticated: AuthenticatedSourceV1,
+        claimant: TrajectoryV1,
+    ): TransportedReconstructionV1 {
+        check(authenticated.actualSourceCommit == authenticated.expectedEngineCommit) {
+            "Authenticated source does not carry the expected commit"
+        }
+        val durableIdentity = claimant.episodeMetadata.environmentIdentity
+        check(durableIdentity.engineCommit == authenticated.expectedEngineCommit) {
+            "Authenticated commit does not match the claimant environment identity"
+        }
+        // P1: repository-owned identity fields are re-derived and compared against the claimant
+        // BEFORE any execution. A claimant with wrong card/deck digests fails here — its metadata
+        // can never ride through reconstruction into the fresh trajectory.
+        val identity = deriveEnvironmentIdentity(durableIdentity)
         val link = claimant.episodeMetadata.compactReplayLink
 
         // A5 fail-closed validation of the transported claimant trajectory (no engine consulted).
@@ -809,7 +839,55 @@ class TransportedReplayReconstructorV1(
     }
 
     companion object {
-        const val DEFAULT_MAX_REPLAY_STEPS: Int = 40
+        /**
+         * Explicit horizon contract: [MAX_REPLAY_STEPS_CEILING] is hard-owned, a claimant range
+         * beyond it fails closed instead of being truncated, and test overrides may only lower
+         * the horizon, never exceed the ceiling.
+         */
+        fun computeReplayHorizon(claimantReplayActionCount: Int?, override: Int?): Int {
+            override?.let {
+                require(it in 1..MAX_REPLAY_STEPS_CEILING) {
+                    "Replay horizon override must be within 1..$MAX_REPLAY_STEPS_CEILING"
+                }
+                return it
+            }
+            require(claimantReplayActionCount == null || claimantReplayActionCount >= 0) {
+                "Claimant replay action count must not be negative"
+            }
+            return (
+                claimantReplayActionCount?.let { it + REPLAY_HORIZON_HEADROOM }
+                    ?: DEFAULT_REPLAY_HORIZON
+                ).coerceAtMost(MAX_REPLAY_STEPS_CEILING)
+        }
+
+        /**
+         * Sealed authority flow (KA06_02_REMEDIATION_01): authenticate the executed source
+         * revision with the accepted bootstrap doctrine and hand back a reconstructor bound to
+         * that proof. Fresh execution is not reachable without a successful authentication — the
+         * unauthenticated constructor stays internal, and [AuthenticatedReconstructorV1.reconstruct]
+         * is the only public reconstruction seam.
+         */
+        fun authenticate(
+            repositoryRoot: Path,
+            expectedEngineCommit: String,
+            claimantReplayActionCount: Int? = null,
+        ): AuthenticatedReconstructorV1 {
+            val reconstructor = TransportedReplayReconstructorV1(
+                repositoryRoot = repositoryRoot,
+                claimantReplayActionCountOrNull = claimantReplayActionCount,
+            )
+            return AuthenticatedReconstructorV1(
+                reconstructor,
+                reconstructor.authenticateSource(expectedEngineCommit),
+            )
+        }
+
+        /** Fixed horizon when no claimant range is known (protocol fixtures only). */
+        const val DEFAULT_REPLAY_HORIZON: Int = 40
+        /** Durable-range headroom covering setup steps beyond authoritative choices. */
+        const val REPLAY_HORIZON_HEADROOM: Int = 64
+        /** Hard-owned production ceiling; larger episodes fail closed, never truncated. */
+        const val MAX_REPLAY_STEPS_CEILING: Int = 4096
         const val DEFAULT_COMMANDER_STARTING_LIFE: Int = 40
         const val RECONSTRUCTED_GAME_ID: String = "transported-replay-verifier-v1"
         const val RECONSTRUCTED_STARTED_AT: String = "1970-01-01T00:00:00Z"
@@ -853,6 +931,21 @@ data class AuthenticatedSourceV1(
     val expectedEngineCommit: String,
     val actualSourceCommit: String,
 )
+
+/**
+ * A reconstructor bound to a successful same-revision source proof. The only reconstruction
+ * seam: fresh execution is impossible without prior repository source authority (P1).
+ */
+class AuthenticatedReconstructorV1 internal constructor(
+    private val reconstructor: TransportedReplayReconstructorV1,
+    private val authenticated: AuthenticatedSourceV1,
+) {
+    /** The successful same-revision proof this reconstructor is bound to. */
+    val authenticatedSource: AuthenticatedSourceV1 get() = authenticated
+
+    fun reconstruct(claimant: TrajectoryV1): TransportedReconstructionV1 =
+        reconstructor.reconstruct(authenticated, claimant)
+}
 
 data class TransportedReconstructionV1(
     val freshBinding: ReplayTrajectoryBindingV1,
