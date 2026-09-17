@@ -15,6 +15,9 @@ tasks.named<Test>("test") {
     exclude("**/EnvironmentV1DecisionFamilyClosureAuditTest*")
     // Pending-payment contract tests read the immutable locked Commander artifact directly.
     inputs.file(rootProject.layout.projectDirectory.file("docs/ml/curriculum/akiri-v0.1.txt"))
+    // The KA06 transported-replay characterization is an explicit opt-in trust gate that spawns
+    // its own verifier JVM processes. Run it through :kaggleActor06CharacterizationTest.
+    exclude("**/KaggleActor06TransportedReplayCharacterizationTest*")
 }
 
 tasks.register<Test>("environmentV1AcceptanceTest") {
