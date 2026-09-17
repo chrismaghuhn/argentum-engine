@@ -15,7 +15,7 @@ Result: **DURABLE_INPUT_SUFFICIENCY = PROVEN** (test-only characterization; no p
 | Base SHA | `8db093024ef2462c1e097d2c2adde69d99cb9cef` |
 | Branch | `chris/kaggle-actor-06-transported-replay-01-characterization-20260916` |
 | Worktree | `C:/Users/chris/.config/superpowers/worktrees/argentum-engine/kaggle-actor-06-transported-replay-01-characterization-20260916` |
-| Head at delivery | the tip commit of this branch, i.e. the commit that adds this report (exact SHA in the task's final report message) |
+| Head at delivery | the remediation head `7ce382cfe7` (review remediation commit; exact SHA in the task's final report message) |
 | `origin/main` at report time | `1251f0666d` (PR #210, PAYMENT_DOMAIN_02) — advanced in parallel during this task, exactly as the parallel-execution boundary permits. The base `8db093024e` remains an ancestor of both HEAD and current `origin/main`; no drift, no rewrite, fast-forwardable. |
 | PREREQUISITES_ACCEPTED | PARTIAL — PAYMENT_DOMAIN_01 characterization merged (PR #209); PAYMENT_DOMAIN_02 merge (PR #210) landed in parallel; the ARENA_ML_01 terminal-game rerun was NOT complete. Per the parallel-execution boundary, this task ran the local replay trust track only, made no gameplay/readiness claims, and admitted no data. |
 
