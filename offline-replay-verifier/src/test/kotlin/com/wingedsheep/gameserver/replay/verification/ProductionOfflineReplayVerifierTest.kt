@@ -240,23 +240,42 @@ private class CrashingWorkerVerifier :
     ProductionOfflineReplayVerifierV1(repositoryRoot = Path.of(".")) {
     fun launchAndAwait(trajectory: TrajectoryV1): Int {
         val request = VerifierWorkerRequestV1.of(trajectory)
-        val arguments = mutableListOf(
-            javaExecutable.toString(),
-            workerMaxHeap,
-            "-cp",
-            workerClasspath,
-            WORKER_MAIN_CLASS,
-            "--request",
-            Base64.getEncoder().encodeToString(
-                VerifierWorkerProtocolV1Json.encodeRequest(request).toByteArray(StandardCharsets.UTF_8),
-            ),
-            "--repository-root",
-            Path.of(".").toAbsolutePath().toString(),
-            "--response",
-            Path.of(".", "does-not-exist", "response.json").toAbsolutePath().toString(),
+        val workDirectory = Files.createTempDirectory("ka06-02-crash-probe-")
+        val argFile = workDirectory.resolve("worker.args")
+        val quoted: (String) -> String = { value ->
+            "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+        }
+        Files.writeString(
+            argFile,
+            listOf(
+                workerMaxHeap,
+                "-cp",
+                quoted(workerClasspath),
+                WORKER_MAIN_CLASS,
+                "--request",
+                quoted(
+                    workDirectory.resolve("request.json").toAbsolutePath().toString(),
+                ),
+                "--repository-root",
+                quoted(Path.of(".").toAbsolutePath().toString()),
+                "--response",
+                quoted(
+                    workDirectory.resolve("does-not-exist").resolve("response.json")
+                        .toAbsolutePath().toString(),
+                ),
+            ).joinToString("\n"),
+            StandardCharsets.UTF_8,
         )
-        val process = ProcessBuilder(arguments).redirectErrorStream(true).start()
+        Files.writeString(
+            workDirectory.resolve("request.json"),
+            VerifierWorkerProtocolV1Json.encodeRequest(request),
+            StandardCharsets.UTF_8,
+        )
+        val process = ProcessBuilder(
+            listOf(javaExecutable.toString(), "@" + argFile.toAbsolutePath().toString()),
+        ).redirectErrorStream(true).start()
         process.waitFor(2, TimeUnit.MINUTES)
+        workDirectory.toFile().deleteRecursively()
         return process.exitValue()
     }
 }

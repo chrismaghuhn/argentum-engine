@@ -43,26 +43,35 @@ open class ProductionOfflineReplayVerifierV1(
 
     override fun verify(trajectory: TrajectoryV1): OfflineReplayVerificationResultV1 {
         val workDirectory = Files.createTempDirectory("offline-replay-verifier-")
-        val requestFile = workDirectory.resolve("request.json")
         val responseFile = workDirectory.resolve("response.json")
         val request = VerifierWorkerRequestV1.of(trajectory)
+        // Java @argfile launch: all arguments (including the module classpath) travel inside a
+        // file, keeping the OS command line short and the launch shape fixed. The request is a
+        // plain file reference, not an inline blob.
+        val argFile = workDirectory.resolve("worker.args")
+        val requestFile = workDirectory.resolve("request.json")
         Files.writeString(requestFile, VerifierWorkerProtocolV1Json.encodeRequest(request), StandardCharsets.UTF_8)
+        Files.writeString(
+            argFile,
+            listOf(
+                workerMaxHeap,
+                "-cp",
+                quoteArgFile(workerClasspath),
+                WORKER_MAIN_CLASS,
+                "--request",
+                quoteArgFile(requestFile.toAbsolutePath().toString()),
+                "--repository-root",
+                quoteArgFile(repositoryRoot.toAbsolutePath().normalize().toString()),
+                "--response",
+                quoteArgFile(responseFile.toAbsolutePath().toString()),
+            ).joinToString("\n"),
+            StandardCharsets.UTF_8,
+        )
 
         val process = ProcessBuilder(
             listOf(
                 javaExecutable.toString(),
-                workerMaxHeap,
-                "-cp",
-                workerClasspath,
-                WORKER_MAIN_CLASS,
-                "--request",
-                Base64.getEncoder().encodeToString(
-                    Files.readAllBytes(requestFile),
-                ),
-                "--repository-root",
-                repositoryRoot.toAbsolutePath().normalize().toString(),
-                "--response",
-                responseFile.toAbsolutePath().toString(),
+                "@" + argFile.toAbsolutePath().toString(),
             ),
         )
             .redirectErrorStream(true)
@@ -147,6 +156,10 @@ open class ProductionOfflineReplayVerifierV1(
         }
         return OfflineReplayVerificationResultV1.Verified(verified.replayTrajectoryBinding)
     }
+
+    /** Java @argfile quoting: double-quote, backslash-escape embedded quotes/backslashes. */
+    private fun quoteArgFile(value: String): String =
+        "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
     private fun failClosed(
         code: OfflineReplayFailureCodeV1,
