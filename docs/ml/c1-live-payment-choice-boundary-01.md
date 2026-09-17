@@ -12,6 +12,14 @@ REMEDIATION=2nd commit per review of 6c5b0d7ef3: P2-1 cardinality 425→6,330/75
   recommendation changed to RECOMMEND_HIERARCHICAL_SEQUENTIAL_PAYMENT_CONSTRUCTION; P2-3 causal
   wording corrected to CAUSAL_MECHANISM=PROVEN / EXACT_CAUSAL_INDEX=NOT_DURABLY_PINNED /
   NUMBER_OF_PRIOR_PAYMENTS=NOT_DURABLY_PROVEN. The six characterization tests are unchanged.
+REMEDIATION_2=3rd commit per review of 8b2d617fe4: curriculum count corrected 9→6 relevant
+  multi-production-CHOICE lands (Boros Garrison = fixed {R}{W} FixedOutputBundle; Sunhome and
+  Slayers' Stronghold = {T}: Add {C} only — verified per card definition), "ordinary boards"
+  claim replaced by reachability with FREQUENCY=NOT_MEASURED; 10,000 re-scoped to a pregame
+  bounded-enumeration PRECEDENT, not a global payment-domain contract; A2 completion re-scoped
+  to a recommended DIRECTION with STEP_GRAMMAR_COMPLETENESS=NOT_YET_PROVEN, branching and depth
+  maxima NOT_YET_PROVEN (all three explicit _02A acceptance gates), and the final preflight's
+  role correctly scoped to plan legality, not grammar completeness.
 ```
 
 ## 1. Executive finding
@@ -59,10 +67,11 @@ The new decisive evidence of this slice:
    allocation → next activation / finalize) → JVM materializes `PaymentStrategy.ExplicitV3` →
    `ActionPaymentPlanValidator`/`PaymentPlanValidator` preflight → one atomic Rules transition.
    Full single-decision plan listing (§15 variant A1) is retained only as the single-step
-   degenerate case: complete plan enumeration is NOT realistically bounded within the repo's own
-   established fail-closed alternative bound (§11: 6,330 complete programs for five dual
-   sources, 75,972 for six — and Akiri's own curriculum runs nine multi-production lands, so
-   such boards are ordinary). Flattened complete-action alternatives are rejected: no complete
+   degenerate case: complete plan enumeration is NOT realistically bounded at reachable
+   curriculum states (§11: 6,330 complete programs for five multi-choice sources, 75,972 for
+   six — and the locked Akiri curriculum contains six such lands, so those states are
+   reachable; their empirical frequency is NOT_MEASURED). Flattened complete-action
+   alternatives are rejected: no complete
    enumerator exists in production and the cross-product growth is real (§11–§13). The "pending
    mana payment decision" route (`SelectManaSourcesDecision`) is rejected for now: its public
    surface is a legacy aggregate source list with an `autoPaySuggestion` — explicitly not a
@@ -369,34 +378,52 @@ CANDIDATE_EXPLOSION_RISK (quantified, §12; arithmetic re-verified per review):
   flattened complete-alternative design across the outer menu:
       |outer candidates| × |target variants| × |mode/X variants| × |payment plans|
   example measured fixture: 1 outer paid action × 2 plans = 2 (harmless);
-  with 5 untapped dual lands + a 2-generic cost the plan count alone is
+  with 5 untapped multi-production-choice lands + a 2-generic cost the plan count alone is
   Σ_{k=1..5} C(5,k)·2^k·k! = 10 + 80 + 480 + 1920 + 3840 = 6,330 distinct complete programs
-  for ONE outer action (six dual lands: Σ_{k=1..6} = 75,972); a 15-candidate outer menu
+  for ONE outer action (six such lands: Σ_{k=1..6} = 75,972); a 15-candidate outer menu
   multiplies that by 15 => flattened enumeration of complete action+plan bindings is
   unacceptable as the general channel, and the outer candidate card must stay plan-free
   (the committed test pins: exactly one live binding per action today).
 
-Realism check against the accepted curriculum (evidence, not hand-waving):
+Realism check against the accepted curriculum (card definitions verified at this HEAD; reachability
+is what the architecture needs — empirical frequency is NOT measured here):
   Akiri v0.1 (docs/ml/curriculum/akiri-v0.1.txt) runs 36 lands: 17 Plains + 10 Mountain
-  (single-production) and NINE multi-production lands (Command Tower, Clifftop Retreat,
-  Battlefield Forge, Inspiring Vantage, Sacred Foundry, Temple of Triumph, Boros Garrison,
-  Sunhome, Slayers' Stronghold; e.g. Clifftop Retreat = "{T}: Add {R} or {W}" — two
-  ProductionChoices in the card definition). Boards with 5–6 dual-capable untapped sources are
-  therefore ORDINARY mid-game states in exactly the curriculum the ML seat plays — the
-  6,330–75,972 program counts are realistic, not adversarial.
-Repo precedent for a cardinality bound (the pattern any flat alternative set must respect):
-  LivePregameDecisionSource.MAX_EXPLICIT_ALTERNATIVES = 10_000, and a domain beyond that bound
-  fails closed with a typed unsupported-structured-decision outcome instead of being truncated
-  (docs/data-contracts.md:1362). 6,330 fits under that bound; 75,972 does NOT — so even inside
-  ONE action's payment sub-domain, full plan listing fails closed on ordinary boards. That is
-  decision incompleteness by cardinality — the same failure class the live seat already exhibits
-  at the outer boundary, recreated one level down if the sub-domain itself is a flat complete
-  plan list.
+  (single-production) and nine nonbasic lands. Of those nine, exactly SIX are relevant
+  multi-production-CHOICE sources in the payment-domain sense (verified per card definition):
+    Command Tower          ({T}: Add one mana of any color in your commander's color identity —
+                            AddManaOfChoiceEffect -> SelectableSingleOutput over the commander
+                            identity colors),
+    Sacred Foundry         (Land — Mountain Plains; intrinsic subtype abilities {T}: Add {R} / {T}:
+                            Add {W} — two abilities, two production choices),
+    Clifftop Retreat       ({T}: Add {R} or {W} — two abilities, two choices),
+    Battlefield Forge      ({T}: Add {R} or {W} + pain rider — two choices, certified side effect),
+    Inspiring Vantage      ({T}: Add {R} or {W} — two abilities, two choices),
+    Temple of Triumph      ({T}: Add {R} or {W} — two abilities, two choices).
+  The other three nonbasics are NOT multi-choice: Boros Garrison is a FIXED {R}{W} bundle
+  (AddMana(RED).then(AddMana(WHITE)) -> FixedOutputBundle, a single ProductionChoice), and
+  Sunhome / Slayers' Stronghold have only {T}: Add {C} (single COLORLESS choice).
+
+  Consequence: 5–6 simultaneous multi-choice untapped sources are REACHABLE in the locked
+  curriculum (17 + 6 candidates on the board), so a trusted controller must not become incomplete
+  at those states. Their empirical frequency is NOT_MEASURED in this slice — no trace/soak/corpus
+  frequency claim is made or needed; the 6,330–75,972 program counts characterize the reachable
+  envelope, not a typical board.
+Repo precedent for a cardinality bound (a PRECEDENT, not a global contract — corrected per
+review):
+  LivePregameDecisionSource.MAX_EXPLICIT_ALTERNATIVES = 10_000 fails closed with a typed
+  unsupported-structured-decision outcome instead of truncating (docs/data-contracts.md:1362) —
+  but it is an internal constant scoping the PREGAME ordered-selection enumeration only. It is
+  NOT evidence of a universal LiveStructuredChoiceDomainV1 or C1-wide payment-domain limit; no
+  such global bound exists on this HEAD. The precedent still demonstrates the current
+  bounded-enumeration design philosophy: an existing source already treats 10,000 explicit
+  alternatives as too large for a single structured decision and fails closed. 6,330 sits under
+  that precedent; 75,972 exceeds it. _02A must define its OWN explicit bound and its behavior
+  above that bound (typed fail-closed), not inherit this constant.
 ```
 
 Therefore: the *channel* must not multiply the outer candidate set. The *payment sub-domain* is
 only derived for the ONE selected outer action — but its own cardinality is NOT inherently
-bounded (§11: up to 75,972 on ordinary boards), so the sub-domain's internal representation
+bounded (§11: up to 75,972 at reachable curriculum states), so the sub-domain's internal representation
 decision (A1 flat listing vs A2 sequential construction, §15) is the central design question,
 not a settled detail.
 
@@ -420,10 +447,12 @@ NO HIDDEN POLICY   the JVM never picks; unique-alternative collapse is the only 
 C1 FIT            reuses the entire C1_07A/07B/07C snapshot/projection/ordinal/staged-RNG contract;
                   the second decision is just another structured domain through the same runtime.
 EXPLOSION         none across the outer set; but the per-action sub-domain itself carries the full
-                  factorial plan count (§11: 6,330–75,972 for ordinary boards). A flat sub-domain
-                  listing therefore breaches the repo's own 10,000-alternative fail-closed bound
-                  on realistic states. Remediated: the hierarchical family splits into A1 vs A2
-                  (§15); A1 alone is insufficient as the general channel.
+                  factorial plan count (§11: 6,330–75,972 at reachable curriculum states). A flat
+                  sub-domain listing is inconsistent with the repo's existing bounded-enumeration
+                  precedent (the pregame source fails closed at 10,000 alternatives), and beyond
+                  six multi-choice sources no bound witness exists at all. Remediated: the
+                  hierarchical family splits into A1 vs A2 (§15); A1 alone is insufficient as the
+                  general channel.
 JVM-ONLY BINDINGS  exact table stores the outer action + the exact selected plan; nothing serialized
                   to Python except model-facing views and ordinals.
 STALE SAFETY      the existing requireCurrent revalidation (observation/domain/binding/RNG) plus a
@@ -445,8 +474,8 @@ SHAPE   outer menu publishes complete bindings: (action × target × mode/X × f
 COMPLETENESS   requires enumerating every legal PaymentPlanV3 per action — the production
                enumerator does NOT exist (§10-B). Building it is feasible (public-data derivation
                is proven by the test support) but §30 forbids it here, and its output multiplies
-               the outer candidate card (§11: 6,330 complete programs for one realistic
-               five-dual action; × outer menu).
+               the outer candidate card (§11: 6,330 complete programs for one reachable
+               five-multi-choice-source action; × outer menu).
 DETERMINISM    fine in principle (canonical plan identity).
 C1 FIT         poor: the outer decision's candidate feature views would have to encode payment
                internals (bucket aliases, allocations) to remain semantically distinct — a large
@@ -488,8 +517,8 @@ DISPOSITION: revisit only if a later slice needs mid-window payment interactions
 
 The review correctly identified that the original recommendation conflated two distinct designs
 inside "hierarchical". They are analyzed separately now, against the corrected cardinality
-evidence (§11: 6,330 complete programs for five dual sources; 75,972 for six; Akiri's own
-curriculum runs nine multi-production lands, so such boards are ordinary).
+evidence (§11: 6,330 complete programs for five multi-choice sources; 75,972 for six; the locked
+Akiri curriculum contains six such lands, so those states are reachable).
 
 ### A1 — hierarchical + full PaymentPlanV3 enumeration
 
@@ -498,8 +527,8 @@ programs of the selected action's current V5 domain.
 
   COMPLETENESS      the enumerated set IS the completeness witness (injective canonical plan
                     identities); complete by construction if the enumerator is correct.
-  BRANCHING         one decision with |complete programs| candidates: 6,330–75,972 on ordinary
-                    curriculum boards (§11).
+  BRANCHING         one decision with |complete programs| candidates: 6,330–75,972 at reachable
+                    curriculum states (§11).
   CANONICAL IDENTITY canonical full-plan JSON per §17; the existing canonicalizer applies.
   STALE REVALIDATION re-derive the full plan set from the fresh domain; identity match; preflight.
   ATOMICITY         unchanged: one Rules transition after selection.
@@ -508,10 +537,15 @@ programs of the selected action's current V5 domain.
                     candidate card of 75,972 feature views per payment decision is not a
                     meaningful model contract; the model would have to search the factorial
                     space through one softmax.
-  BOUND CHECK       against the repo's own precedent (MAX_EXPLICIT_ALTERNATIVES = 10_000,
-                    fail-closed beyond): 5 dual sources fit (6,330), 6 do not (75,972). An
-                    ordinary Akiri board crosses the bound => typed fail-closed => the model
-                    cannot pay in exactly the states that motivated this task.
+  BOUND CHECK       against the repo's existing precedent (the pregame source's
+                    MAX_EXPLICIT_ALTERNATIVES = 10_000, typed fail-closed beyond): 5 multi-choice
+                    sources fit under it (6,330), 6 exceed it (75,972). The precedent is not a
+                    normative payment-domain bound, but it demonstrates the current
+                    bounded-enumeration design philosophy; a 75,972-candidate card would be
+                    inconsistent with it and would need its own explicit, justified bound.
+                    Reachable curriculum states therefore push A1 into exactly the territory the
+                    existing design philosophy already treats as too large => typed fail-closed
+                    => the model cannot pay in exactly the states that motivated this task.
   VERDICT           viable ONLY for small, witness-provable plan sets. Insufficient as the
                     general channel.
 
@@ -544,17 +578,33 @@ validated plan crosses the boundary:
         ↓
     ONE authoritative Rules transition; staged RNG commits only after acceptance
 
-  COMPLETENESS      step-local witnesses: each step's alternative set is derived from published
-                    domain data of the remaining construction problem, and the FINAL assembled
-                    plan is never trusted on construction alone — it still passes the full
-                    PaymentPlanValidator preflight. Any incompleteness in the step grammar
-                    surfaces as a typed validation failure, never as hidden policy.
-  BRANCHING         per step, tens — not tens of thousands: options = untapped published source
-                    options (× production choices × cost orders) × allocation targets (pool
-                    buckets + earlier outputs). Depth ≤ |sources| + 1 (a source activates at
-                    most once — usedSources tracking). The factorial PATH count is distributed
-                    over small sequential DECISIONS: the model faces small candidate cards,
-                    never the product.
+  COMPLETENESS      step-local witnesses alone are NOT sufficient (corrected per review): a
+                    witness proves the PUBLISHED alternatives are injective and consistently
+                    bound; it does not prove the grammar REACHES every legal plan. A defective
+                    grammar generating only {planA, planB} where {planA, planB, planC} are legal
+                    passes both witnesses and the final preflight — planC is simply never
+                    generated, and PaymentPlanValidator answers "is THIS plan legal?", never
+                    "is the reachable plan set complete?". Therefore:
+                    STEP_GRAMMAR_COMPLETENESS = NOT_YET_PROVEN, and _02A must supply exactly
+                    this proof: (a) for small domains, a complete flat reference enumerator
+                    cross-checked against the grammar's reachable terminal plans (canonical set
+                    equality); (b) for larger domains, a structural per-state/per-transition
+                    coverage argument (each transition's alternative set must cover ALL legal
+                    continuations of that construction state — proven against the published V5
+                    domain, not asserted). Until that proof exists, A2 is the recommended
+                    DIRECTION, not a proven-complete design, and the final preflight's role is
+                    correctly scoped: it proves the assembled plan is legal, never that the
+                    grammar was complete.
+  BRANCHING         EXPECTED: local domains substantially smaller than whole-plan enumeration
+                    (options = untapped published source options × production choices × cost
+                    orders × allocation targets). NOT_YET_PROVEN: the exact maximum branching —
+                    initial-pool allocations, activation mana costs, production choice counts,
+                    ordering, and outer-cost allocations can each enlarge a local domain or add
+                    decision levels. _02A must characterize and bound the actual maxima.
+  DEPTH             EXPECTED ≤ |sources| + construction levels (a source activates at most once
+                    — usedSources tracking). NOT_YET_PROVEN: the exact maximum construction
+                    depth, including activation-cost sub-construction levels. _02A must
+                    characterize and bound it.
   CANONICAL IDENTITY the JVM-only partial plan carries a canonical prefix identity (§17); step
                     alternatives are identified by (step kind + canonical step content).
   STALE REVALIDATION every step revalidated against a fresh snapshot; any drift => STALE_INFERENCE,
@@ -574,8 +624,10 @@ validated plan crosses the boundary:
                     with nested step responses — decided in the trajectory follow-up; both
                     preserve complete domain + chosen response + replay correspondence
                     (the final ExplicitV3 action).
-  COSTS             k+1 round-trips and k+1 staged snapshots per payment-relevant paid action;
-                    new orchestration loop; the most new code of the variants.
+  Cost of A2: k+1 round-trips and k+1 staged snapshots per payment-relevant paid action;
+                    new orchestration loop; the most new code of the variants; and the grammar
+                    completeness/branching/depth proofs are pending _02A (see COMPLETENESS /
+                    BRANCHING / DEPTH above).
 
 ### Recommendation
 
@@ -588,25 +640,35 @@ validated plan crosses the boundary:
 
   Evidence for choosing A2 over A1 (not a default; the review required this decision to be made
   on evidence):
-  1. A1's own cardinality audit (§11) shows full plan listing crosses the repo's established
-     10,000-alternative fail-closed bound on ordinary curriculum boards (six dual sources of
-     Akiri's nine) — A1 would recreate decision incompleteness at the payment sub-domain, the
+  1. A1's cardinality audit (§11) shows full plan listing exceeds the repo's existing
+     bounded-enumeration precedent at reachable curriculum states (six multi-choice sources of
+     Akiri's six exceed the 10,000-alternative pregame bound; beyond six, no bound witness
+     exists at all) — A1 would recreate decision incompleteness at the payment sub-domain, the
      same failure class this task exists to remove, one level down.
-  2. A2's per-step branching is small and bounded by published domain data per step; the model
-     contract stays within what the accepted C1_06 scorer meaningfully consumes.
+  2. A2's per-step local domains are EXPECTED to be substantially smaller than whole-plan
+     enumeration; the model contract then stays within what the accepted C1_06 scorer
+     meaningfully consumes. The exact branching/depth maxima are NOT_YET_PROVEN and are
+     explicitly _02A deliverables (§15 BRANCHING/DEPTH above).
   3. A2 strictly preserves every established safety property: no intermediate mutation, staged
      RNG, fail-closed staleness, final preflight, JVM-only exact state.
   4. The task's own §10 explicitly allowed this outcome: "the domain is naturally better
      represented as a structured/sequential choice rather than a flat complete plan list" —
      after the corrected cardinality evidence, that is what the audit shows.
 
-  Honest cost of A2: the step grammar and its orchestration loop are genuinely new; completeness
-  of the step grammar itself must be argued per step kind (§24 _02A), and a wrong step grammar
-  fails closed (final validation) rather than silently. A1 is simpler to build and provably
-  complete where it fits; A2 is the only variant that fits the real curriculum.
+  Honest cost of A2: the step grammar and its orchestration loop are genuinely new; the
+  grammar's completeness is NOT_YET_PROVEN and must be argued per step kind with the two-tier
+  proof above (flat reference enumeration on small domains; structural coverage per transition
+  on large ones) — this is _02A's central acceptance gate, not a detail. A wrong grammar fails
+  the _02A gate rather than shipping hidden policy. A1 is simpler to build and provably
+  complete where its candidate card stays small; A2 is the only direction that fits the
+  reachable state envelope.
 
-  DESIGN_RECOMMENDATION_READY = YES (this recommendation; supersedes the pre-remediation
-  RECOMMEND_HIERARCHICAL_PAYMENT_DECISION wording).
+  DESIGN_RECOMMENDATION_READY = YES as an ARCHITECTURE DIRECTION only:
+    recommended architecture direction = RECOMMEND_HIERARCHICAL_SEQUENTIAL_PAYMENT_CONSTRUCTION
+    proven complete grammar            = NOT_YET_PROVEN (explicit _02A acceptance gate)
+  The slice does not claim a proven-complete grammar; it claims a direction, with the
+  completeness proof as the named next deliverable. (Supersedes the pre-remediation
+  RECOMMEND_HIERARCHICAL_PAYMENT_DECISION wording.)
 
 ### Proposed dataflow (decision-boundary diagram, §40)
 
@@ -646,15 +708,15 @@ validated plan crosses the boundary:
 
 | Property | A1: hierarchical + full plan enumeration | A2: hierarchical + sequential construction | Flattened (B) | Pending-decision (C) |
 |---|---|---|---|---|
-| Complete | where under the 10,000-alternative bound; fail-closed beyond (6 dual sources breach it) | yes — per-step witnesses + final PaymentPlanValidator preflight; any grammar gap fails typed | only if a complete enumerator is built (none exists) | no — current decision surface is aggregate/partial (typed unsupported today) |
-| Candidate growth | none across outer set; per-action card up to 75,972 on ordinary boards | none across outer set; per-step cards of tens, depth ≤ \|sources\|+1 | \|outer\| × \|targets\| × \|modes/X\| × \|plans\| (6,330 plans for one realistic five-dual action) | none across outer set; single pause per payment |
+| Complete | where under the pregame precedent bound; fail-closed beyond (6 multi-choice sources exceed it; beyond six, no bound witness exists) | DIRECTION ONLY — per-step witnesses + final preflight prove legality, NOT grammar completeness; STEP_GRAMMAR_COMPLETENESS = NOT_YET_PROVEN with a two-tier proof required in _02A | only if a complete enumerator is built (none exists) | no — current decision surface is aggregate/partial (typed unsupported today) |
+| Candidate growth | none across outer set; per-action card up to 75,972 at reachable curriculum states | none across outer set; local step domains EXPECTED substantially smaller; exact branching max NOT_YET_PROVEN (explicit _02A deliverable) | \|outer\| × \|targets\| × \|modes/X\| × \|plans\| (6,330 plans for one reachable five-multi-choice action) | none across outer set; single pause per payment |
 | Existing contract reuse | maximal — one structured domain through existing machinery | same machinery + one new construction-loop orchestration | needs new production enumerator + new candidate feature encoding | response carrier + replay v6 exist; decision primitive does not |
 | JVM-only exact binding | existing `LiveExactSourceBindingTable` + one new binding variant | staged JVM-only partial plan + same binding variant at finalize | same table, but \|plans\|× more entries | existing `DecisionResponseBinding` |
 | C1_06 compatibility | ADAPTER_ONLY, but a 75,972-candidate card is not a meaningful model contract | ADAPTER_ONLY; small per-step cards are the best fit | changes existing candidate semantics (risk to accepted checkpoint behavior) | ADAPTER_ONLY |
 | Stale revalidation | re-derive whole plan set; identity match; preflight | per-step fresh revalidation + staged-prefix consistency; whole plan discarded on any drift | domain-cards must be re-derived wholesale | decision id rebind exists; domain completeness still missing |
 | Replay impact | none — final ExplicitV3 already carried (v5/v6) | none — final ExplicitV3 already carried (v5/v6) | none for actions; new digest-relevant candidate data | none — pending paymentPlan already v6 |
 | Trajectory clarity | two typed samples: outer + one large payment decision | outer + per-step typed samples (or one nested sample) | one sample, payment internals hidden inside a candidate | response-shaped sample; missing domain witness |
-| Implementation complexity | enumerator + witness + adapter seam | step grammar + construction loop + adapter seam (most new code) | enumerator + candidate-model changes | Rules flow change + decision redesign |
+| Implementation complexity | enumerator + witness + adapter seam | step grammar + construction loop + adapter seam (most new code) + completeness proof | enumerator + candidate-model changes | Rules flow change + decision redesign |
 
 ## 17. Semantic payment equivalence (§17) and stable identity (§18)
 
@@ -762,7 +824,8 @@ family of feature views (bucket aliases, colors, amounts, production/cost/order 
 representable with the existing schema-open, alias-validated feature-view contract; no new
 architecture, no new feature *fields*, no checkpoint/weights/learner change.
 Per variant (§15): A1 would present the WHOLE plan set as one candidate card (up to 75,972
-candidates on ordinary boards — mechanically consumable, not a meaningful model contract); A2
+candidates at reachable curriculum states — mechanically consumable, not a meaningful model
+contract); A2
 presents small per-step candidate cards with the partial-plan context encoded only in the step
 feature views — the better fit for the same checkpoint.
 Honest caveat: the accepted checkpoint has never scored payment alternatives; its scores on that
@@ -830,7 +893,14 @@ _02A  PAYMENT-CONSTRUCTION GRAMMAR + SOURCE PRIMITIVE (contract + derivation, te
                   whole-plan equivalence of staged construction vs flat enumeration (A1 vs A2
                   cross-check on small domains where both fit)
       acceptance: complete per-step, canonical, public-data-only derivation; no GameState/
-                  strategy access; every incompleteness surfaces as a typed validation failure
+                  strategy access; every derivation gap surfaces as a typed failure at the _02A
+                  gate (NEVER as runtime hidden policy — the final preflight proves plan
+                  legality, not grammar completeness) — and explicitly: the two-tier
+                  grammar-completeness proof (small domains: flat reference enumerator vs
+                  grammar reachable set, canonical set equality; large domains: structural
+                  per-transition coverage against the published domain) plus measured
+                  branching/depth maxima with the source's own explicit alternative bound and
+                  typed above-bound behavior
       dependency: none
 
 _02B  LIVE MATERIALIZATION + REVALIDATION (game-server)
@@ -873,7 +943,8 @@ no "two buckets → pick first" (§31) in any form.
 1. _02A derivation uses only published V5 domain data + the staged JVM-side prefix; each step
    carries a witness proving its alternative-set completeness; output is canonically ordered and
    stable across runs; on small domains the staged construction reaches exactly the set a full
-   enumeration (A1) would produce.
+   enumeration (A1) would produce — and the grammar-completeness proof (two-tier, per §15)
+   plus explicit branching/depth bounds are DELIVERED, not assumed.
 2. _02B flips the committed characterization's LIVE_C1_CAN_SELECT_PLAN to YES end-to-end while
    tests 1–3, 6 (trusted semantics) remain green unchanged.
 3. Stale/rejected payment inference never mutates state and never advances PolicyTieRng.
