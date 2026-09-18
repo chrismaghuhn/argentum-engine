@@ -13,6 +13,8 @@ import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.mtg.sets.definitions.isd.cards.ClifftopRetreat
+import com.wingedsheep.mtg.sets.definitions.rav.cards.GolgariSignet
 import com.wingedsheep.mtg.sets.definitions.thb.cards.Shadowspear
 import com.wingedsheep.mtg.sets.definitions.wth.cards.MindStone
 import com.wingedsheep.sdk.core.Format
@@ -128,6 +130,62 @@ class PaymentConstructionGrammarTask1CharacterizationTest : FunSpec({
         }
     }
 
+    test("T2a: one source publishes multiple mana-ability options (Clifftop Retreat)") {
+        // Emission evidence for the flat-oracle L1 rule: PaymentDomainV5 only forbids duplicate
+        // (sourceId, manaAbilityKey) pairs, so a source CAN publish several options; a payment
+        // program may activate a given source at most once. Clifftop Retreat has two mana
+        // abilities and must publish exactly two options for its single sourceId.
+        val prepared = preparedSignetWithLands()
+        val domain = ObservationBuilder(cardRegistry = prepared.cardRegistry)
+            .paymentDomainV5For(prepared.environment.state, prepared.outerActivation)
+        domain shouldNotBe null
+        val clifftopOptions = domain!!.sourceActivationOptions.filter {
+            it.sourceName == ClifftopRetreat.name
+        }
+        clifftopOptions.size shouldBe 2
+        clifftopOptions.map { it.sourceId }.toSet().size shouldBe 1
+        clifftopOptions.map { it.manaAbilityKey }.toSet().size shouldBe 2
+        clifftopOptions.forEach { option ->
+            option.productionChoices.size shouldBe 1
+            option.atomicActivationManaCostUnits.isEmpty() shouldBe true
+            option.activationCostOrderOptions.single().map { it::class.simpleName } shouldBe
+                listOf("DeterministicNonManaComponent")
+        }
+        println(
+            "T2a inventory: source=${clifftopOptions.first().sourceId.value} " +
+                "options=${clifftopOptions.size} " +
+                "abilities=${clifftopOptions.map { it.manaAbilityKey }}",
+        )
+    }
+
+    test("T2b: a paid mana source publishes a real inner cost and a real component order") {
+        // Closes the T2 D5/D6 gap: Golgari Signet's mana ability costs {1} and its published
+        // order option is the real [ManaComponent, DeterministicNonManaComponent] sequence.
+        // Its fixed-output bundle additionally measures the bundle subclass of D4.
+        val prepared = preparedSignetWithLands()
+        val domain = ObservationBuilder(cardRegistry = prepared.cardRegistry)
+            .paymentDomainV5For(prepared.environment.state, prepared.outerActivation)
+        domain shouldNotBe null
+        val signet = domain!!.sourceActivationOptions.single {
+            it.sourceName == GolgariSignet.name
+        }
+        signet.atomicActivationManaCostUnits.size shouldBe 1
+        signet.atomicActivationManaCostUnits.single().kind shouldBe
+            com.wingedsheep.engine.core.PaymentCostKindV1.GENERIC
+        signet.activationCostOrderOptions.single().map { it::class.simpleName } shouldBe
+            listOf("ManaComponent", "DeterministicNonManaComponent")
+        signet.deterministicNonManaCosts.map { it.name } shouldBe listOf("TAP_SELF")
+        val bundle = signet.productionChoices.single()
+        bundle.fixedOutputs shouldNotBe null
+        bundle.fixedOutputs!!.map { it.color } shouldBe
+            listOf(PaymentManaColor.BLACK, PaymentManaColor.GREEN)
+        println(
+            "T2b inventory: source=${signet.sourceId.value} actCostUnits=1(GENERIC) " +
+                "order=[ManaComponent,DeterministicNonManaComponent] " +
+                "bundle=[BLACK,GREEN]",
+        )
+    }
+
     test("T3 RED: no production payment-construction grammar/source primitive exists at this HEAD") {
         // The planned production type (docs/ml/c1-live-payment-choice-boundary-02a.md, TASK 2)
         // must not exist yet; the RED is the missing primitive itself.
@@ -241,6 +299,82 @@ class PaymentConstructionGrammarTask1CharacterizationTest : FunSpec({
                 }
                 prepared.environment.step(manaAction.action)
             }
+        }
+
+        private data class SignetPrepared(
+            val environment: com.wingedsheep.gym.GameEnvironment,
+            val cardRegistry: CardRegistry,
+            val playerId: EntityId,
+            val outerActivation: LegalAction,
+        )
+
+        /**
+         * The proven _01 characterization fixture pattern, extended with two extra battlefield
+         * permanents: Alice controls Shadowspear (whose paid {1} activation is the real outer
+         * action taken from the engine menu), a Golgari Signet (inner {1} activation cost), and
+         * a Clifftop Retreat (two mana-ability options), at precombat main.
+         */
+        private fun preparedSignetWithLands(): SignetPrepared {
+            val cardRegistry = CardRegistry().apply {
+                register(PortalSet.cards)
+                register(PortalSet.basicLands)
+                register(Shadowspear)
+                register(GolgariSignet)
+                register(ClifftopRetreat)
+            }
+            val environment = com.wingedsheep.gym.GameEnvironment.create(cardRegistry)
+            environment.reset(
+                GameConfig(
+                    players = listOf(
+                        PlayerConfig(
+                            "Alice",
+                            Deck.of(
+                                Shadowspear.name to 1,
+                                GolgariSignet.name to 1,
+                                ClifftopRetreat.name to 1,
+                                "Forest" to 3,
+                                "Mountain" to 2,
+                                "Island" to 2,
+                            ),
+                        ),
+                        PlayerConfig("Bob", Deck.of("Mountain" to 2)),
+                    ),
+                    startingHandSize = 1,
+                    skipMulligans = true,
+                    startingPlayerIndex = 0,
+                    format = Format.Standard,
+                ),
+            )
+
+            var state = environment.state
+            while (state.step != Step.PRECOMBAT_MAIN) {
+                val pass = environment.legalActions().first { it.action is PassPriority }
+                environment.step(pass.action)
+                state = environment.state
+            }
+
+            val playerId = environment.playerIds.first()
+            fun moveNamedToBattlefield(name: String): EntityId {
+                val cardId = state.entities.entries.first { (id, container) ->
+                    id in state.getZone(playerId, Zone.HAND) + state.getZone(playerId, Zone.LIBRARY) &&
+                        container.get<CardComponent>()?.name == name
+                }.key
+                val sourceZone = state.zones.entries.first { (_, ids) -> cardId in ids }.key
+                state = state.moveToZone(cardId, sourceZone, ZoneKey(playerId, Zone.BATTLEFIELD))
+                return cardId
+            }
+
+            val spearId = moveNamedToBattlefield(Shadowspear.name)
+            moveNamedToBattlefield(GolgariSignet.name)
+            moveNamedToBattlefield(ClifftopRetreat.name)
+            environment.restore(state, environment.playerIds, environment.stepCount)
+
+            val spearAbilityId = cardRegistry.requireCard(Shadowspear.name).activatedAbilities[0].id
+            val outerActivation = environment.legalActions().single { legalAction ->
+                val activate = legalAction.action as? ActivateAbility
+                activate?.sourceId == spearId && activate.abilityId == spearAbilityId
+            }
+            return SignetPrepared(environment, cardRegistry, playerId, outerActivation)
         }
 
         private fun preparedMindStoneControl(): PreparedState {

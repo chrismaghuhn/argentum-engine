@@ -166,7 +166,22 @@ T2  paid-activation domain publishes the complete per-activation public fields.
     MEASURED (Mind Stone {1} with untapped Mountain): outerUnits=1 buckets=0 options=1;
     option(source=e3 Mountain, ability=intrinsic:R): productions=1, actCostUnits=0,
     orders=1, support=FIXED_MANA_AND_TAP_SELF, nonMana=[TAP_SELF], selfDamage=0.
-    => every grammar-relevant activation field is public; no GameState access needed.
+    LIMIT (per review of 27c73d79e1): this fixture exercises D5/D6 only in their
+    degenerate form (empty inner cost; TapSelf-only order) — see T2a/T2b for the
+    non-degenerate characterization.
+T2a one source publishes MULTIPLE mana-ability options (added per FIX_01 review).
+    MEASURED (Clifftop Retreat, two abilities, same sourceId): exactly 2 published
+    options for the same sourceId with 2 distinct manaAbilityKeys, each
+    productions=1 — grounds the flat-oracle L1 rule (at most ONE option per sourceId)
+    in measured emission data, since PaymentDomainV5 only forbids duplicate
+    (sourceId, manaAbilityKey) pairs.
+T2b a paid mana source publishes a real inner cost and a real component order
+    (added per FIX_01 review; closes the T2 D5/D6 gap).
+    MEASURED (Golgari Signet): atomicActivationManaCostUnits.size=1 (GENERIC);
+    activationCostOrderOptions.single() = [ManaComponent, DeterministicNonManaComponent]
+    (a real ManaComponent + TapSelf order); deterministicNonManaCosts=[TAP_SELF];
+    productionChoices.single().fixedOutputs = [BLACK, GREEN] — additionally measuring
+    the FixedOutputBundle subclass of the D4 production axis.
 T3  RED: PaymentConstructionGrammarV1 absent at this HEAD (ClassNotFoundException) — the
     planned production source primitive (section 5) does not exist yet.
 T4  canonical-identity substrate: canonical-JSON identities over the two certified bucket
@@ -176,10 +191,10 @@ T4  canonical-identity substrate: canonical-JSON identities over the two certifi
 
 Test run (real execution, this worktree, `--rerun`):
 
-```text
-bash scripts/gradle-locked :gym:test --tests
+```text  bash scripts/gradle-locked :gym:test --tests
   "com.wingedsheep.gym.contract.PaymentConstructionGrammarTask1CharacterizationTest" --rerun
-=> 4 tests PASSED, 0 failures, BUILD SUCCESSFUL
+=> 6 tests PASSED, 0 failures, BUILD SUCCESSFUL  (T1, T2, T2a, T2b, T3 RED, T4;
+   T2a/T2b added per the FIX_01 review of 27c73d79e1)
 ```
 
 ---
@@ -254,12 +269,28 @@ sources only) that enumerates terminal plans WITHOUT sharing the grammar's state
 
 ```text
 Independent derivation order (deliberately different from the grammar's):
-  for every subset of source options, every production/order combination per source,
-  every semantic activation order, and every assignment of atomic demand units to
-  resources (activation outputs + pool buckets by color class), with the certified
-  self-damage budget check — collect each COMPLETE PaymentPlanV3.
-Deduplicate by the canonical identity function (section 7). Reference may be exponential;
-bounded fixtures keep it tiny.
+  for every selection of AT MOST ONE published option per sourceId (a source may publish
+  several mana-ability options; the Rules ledger rejects activating one source twice —
+  PaymentPlanValidator: "PaymentPlanV3 activates a source more than once"),
+  every production/order combination per selected option, every semantic activation
+  program order, and every assignment of atomic demand units to resources — collect each
+  COMPLETE PaymentPlanV3 that satisfies the full ledger rules reconstructed directly
+  from the published DTO:
+    L1 at most one activation per sourceId
+    L2 an activation-cost allocation at program index i may consume pool resources and
+       outputs of activations at indices j < i ONLY — self/forward references are
+       structurally impossible because the oracle materializes activations in program
+       order and offers only already-materialized resources
+    L3 each atomic cost unit (inner and outer) is targeted exactly once (target
+       uniqueness; "allocates a cost unit more than once" is a Rules rejection)
+    L4 each output unit is consumed at most once ("spent more than once" rejection)
+    L5 bucket capacities respected per exact InitialPoolBucketKeyV1
+    L6 every allocation's resource color class satisfies its target unit's allowedColors
+    L7 certified self-damage total within fixedSelfDamageBudget
+  The oracle validates each terminal plan against L1-L7 derived from the DTO itself; it
+  does NOT call nextSteps/isTerminal/materialize and does NOT reuse the grammar's state
+  machine. Deduplicate by the canonical identity function (section 7). Reference may be
+  exponential; bounded fixtures keep it tiny.
 INDEPENDENCE ARGUMENT: the reference recomputes legality directly from the published DTO
 per terminal plan (does not call nextSteps/isTerminal/materialize); the grammar walks
 states forward. Set equality of their terminal identities is then a meaningful proof.
@@ -273,14 +304,26 @@ REUSES the accepted identity substrate (no second durable format):
 
 ```text
 identity(terminal plan) = A3SemanticJson.canonicalJson of the plan's exact semantic content:
-  activations in program order: (sourceId.value, manaAbilityKey, productionChoice canonical JSON,
-  activationCostOrder canonical JSON, activationCostAllocation sorted by (target, resource) canonical JSON)
+  activations in PROGRAM ORDER with activation INDICES PRESERVED:
+    (sourceId.value, manaAbilityKey, productionChoice canonical JSON,
+     activationCostOrder canonical JSON, activationCostAllocation sorted by
+     (target, resource) canonical JSON)
   outerAllocation sorted by (target, resource) canonical JSON
   bucket resources identified by their full InitialPoolBucketKeyV1 canonical key
   (canonicalizeInitialPoolBucketsV1 order supplies the transport order for sets)
-Two construction paths representing the same semantic payment MUST collapse to one identity
-(allocation-order differences and per-activation list-position references normalize away);
-two provenance-distinct selections MUST stay distinct (T4 pins the discriminator).
+CONSERVATIVE IDENTITY RULE (frozen per review of 27c73d79e1; this is the TASK 2 proof
+identity): activation program order, activation indices, and ActivationOutputUnit
+producer indices are semantic — PaymentPlanV3 addresses outputs normatively by position
+(ActivationCostUnit.activationIndex, ActivationOutputUnit.activationIndex/outputIndex)
+and the Rules validator enforces earlier-output-only semantics on them. The identity
+therefore canonicalizes ONLY representation-order noise (allocation-list ordering within
+an activation's activationCostAllocation and within outerAllocation). It MUST NOT
+collapse distinct activation program orders unless their semantic equivalence is
+independently proven per the accepted _01 §17 doctrine (equal aggregate counts alone are
+NOT equivalence; dependent activations, damage, tap/history/event effects can make order
+observable). Unproven equivalence => distinct alternatives. Duplicate CONSTRUCTION PATHS
+that reach the identical program (same order, same allocations) still collapse — that is
+the F8 dedup, and it does not fold distinct ordered payment programs.
 ```
 
 ---
@@ -294,7 +337,13 @@ the accepted gym characterization fixture pattern (real cards, minimal states):
 F1 single source, single production, {1} pool-only          (two-bucket _01 fixture is F1-pair)
 F2 two provenance-distinct same-color pool buckets, {1}     (committed _01 fixture)
 F3 two same-color buckets + one untapped source, {2}        (pool+activation; multi-step)
-F4 one dual-production source (e.g. Sacred Foundry shape)   (production choice axis)
+F4 production-choice axis, evidence-driven: a real repository fixture whose emitted
+    PaymentSourceActivationDomainV2 shows productionChoices.size > 1 (multi-choice)
+    — and, separately, a real FixedOutputBundle option (the bundle subclass of D4).
+    The concrete card is fixed ONLY after the actually emitted V5 domain demonstrates
+    the exact shape (TASK 1 measured the bundle subclass already: T2b below shows a
+    Signet publishing fixedOutputs [BLACK, GREEN]; the multi-choice>1 fixture is
+    selected at TASK 2 by emission evidence, not by card name).
 F5 two multi-choice sources + mixed cost                    (branching measurement)
 F6 source with activation cost + order options              (order/allocation axes; Mind Stone shape)
 F7 impossible payment (demand > total supply)               (no false terminal plan)
@@ -308,13 +357,21 @@ flat-reference vs grammar set equality (F1-F8; the equality suite scales with fi
 ## 9. Bound derivation plan (Gate F, delivered in TASK 2)
 
 ```text
-Candidate bound shape (to be justified with F1-F8 measurements + the pregame precedent):
-  a per-decision alternatives bound and a construction-depth bound, named for what they bound
-  (e.g. MAX_PAYMENT_CONSTRUCTION_ALTERNATIVES / MAX_PAYMENT_CONSTRUCTION_DEPTH), each with
-  typed fail-closed behavior. DERIVED FROM: grammar structure (local next-choice cardinality),
-  measured fixture maxima, and the existing typed-fail-closed precedent. NOT inherited from
-  the pregame constant. If measured evidence proves insufficient to set a safe production
-  bound, TASK 2 stops and reports the gap instead of inventing one.
+Candidate bound shape (disciplined per review of 27c73d79e1):
+  a per-decision alternatives bound and a construction-depth bound, named for what they
+  bound (e.g. MAX_PAYMENT_CONSTRUCTION_ALTERNATIVES / MAX_PAYMENT_CONSTRUCTION_DEPTH),
+  each with typed fail-closed behavior. DERIVED FROM: grammar structure (local
+  next-choice cardinality), measured fixture maxima, and the existing typed-fail-closed
+  precedent. HONEST LIMITS: fixture maxima are NOT architecture maxima — the published
+  V5 lists (sourceActivationOptions, productionChoices, outerAtomicCostUnits,
+  atomicActivationManaCostUnits) have no small global DTO-level size limit, so measured
+  fixture behavior alone cannot establish a universal production support bound. The
+  bound is either (a) an OPERATIONAL fail-closed ceiling, explicitly labeled as such and
+  never claimed as a Magic maximum, accompanied by proof that the locked Akiri/Chevill
+  curriculum stays within that envelope, or (b) withheld entirely — in which case
+  TASK 2 reports CAN_A_SAFE_PRODUCTION_BOUND_BE_DERIVED_NOW = NO and STOPS per the
+  task contract. The pregame 10_000 remains a fail-closed bounded-enumeration design
+  precedent, not numeric evidence for payments.
 ```
 
 ---
@@ -338,11 +395,13 @@ ActionPaymentPlanValidator, LivePolicyDecisionSnapshotV1, GameGymEnv, game-serve
 ## 11. TASK 1 answers (required by §27)
 
 ```text
-CAN_SMALL_DOMAIN_COMPLETENESS_BE_PROVEN = YES
-  Method designed (sections 6-8): independent flat reference enumerator over published DTO
-  vs grammar-reachable terminal set, canonical-identity set equality, both directions, plus
-  no-duplicate check. The identity substrate is pinned by executed test T4; the public DTO
-  is complete for the grammar inputs (T1/T2). The reference is test-only and slow by design.
+CAN_SMALL_DOMAIN_COMPLETENESS_BE_PROVEN = YES — CONDITIONAL on the corrected identity
+  and oracle contract (sections 6-7 as amended by the FIX_01 review): set equality is a
+  meaningful completeness proof only under the frozen conservative identity (program
+  order + indices preserved, only allocation-list noise normalized) and the independent
+  oracle with ledger rules L1-L7 reconstructed from the DTO. The identity substrate is
+  pinned by executed tests T4; the public DTO is complete for the grammar inputs
+  (T1/T2a/T2b). The reference is test-only and slow by design.
 
 CAN_LARGE_DOMAIN_STRUCTURAL_COVERAGE_BE_PROVEN = YES
   Method designed (section 4): per-dimension inventory D1-D11 with, per dimension, the
@@ -390,7 +449,47 @@ NOT_EXECUTED:
 
 ---
 
-## 13. Limitations
+## 13. Remediation record (FIX_01, per review of 27c73d79e1)
+
+The independent exact-head review found P1=1/P2=3/P3=1 in the TASK 1 design. This
+remediation changed ONLY this report and the test-only characterization scaffold; no
+production code exists at this HEAD.
+
+```text
+P1 CANONICALIZATION_PRECISION = FIXED (section 7)
+   Proof identity is now the frozen CONSERVATIVE rule: activation program order,
+   activation indices, and ActivationOutputUnit producer indices are semantic and
+   preserved (PaymentPlanV3 addresses outputs normatively by position; the Rules
+   validator enforces earlier-output-only semantics — verified at
+   PaymentPlanValidator.kt lines 421/1248/1281/1286). Only allocation-list ordering
+   noise is normalized. The removed claim ("per-activation list-position references
+   normalize away") is not part of the identity anymore.
+P2 T2_D5_D6_GAP = FIXED (new tests T2a + T2b, executed green)
+   T2 keeps its measured value but is now explicitly labeled degenerate for D5/D6.
+   T2a measures one sourceId emitting TWO mana-ability options (Clifftop Retreat:
+   Add {R} / Add {W}) — grounding oracle rule L1 in emission data. T2b measures a
+   real inner cost (Golgari Signet: 1 GENERIC unit) with the real component order
+   [ManaComponent, DeterministicNonManaComponent] and the FixedOutputBundle [BLACK, GREEN].
+P2 FLAT_ORACLE_LEGALITY_RULES = FIXED (section 6)
+   The oracle now derives the complete ledger rules L1-L7 directly from the published
+   DTO (one option per sourceId; earlier-outputs-only by program-order materialization;
+   target uniqueness; output single-use; bucket capacities; color-class match;
+   self-damage budget) instead of the unscoped "every subset x assignments" sketch.
+P2 BOUND_DERIVATION_HONESTY = FIXED (section 9)
+   Fixture maxima are explicitly NOT architecture maxima; the bound is either an
+   operational fail-closed ceiling with proven curriculum-envelope coverage, or it is
+   withheld and TASK 2 reports CAN_A_SAFE_PRODUCTION_BOUND_BE_DERIVED_NOW = NO and
+   STOPS. The pregame 10_000 remains design precedent only.
+P3 F4_EMISSION_EVIDENCE = FIXED (section 8)
+   F4 is now evidence-driven: the card is fixed only after the actually emitted V5
+   domain demonstrates productionChoices.size > 1 (multi-choice) — and separately a
+   real FixedOutputBundle (already measured by T2b). No card-name pre-commitment.
+ANSWERS = CAN_SMALL_DOMAIN_COMPLETENESS_BE_PROVEN = YES under the corrected
+   identity/oracle contract (section 11); CAN_A_SAFE_PRODUCTION_BOUND_BE_DERIVED_NOW
+   remains NOT_YET.
+```
+
+## 14. Limitations
 
 ```text
 - TASK 1 implements no grammar; all grammar statements in sections 5-8 are DESIGN, not code.
