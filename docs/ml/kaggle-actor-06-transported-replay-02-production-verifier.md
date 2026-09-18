@@ -13,6 +13,13 @@ Predecessor: KAGGLE_ACTOR_06_TRANSPORTED_REPLAY_01 (PR #211, merge `f22d2fc46871
   (sealed authority flow + hardening; test-layer fixes; closure-aware horizon derivation).
   Focused suite 14/14, KA06 gate 5/5, regressions 851/851 at `5beae6d7eb`. This document describes
   the remediated state; original-review findings are addressed inline below.
+- `40260d5d0e` — **integration head**: `origin/main` (`c75284e1aa`, PRs #212/#213 — C1 payment
+  boundary docs + game-server characterization test + ml pyproject pin) merged; zero file overlap
+  with the KA06 slice, so the PR diff remains exactly the ten KA06 files. All gates re-executed at
+  this exact head with `--rerun-tasks`: focused verifier suite 14/14, KA06 gate 5/5 (both specs,
+  fresh producer + worker JVMs), and the three surrounding regression modules 1773 tests
+  (BUILD SUCCESSFUL in 12m 26s combined run, 0 failures). This is the head awaiting the
+  independent exact-head review and PR approval.
 
 ## KA06_02_REMEDIATION_01 (P1 + 5×P2 + P3 closure)
 
