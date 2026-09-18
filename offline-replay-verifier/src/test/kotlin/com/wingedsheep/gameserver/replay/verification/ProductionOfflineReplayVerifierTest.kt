@@ -146,7 +146,9 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
         val verifier = CrossBindingProbeVerifier(testLaunchOverrides())
         val trajectory = fabricatedTrajectory()
         val link = trajectory.episodeMetadata.compactReplayLink
-        val binding = fabricatedBinding()
+        // The positive pole needs an EXACT, internally consistent binding now that the seam
+        // validates the nested binding itself (P2 hardening).
+        val binding = fabricatedBinding(fidelity = ReplayFidelity.EXACT, replayActionCount = link.replayActionCount)
 
         fun forgedResult(
             trajectoryId: String = trajectory.trajectoryId,
@@ -247,14 +249,7 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
         val verifier = CrossBindingProbeVerifier(testLaunchOverrides())
         val trajectory = fabricatedTrajectory()
         val outerIdentity = trajectory.episodeMetadata.compactReplayLink.replayContentIdentity
-        val binding = fabricatedBinding(fidelity = ReplayFidelity.EXACT, replayActionCount = 0)
-        val withMismatchedIdentity = binding.copy(
-            verificationBinding = binding.verificationBinding.copy(
-                replayContentIdentity = binding.verificationBinding.replayContentIdentity.copy(
-                    value = "d".repeat(64),
-                ),
-            ),
-        )
+        val genuine = fabricatedBinding(fidelity = ReplayFidelity.EXACT, replayActionCount = 0)
         val forged = VerifierWorkerResultV1(
             status = VerifierWorkerStatusV1.VERIFIED,
             verifiedResult = VerifiedWorkerVerificationV1(
@@ -262,10 +257,18 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
                 verifiedSemanticEpisodeId = trajectory.semanticEpisodeId,
                 verifiedReplayContentIdentity = outerIdentity,
                 verifiedReplayActionCount = trajectory.episodeMetadata.compactReplayLink.replayActionCount,
-                replayTrajectoryBinding = withMismatchedIdentity,
+                replayTrajectoryBinding = genuine,
             ),
         )
-        verifier.crossBindingCheck(trajectory, forged)
+        // Mutate the decoded wire form AFTER protocol decoding: the forged result now claims the
+        // outer identity while the binding itself still names a different replay content
+        // identity. The constructor invariant protects in-process construction; the seam must
+        // catch exactly this wire-form divergence.
+        val decoded = VerifierWorkerProtocolV1Json.decodeResult(
+            VerifierWorkerProtocolV1Json.encodeResult(forged)
+                .replace("\"value\":\"" + outerIdentity + "\"", "\"value\":\"" + "d".repeat(64) + "\""),
+        )
+        verifier.crossBindingCheck(trajectory, decoded)
             .shouldBeInstanceOf<OfflineReplayVerificationResultV1.Unavailable>()
     }
 
@@ -274,6 +277,9 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
         // digests come from the accepted locked-pair curriculum sources, so a claimant carrying
         // fabricated digests fails before any reconstruction.
         val root = repositoryRoot()
+        check(root.toFile().isDirectory && root.resolve(".git").toFile().exists()) {
+            "repositoryRoot() must resolve the real git work tree, never a temp or module dir"
+        }
         try {
             val akiri = CurriculumDeckSourceLoader(root)
                 .load(CurriculumAiTournamentPreset.AKIRI_CHEVILL.sourcePaths[0])
@@ -291,15 +297,18 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
                 reconstructor.deriveEnvironmentIdentity(wrongClaimant.episodeMetadata.environmentIdentity)
             }
 
-            // The positive pole: the real digests re-derive without failure.
+            // The positive pole: all three repository-derived fields carry the real values
+            // and re-derive without failure.
             reconstructor.deriveEnvironmentIdentity(
                 fabricatedTrajectory(
                     akiriDigest = akiri.sourceDigest,
                     chevillDigest = chevill.sourceDigest,
+                    cardDigest = cardDigest,
                 ).episodeMetadata.environmentIdentity,
             )
         } finally {
-            root.toFile().deleteRecursively()
+            // `root` is the real git work tree (asserted above); it must survive the test.
+            check(root.toFile().isDirectory) { "The real repository root must never be deleted" }
         }
     }
 })
@@ -400,19 +409,40 @@ private class CrashingWorkerVerifier(private val launch: WorkerLaunchOverridesV1
 
 private fun sha256Hex(seed: String): String = A3SemanticJson.sha256(seed.toByteArray(StandardCharsets.UTF_8))
 
-/** The engine repository root: the running checkout itself (tests may not mutate it). */
-private fun repositoryRoot(): Path = Path.of(System.getProperty("user.dir")).toAbsolutePath()
+/**
+ * The engine repository root, resolved through git from the running module directory (a Gradle
+ * test's working directory is the module dir, so `user.dir` alone is not the work-tree root).
+ * Tests must never mutate or delete this tree — the bootstrap doctrine requires it clean.
+ */
+private fun repositoryRoot(): Path {
+    val root = Path.of(
+        ProcessBuilder("git", "rev-parse", "--show-toplevel")
+            .directory(Path.of(System.getProperty("user.dir")).toFile())
+            .start()
+            .inputStream
+            .bufferedReader()
+            .readLine()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: error("git rev-parse --show-toplevel found no repository root"),
+    )
+    check(root.toFile().isDirectory && root.resolve(".git").toFile().exists()) {
+        "Repository root is not a git work tree: $root"
+    }
+    return root
+}
 
 private fun fabricatedEnvironmentIdentity(
     engineCommit: String,
     akiriDigest: String = sha256Hex("akiri-deck"),
     chevillDigest: String = sha256Hex("chevill-deck"),
+    cardDigest: String = sha256Hex("card-definition"),
 ): EnvironmentIdentityV1 {
     val seat0 = EntityId("verifier-seat-0")
     val seat1 = EntityId("verifier-seat-1")
     return EnvironmentIdentityV1(
         engineCommit = engineCommit,
-        cardDefinitionIdentity = sha256Hex("card-definition"),
+        cardDefinitionIdentity = cardDigest,
         akiriDeckIdentity = akiriDigest,
         chevillDeckIdentity = chevillDigest,
         format = "COMMANDER",
@@ -445,8 +475,9 @@ private fun fabricatedTrajectory(
     engineCommit: String = sha256Hex("fabricated-commit"),
     akiriDigest: String = sha256Hex("akiri-deck"),
     chevillDigest: String = sha256Hex("chevill-deck"),
+    cardDigest: String = sha256Hex("card-definition"),
 ): TrajectoryV1 {
-    val identity = fabricatedEnvironmentIdentity(engineCommit, akiriDigest, chevillDigest)
+    val identity = fabricatedEnvironmentIdentity(engineCommit, akiriDigest, chevillDigest, cardDigest)
     val metadata = EpisodeMetadataV1(
         semanticEpisodeId = sha256Hex("semantic-episode"),
         collectionJobId = sha256Hex("collection-job"),
