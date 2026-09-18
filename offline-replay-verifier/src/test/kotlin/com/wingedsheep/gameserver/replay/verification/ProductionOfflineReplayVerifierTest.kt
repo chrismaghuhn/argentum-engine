@@ -202,6 +202,43 @@ class ProductionOfflineReplayVerifierTest : FunSpec({
         }
     }
 
+    test("horizon contract: horizon-reached episodes reconstruct with the exact durable range") {
+        TransportedReplayReconstructorV1.computeReplayHorizon(
+            claimantReplayActionCount = 40,
+            horizonReached = true,
+            override = null,
+        ) shouldBe 40
+        TransportedReplayReconstructorV1.computeReplayHorizon(
+            claimantReplayActionCount = 1000,
+            horizonReached = true,
+            override = null,
+        ) shouldBe 1000
+    }
+
+    test("horizon contract: natural terminations get headroom under the ceiling") {
+        TransportedReplayReconstructorV1.computeReplayHorizon(
+            claimantReplayActionCount = 40,
+            horizonReached = false,
+            override = null,
+        ) shouldBe 40 + TransportedReplayReconstructorV1.REPLAY_HORIZON_HEADROOM
+        TransportedReplayReconstructorV1.computeReplayHorizon(
+            claimantReplayActionCount = TransportedReplayReconstructorV1.MAX_REPLAY_STEPS_CEILING - 1,
+            horizonReached = false,
+            override = null,
+        ) shouldBe TransportedReplayReconstructorV1.MAX_REPLAY_STEPS_CEILING
+    }
+
+    test("horizon contract: overrides may only lower the horizon within the ceiling") {
+        TransportedReplayReconstructorV1.computeReplayHorizon(40, true, 12) shouldBe 12
+        io.kotest.assertions.throwables.shouldThrow<IllegalArgumentException> {
+            TransportedReplayReconstructorV1.computeReplayHorizon(
+                40,
+                true,
+                TransportedReplayReconstructorV1.MAX_REPLAY_STEPS_CEILING + 1,
+            )
+        }
+    }
+
     test("tampered claimant engine commit is rejected by the sealed authentication flow") {
         // Sealed worker flow (P1): the worker's performVerification only exposes the
         // authenticate-then-reconstruct seam. With a syntactically valid commit that cannot

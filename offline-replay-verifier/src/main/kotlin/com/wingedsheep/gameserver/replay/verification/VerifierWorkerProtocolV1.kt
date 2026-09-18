@@ -176,13 +176,26 @@ object TransportedReplayVerifierWorkerMain {
         request: VerifierWorkerRequestV1,
     ): VerifierWorkerResultV1 = try {
         val claimant = request.claimantTrajectory()
+        val link = claimant.episodeMetadata.compactReplayLink
+        if (link.replayActionCount > TransportedReplayReconstructorV1.MAX_REPLAY_STEPS_CEILING) {
+            // A durable range beyond the hard-owned ceiling cannot be reconstructed by this
+            // verifier version: fail closed as unsupported, never truncated.
+            throw TransportedReplayReconstructionException(
+                code = TransportedReplayReconstructionFailure.UNSUPPORTED_ENVIRONMENT,
+                message = "Durable replay range ${link.replayActionCount} exceeds the verifier " +
+                    "horizon ceiling ${TransportedReplayReconstructorV1.MAX_REPLAY_STEPS_CEILING}",
+            )
+        }
         // Sealed authority flow (KA06_02_REMEDIATION_01 P1): the only reconstruction seam takes
         // the authenticated source proof and re-derives the repository-owned environment identity
         // before any execution. No unauthenticated path exists.
         val authenticated = TransportedReplayReconstructorV1.authenticate(
             repositoryRoot = repositoryRoot,
             expectedEngineCommit = claimant.episodeMetadata.environmentIdentity.engineCommit,
-            claimantReplayActionCount = claimant.episodeMetadata.compactReplayLink.replayActionCount,
+            claimantReplayActionCount = link.replayActionCount,
+            claimantHorizonReached = (claimant.episodeMetadata.closure as?
+                com.wingedsheep.gym.EpisodeClosureV1.Interrupted)?.reason ==
+                com.wingedsheep.gym.EpisodeInterruptionReason.HORIZON_REACHED,
         )
         val reconstruction = authenticated.reconstruct(claimant)
         VerifierWorkerResultV1(

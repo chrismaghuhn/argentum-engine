@@ -85,6 +85,13 @@ class TransportedReplayReconstructorV1(
      * worker (the reconstructor instance is repository-scoped, not trajectory-scoped).
      */
     claimantReplayActionCountOrNull: Int? = null,
+    /**
+     * Whether the durable claimant closure ended by reaching its horizon
+     * ([EpisodeInterruptionReason.HORIZON_REACHED]). In that case the fresh execution horizon
+     * must EQUAL the durable range so the episode truncates at the identical boundary; natural
+     * terminations get the fixed headroom instead.
+     */
+    claimantHorizonReached: Boolean = false,
     /** Deck source loading authority; defaults to the accepted curriculum loader. */
     private val deckSourceLoader: (repositoryRoot: Path, sourcePath: String) -> CurriculumDeckSourceV1 =
         { root, sourcePath -> CurriculumDeckSourceLoader(root).load(sourcePath) },
@@ -98,7 +105,8 @@ class TransportedReplayReconstructorV1(
      * ceiling [MAX_REPLAY_STEPS_CEILING]. A claimant range beyond the ceiling cannot be
      * reconstructed and fails closed — it must never be truncated silently.
      */
-    private val maxReplaySteps: Int = computeReplayHorizon(claimantReplayActionCountOrNull, replayHorizonOverride),
+    private val maxReplaySteps: Int =
+        computeReplayHorizon(claimantReplayActionCountOrNull, claimantHorizonReached, replayHorizonOverride),
 ) {
     /** Accepted locked-pair deck authority, loaded once per reconstructor instance. */
     private val deckSources: Pair<CurriculumDeckSourceV1, CurriculumDeckSourceV1> by lazy {
@@ -844,7 +852,11 @@ class TransportedReplayReconstructorV1(
          * beyond it fails closed instead of being truncated, and test overrides may only lower
          * the horizon, never exceed the ceiling.
          */
-        fun computeReplayHorizon(claimantReplayActionCount: Int?, override: Int?): Int {
+        fun computeReplayHorizon(
+            claimantReplayActionCount: Int?,
+            horizonReached: Boolean,
+            override: Int?,
+        ): Int {
             override?.let {
                 require(it in 1..MAX_REPLAY_STEPS_CEILING) {
                     "Replay horizon override must be within 1..$MAX_REPLAY_STEPS_CEILING"
@@ -854,10 +866,14 @@ class TransportedReplayReconstructorV1(
             require(claimantReplayActionCount == null || claimantReplayActionCount >= 0) {
                 "Claimant replay action count must not be negative"
             }
-            return (
-                claimantReplayActionCount?.let { it + REPLAY_HORIZON_HEADROOM }
-                    ?: DEFAULT_REPLAY_HORIZON
-                ).coerceAtMost(MAX_REPLAY_STEPS_CEILING)
+            if (claimantReplayActionCount == null) return DEFAULT_REPLAY_HORIZON
+            // Durable-closure-aware horizon derivation: an episode that ended BY reaching its
+            // horizon must be reconstructed with exactly that horizon, otherwise the fresh
+            // execution would keep running past the durable boundary (no closure -> crash) or
+            // end early. Natural terminations only need headroom above the durable range.
+            if (horizonReached) return claimantReplayActionCount.coerceAtMost(MAX_REPLAY_STEPS_CEILING)
+            return (claimantReplayActionCount + REPLAY_HORIZON_HEADROOM)
+                .coerceAtMost(MAX_REPLAY_STEPS_CEILING)
         }
 
         /**
@@ -871,10 +887,12 @@ class TransportedReplayReconstructorV1(
             repositoryRoot: Path,
             expectedEngineCommit: String,
             claimantReplayActionCount: Int? = null,
+            claimantHorizonReached: Boolean = false,
         ): AuthenticatedReconstructorV1 {
             val reconstructor = TransportedReplayReconstructorV1(
                 repositoryRoot = repositoryRoot,
                 claimantReplayActionCountOrNull = claimantReplayActionCount,
+                claimantHorizonReached = claimantHorizonReached,
             )
             return AuthenticatedReconstructorV1(
                 reconstructor,
