@@ -4,6 +4,51 @@ Task: **KAGGLE_ACTOR_06_TRANSPORTED_REPLAY_02**
 Status: **IMPLEMENTATION_PASS = YES** (independent review pending)
 Predecessor: KAGGLE_ACTOR_06_TRANSPORTED_REPLAY_01 (PR #211, merge `f22d2fc46871d96ff6d175bfcfce110594d9ec1a`)
 
+## Revision history
+
+- `da9d83a1058e3485289118db154ffcda488a58e4` — original `_02` delivery. The independent review
+  found P1 (environment identity repository authority defined but never invoked) and five P2
+  hardening findings plus one P3 wording issue; verdict `IMPLEMENTATION_PASS = NO`.
+- `f9971fe762`…`5beae6d7eb` — **KA06_02_REMEDIATION_01**: all findings closed in three commits
+  (sealed authority flow + hardening; test-layer fixes; closure-aware horizon derivation).
+  Focused suite 14/14, KA06 gate 5/5, regressions 851/851 at `5beae6d7eb`. This document describes
+  the remediated state; original-review findings are addressed inline below.
+
+## KA06_02_REMEDIATION_01 (P1 + 5×P2 + P3 closure)
+
+1. **P1 — environment authority now enforced, and the seam is sealed.** `reconstruct()` is
+   reachable only through `TransportedReplayReconstructorV1.authenticate(...)`, which performs the
+   same-revision source-bootstrap doctrine and returns an `AuthenticatedReconstructorV1` bound to
+   that proof. Reconstruction then re-derives the repository-owned environment fields (card
+   definition digest, both deck digests via the real curriculum loader) and requires exact
+   equality with the claimant identity BEFORE any execution; `ENVIRONMENT_IDENTITY_MISMATCH` is a
+   live production failure code again. Negative control with real curriculum authority included.
+2. **P2 — self-validating result boundary.** Before `Verified`, the launcher additionally
+   requires binding fidelity `EXACT`, `completeRangeVerified`, and internal binding identities
+   (verification + chosen-input content identity, both action counts) equal to the outer verified
+   values. Negative controls: non-EXACT binding and wire-forged internal mismatch, both rejected.
+3. **P2 — replay horizon is an explicit limit contract.** Derived closure-aware from the durable
+   range: horizon-reached episodes reconstruct with exactly the durable range (the producer
+   fixture ends `HORIZON_REACHED` at 40 steps — deriving plain range+headroom changed the
+   truncation boundary and produced no closure; this is the exact case the review asked to derive
+   from range/closure), natural terminations get fixed headroom, all under a hard `4096` ceiling.
+   Ranges beyond the ceiling fail closed (`UNSUPPORTED_ENVIRONMENT`), never truncated; overrides
+   may only lower the horizon.
+4. **P2 — temp workspaces are cleaned in a `finally` block** on every outcome (success, timeout,
+   crash, malformed response).
+5. **P2 — the protocol is byte-bounded.** Explicit budgets for request (32 MiB), response
+   (128 MiB), and streamed worker output (64 KiB cap); oversized messages produce typed
+   fail-closed results, and the bounded output read caps memory from a misbehaving worker.
+6. **P2 — production construction vs test injection separated.** The class is now `final` and its
+   public constructor takes only the repository root (plus bounded timeout internals); classpath/
+   executable/heap moved behind the test-only `WorkerLaunchOverridesV1` seam (internal
+   constructor), and the binding seam is exposed to tests via `invokeBoundResultForTest` only.
+7. **P3 — evidence wording corrected.** The focused tampered-commit control exercises the sealed
+   authentication flow against a non-git probe root (bootstrap-doctrine rejection); the real
+   HEAD-mismatch→`SOURCE_REVISION_MISMATCH` control remains the `_01` oracle. See the controls
+   table below for the exact mapping.
+
+
 ## Delivery summary
 
 ```text
@@ -193,7 +238,7 @@ participate in any identity.
 
 ## 11. Tests
 
-Focused (`:offline-replay-verifier:test` — 8 tests):
+Focused (`:offline-replay-verifier:test` — 14 tests):
 
 - worker protocol round-trips a canonical request and result
 - typed reconstruction failures map onto the admission failure taxonomy
@@ -202,7 +247,16 @@ Focused (`:offline-replay-verifier:test` — 8 tests):
 - worker exits nonzero without a response file when its output path is unwritable (crash shape)
 - bounded timeout produces a typed `VERIFIER_TIMEOUT`, never `VERIFIED`
 - unsupported worker protocol version is rejected by the contract
-- same-revision authentication precedes reconstruction in the worker contract
+- same-revision authentication precedes reconstruction in the worker contract (sealed-flow
+  rejection against a non-git probe root; see controls table)
+- tampered claimant engine commit is rejected by the sealed authentication flow
+- a syntactically valid but non-EXACT binding can never surface as VERIFIED (P2)
+- an EXACT binding with internally mismatched identities is rejected (P2)
+- environment identity repository re-derivation rejects wrong card/deck digests (P1, real
+  curriculum authority; positive pole with all three repository-derived real values)
+- horizon contract: horizon-reached episodes reconstruct with the exact durable range
+- horizon contract: natural terminations get headroom under the ceiling
+- horizon contract: overrides may only lower the horizon within the ceiling
 
 End-to-end (inside the `:gym:kaggleActor06CharacterizationTest` gate, real published envelopes,
 fresh verifier JVMs — timings from the gate run):
@@ -234,7 +288,9 @@ No test was skipped or unavailable.
 ## 13. Negative controls (§4/§31/§32)
 
 ```text
-NEGATIVE_ENGINE_COMMIT = REJECTED (SOURCE_REVISION_MISMATCH, before reconstruction — focused test)
+NEGATIVE_ENGINE_COMMIT = REJECTED
+  focused: sealed-flow bootstrap rejection (non-git probe root, real checkout HEAD unavailable)
+  _01 oracle: real HEAD-mismatch control maps to SOURCE_REVISION_MISMATCH before reconstruction
 NEGATIVE_ENGINE_SEED = REJECTED (in _01 oracle, control A)
 NEGATIVE_SEMANTIC_CHOICE = REJECTED (in _01 oracle, control B)
 NEGATIVE_TRUNCATED_RANGE = REJECTED (in _01 oracle, control C)
@@ -272,14 +328,20 @@ BUILD_FILES = 1
   gym/build.gradle.kts (gate task registration: + testImplementation(project(":offline-replay-verifier")), + integration spec in gate)
 DOC_FILES = 1 (this report)
 Total: 9 files changed, 1922 insertions(+), 3 deletions(-) at gate head; +1 doc commit
+Remediation adds 3 commits (2 production/test files + report): sealed authority flow, P2
+hardening (final class, overrides seam, byte bounds, temp cleanup, binding self-validation),
+closure-aware horizon contract, and the expanded focused suite (14 tests).
 ```
 
 ## 16. Verification evidence
 
 ```text
 WORKTREE_CLEAN = YES at report commit
-GATE = PASS at bf01a2a654 (5/5)
-REGRESSIONS = PASS (1087)
+GATE = PASS at 5beae6d7eb (5/5; BUILD SUCCESSFUL in 9m 36s, --rerun-tasks, machine-global lock)
+REGRESSIONS = PASS (:offline-replay-verifier + :gym + :game-server + :gym-trainer; 851 PASSED / 0 FAILED, 5m 6s)
+  (earlier evidence: GATE PASS at bf01a2a654 5/5 12m04s; combined regression run 1087 tests before
+   the focused suite grew to 14)
+
 PRODUCTION_FILES + TEST_FILES compile clean; no schema, replay-version, rules, card, deck, or ML change.
 TRAJECTORY_SCHEMA_CHANGED = NO
 REPLAY_SCHEMA_CHANGED = NO
