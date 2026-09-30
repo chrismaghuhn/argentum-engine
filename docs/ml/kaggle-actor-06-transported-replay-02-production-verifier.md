@@ -20,6 +20,12 @@ Predecessor: KAGGLE_ACTOR_06_TRANSPORTED_REPLAY_01 (PR #211, merge `f22d2fc46871
   fresh producer + worker JVMs), and the three surrounding regression modules 1773 tests
   (BUILD SUCCESSFUL in 12m 26s combined run, 0 failures). This is the head awaiting the
   independent exact-head review and PR approval.
+- KA07 integration (2026-09-30): merged `chris/ka07-shard-generation-throughput-20260930`
+  (memoized descriptor lookup, public linear prefix accumulator) and switched
+  `TransportedReplayReconstructorV1` from per-decision `SemanticReplayPrefixV1` re-digesting
+  (O(n²)) to `SemanticReplayPrefixAccumulatorV1`. Re-executed on the committed head: focused
+  verifier suite 14/14, KA06 gate 5/5 (6m 24s), regressions `:gym` 861 / `:gym-trainer` 231 /
+  `:game-server` replay 148, all 0 failures.
 
 ## KA06_02_REMEDIATION_01 (P1 + 5×P2 + P3 closure)
 
