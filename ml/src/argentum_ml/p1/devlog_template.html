@@ -1,0 +1,220 @@
+<title>Argentum Checkpoint Log</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a single reading column of checkpoint entries, newest first, under a ladder chart;
+   each entry is a ledger page: figures row, deck split, training curve, card usage table. */
+:root {
+  --bg: #eef1f0;
+  --panel: #ffffff;
+  --ink: #17201d;
+  --muted: #5d6a66;
+  --rule: #d3dbd8;
+  --brass: #9a7426;
+  --akiri: #c2462c;
+  --chevill: #2f7a4f;
+  --engine: #6b6f86;
+  --good: #2f7a4f;
+  --bad: #b3372a;
+  --font-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111715; --panel: #18201d; --ink: #e6ece9; --muted: #95a39e; --rule: #2a3531;
+    --brass: #d2a95a; --akiri: #e0694d; --chevill: #5cb07c; --engine: #9da1bb; --good: #5cb07c; --bad: #e0694d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111715; --panel: #18201d; --ink: #e6ece9; --muted: #95a39e; --rule: #2a3531;
+  --brass: #d2a95a; --akiri: #e0694d; --chevill: #5cb07c; --engine: #9da1bb; --good: #5cb07c; --bad: #e0694d;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 980px; margin: 0 auto; padding-inline: 16px; padding-block: 28px 64px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; line-height: 1.15; }
+h1 { font-size: clamp(28px, 5vw, 42px); font-weight: 800; letter-spacing: -0.01em; }
+h2 { font-size: 22px; font-weight: 800; }
+h3 { font-size: 15px; font-weight: 600; }
+.label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.num { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+header.top { display: grid; gap: 8px; margin-bottom: 28px; }
+header.top p { margin: 0; color: var(--muted); max-width: 65ch; }
+.matchup { display: inline-flex; gap: 8px; align-items: center; font-weight: 700; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+section.ladder { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px; margin-bottom: 32px; display: grid; gap: 14px; }
+.ladder-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 720px) { .ladder-grid { grid-template-columns: minmax(0, 1fr); } }
+svg { display: block; width: 100%; height: auto; }
+svg text { fill: var(--muted); font-family: var(--font-data); font-size: 11px; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 700; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+td.r, th.r { text-align: right; }
+.scroll { overflow-x: auto; }
+article.entry { border-top: 3px solid var(--brass); padding-top: 18px; margin-bottom: 44px; display: grid; gap: 20px; }
+.entry-head { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; }
+.entry-head .note { color: var(--muted); }
+.figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 14px; display: grid; gap: 2px; }
+.figure .v { font-family: var(--font-data); font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.figure .s { font-size: 12.5px; color: var(--muted); }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+@media (max-width: 720px) { .two { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 14px; display: grid; gap: 10px; min-width: 0; }
+.bar { display: grid; grid-template-columns: 76px minmax(0, 1fr) 56px; gap: 10px; align-items: center; font-size: 13.5px; }
+.bar .track { height: 10px; background: var(--rule); border-radius: 5px; overflow: hidden; }
+.bar .fill { height: 100%; border-radius: 5px; }
+.rate { display: grid; grid-template-columns: 48px minmax(40px, 1fr); gap: 8px; align-items: center; }
+.rate .track { height: 6px; background: var(--rule); border-radius: 3px; overflow: hidden; }
+.rate .fill { height: 100%; }
+.kind { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--rule); color: var(--muted); }
+.empty { color: var(--muted); font-style: italic; }
+button.more { justify-self: start; font: inherit; font-size: 13px; background: none; border: 1px solid var(--rule); color: var(--ink); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button.more:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+code { font-family: var(--font-data); font-size: 12.5px; background: var(--rule); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+footer { color: var(--muted); font-size: 13px; display: grid; gap: 8px; max-width: 70ch; }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <span class="label">Argentum · Phase 1 · Devlog</span>
+    <h1>Argentum Checkpoint Log</h1>
+    <p><span class="matchup"><span class="swatch" style="background:var(--akiri)"></span>Akiri</span> gegen
+       <span class="matchup"><span class="swatch" style="background:var(--chevill)"></span>Chevill</span>, Commander.
+       Jeder Checkpoint lernt aus Partien der eingebauten Engine-KI und tritt dann gegen sie und gegen frühere Checkpoints an.</p>
+    <p class="label" id="generated"></p>
+  </header>
+
+  <section class="ladder" aria-labelledby="ladder-title">
+    <h2 id="ladder-title">Elo-Rangliste</h2>
+    <div class="ladder-grid">
+      <div id="elo-chart"></div>
+      <div class="scroll"><table id="ladder-table"><thead><tr><th>Spieler</th><th class="r">Elo</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <p class="label">Engine-KI fest bei 1500. Bradley-Terry-Schätzung über alle Turnier-Partien; unentschiedene oder abgebrochene Partien zählen halb.</p>
+  </section>
+
+  <div id="entries"></div>
+
+  <footer>
+    <h3>So entstehen die Zahlen</h3>
+    <p>Lehrer ist die Engine-KI (Profil production-candidate-expiring). Das Modell sieht nur die öffentliche Sicht des handelnden Spielers und wählt die Aktion; Zahlung, Ziele und Kampf-Details übernimmt die Engine.
+       Übereinstimmung heißt: Anteil der Validierungs-Entscheidungen, in denen das Modell dieselbe Aktion wählt wie die Engine-KI.</p>
+    <p>Karten-Nutzung: <em>angeboten</em> zählt Entscheidungen, in denen die Karte eine bezahlbare Aktion bot, <em>gespielt</em> die tatsächlich gewählten. Für Modell und Engine-KI gilt dieselbe Regel.</p>
+    <p>Bekannte Grenze von Phase 1: Auf Zauber im Stapel antwortet niemand, die Engine passt dort automatisch.</p>
+  </footer>
+</div>
+
+<script type="application/json" id="devlog-data">/*DEVLOG_DATA*/</script>
+<script>
+(() => {
+  const data = JSON.parse(document.getElementById('devlog-data').textContent);
+  const pct = v => v == null ? '–' : (100 * v).toFixed(0) + ' %';
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const el = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+  document.getElementById('generated').textContent = 'Stand ' + data.generated.replace('T', ' ');
+
+  // Ladder table
+  const tbody = document.querySelector('#ladder-table tbody');
+  data.ladder.forEach(r => tbody.append(el(`<tr><td>${esc(r.player.startsWith('engine') ? 'Engine-KI' : r.player)}</td><td class="r num">${r.elo.toFixed(0)}</td></tr>`)));
+
+  // Elo chart over checkpoints in entry order, engine anchor dashed
+  const points = data.entries.filter(e => e.elo != null).map(e => ({ name: e.checkpoint, elo: e.elo }));
+  const W = 560, H = 220, L = 46, R = 16, T = 14, B = 34;
+  const values = points.map(p => p.elo).concat([1500]);
+  let lo = Math.floor((Math.min(...values) - 50) / 100) * 100, hi = Math.ceil((Math.max(...values) + 50) / 100) * 100;
+  const x = i => points.length < 2 ? L + (W - L - R) / 2 : L + i * (W - L - R) / (points.length - 1);
+  const y = v => T + (hi - v) * (H - T - B) / (hi - lo);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Elo je Checkpoint">`;
+  for (let v = lo; v <= hi; v += 100) svg += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--rule)" stroke-width="1"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${v}</text>`;
+  svg += `<line x1="${L}" x2="${W - R}" y1="${y(1500)}" y2="${y(1500)}" stroke="var(--engine)" stroke-width="1.5" stroke-dasharray="5 4"/><text x="${W - R}" y="${y(1500) - 6}" text-anchor="end">Engine-KI 1500</text>`;
+  if (points.length > 1) svg += `<polyline fill="none" stroke="var(--brass)" stroke-width="2.5" points="${points.map((p, i) => `${x(i)},${y(p.elo)}`).join(' ')}"/>`;
+  points.forEach((p, i) => {
+    svg += `<circle cx="${x(i)}" cy="${y(p.elo)}" r="${i === points.length - 1 ? 5.5 : 4}" fill="var(--brass)"/>`;
+    svg += `<text x="${x(i)}" y="${H - 12}" text-anchor="middle">${esc(p.name.replace('p1-ckpt-', '#'))}</text>`;
+  });
+  svg += '</svg>';
+  document.getElementById('elo-chart').innerHTML = svg;
+
+  const deckColor = d => d === 'Akiri' ? 'var(--akiri)' : 'var(--chevill)';
+  const kindName = { Cast: 'Wirken', Ability: 'Fähigkeit', Land: 'Land', Cycle: 'Cycling', TurnFaceUp: 'Aufdecken' };
+
+  const trainingCurve = e => {
+    const hs = e.history.filter(h => h.top1 != null);
+    if (!hs.length) return '<p class="empty">Keine Validierungsdaten.</p>';
+    const W = 420, H = 150, L = 36, R = 10, T = 10, B = 26;
+    const vals = hs.map(h => h.top1).concat(hs.map(h => h.top1NonPass || 0)).concat([e.validation.alwaysPassBaseline || 0]);
+    const lo = Math.max(0, Math.floor(Math.min(...vals) * 10) / 10), hi = Math.min(1, Math.ceil(Math.max(...vals) * 10) / 10);
+    const x = i => hs.length < 2 ? (L + W - R) / 2 : L + i * (W - L - R) / (hs.length - 1);
+    const y = v => T + (hi - v) * (H - T - B) / ((hi - lo) || 1);
+    let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Übereinstimmung je Epoche">`;
+    for (let v = lo; v <= hi + 1e-9; v += 0.1) s += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--rule)"/><text x="${L - 5}" y="${y(v) + 4}" text-anchor="end">${Math.round(v * 100)}</text>`;
+    if (e.validation.alwaysPassBaseline != null) s += `<line x1="${L}" x2="${W - R}" y1="${y(e.validation.alwaysPassBaseline)}" y2="${y(e.validation.alwaysPassBaseline)}" stroke="var(--engine)" stroke-dasharray="4 4"/>`;
+    const line = (key, color) => `<polyline fill="none" stroke="${color}" stroke-width="2" points="${hs.map((h, i) => `${x(i)},${y(h[key] || 0)}`).join(' ')}"/>`;
+    s += line('top1', 'var(--brass)') + line('top1NonPass', 'var(--ink)');
+    const sel = hs.findIndex(h => h.epoch === e.selectedEpoch);
+    if (sel >= 0) s += `<circle cx="${x(sel)}" cy="${y(hs[sel].top1)}" r="5" fill="var(--brass)"/>`;
+    hs.forEach((h, i) => s += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle">${h.epoch}</text>`);
+    return s + '</svg><p class="label"><span class="swatch" style="background:var(--brass)"></span> alle Entscheidungen · <span class="swatch" style="background:var(--ink)"></span> ohne Passen · gestrichelt: „immer passen“ · Punkt: gewählte Epoche</p>';
+  };
+
+  const rateCell = (counts) => {
+    if (!counts) return '<span class="empty">–</span>';
+    const [offered, played] = counts;
+    const r = offered ? played / offered : 0;
+    return `<div class="rate"><span class="num">${offered ? pct(r) : '–'}</span><div class="track"><div class="fill" style="width:${Math.min(100, 100 * r)}%;background:var(--brass)"></div></div></div><span class="label num">${played}/${offered}</span>`;
+  };
+
+  const cardTable = (e, id) => {
+    if (!e.cards.length) return '<p class="empty">Karten-Nutzung wird ab Checkpoint 1 aufgezeichnet.</p>';
+    const rows = [];
+    e.cards.forEach(c => {
+      const kinds = new Set([...Object.keys(c.model || {}), ...Object.keys(c.engine || {})]);
+      kinds.forEach(k => rows.push({ card: c.card, types: c.types, kind: k, model: (c.model || {})[k], engine: (c.engine || {})[k] }));
+    });
+    rows.sort((a, b) => ((b.model || [0])[0] + (b.engine || [0])[0]) - ((a.model || [0])[0] + (a.engine || [0])[0]));
+    const body = rows.map((r, i) => `<tr${i >= 25 ? ' hidden data-more="' + id + '"' : ''}><td>${esc(r.card)}<br><span class="label">${esc(r.types.replace(/\//g, ' · '))}</span></td><td><span class="kind">${esc(kindName[r.kind] || r.kind)}</span></td><td>${rateCell(r.model)}</td><td>${rateCell(r.engine)}</td></tr>`).join('');
+    return `<div class="scroll"><table><thead><tr><th>Karte</th><th>Aktion</th><th>Modell gespielt/angeboten</th><th>Engine-KI</th></tr></thead><tbody>${body}</tbody></table></div>` +
+      (rows.length > 25 ? `<button class="more" id="more-${id}" type="button">Alle ${rows.length} Zeilen zeigen</button>` : '');
+  };
+
+  const entries = document.getElementById('entries');
+  [...data.entries].reverse().forEach((e, n) => {
+    const vsEngine = e.matches.find(m => m.opponent.startsWith('engine'));
+    const others = e.matches.filter(m => !m.opponent.startsWith('engine'));
+    const deckBars = vsEngine ? Object.entries(vsEngine.byDeck).map(([deck, d]) =>
+      `<div class="bar"><span><span class="swatch" style="background:${deckColor(deck)}"></span> ${esc(deck)}</span><div class="track"><div class="fill" style="width:${100 * d.winRate}%;background:${deckColor(deck)}"></div></div><span class="num">${pct(d.winRate)}</span></div>`).join('') : '<p class="empty">Noch kein Turnier gegen die Engine-KI.</p>';
+    const matchRows = others.map(m => `<tr><td>${esc(m.opponent)}</td><td class="r num">${m.games}</td><td class="r num">${pct(m.winRate)}</td></tr>`).join('');
+    const showcases = e.showcases.length ? e.showcases.map(s => `<li>${s.won ? 'Sieg' : 'Niederlage'} mit ${esc(s.deck)} gegen ${esc(s.opponent.startsWith('engine') ? 'Engine-KI' : s.opponent)}, ${s.turns} Züge (${esc(s.fidelity || '')})<br><code>just replay-import ${esc(s.file)}</code></li>`).join('') : '';
+    const node = el(`<article class="entry" id="${esc(e.checkpoint)}">
+      <div class="entry-head"><h2>${esc(e.checkpoint)}</h2><span class="label num">${esc(e.created.replace('T', ' '))}</span><span class="note">${esc(e.note || '')}</span></div>
+      <div class="figures">
+        <div class="figure"><span class="label">Elo</span><span class="v">${e.elo == null ? '–' : e.elo.toFixed(0)}</span><span class="s">Engine-KI = 1500</span></div>
+        <div class="figure"><span class="label">gegen Engine-KI</span><span class="v">${vsEngine ? pct(vsEngine.winRate) : '–'}</span><span class="s">${vsEngine ? vsEngine.points + ' aus ' + vsEngine.games + ' Partien' : 'kein Turnier'}</span></div>
+        <div class="figure"><span class="label">Übereinstimmung</span><span class="v">${pct(e.validation.top1)}</span><span class="s">„immer passen“: ${pct(e.validation.alwaysPassBaseline)}</span></div>
+        <div class="figure"><span class="label">ohne Passen</span><span class="v">${pct(e.validation.top1NonPass)}</span><span class="s">wenn die Engine-KI handelt</span></div>
+        <div class="figure"><span class="label">Daten</span><span class="v">${e.data.games}</span><span class="s">Partien · ${(e.data.trainSamples || 0).toLocaleString('de-DE')} Beispiele</span></div>
+      </div>
+      <div class="two">
+        <div class="panel"><h3>Siegquote gegen Engine-KI nach Deck</h3>${deckBars}
+          ${vsEngine ? `<p class="label">Ø ${vsEngine.averageTurns} Züge · ${vsEngine.unfinished} unbeendet · Fallbacks ${vsEngine.fallbacks}/${vsEngine.modelChoices} · Schleifensperre ${vsEngine.loopBreaks}×</p>` : ''}
+          ${matchRows ? `<h3>Gegen frühere Checkpoints</h3><div class="scroll"><table><thead><tr><th>Gegner</th><th class="r">Partien</th><th class="r">Siegquote</th></tr></thead><tbody>${matchRows}</tbody></table></div>` : ''}
+        </div>
+        <div class="panel"><h3>Training: Übereinstimmung je Epoche</h3>${trainingCurve(e)}
+          <p class="label">${e.training.parameters ? e.training.parameters.toLocaleString('de-DE') + ' Parameter' : ''} · ${e.training.seconds ? Math.round(e.training.seconds / 60) + ' min' : ''} · Wert-Kopf trifft Sieger: ${pct(e.validation.valueSignAccuracy)}</p>
+        </div>
+      </div>
+      <div class="panel"><h3>Welche Karten spielt das Modell?</h3>${cardTable(e, 'c' + n)}</div>
+      ${showcases ? `<div class="panel"><h3>Showcase-Partien</h3><ul>${showcases}</ul><p class="label">Import in den lokalen Server, dann im Replay-Viewer öffnen.</p></div>` : ''}
+    </article>`);
+    entries.append(node);
+    const more = node.querySelector('button.more');
+    if (more) more.addEventListener('click', () => { node.querySelectorAll('[data-more]').forEach(r => r.hidden = false); more.remove(); });
+  });
+})();
+</script>
