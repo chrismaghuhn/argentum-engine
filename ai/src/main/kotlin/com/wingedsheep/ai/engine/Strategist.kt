@@ -213,8 +213,10 @@ class Strategist(
                 // nothing, whatever the leaf score says — and it is not a one-off mistake, because it
                 // hands us back the very position that made it look good. Aphetto Alchemist untapping
                 // itself is the degenerate case (`here`); two of them untapping each other is the same
-                // thing one step longer. See [StateProgress].
-                else -> StateProgress.digest(simulation.state)
+                // thing one step longer. See [StateProgress]. The *settled* leaf, because after blocks
+                // the simulator plays on through combat damage, and a leaf past the damage can never
+                // match a position from before it — which left this guard blind for the whole window.
+                else -> StateProgress.digest(simulation.settledState)
                     .let { leaf -> leaf != here && leaf !in positionsActedFrom }
             }
             if (usable) {
@@ -426,7 +428,7 @@ class Strategist(
         if (simulation is SimulationResult.Illegal || simulation is SimulationResult.NeedsDecision) {
             return materialized to simulation
         }
-        if (StateProgress.digest(simulation.state) != here) return materialized to simulation
+        if (StateProgress.digest(simulation.settledState) != here) return materialized to simulation
 
         val refined = chooseCommittedTargets(state, action, playerId, budget, forceTargetRefinement = true)
         if (refined == materialized) return materialized to simulation
@@ -732,7 +734,7 @@ class Strategist(
                 // choice, it is a no-op wearing one — Aphetto Alchemist untapping itself. Rank it
                 // below every real option, so `chooseAction` only ever drops the whole ability as
                 // inert when *no* target does anything.
-                if (StateProgress.digest(result.state) == here) {
+                if (StateProgress.digest(result.settledState) == here) {
                     Double.NEGATIVE_INFINITY
                 } else {
                     evaluator.evaluate(result.state, result.state.projectedState, playerId)

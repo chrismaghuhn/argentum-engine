@@ -11,6 +11,7 @@ import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.battlefield.HasBecomeTappedComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -143,7 +144,6 @@ class LoopingActionAiTest : FunSpec({
 
         val strategist = strategistFor(registry, Step.END_COMBAT)
         val chosen = chooseFor(strategist, registry, driver.state, ai)
-
         chosen.actionType shouldBe "PassPriority"
     }
 
@@ -170,6 +170,54 @@ class LoopingActionAiTest : FunSpec({
         // the whole cycle. The only other option, untapping itself, changes nothing at all.
         val reply = chooseFor(strategist, registry, afterOpening, ai)
         reply.actionType shouldBe "PassPriority"
+    }
+
+    test("an inert activation after blocks is refused when the simulator resolves through combat damage") {
+        // Found in engine AI self-play (Commander, `production-candidate-expiring`): with blocks
+        // declared, Akiri re-equipped a free Mask of Memory onto the creature already wearing it
+        // until the game hit its step cap. The simulator carries every leaf of that window on
+        // through combat damage, so no leaf ever equals the pre-damage position the AI acts from,
+        // and the repetition guard compared the wrong two positions.
+        val registry = registry()
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all)
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true, startingPlayer = 0)
+        val ai = driver.player1
+        val human = driver.player2
+        // The Alchemist is the attacker and the only artifact or creature in play, so the one
+        // target its ability has is itself: paying {T} and untapping again changes nothing.
+        val alchemist = driver.putCreatureOnBattlefield(ai, "Aphetto Alchemist")
+        driver.removeSummoningSickness(alchemist)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(ai, listOf(alchemist), human)
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(human)
+        if (driver.state.priorityPlayerId == human) driver.passPriority(human)
+        // Standing in for vigilance, so it can pay its own {T}.
+        driver.untapPermanent(alchemist)
+        withClue("the AI holds priority after blocks") {
+            driver.state.step shouldBe Step.DECLARE_BLOCKERS
+            driver.state.priorityPlayerId shouldBe ai
+        }
+
+        // The bias that fed the real loop was rollout noise in the activation's favour. The
+        // smallest honest model of it: a score that rises with every time a permanent became
+        // tapped this turn, which the activation's {T} counts up and the position digest
+        // deliberately ignores.
+        val prefersActivating = BoardEvaluator { state, _, _ ->
+            state.getBattlefield().sumOf {
+                state.getEntity(it)?.get<HasBecomeTappedComponent>()?.timesThisTurn ?: 0
+            }.toDouble()
+        }
+        val strategist = Strategist(
+            GameSimulator(registry, resolveThroughCombatDamage = true),
+            prefersActivating,
+            budgetPolicy = LegacyBudgetPolicy,
+        )
+
+        val chosen = chooseFor(strategist, registry, driver.state, ai)
+
+        chosen.actionType shouldBe "PassPriority"
     }
 })
 

@@ -132,6 +132,9 @@ class GameSimulator(
         var allEvents = result.events
         var iterations = 0
         val maxIterations = 100
+        // Where the action's own resolution came to rest, before any pass below carries the game
+        // on into combat damage. See [SimulationResult.settledState].
+        var settled: GameState? = null
 
         while (iterations < maxIterations) {
             val error = current.error
@@ -190,6 +193,7 @@ class GameSimulator(
             // candidate may be the damage; pass priority to advance the step and look again.
             if (resolveThroughCombatDamage && isPreDamageCombatState(state)) {
                 if (priorityPlayerId == null || state.gameOver) break
+                if (settled == null) settled = state
                 val passAction = PassPriority(priorityPlayerId)
                 current = processor.process(state, passAction).result
                 onTransition?.invoke(passAction, current)
@@ -208,7 +212,7 @@ class GameSimulator(
             current.isPaused ->
                 SimulationResult.NeedsDecision(current.state, current.pendingDecision!!, allEvents)
             else ->
-                SimulationResult.Terminal(current.state, allEvents)
+                SimulationResult.Terminal(current.state, allEvents, settledState = settled ?: current.state)
         }
     }
 
