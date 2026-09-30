@@ -90,6 +90,18 @@ tasks.register<Test>("phase1SelfPlayMeasureTest") {
     testLogging { showStandardStreams = true }
 }
 
+tasks.register<Test>("phase1SelfPlayCollectTest") {
+    description = "Opt-in Phase 1 teacher data: engine AI self-play samples (-Dphase1.collect=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1SelfPlayCollectTest*")
+    // Each worker holds one Commander game; size -Dphase1.workers against this heap.
+    maxHeapSize = System.getProperty("phase1.heap") ?: "12g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
 tasks.register<Test>("kaggleActor06CharacterizationTest") {
     description = "Runs the opt-in transported-replay reconstruction authority characterization."
     group = "verification"
@@ -156,6 +168,11 @@ tasks.withType<Test>().configureEach {
         "phase1.profile",
         "phase1.outputFile",
         "phase1.traceFrom",
+        "phase1.collect",
+        "phase1.firstGame",
+        "phase1.workers",
+        "phase1.baseSeed",
+        "phase1.outputDir",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }
