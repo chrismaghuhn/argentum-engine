@@ -26,15 +26,15 @@ while (!environment.isTerminal && !environment.isTruncated) {
     environment.step(chooseAction(environment))             // any policy, any seat
 }
 val replay = recorder.finish(gameId = "devlog-ckpt-0042-game-1", engineVersion = gitSha)
-Files.writeString(Path.of("$gameId.replay"), ReplayCodec.encode(replay))
+Files.writeString(Path.of("${replay.gameId}.replay"), ReplayCodec.encode(replay))
 ```
 
 Requirements: `config.seed` set, every `PlayerConfig.playerId` set, and `registry` the one the
 environment was created with. Create the environment with the **server's** registries — card,
 printing, and token-art (`GameBeansConfig(GameProperties())` builds all three, see
 `HeadlessEngineAiGame`). Token art is part of the fingerprinted state: a game played without the
-token-art registry replays EXACT locally but drifts on the server at its first token. Do not `reset`/`restore` the environment while recording — `finish()`
-detects it and refuses. The recorder lives in `:game-server` because the replay format does;
+token-art registry replays EXACT locally but drifts on the server at its first token. Do not
+`reset`/`restore` the environment while recording — `finish()` detects it and refuses. The recorder lives in `:game-server` because the replay format does;
 `:gym` stays free of that dependency (its tests already depend on `:game-server`).
 
 To check a replay the way the viewer will, run
@@ -57,8 +57,8 @@ data through the TRUSTED path; record showcase games with this one.
    Files land in `build/showcase-replays/` together with `showcase-<timestamp>.md`, a table of
    seed, winner, turns, and fidelity per game. Options: `just showcase-replays GAMES SEED OUTPUT`.
 
-2. Start the server with dev endpoints enabled (`.env.example` has `GAME_DEV_ENDPOINTS_ENABLED=true`)
-   and the web client:
+2. Start the server with dev endpoints enabled and the web client. `just server` reads `.env`;
+   copy `.env.example` to `.env` once — it sets `GAME_DEV_ENDPOINTS_ENABLED=true`:
 
    ```bash
    just dev
