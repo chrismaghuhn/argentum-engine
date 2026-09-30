@@ -69,8 +69,13 @@ internal object Phase1Tournament {
 
         /** Returns the chosen candidate index, or null when the worker reports an error. */
         @Synchronized
-        fun choose(sample: kotlinx.serialization.json.JsonObject): Int? {
-            input.write(buildJsonObject { put("sample", sample) }.toString())
+        fun choose(sample: kotlinx.serialization.json.JsonObject, allowed: List<Boolean>): Int? {
+            input.write(
+                buildJsonObject {
+                    put("sample", sample)
+                    put("allowed", kotlinx.serialization.json.JsonArray(allowed.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                }.toString(),
+            )
             input.write("\n")
             input.flush()
             val reply = Json.parseToJsonElement(output.readLine() ?: return null).jsonObject
@@ -163,7 +168,9 @@ internal object Phase1Tournament {
                 continue
             }
             val sample = Phase1SelfPlayCollector.observationSample(game, environment.stepCount, names, observation, candidates)
-            val index = workers.getValue(spec.checkpoint).choose(sample)
+            // The teacher never picks an unaffordable candidate and the sample carries no affordability
+            // feature, so the seat restricts the model to candidates it can currently pay for.
+            val index = workers.getValue(spec.checkpoint).choose(sample, candidates.map { it.affordable })
             val template = index?.let { i ->
                 candidates.getOrNull(i)?.let { view ->
                     built.registry.legalActions.firstOrNull { it.first == view.actionId }?.second

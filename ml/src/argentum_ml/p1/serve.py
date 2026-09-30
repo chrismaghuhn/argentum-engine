@@ -2,8 +2,11 @@
 
     python -m argentum_ml.p1.serve --checkpoint DIR [--device cpu]
 
-Reads one JSON object per stdin line: `{"sample": <observation sample>}` where the sample is the
-model-facing part of `argentum-p1-selfplay-sample@v1` (no `chosen`/`outcome` needed). Writes one
+Reads one JSON object per stdin line: `{"sample": <observation sample>, "allowed": [bool, ...]}` where
+the sample is the model-facing part of `argentum-p1-selfplay-sample@v1` (no `chosen`/`outcome`
+needed) and the optional `allowed` mask excludes candidates the seat may not pick (e.g. ones the
+player cannot currently afford; the teacher never picks those, but the sample has no affordability
+feature). Writes one
 JSON line per request: `{"chosen": i, "value": v, "scores": [...]}` with `chosen` the argmax over
 the candidates, or `{"error": "..."}`. After loading it prints `{"ready": "<checkpoint name>"}`.
 """
@@ -32,7 +35,7 @@ def load_checkpoint(directory: Path, device: str = "cpu") -> tuple[P1Model, Voca
 
 
 @torch.no_grad()
-def choose(model: P1Model, vocab: Vocab, sample: dict, device: str = "cpu") -> dict:
+def choose(model: P1Model, vocab: Vocab, sample: dict, device: str = "cpu", allowed: list[bool] | None = None) -> dict:
     prepared = dict(sample)
     prepared.setdefault("chosen", 0)
     prepared.setdefault("outcome", 0)
@@ -40,8 +43,12 @@ def choose(model: P1Model, vocab: Vocab, sample: dict, device: str = "cpu") -> d
     encoded = encode(prepared, vocab)
     scores, value = model(collate([encoded], device))
     row = scores[0, : len(encoded.candidate_kind)]
+    pick = row
+    if allowed is not None and len(allowed) == len(row) and any(allowed):
+        mask = torch.tensor([not a for a in allowed], device=row.device)
+        pick = row.masked_fill(mask, float("-inf"))
     return {
-        "chosen": int(row.argmax().item()),
+        "chosen": int(pick.argmax().item()),
         "value": float(value[0].item()),
         "scores": [round(float(x), 4) for x in row.tolist()],
     }
@@ -62,7 +69,8 @@ def main(argv=None) -> None:
         if not line.strip():
             continue
         try:
-            reply = choose(model, vocab, json.loads(line)["sample"], args.device)
+            request = json.loads(line)
+            reply = choose(model, vocab, request["sample"], args.device, request.get("allowed"))
         except Exception as error:  # the Kotlin seat counts errors as fallbacks
             reply = {"error": f"{type(error).__name__}: {error}"}
         out.write(json.dumps(reply) + "\n")
