@@ -46,8 +46,8 @@ import kotlinx.serialization.json.put
  *      (production choices, activation cost units, cost order options, deterministic
  *      non-mana components, certified self damage) — i.e. the grammar needs no GameState
  *      access beyond the published DTO.
- *  T3  RED: no production payment-construction grammar/source primitive exists at this HEAD
- *      (reflective probe; the exact planned type name is documented in the report).
+ *  T3  RED at TASK 1 (planned grammar/source primitive absent); flipped GREEN at TASK 2 once
+ *      PaymentConstructionGrammarV1 exists (reflective probe).
  *  T4  the canonical-identity substrate the design reuses already exists and is stable:
  *      canonicalizeInitialPoolBucketsV1 ordering + A3SemanticJson canonical JSON distinguish
  *      provenance-distinct bucket keys and are repeatable.
@@ -186,14 +186,15 @@ class PaymentConstructionGrammarTask1CharacterizationTest : FunSpec({
         )
     }
 
-    test("T3 RED: no production payment-construction grammar/source primitive exists at this HEAD") {
-        // The planned production type (docs/ml/c1-live-payment-choice-boundary-02a.md, TASK 2)
-        // must not exist yet; the RED is the missing primitive itself.
+    test("T3 GREEN (flipped at TASK 2): the planned payment-construction grammar primitive exists") {
+        // TASK 1 pinned this as RED (class absent). TASK 2 implements the planned production type
+        // (docs/ml/c1-live-payment-choice-boundary-02a.md, TASK 2); its completeness proof lives in
+        // PaymentConstructionGrammarCompletenessTest.
         val probe = runCatching {
             Class.forName("com.wingedsheep.gym.contract.PaymentConstructionGrammarV1")
         }
-        probe.isFailure shouldBe true
-        println("T3 RED: PaymentConstructionGrammarV1 absent (${probe.exceptionOrNull()?.javaClass?.simpleName})")
+        probe.isSuccess shouldBe true
+        println("T3 GREEN: PaymentConstructionGrammarV1 present")
     }
 
     test("T4: the canonical-identity substrate exists and separates provenance-distinct keys") {

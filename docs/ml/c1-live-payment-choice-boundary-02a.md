@@ -503,3 +503,331 @@ ANSWERS = CAN_SMALL_DOMAIN_COMPLETENESS_BE_PROVEN = YES under the corrected
 - The unrelated non-compiling StackResolver.kt edit in the MAIN checkout blocks any build
   started from C:/argentum-engine; it is outside this slice's scope and was left untouched.
 ```
+
+---
+---
+
+# TASK 2: Implementation, Completeness Proof, Measured Gates, Bound Derivation
+
+```text
+TASK = C1_LIVE_PAYMENT_CHOICE_BOUNDARY_02A / TASK_2
+BRANCH = chris/c1-live-payment-choice-boundary-02a-20260918
+BASE = TASK 1 head 56c0d8d34b, brought up to date by merging origin/main 8382d157af
+       (PR #214, KA07) -> merge commit 19fb708b20; no conflicts
+SCOPE = gym-only: 1 production file + 2 test files + T3 flipped RED->GREEN + this report.
+UNCHANGED (verified by diff): PaymentDomain.kt, PaymentPlanV3.kt, PaymentPlanValidator,
+  OrderedPaymentProgramExecutor, ActionPaymentPlanValidator, LivePolicyDecisionSnapshotV1,
+  GameGymEnv, every game-server file.
+```
+
+## 15. The implemented primitive
+
+`gym/src/main/kotlin/com/wingedsheep/gym/contract/PaymentConstructionGrammarV1.kt`
+
+```text
+PaymentConstructionStateV1(domain: PaymentDomainV5, activations: List<SourceActivationV2>,
+                           outerAllocation: List<PaymentAllocationV1>, finalized: Boolean)
+    pure data; no GameState, no engine service, no executor handle.
+PaymentConstructionStepV1 =
+    ActivateSource(sourceOptionIndex, productionChoiceIndex, activationCostOrderIndex)
+  | AllocateActivationCostUnit(target: ActivationCostUnit, resource: ManaResourceRefV1)
+  | AllocateOuterCostUnit(target: OuterCostUnit, resource: ManaResourceRefV1)
+  | Finalize
+PaymentConstructionGrammarV1:
+    initial(domain)            -> Ok(root) | Failed(typed)
+    nextSteps(state)           -> Ok(complete canonical legal next steps) | Failed(typed)
+    apply(state, step)         -> Ok(successor) only if step in nextSteps(state)
+    isTerminal(state)          -> finalized
+    materialize(state)         -> Ok(PaymentPlanV3(activations, outerAllocation)), pure assembly
+    structuralBounds(domain)   -> (alternatives, depth) per-domain structural bounds
+Typed failures (PaymentConstructionFailureV1):
+    UnsupportedDomainShapeV1      support kind != FixedManaAndTapSelf, non-mana costs != [TapSelf],
+                                  production choice with amount != 1 / bonusChoice / malformed bundle
+    ConstructionBoundExceededV1   bound = ALTERNATIVES | DEPTH | VIABILITY_WORK (limit, observed)
+    InvalidPartialConstructionV1  forged/non-canonical prefix, step not in nextSteps, premature
+                                  materialize, prefix without legal completion
+    NoLegalPaymentV1              the published domain admits no complete plan
+```
+
+Canonical construction order (exactly one path per distinct plan):
+
+```text
+1. activation phase: ActivateSource (at most one per sourceId), then that activation's inner
+   cost units one by one IN PUBLISHED UNIT ORDER, each from an initial-pool bucket or an unconsumed
+   output of an EARLIER activation;
+2. outer phase: the first AllocateOuterCostUnit closes the activation program; outer units are
+   paid one by one in published unit order from a bucket or any unconsumed activation output;
+3. Finalize (also offered directly in the activation phase when the outer cost is empty).
+Step order inside one nextSteps list: ActivateSource by (option, production, order) indices,
+then allocations by resource (buckets in published order, then outputs by (activation, output)),
+Finalize last.
+Activations whose outputs are never spent are LEGAL (the Rules ledger floats them; the executor
+adds them to the pool) and are therefore offered: completeness against the Rules ledger requires it.
+```
+
+Viability (why nextSteps never offers a dead end): each candidate successor is kept only if at
+least one complete legal plan extends it. The check is exact over a colour abstraction (ledger
+legality depends only on colour, bucket capacity, and output single use):
+
+```text
+- the open activation's unpaid inner units are paid first, from EXISTING resources only;
+- EAGER sources (single free activation shape, no budget-relevant damage) are activated
+  unconditionally: a free activation can be moved in front of all new activations and its unused
+  outputs float, so adding it never destroys a completion;
+- FLEXIBLE sources (every activation a free single output) become one optional unit of any of
+  their colours; the outer demand is matched exactly against fixed colours + flexible units by
+  a maximum flow;
+- COMPLEX sources (inner cost, budget-relevant damage, mixed output counts) are searched
+  exhaustively, memoized, paying inner units from any existing colour or flexible unit;
+- pruning uses only a NECESSARY condition (Hall over colour subsets with complex sources taken
+  cost-free, and net output over all colours).
+History (recorded honestly): the first version searched every non-eager source. The Gate F
+adversarial sweep measured 21,452 work units on the Chevill envelope (46x headroom to the
+ceiling, below the 100x margin the test demands). The flexible-unit/max-flow version replaced it
+BEFORE any bound was fixed; it cut the same sweep to 1,228 and was re-proven by every gate below.
+```
+
+## 16. Independent flat reference enumerator (test-only)
+
+`gym/src/test/kotlin/com/wingedsheep/gym/contract/PaymentConstructionFlatReferenceEnumerator.kt`
+
+```text
+GENERATION (brute force, shares no code with the grammar): every ordered sequence of distinct
+  published OPTIONS (sourceId uniqueness deliberately NOT enforced), every production x cost-order
+  combination, and every total function from atomic targets to the FULL resource universe
+  (all buckets + every output of every activation in the program, earlier OR later).
+FILTER violation(domain, plan): domain conformity + L1-L7 re-derived from the DTO
+  (L1 one activation per sourceId, L2 inner costs only from strictly earlier outputs, L3 every
+  target exactly once and in its owner's list, L4 output single use, L5 bucket capacity per exact
+  key, L6 colour class, L7 total fixed self-damage within the budget).
+IDENTITY: the frozen conservative identity of section 7 (program order and indices preserved;
+  only allocation-list order normalized), canonical JSON via A3SemanticJson.
+Never calls nextSteps/apply/isTerminal/materialize; guarded by MAX_GENERATED_CANDIDATES.
+```
+
+## 17. Gates A / A+ / C / D / E / G on real-card fixtures F1-F8 (executed)
+
+Per fixture: exhaustive walk over every reachable construction state. Gate A = set equality of
+grammar terminals vs reference. Gate A+ = EVERY reachable plan is `AcceptedV3` by
+`PaymentPlanValidator.validateV3` on the real state, passes
+`ActionPaymentPlanValidator.requireOrdinary`, EXECUTES through
+`GameEnvironment.stepFromCandidateStrict` with `PaymentStrategy.ExplicitV3(plan)`, and leaves
+exactly the predicted floating mana (unspent buckets + unspent outputs, per colour).
+
+| Fixture (real cards) | reference = grammar (Gates A/E) | paths | states | max branching / bound (C) | max depth / bound (D) | max viability work | A+ accepted + executed |
+|---|---|---|---|---|---|---|---|
+| F1 1 floated Plains, Shadowspear `{1}` | 1 = 1 | 1 | 3 | 1 / 2 | 2 / 2 | 0 | 1 |
+| F2 2 floated Plains (certified buckets), `{1}` | 2 = 2 | 2 | 5 | 2 / 3 | 2 / 2 | 0 | 2 |
+| F3 2 floated + 1 untapped Plains, Mind Stone `{2}` | 8 = 8 | 8 | 23 | 3 / 5 | 4 / 4 | 1 | 8 |
+| F4 City of Brass (5 choices) + Plains, `{1}` | 26 = 26 | 26 | 69 | 6 / 9 | 4 / 4 | 9 | 26 |
+| F4b Golgari Rot Farm bundle [B,G], `{1}` | 2 = 2 | 2 | 6 | 2 / 4 | 3 / 3 | 1 | 2 |
+| F5 2x City of Brass, Armored Pegasus `{1}{W}` | 20 = 20 | 20 | 89 | 10 / 13 | 5 / 5 | 50 | 20 |
+| F6 Golgari Signet + 2 Forest, Mind Stone `{2}` | 44 = 44 | 44 | 131 | 3 / 8 | 7 / 7 | 4 | 44 |
+| F7 impossible (see below) | 0 = NoLegalPaymentV1 | n/a | n/a | n/a | n/a | n/a | n/a |
+| F8 3 floated Plains, Mind Stone `{2}` | 6 = 6 | 6 | 16 | 3 / 4 | 3 / 3 | 0 | 6 |
+
+Hand checks: F3 = 2 (pool only: ordered distinct bucket pairs) + 6 (Plains activated: ordered
+distinct pairs from 3 resources) = 8; F4 = 1 + 5 + 10 + 10 = 26 (Plains only; City of Brass only
+in 5 colours; both activation orders with the outer unit paid from either output). Both match.
+
+```text
+F4 evidence (P3 of the TASK 1 review): the candidate list [City of Brass, Birds of Paradise] is
+   probed by EMISSION; City of Brass is the first whose emitted V5 option has
+   productionChoices.size > 1 (measured sizes=[5]). The bundle subclass is F4b (Rot Farm) and F6.
+F6: 40 of 44 plans pay the Signet's inner {1} from an earlier Forest output (D5 exercised);
+   36 of 44 contain a surplus activation.
+F7: MEASURED first: the engine menu offers NO CastSpell candidate for Mind Stone with one Forest
+   (unaffordable paid actions are never listed), so no such V5 domain reaches the grammar live.
+   The impossible shapes are therefore derived from the REAL F6 emission by raising only the outer
+   demand: {5} (demand > total supply 4) and {W}{W} (colour-impossible): reference = 0,
+   grammar = NoLegalPaymentV1 for both.
+F8 (dedup, Gate G): grammar paths = distinct plans = 6; a free-target-order construction would
+   reach every plan once per target order (12 paths). Canonical target order makes duplicate
+   construction paths impossible by construction, so no plan-level dedup is needed.
+Gate G on EVERY visited state of every fixture: nextSteps deterministic (repeat call equal),
+   list equals its documented canonical sort (independent comparator), no duplicate steps,
+   successors pairwise distinct (injective), every non-terminal state has >= 1 step and every
+   step reaches a terminal (no dead ends; the walk is exhaustive).
+```
+
+## 18. Gate A at DTO level: seeded differential test (executed)
+
+```text
+600 seeded random PaymentDomainV5 instances inside the DTO contract (0-2 unrestricted buckets,
+0-3 sources with 1-2 options, single-choice / multi-choice / bundle productions, optional inner
+cost incl. two cost-order options, GENERIC / COLORLESS / COLORED / two-colour COLORED units,
+optional pain damage and budget):
+  compared = 600, skipped (oracle too large) = 0
+  NoLegalPaymentV1 cases = 232 (reference empty in exactly those cases)
+  reachable plans compared = 31,360; grammar set == reference set in every case
+  one path per plan in every case; every grammar plan passes the oracle's L1-L7 filter
+  max branching 11, max depth 9 (each within its structural bound), max viability work 101
+  budget-binding cases (total damage > budget) = 30
+These DTOs are NOT claimed to be reachable Magic states; they test the grammar's contract
+generality (especially the viability search) beyond the real fixtures.
+```
+
+## 19. Gate B: structural coverage of D1-D11 (per-transition argument + evidence)
+
+Per-transition coverage argument (independent of domain size): let P be any plan that satisfies
+L1-L7. P has exactly one canonical step sequence (activations in program order, each followed by
+its inner units in published order, then outer units in published order, then Finalize). Every
+step of that sequence is generated as a candidate (candidate generation enumerates every unused
+option x production x order, and for the canonical next target every bucket with capacity and every
+unconsumed permitted output whose colour is accepted), and every step is viable because P itself
+completes it. Hence P is reachable. Conversely every terminal path passes the prefix replay
+(L1-L7 re-derived on each call), so every reachable plan satisfies L1-L7. The only non-trivial
+lemma is exactness of the viability check (section 15), which the 600-case differential test and
+the fixture set equality exercise; the Rules validator independently accepts every reachable plan.
+
+| Dimension | Consumed by | Non-degenerate evidence |
+|---|---|---|
+| D1 outerAtomicCostUnits | outer phase targets, demand matching | F5 mixed GENERIC+COLORED; F8 two GENERIC; DTO COLORLESS and two-colour units |
+| D2 initialPoolBuckets | allocation resources, capacity | F2/F3/F8 certified buckets; DTO unrestricted buckets (capacity 2) |
+| D3 sourceActivationOptions | ActivateSource, L1 | F4/F5/F6 multi-source; DTO two options per sourceId (T2a measured it for Clifftop) |
+| D4 productionChoices | ActivateSource production index, outputs | F4/F5 five choices; F4b/F6 fixed bundles |
+| D5 atomicActivationManaCostUnits | inner allocation phase | F6 (40 plans pay the inner cost from an earlier output) |
+| D6 activationCostOrderOptions | ActivateSource order index | real emission always publishes one order (T2b); DTO case with two orders: both reachable |
+| D7 deterministicNonManaCosts | admission (must be [TapSelf]) | typed UnsupportedDomainShape on other shapes; carries no choice |
+| D8 fixedSelfDamageAmount | L7 ledger, budget-relevant viability | DTO pain options; Chevill/Akiri envelope pain sources; City of Brass note O3 |
+| D9 reservedOuterLifePayment | no choice; only via D10 | real War Room domain: reservation 2 |
+| D10 fixedSelfDamageBudget | ActivateSource filter, L7, viability | DTO budget=1 case (no plan activates both pain sources); real War Room budget 38; 30 random budget-binding cases |
+| D11 version/order invariants | DTO init + grammar admission + prefix replay | typed-failure test (forged prefix, unsupported shape, bound) |
+
+`requiredCost`, `sourceName`, `activationSupportKind` carry no construction choice (TASK 1 section 4).
+
+## 20. Gate H: public-data-only
+
+```text
+Reflective check: no public method of PaymentConstructionGrammarV1 takes or returns GameState,
+ManaSolver, GameEnvironment, CardRegistry, or ObservationBuilder; PaymentConstructionStateV1 has
+no such field. The file imports only engine payment DTO types and EntityId.
+```
+
+## 21. Gate F: bound derivation (per section 9)
+
+Structural per-domain bounds (proven formulas, checked at admission, so a construction is refused
+before its first step instead of failing midway):
+
+```text
+alternatives(domain) = sum_options(|productions| x |orders|) + |buckets|
+                       + sum_sources(max output bundle) + 1
+depth(domain)        = sum_sources(1 + max inner units) + |outer units| + 1
+Measured maxima never exceeded them (F1-F8, 600 DTO cases, envelope walks).
+```
+
+Curriculum envelope (locked Akiri v0.1 / Chevill v0.1, real Commander games): EVERY mana-producing
+card of the deck is put onto the battlefield at once, untapped and without summoning sickness.
+Both bounds are additive per source, so this state maximizes them over every subset of the deck's
+sources. Headroom is added for floating buckets (a source contributes at most one certified bucket
+per colour it can produce; unrestricted pools have at most 6 buckets) and for the largest fixed
+cost any deck card can present (mana cost or activated-ability mana cost).
+
+| | Akiri v0.1 | Chevill v0.1 |
+|---|---|---|
+| mana cards on battlefield / V5-published | 42 / 42 (none refused) | 43 / 43 (none refused) |
+| emitted options | 50 | 50 |
+| structural alternatives (empty pool) | 98 | 102 |
+| + pool-bucket headroom | 55 | 58 |
+| ENVELOPE alternatives bound | **153** | **160** |
+| largest deck outer cost (units) | 9 | 6 |
+| ENVELOPE depth bound (without commander tax) | **53** | **51** |
+| commander-tax headroom under the depth ceiling (+2 units per recast) | 101 recasts | 102 recasts |
+| 40 random walks: max branching / max depth | 54 / 25 | 56 / 28 |
+| real PayLife outer (War Room `{3}`, reservation 2, budget 38) | n/a | 40 walks, max branching 56, max work 251, all AcceptedV3 |
+| adversarial sweep cases (demand 1..relaxed total+1; generic / per colour / half-colour; budget null/1/3) | 945 | 1,794 |
+| max viability work (walks + sweep + War Room) | **688** | **1,228** |
+| complex sources: without budget / with budget | 1 (Boros Signet) / 3 | 1 (Golgari Signet) / 3 |
+
+Every envelope walk's plan is `AcceptedV3` by the Rules validator on the envelope state.
+
+```text
+DERIVED OPERATIONAL FAIL-CLOSED CEILINGS (NOT Magic maxima):
+  MAX_PAYMENT_CONSTRUCTION_ALTERNATIVES   = 512        envelope <= 160 (proven, additive), 3.2x headroom
+  MAX_PAYMENT_CONSTRUCTION_DEPTH          = 256        envelope <= 53 + 2 per commander recast (proven),
+                                                       >= 101 recasts of headroom
+  MAX_PAYMENT_CONSTRUCTION_VIABILITY_WORK = 1,000,000  measured max 1,228, 814x headroom;
+                                                       coverage MEASURED, not proven (see limits)
+Above any ceiling: typed ConstructionBoundExceededV1 (never truncation, never a guess).
+The pregame 10_000 constant was not used as evidence (section 9).
+```
+
+Honest limits of the derivation:
+
+```text
+- Alternatives/depth coverage is proven only for the locked curriculum's own cards (sources that
+  are not in either deck, such as tokens, stolen permanents, or opponents' cards, are outside the
+  claim). Commander tax is the one unbounded growth in the curriculum; it is covered for 101 recasts.
+- The viability-work ceiling has no analytic curriculum proof: the search is exponential in the
+  number of COMPLEX sources (curriculum: 1, or 3 when an outer PayLife makes pain sources
+  budget-relevant), and a loose analytic worst case exceeds the ceiling. Its coverage rests on
+  the adversarial sweeps and walks above. If it is ever hit, the step fails closed with
+  ConstructionBoundExceededV1(VIABILITY_WORK): the same outcome class as today's unsupported
+  payment domain, never a wrong step list.
+- Flat enumeration (A1) is ruled out at the envelope by a lower bound, not by an estimate: every
+  ordered sequence of distinct free-source activations (surplus outputs float) followed by one
+  valid outer allocation is a distinct legal plan under the conservative identity, so the
+  envelope has more than sum_k 42!/(42-k)! > 10^51 plans. Sequential construction keeps every
+  single decision at <= 56 measured alternatives (<= 160 proven).
+```
+
+## 22. Observations for _02B/_02C (no change made here)
+
+```text
+O1 Surplus activations and free program order are legal Rules plans, so the construction space is
+   astronomically large even though each step is small. Whether some of these distinctions are
+   semantically equivalent (the _01 section 17 equivalence question) is an open design decision for
+   the model-facing layer; this grammar keeps the frozen conservative identity and collapses nothing.
+O2 The conservative identity distinguishes symmetric assignments (F8: {u0<-A,u1<-B} vs
+   {u0<-B,u1<-A} for two GENERIC units). Unproven equivalence => distinct (section 7), as required.
+O3 City of Brass publishes fixedSelfDamageAmount = 0: its damage is a "becomes tapped" TRIGGER
+   that resolves through the stack after payment, not a certified payment-time side effect. This
+   is a PaymentDomainV5 publication question, outside the grammar; flagged, not changed.
+O4 The engine menu never lists unaffordable paid actions (measured in F7), so NoLegalPaymentV1 is a
+   defensive outcome for the live path.
+O5 Performance: nextSteps runs one viability check per candidate; envelope steps cost <= 1,228
+   work units (milliseconds). _02B will call nextSteps once per construction step.
+```
+
+## 23. TASK 2 answers
+
+```text
+CAN_SMALL_DOMAIN_COMPLETENESS_BE_PROVEN = YES (PROVEN AND EXECUTED)
+  Grammar-reachable terminal set == independent flat reference set under the frozen conservative
+  identity for F1-F8 (real cards) and 600 seeded DTO domains (31,360 plans); every reachable real
+  plan is accepted by the Rules validator, passes the trusted seam, and executes exactly.
+
+CAN_LARGE_DOMAIN_STRUCTURAL_COVERAGE_BE_PROVEN = YES
+  Per-transition argument in section 19 (unique canonical path per legal plan, each step a
+  candidate and viable; prefix replay enforces L1-L7); D1-D11 each exercised non-degenerately;
+  the viability lemma is exact by construction (section 15) and differential-tested.
+
+CAN_A_SAFE_PRODUCTION_BOUND_BE_DERIVED_NOW = YES, as OPERATIONAL FAIL-CLOSED CEILINGS
+  MAX_PAYMENT_CONSTRUCTION_ALTERNATIVES = 512 and MAX_PAYMENT_CONSTRUCTION_DEPTH = 256, derived
+  from proven structural bounds and a proven (additive) Akiri/Chevill envelope (160 / 53 + tax).
+  MAX_PAYMENT_CONSTRUCTION_VIABILITY_WORK = 1,000,000 is an internal compute guard whose envelope
+  coverage is MEASURED (max 1,228), not proven; stated explicitly in section 21. None is a Magic
+  maximum.
+
+MEASURED_MAX_BRANCHING = fixtures 10 (F5); DTO 11; envelope 56 (proven envelope bound 160)
+MEASURED_MAX_DEPTH     = fixtures 7 (F6); DTO 9; envelope walks 28 (proven envelope bound 53 + tax)
+MISSING_GENERIC_PRIMITIVE = none
+PRODUCTION_SOURCE_PRIMITIVE = PaymentConstructionGrammarV1 (implemented; not wired into any live
+  path yet, which is _02B)
+```
+
+## 24. Tests executed / not executed (TASK 2)
+
+```text
+EXECUTED in this worktree (real runs, JDK 21, scripts/gradle-locked):
+  :gym:test --tests PaymentConstructionGrammarCompletenessTest   15/15 PASSED
+      (F1-F8, F4b, Gate A DTO 600 cases, Gate B DTO, typed failures, Gate H, Gate F Akiri,
+       Gate F Chevill)
+  :gym:test --tests PaymentConstructionGrammarTask1CharacterizationTest   6/6 PASSED
+      (T3 flipped RED -> GREEN: the planned class now exists)
+  full :gym:test on the committed head: see section 25
+NOT EXECUTED:
+  :gym:environmentV1TrustedGenerationTest (separate task, already red on main: A8 closure audit,
+  CastWithKicker/CycleCard unclassified, unrelated); game-server suites (no game-server change);
+  hosted CI (no PR opened without the user's consent).
+```
