@@ -120,6 +120,20 @@ class GameEnvironment private constructor(
     var maxSteps: Int? = null
         private set
 
+    /**
+     * Optional observer of every rules transition this environment commits, in order: each
+     * [ActionProcessor] input together with the state it produced.
+     *
+     * One [step] can commit several transitions — the submitted action, then the automatic
+     * priority passes and forced decision answers of the legacy quiet-state loop — and each is
+     * reported on its own, so the reported actions are exactly the input stream that re-creates
+     * [state] from the [reset] state. That is what a replay recorder needs (see the game-server's
+     * `HeadlessReplayRecorder`). Transitions are reported only once the whole step has committed;
+     * a rejected step reports nothing. [reset], [restore] and [fork] report nothing, and a fork
+     * does not inherit the listener.
+     */
+    var committedTransitionListener: ((action: GameAction, stateAfter: GameState) -> Unit)? = null
+
     /** Authoritative, episode-scoped unsupported-path evidence. */
     var diagnostics: EpisodeDiagnostics = EpisodeDiagnostics.EMPTY
         private set
@@ -386,10 +400,15 @@ class GameEnvironment private constructor(
         // left by a direct internal strict call before advancing through this compatibility path.
         pendingCommittedTransition = null
 
+        val listener = committedTransitionListener
+        val transitions = if (listener != null) mutableListOf<Pair<GameAction, GameState>>() else null
+        val onTransition = transitions?.let { collected ->
+            { processed: GameAction, result: ExecutionResult -> collected += processed to result.state }
+        }
         val simResult = if (action is SubmitDecision) {
-            simulator.simulateDecision(state, action.response)
+            simulator.simulateDecision(state, action.response, onTransition)
         } else {
-            simulator.simulate(state, action)
+            simulator.simulate(state, action, onTransition)
         }
 
         // Do not install an illegal simulation result as if it were a successful step.  Besides
@@ -403,6 +422,7 @@ class GameEnvironment private constructor(
         lastStepEvents = simResult.events
         stepCount++
         projectionGeneration++
+        if (listener != null) transitions?.forEach { (processed, after) -> listener(processed, after) }
 
         return buildStepResult(simResult.events)
     }
@@ -430,6 +450,7 @@ class GameEnvironment private constructor(
             events = result.events.toList(),
             sourceStepCount = stepCount,
         )
+        committedTransitionListener?.invoke(action, result.state)
 
         return buildStepResult(result.events)
     }

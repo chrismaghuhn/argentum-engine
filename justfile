@@ -194,6 +194,25 @@ arena-budget-scaling GAMES="300" SET="BLB" SEED="20260727":
     scripts/gradle-locked :ai:test --tests "*.ArenaBudgetScalingTest" -Dbenchmark=true \
         -DarenaBudgetScaling=true -DarenaGames={{GAMES}} -DarenaSet={{SET}} -DarenaSeed={{SEED}}
 
+# Games are played headlessly through the Gym environment; files land in build/showcase-replays/
+# (or OUTPUT) with a markdown index, each verified to re-simulate EXACT. Watch one with
+# `just replay-import`. How-to: docs/ml/headless-replay-showcase.md.
+# Record N engine-AI vs engine-AI showcase replays (Akiri vs Chevill Commander)
+[group: 'ai']
+showcase-replays GAMES="2" SEED="1" OUTPUT="":
+    scripts/gradle-locked :game-server:test --tests "*.HeadlessShowcaseReplays" -Dbenchmark=true \
+        -DshowcaseReplays=true -DshowcaseReplaysGames={{GAMES}} -DshowcaseReplaysSeed={{SEED}} \
+        -DshowcaseReplaysOutputDir="{{ if OUTPUT == "" { justfile_directory() / "build/showcase-replays" } else { OUTPUT } }}" \
+        -DshowcaseReplaysEngineVersion=$(git rev-parse --short HEAD)
+
+# Needs a dev server with GAME_DEV_ENDPOINTS_ENABLED=true (as in .env.example); prints the
+# /replay/<gameId> path to open in the web client.
+# Import a replay file into the running dev server's replay store
+[group: 'dev']
+replay-import FILE SERVER="http://localhost:8080":
+    curl -sS --fail-with-body -X POST -H "Content-Type: text/plain" --data-binary "@{{FILE}}" "{{SERVER}}/api/dev/replays/import"
+    @echo
+
 # Clean build artifacts
 [group: 'build']
 clean:
