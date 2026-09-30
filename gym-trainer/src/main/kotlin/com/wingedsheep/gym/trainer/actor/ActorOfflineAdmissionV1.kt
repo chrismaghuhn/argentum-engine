@@ -45,6 +45,33 @@ enum class OfflineReplayFailureCodeV1 {
     REPLAY_INCOMPLETE,
     REPLAY_DIVERGED,
     REPLAY_CONTENT_INVALID,
+
+    /** Transported engineCommit does not equal the verifier's executed source revision. */
+    SOURCE_REVISION_MISMATCH,
+
+    /** Source-bootstrap doctrine failed on grounds other than HEAD equality (dirty tree, pins, unavailable HEAD). */
+    SOURCE_REVISION_UNVERIFIED,
+
+    /** Repository re-derivation of the durable environment identity diverges from the claimant. */
+    ENVIRONMENT_IDENTITY_MISMATCH,
+
+    /** A transported semantic choice cannot be rebound against the CURRENT reconstructed boundary. */
+    SEMANTIC_REBIND_FAILED,
+
+    /** Freshly rebuilt replay content identity diverges from the claimant replay content identity. */
+    REPLAY_CONTENT_IDENTITY_MISMATCH,
+
+    /** Fresh trajectory/episode identity diverges from the exact requested trajectory (request binding). */
+    TRAJECTORY_IDENTITY_MISMATCH,
+
+    /** Reconstruction hit a contract boundary this verifier version does not support; never verified. */
+    UNSUPPORTED_RECONSTRUCTION,
+
+    /** Unexpected verifier/worker failure (crash, malformed result); always fail-closed. */
+    INTERNAL_VERIFIER_FAILURE,
+
+    /** Bounded verifier work exceeded its timeout; fail-closed, never NO_INDEPENDENT_PROOF. */
+    VERIFIER_TIMEOUT,
 }
 
 @Serializable
