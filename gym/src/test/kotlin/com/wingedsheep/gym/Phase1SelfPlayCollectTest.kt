@@ -17,8 +17,9 @@ private val phase1CollectEnabled = System.getProperty("phase1.collect") == "true
  *
  * `-Dphase1.collect=true -Dphase1.games=N -Dphase1.workers=W -Dphase1.outputDir=DIR`
  * (optional `phase1.firstGame`, `phase1.baseSeed`, `phase1.profile`, `phase1.maxSteps`).
- * Game `g` always uses seed `baseSeed + g` and the same seat orientation, so any game can be
- * regenerated alone and a run can be extended by starting at `firstGame`.
+ * Game `g` always uses seed `baseSeed + g` and the same seat orientation, so a run can be extended
+ * by starting at `firstGame`. The seed fixes the deal; the engine AI's play also depends on its
+ * wall-clock search budget (see docs/ml/p1-first-playing-model.md).
  */
 class Phase1SelfPlayCollectTest : FunSpec({
     test("collects engine AI self-play behavior-cloning samples")
