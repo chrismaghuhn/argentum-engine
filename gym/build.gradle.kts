@@ -102,6 +102,17 @@ tasks.register<Test>("phase1SelfPlayCollectTest") {
     testLogging { showStandardStreams = true }
 }
 
+tasks.register<Test>("phase1TournamentTest") {
+    description = "Opt-in Phase 1 match between engine AI and/or model checkpoints (-Dphase1.tournament=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1TournamentTest*")
+    maxHeapSize = System.getProperty("phase1.heap") ?: "12g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
 tasks.register<Test>("kaggleActor06CharacterizationTest") {
     description = "Runs the opt-in transported-replay reconstruction authority characterization."
     group = "verification"
@@ -173,6 +184,11 @@ tasks.withType<Test>().configureEach {
         "phase1.workers",
         "phase1.baseSeed",
         "phase1.outputDir",
+        "phase1.tournament",
+        "phase1.seatA",
+        "phase1.seatB",
+        "phase1.results",
+        "phase1.python",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }

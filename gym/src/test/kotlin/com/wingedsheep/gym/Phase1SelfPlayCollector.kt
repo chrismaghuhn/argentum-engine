@@ -144,7 +144,7 @@ internal object Phase1SelfPlayCollector {
             val built = observationBuilder.build(state, actor, legal)
             val observation = built.observation as? TrainingObservation
             if (observation != null && built.diagnostics.isEmpty()) {
-                val candidates = observation.legalActions.filterNot { it.isManaAbility }
+                val candidates = modelCandidates(observation)
                 if (candidates.size >= 2) {
                     val chosenIndex = candidates.indexOfFirst { view ->
                         val template = built.registry.legalActions.firstOrNull { it.first == view.actionId }?.second
@@ -153,7 +153,8 @@ internal object Phase1SelfPlayCollector {
                     if (chosenIndex < 0) {
                         unmatched++
                     } else {
-                        pending += actor to sample(game, environment.stepCount, names, observation, candidates, chosenIndex)
+                        val record = observationSample(game, environment.stepCount, names, observation, candidates)
+                        pending += actor to JsonObject(record + ("chosen" to JsonPrimitive(chosenIndex)))
                     }
                 }
             }
@@ -188,17 +189,22 @@ internal object Phase1SelfPlayCollector {
         )
     }
 
+    /** Priority candidates the P1 model chooses among: every public legal action except mana abilities. */
+    fun modelCandidates(observation: TrainingObservation): List<com.wingedsheep.gym.contract.LegalActionView> =
+        observation.legalActions.filterNot { it.isManaAbility }
+
     /**
-     * One behavior-cloning sample. Everything is relative to the acting player ("self"/"opponent"),
-     * and every entity reference is an index into `cards`; no engine ids are written.
+     * The model-facing part of a sample: the acting player's public observation and candidates.
+     * Everything is relative to the acting player ("self"/"opponent"), and every entity reference is
+     * an index into `cards`; no engine ids are written. The collector appends `chosen` and
+     * `outcome`; a live model seat sends exactly this object, so training and play see one format.
      */
-    private fun sample(
+    fun observationSample(
         game: Int,
         engineStep: Int,
         names: Map<EntityId, String>,
         observation: TrainingObservation,
         candidates: List<com.wingedsheep.gym.contract.LegalActionView>,
-        chosenIndex: Int,
     ): JsonObject {
         val self = observation.perspectivePlayerId
         val visible = observation.zones.flatMap { it.cards }
@@ -259,7 +265,6 @@ internal object Phase1SelfPlayCollector {
                     })
                 }
             })
-            put("chosen", chosenIndex)
         }
     }
 
