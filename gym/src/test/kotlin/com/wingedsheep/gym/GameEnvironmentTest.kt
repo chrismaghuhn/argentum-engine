@@ -134,6 +134,53 @@ class GameEnvironmentTest : FunSpec({
         env.stepCount shouldBe stepCountAfterOpening
     }
 
+    test("committedTransitionListener reports every committed transition, and only committed ones") {
+        val env = GameEnvironment.create(createRegistry())
+        env.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig("Alice", sealedDeck(1)),
+                    PlayerConfig("Bob", sealedDeck(2))
+                ),
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+                seed = 5L
+            )
+        )
+        val reported = mutableListOf<Pair<GameAction, com.wingedsheep.engine.state.GameState>>()
+        env.committedTransitionListener = { action, after -> reported += action to after }
+
+        val ais = env.playerIds.associateWith {
+            com.wingedsheep.ai.engine.AIPlayer.create(createRegistry(), it, com.wingedsheep.ai.engine.AiProfile.LEGACY_V0)
+        }
+        var submitted = 0
+        while (submitted < 40 && !env.isTerminal) {
+            val player = env.agentToAct ?: break
+            val ai = ais.getValue(player)
+            val decision = env.pendingDecision
+            val action = if (decision != null) {
+                SubmitDecision(player, ai.respondToDecision(env.state, decision))
+            } else {
+                ai.chooseAction(env.state)
+            }
+            env.step(action)
+            submitted++
+            // Each step reports at least its submitted action, and the last report is the state
+            // the step committed.
+            reported.last().second shouldBe env.state
+        }
+        reported.size shouldBeGreaterThan submitted - 1
+
+        // A rejected step reports nothing.
+        val before = reported.size
+        val player = env.agentToAct.shouldNotBeNull()
+        shouldThrow<IllegalArgumentException> { env.step(PassPriority(env.playerIds.first { it != player })) }
+        reported.size shouldBe before
+
+        // A fork does not inherit the listener.
+        env.fork().committedTransitionListener shouldBe null
+    }
+
     test("fork creates an independent copy") {
         val env = GameEnvironment.create(createRegistry())
         env.reset(

@@ -7,6 +7,20 @@ plugins {
     alias(libs.plugins.kover)
 }
 
+// Forward the opt-in showcase replay generator's controls (see HeadlessShowcaseReplays and
+// `just showcase-replays`) to the test JVM.
+tasks.withType<Test>().configureEach {
+    for (property in listOf(
+        "showcaseReplays",
+        "showcaseReplaysGames",
+        "showcaseReplaysSeed",
+        "showcaseReplaysOutputDir",
+        "showcaseReplaysEngineVersion",
+    )) {
+        System.getProperty(property)?.let { systemProperty(property, it) }
+    }
+}
+
 dependencies {
     implementation(project(":rules-engine"))
     implementation(project(":mtg-sdk"))
