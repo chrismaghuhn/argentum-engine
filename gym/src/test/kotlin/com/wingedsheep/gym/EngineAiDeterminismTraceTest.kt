@@ -2,6 +2,10 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.ai.engine.AIPlayer
 import com.wingedsheep.ai.engine.AiProfile
+import com.wingedsheep.ai.engine.budget.BudgetPolicy
+import com.wingedsheep.ai.engine.budget.DecisionBudget
+import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.SubmitDecision
@@ -20,6 +24,25 @@ import java.util.concurrent.Executors
 import kotlin.time.Duration.Companion.hours
 
 private val determinismTraceEnabled = System.getProperty("perf.trace") == "true"
+
+/**
+ * The same tier and search allowances as [inner], without any wall-clock stop. The production
+ * tiered budget cuts search at a deadline, so the engine AI plays differently under CPU load and a
+ * behavior-parity trace cannot be reproduced; bounded by work alone it can.
+ */
+internal class WorkBoundedBudgetPolicy(private val inner: BudgetPolicy) : BudgetPolicy {
+    override fun budgetFor(state: GameState, playerId: EntityId, meaningfulActions: List<LegalAction>): DecisionBudget =
+        unbounded(inner.budgetFor(state, playerId, meaningfulActions))
+
+    override fun budgetForDecision(state: GameState, playerId: EntityId): DecisionBudget =
+        unbounded(inner.budgetForDecision(state, playerId))
+
+    private fun unbounded(budget: DecisionBudget) = DecisionBudget(
+        budget.tier,
+        budget.allowances.copy(combatSearchMillis = DecisionBudget.UNBOUNDED_MILLIS),
+        DecisionBudget.UNBOUNDED_MILLIS,
+    )
+}
 
 /**
  * Opt-in behavior-parity trace for engine/AI performance work: plays seeded engine AI vs engine AI
@@ -76,7 +99,8 @@ class EngineAiDeterminismTraceTest : FunSpec({
                         environment.reset(cfg, maxSteps = 5_000)
                         val ais = cfg.players.associate { p ->
                             val id = checkNotNull(p.playerId)
-                            id to AIPlayer.create(registry, id, AiProfile.PRODUCTION_CANDIDATE_EXPIRING)
+                            val base = AiProfile.PRODUCTION_CANDIDATE_EXPIRING
+                            id to AIPlayer.create(registry, id, base.copy(budgetPolicy = WorkBoundedBudgetPolicy(base.budgetPolicy)))
                         }
                         val digest = MessageDigest.getInstance("SHA-256")
                         var submitted = 0
