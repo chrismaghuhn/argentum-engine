@@ -60,9 +60,13 @@ class Phase1TournamentTest : FunSpec({
             try {
                 val finished = (firstGame until firstGame + games).map { game ->
                     pool.submit(Callable {
-                        val result = Phase1Tournament.playGame(
+                        val config = Phase1SelfPlayCollector.gameConfig(game, TOURNAMENT_BASE_SEED, resolver, decks)
+                        // An engine failure inside one game (a model can reach positions the engine AI
+                        // never does) is recorded with its seed for reproduction instead of aborting the
+                        // whole match; error lines are excluded from ratings.
+                        val result = try { Phase1Tournament.playGame(
                             game = game,
-                            config = Phase1SelfPlayCollector.gameConfig(game, TOURNAMENT_BASE_SEED, resolver, decks),
+                            config = config,
                             seatA = seatA,
                             seatB = seatB,
                             workers = policyWorkers,
@@ -76,7 +80,31 @@ class Phase1TournamentTest : FunSpec({
                             } else {
                                 null
                             },
-                        )
+                        ) } catch (failure: Exception) {
+                            val errorLine = buildJsonObject {
+                                put("schema", "argentum-p1-match-result@v1")
+                                put("game", game)
+                                put("seatA", seatA.label)
+                                put("seatB", seatB.label)
+                                put("deckA", config.players[0].name)
+                                put("aStarts", config.startingPlayerIndex == 0)
+                                put("terminal", false)
+                                put("winner", "-")
+                                put("turns", 0)
+                                put("engineSteps", 0)
+                                put("modelChoices", 0)
+                                put("modelFallbacks", 0)
+                                put("loopBreaks", 0)
+                                put("seconds", 0.0)
+                                put("seed", config.seed ?: -1L)
+                                put("error", "${failure::class.simpleName}: ${failure.cause?.message ?: failure.message}")
+                            }.toString()
+                            synchronized(results) {
+                                Files.writeString(results, errorLine + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+                            }
+                            println("  $errorLine")
+                            return@Callable null
+                        }
                         val line = buildJsonObject {
                             put("schema", "argentum-p1-match-result@v1")
                             put("game", result.game)
@@ -115,7 +143,7 @@ class Phase1TournamentTest : FunSpec({
                         println("  $line")
                         result
                     })
-                }.map { it.get() }
+                }.mapNotNull { it.get() }
                 val aWins = finished.count { it.winner == "A" }
                 val bWins = finished.count { it.winner == "B" }
                 println(

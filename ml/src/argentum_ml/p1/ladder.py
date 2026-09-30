@@ -27,6 +27,8 @@ def read_results(paths: Iterable[Path]) -> list[dict]:
                 row = json.loads(line)
                 if row.get("schema") != RESULT_SCHEMA:
                     raise ValueError(f"{path}: unexpected result schema {row.get('schema')!r}")
+                if row.get("error"):
+                    continue  # engine failure, recorded for reproduction, not a game result
                 rows.append(row)
     return rows
 
