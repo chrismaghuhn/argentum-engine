@@ -247,6 +247,12 @@ object BlockerDeclarationDomainValidator {
      */
     fun maximumSatisfiedRequirementCount(domain: RulesBlockerDeclarationDomain): Int? {
         if (!isCanonicalCertificate(domain, allowThresholdMismatch = true)) return null
+        // Every declaration satisfies zero of zero requirement instances, so the exact maximum is
+        // 0 without searching. The search below is exponential in the number of blockers and ran
+        // on every blocker enumeration, including each simulated step of the engine AI's rollouts:
+        // on a full Commander board it hit the node budget, reported the domain unsupported, and
+        // stalled self-play games for hours.
+        if (domain.requirements.isEmpty()) return 0
 
         val blockers = domain.blockerOrder
         // Keep the exact search bounded without materializing the power set of each blocker. A

@@ -194,6 +194,21 @@ class BlockerDeclarationDomainTest : FunSpec({
         BlockerDeclarationDomainValidator.validate(domain, declaration()) shouldBe
             BlockerDeclarationValidationResult.Accepted
     }
+
+    test("a large board without block requirements has an exact threshold of zero") {
+        // 20 potential blockers, each able to block any of 10 attackers: 11^20 declarations. With
+        // no requirement instance, every declaration satisfies zero of them, so the maximum is
+        // exactly 0; searching it exhausted the node budget and reported the domain unsupported.
+        val blockers = (0 until 20).map { EntityId("blocker-%02d".format(it)) }
+        val attackers = (0 until 10).map { EntityId("attacker-%02d".format(it)) }
+        val domain = domain(
+            blockers = blockers,
+            attackers = attackers,
+            relation = blockers.associateWith { attackers },
+        )
+
+        BlockerDeclarationDomainValidator.maximumSatisfiedRequirementCount(domain) shouldBe 0
+    }
 })
 
 private val player = EntityId("defender")
