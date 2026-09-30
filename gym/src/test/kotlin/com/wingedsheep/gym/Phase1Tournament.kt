@@ -59,6 +59,23 @@ internal object Phase1Tournament {
 
     data class Showcase(val directory: Path, val gameId: String, val engineVersion: String)
 
+    /** One model-seat choice among >= 2 candidates, reported before the model's action executes. */
+    class ModelDecision(
+        val environment: GameEnvironment,
+        val actor: EntityId,
+        val state: GameState,
+        val legal: List<LegalAction>,
+        val registry: com.wingedsheep.gym.contract.ActionRegistry,
+        val candidates: List<com.wingedsheep.gym.contract.LegalActionView>,
+        val sample: kotlinx.serialization.json.JsonObject,
+        val modelIndex: Int?,
+    )
+
+    /** Observes model decisions without influencing them (DAgger labels them with the teacher). */
+    fun interface ModelDecisionObserver {
+        fun onModelDecision(decision: ModelDecision)
+    }
+
     /**
      * Which cards a seat actually uses, split by what it did with them. `offered` counts priority
      * decisions in which the card gave the seat at least one affordable, non-mana action of that kind
@@ -190,6 +207,7 @@ internal object Phase1Tournament {
         workers: Map<Path, PolicyWorker>,
         maxSteps: Int,
         showcase: Showcase? = null,
+        observer: ModelDecisionObserver? = null,
     ): GameResult {
         val registry = Registries.card
         val environment = GameEnvironment.create(
@@ -268,6 +286,9 @@ internal object Phase1Tournament {
             // The teacher never picks an unaffordable candidate and the sample carries no affordability
             // feature, so the seat restricts the model to candidates it can currently pay for.
             val index = workers.getValue(spec.checkpoint).choose(sample, candidates.map { it.affordable })
+            observer?.onModelDecision(
+                ModelDecision(environment, actor, state, legal, built.registry, candidates, sample, index),
+            )
             val template = index?.let { i ->
                 candidates.getOrNull(i)?.let { view ->
                     built.registry.legalActions.firstOrNull { it.first == view.actionId }?.second

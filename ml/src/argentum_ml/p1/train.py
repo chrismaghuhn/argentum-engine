@@ -89,7 +89,8 @@ def next_checkpoint_dir(runs: Path) -> Path:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", type=Path, required=True)
+    parser.add_argument("--data", type=Path, action="append", required=True,
+                        help="data directory; repeat to combine engine-AI games with DAgger rounds")
     parser.add_argument("--runs", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=128)
@@ -111,7 +112,7 @@ def main(argv=None):
     vocab, train, val = features.load_split(args.data)
     train = [pretensorize(s) for s in train]
     val = [pretensorize(s) for s in val]
-    games = len(features.iter_game_files(args.data))
+    games = sum(len(features.iter_game_files(d)) for d in args.data)
     print(f"data: {games} games, {len(train)} train / {len(val)} val samples, "
           f"{vocab.size('name')} card names, device={device}")
     pass_kind = vocab.id("kind", "PassPriority")
@@ -162,13 +163,13 @@ def main(argv=None):
     save_file({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()}, str(out / "model.safetensors"))
     (out / "vocab.json").write_text(json.dumps(vocab.to_json(), sort_keys=True), encoding="utf-8")
     (out / "config.json").write_text(json.dumps(config.to_json(), sort_keys=True, indent=2), encoding="utf-8")
-    manifests = sorted(args.data.glob("manifest-*.json"))
+    manifests = sorted(m for d in args.data for m in d.glob("manifest-*.json"))
     (out / "metrics.json").write_text(json.dumps({
         "schema": CHECKPOINT_SCHEMA,
         "checkpoint": out.name,
         "note": args.note,
         "data": {
-            "directory": str(args.data),
+            "directories": [str(d) for d in args.data],
             "games": games,
             "trainSamples": len(train),
             "valSamples": len(val),

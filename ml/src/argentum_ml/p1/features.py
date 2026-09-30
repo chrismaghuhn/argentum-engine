@@ -277,11 +277,15 @@ def encode(sample: dict, vocab: Vocab) -> EncodedSample:
     )
 
 
-def load_split(directory: Path, vocab: Vocab | None = None) -> tuple[Vocab, list[EncodedSample], list[EncodedSample]]:
-    """Read every game, build the vocabulary from training games only, and encode both splits."""
-    files = iter_game_files(directory)
+def load_split(
+    directory: Path | list[Path], vocab: Vocab | None = None,
+) -> tuple[Vocab, list[EncodedSample], list[EncodedSample]]:
+    """Read every game of one or more data directories (e.g. engine-AI games plus DAgger rounds),
+    build the vocabulary from training games only, and encode both splits."""
+    directories = directory if isinstance(directory, list) else [directory]
+    files = [f for d in directories for f in iter_game_files(d)]
     if not files:
-        raise FileNotFoundError(f"no game-*.jsonl.gz files in {directory}")
+        raise FileNotFoundError(f"no game-*.jsonl.gz files in {directories}")
     raw_train: list[dict] = []
     raw_val: list[dict] = []
     for path in files:
