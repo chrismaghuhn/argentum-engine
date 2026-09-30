@@ -3,7 +3,15 @@ package com.wingedsheep.gym
 import com.wingedsheep.ai.engine.AIPlayer
 import com.wingedsheep.ai.engine.AiProfile
 import com.wingedsheep.ai.engine.StateProgress
+import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.GameAction
+import com.wingedsheep.engine.core.PlayLand
+import com.wingedsheep.engine.core.TurnFaceUp
+import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.SubmitDecision
@@ -51,58 +59,51 @@ internal object Phase1Tournament {
 
     data class Showcase(val directory: Path, val gameId: String, val engineVersion: String)
 
-    sealed interface SeatSpec {
-        val label: String
-
-        data class Engine(val profile: AiProfile) : SeatSpec {
-            override val label: String get() = "engine:${profile.id}"
+    /**
+     * Which cards a seat actually uses, split by what it did with them. `offered` counts priority
+     * decisions in which the card gave the seat at least one affordable, non-mana action of that kind
+     * (once per decision and kind); `played` counts submitted actions of that kind sourced from the
+     * card. The same rule applies to engine and model seats, so their usage rates are comparable.
+     * Kinds: Cast (any spell cast, incl. kicker/flashback/modes), Ability, Land, Cycle, TurnFaceUp.
+     */
+    class CardUsage {
+        class Stats(val types: String) {
+            val kinds = sortedMapOf<String, IntArray>()
         }
 
-        data class Model(val checkpoint: Path) : SeatSpec {
-            override val label: String get() = checkpoint.fileName.toString()
+        val cards = sortedMapOf<String, Stats>()
+
+        fun offered(state: GameState, legal: List<LegalAction>) {
+            legal.asSequence()
+                .filter { it.affordable && !it.isManaAbility }
+                .mapNotNull { source(state, it.action) }
+                .toSet()
+                .forEach { (card, kind) -> stats(state, card).kinds.getOrPut(kind) { IntArray(2) }[0]++ }
         }
 
-        companion object {
-            /** `engine`, `engine:<profile>`, or a checkpoint directory path. */
-            fun parse(value: String): SeatSpec = when {
-                value == "engine" -> Engine(AiProfile.PRODUCTION_CANDIDATE_EXPIRING)
-                value.startsWith("engine:") -> Engine(Phase1SelfPlayCollector.profileFor(value.removePrefix("engine:")))
-                else -> Model(Path.of(value))
+        fun played(state: GameState, action: GameAction) {
+            val (card, kind) = source(state, action) ?: return
+            stats(state, card).kinds.getOrPut(kind) { IntArray(2) }[1]++
+        }
+
+        private fun stats(state: GameState, card: EntityId): Stats {
+            val component = state.getEntity(card)?.get<CardComponent>()
+            val name = component?.name ?: card.value
+            return cards.getOrPut(name) {
+                Stats(component?.typeLine?.cardTypes?.map { it.name }?.sorted()?.joinToString("/") ?: "")
             }
         }
-    }
 
-    /** One `python -m argentum_ml.p1.serve` process; calls are serialized, inference is milliseconds. */
-    class PolicyWorker(checkpoint: Path, python: Path, mlRoot: Path) : AutoCloseable {
-        private val process: Process = ProcessBuilder(
-            python.toString(), "-m", "argentum_ml.p1.serve", "--checkpoint", checkpoint.toString(),
-        ).directory(mlRoot.toFile()).redirectError(ProcessBuilder.Redirect.INHERIT).start()
-        private val input: BufferedWriter = process.outputStream.bufferedWriter(Charsets.UTF_8)
-        private val output: BufferedReader = process.inputStream.bufferedReader(Charsets.UTF_8)
-
-        init {
-            val ready = output.readLine() ?: error("P1 policy worker for $checkpoint exited before ready")
-            check(Json.parseToJsonElement(ready).jsonObject.containsKey("ready")) { "Unexpected worker hello: $ready" }
-        }
-
-        /** Returns the chosen candidate index, or null when the worker reports an error. */
-        @Synchronized
-        fun choose(sample: kotlinx.serialization.json.JsonObject, allowed: List<Boolean>): Int? {
-            input.write(
-                buildJsonObject {
-                    put("sample", sample)
-                    put("allowed", kotlinx.serialization.json.JsonArray(allowed.map { kotlinx.serialization.json.JsonPrimitive(it) }))
-                }.toString(),
-            )
-            input.write("\n")
-            input.flush()
-            val reply = Json.parseToJsonElement(output.readLine() ?: return null).jsonObject
-            return reply["chosen"]?.jsonPrimitive?.int
-        }
-
-        override fun close() {
-            runCatching { input.close() }
-            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) process.destroyForcibly()
+        private fun source(state: GameState, action: GameAction): Pair<EntityId, String>? {
+            val (card, kind) = when (action) {
+                is CastSpell -> action.cardId to "Cast"
+                is ActivateAbility -> action.sourceId to "Ability"
+                is CycleCard -> action.cardId to "Cycle"
+                is PlayLand -> action.cardId to "Land"
+                is TurnFaceUp -> action.sourceId to "TurnFaceUp"
+                else -> return null
+            }
+            return if (state.getEntity(card)?.get<CardComponent>() != null) card to kind else null
         }
     }
 
@@ -122,6 +123,8 @@ internal object Phase1Tournament {
         val seconds: Double,
         val replayFile: String? = null,
         val replayFidelity: String? = null,
+        val cardsA: Map<String, CardUsage.Stats> = emptyMap(),
+        val cardsB: Map<String, CardUsage.Stats> = emptyMap(),
     )
 
     fun playGame(
@@ -162,6 +165,7 @@ internal object Phase1Tournament {
         // The engine AI refuses to act again from a position it already acted from (StateProgress);
         // a model seat gets the same guard, or a free inert action (re-equip, self-untap) repeats forever.
         val actedFrom = ids.associateWith { mutableSetOf<Long>() }
+        val usage = ids.associateWith { CardUsage() }
 
         while (!environment.isTerminal && !environment.isTruncated) {
             val actor = environment.agentToAct ?: break
@@ -174,7 +178,12 @@ internal object Phase1Tournament {
             val spec = seatOf.getValue(actor)
             val state = environment.state
             if (spec is SeatSpec.Engine) {
-                environment.step(ai.chooseAction(state))
+                if (!MeaningfulActionFilter.canAutoPassWithoutEnumerating(state, actor)) {
+                    usage.getValue(actor).offered(state, environment.legalActions())
+                }
+                val action = ai.chooseAction(state)
+                usage.getValue(actor).played(state, action)
+                environment.step(action)
                 continue
             }
             spec as SeatSpec.Model
@@ -184,6 +193,7 @@ internal object Phase1Tournament {
             }
             val legal = environment.legalActions()
             if (legal.isEmpty()) break
+            usage.getValue(actor).offered(state, legal)
             if (!actedFrom.getValue(actor).add(StateProgress.digest(state))) {
                 loopBreaks++
                 val pass = legal.firstOrNull { it.action is PassPriority }?.action
@@ -194,7 +204,9 @@ internal object Phase1Tournament {
             val observation = built.observation as? TrainingObservation
             val candidates = observation?.let(Phase1SelfPlayCollector::modelCandidates).orEmpty()
             if (observation == null || candidates.size < 2) {
-                environment.step(ai.chooseFrom(state, legal).action)
+                val action = ai.chooseFrom(state, legal).action
+                usage.getValue(actor).played(state, action)
+                environment.step(action)
                 continue
             }
             val sample = Phase1SelfPlayCollector.observationSample(game, environment.stepCount, names, observation, candidates)
@@ -209,9 +221,13 @@ internal object Phase1Tournament {
             modelChoices++
             val completed: GameAction? = template?.let { ai.chooseFrom(state, listOf(it)).action }
             val ok = completed != null && runCatching { environment.step(completed) }.isSuccess
-            if (!ok) {
+            if (ok) {
+                usage.getValue(actor).played(state, checkNotNull(completed))
+            } else {
                 modelFallbacks++
-                environment.step(ai.chooseAction(environment.state))
+                val fallback = ai.chooseAction(environment.state)
+                usage.getValue(actor).played(environment.state, fallback)
+                environment.step(fallback)
             }
         }
 
@@ -248,6 +264,8 @@ internal object Phase1Tournament {
             seconds = (System.nanoTime() - started) / 1e9,
             replayFile = replayFile,
             replayFidelity = replayFidelity,
+            cardsA = usage.getValue(ids[0]).cards,
+            cardsB = usage.getValue(ids[1]).cards,
         )
     }
 }

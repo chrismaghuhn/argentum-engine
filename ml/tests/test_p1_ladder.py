@@ -44,6 +44,20 @@ class P1LadderTest(unittest.TestCase):
         self.assertEqual(mine.fallbacks, 2)
         self.assertEqual(theirs.fallbacks, 0)
 
+    def test_card_usage_aggregates_per_player_seat_and_kind(self):
+        first = _row("ckpt-1", "engine:x", "A")
+        first["cardsA"] = {"Boros Charm": {"types": "INSTANT", "Cast": [3, 1]}}
+        first["cardsB"] = {"Boros Charm": {"types": "INSTANT", "Cast": [2, 2]}}
+        second = _row("engine:x", "ckpt-1", "B")
+        second["cardsB"] = {
+            "Boros Charm": {"types": "INSTANT", "Cast": [1, 0]},
+            "Vulshok Morningstar": {"types": "ARTIFACT", "Cast": [1, 1], "Ability": [4, 2]},
+        }
+        usage = ladder.card_usage([first, second], "ckpt-1")
+        self.assertEqual(usage["Boros Charm"], {"types": "INSTANT", "kinds": {"Cast": [4, 1]}})
+        self.assertEqual(usage["Vulshok Morningstar"]["kinds"], {"Cast": [1, 1], "Ability": [4, 2]})
+        self.assertEqual(ladder.card_usage([first], "engine:x")["Boros Charm"]["kinds"], {"Cast": [2, 2]})
+
     def test_read_results_rejects_foreign_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "r.jsonl"

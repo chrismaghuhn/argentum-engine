@@ -110,3 +110,24 @@ def elo(rows: list[dict], iterations: int = 500, prior_games: float = 1.0) -> di
         norm = updated[anchor]
         strength = {p: v / norm for p, v in updated.items()}
     return {p: round(ANCHOR_RATING + ELO_SCALE * math.log(strength[p]), 1) for p in players}
+
+
+def card_usage(rows: list[dict], player: str) -> dict[str, dict]:
+    """Aggregate a player's per-card usage over all its games.
+
+    Returns `{card: {"types": str, "kinds": {kind: [offered, played]}}}` from the `cardsA`/`cardsB`
+    fields of result lines (games without those fields contribute nothing).
+    """
+    total: dict[str, dict] = {}
+    for row in rows:
+        for seat, field in (("seatA", "cardsA"), ("seatB", "cardsB")):
+            if row.get(seat) != player:
+                continue
+            for card, stats in row.get(field, {}).items():
+                entry = total.setdefault(card, {"types": stats.get("types", ""), "kinds": {}})
+                for kind, counts in stats.items():
+                    if kind == "types":
+                        continue
+                    offered, played = entry["kinds"].setdefault(kind, [0, 0])
+                    entry["kinds"][kind] = [offered + counts[0], played + counts[1]]
+    return total

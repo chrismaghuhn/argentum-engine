@@ -94,6 +94,20 @@ class Phase1TournamentTest : FunSpec({
                             put("seconds", result.seconds)
                             result.replayFile?.let { put("replayFile", it) }
                             result.replayFidelity?.let { put("replayFidelity", it) }
+                            // {"card": {"types": "CREATURE", "Cast": [offered, played], ...}} per seat
+                            fun usageJson(cards: Map<String, Phase1Tournament.CardUsage.Stats>) =
+                                kotlinx.serialization.json.JsonObject(
+                                    cards.mapValues { (_, stats) ->
+                                        buildJsonObject {
+                                            put("types", stats.types)
+                                            stats.kinds.forEach { (kind, c) ->
+                                                put(kind, kotlinx.serialization.json.JsonArray(c.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                                            }
+                                        }
+                                    },
+                                )
+                            put("cardsA", usageJson(result.cardsA))
+                            put("cardsB", usageJson(result.cardsB))
                         }.toString()
                         synchronized(results) {
                             Files.writeString(results, line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
