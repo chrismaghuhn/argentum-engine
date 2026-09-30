@@ -110,6 +110,54 @@ class P1Model(nn.Module):
         return scores, value
 
 
+_TOKEN_FIELDS = ("token_name", "token_zone", "token_side", "token_types", "token_colors", "token_keywords",
+                 "token_counters", "token_numeric")
+_CANDIDATE_FIELDS = ("candidate_kind", "candidate_source", "candidate_targets", "candidate_numeric")
+_PAD_VALUES = {"token_side": 2, "candidate_source": -1, "candidate_targets": -1}
+
+
+def pretensorize(sample: EncodedSample) -> dict[str, torch.Tensor]:
+    """Convert one encoded sample to tensors once, so training batches only pad and stack."""
+    out: dict[str, torch.Tensor] = {}
+    for name in _TOKEN_FIELDS + _CANDIDATE_FIELDS:
+        values = getattr(sample, name)
+        dtype = torch.float32 if name.endswith("numeric") else torch.long
+        out[name] = torch.tensor(values, dtype=dtype)
+    if out["token_name"].numel() == 0:  # keep at least one attendable token
+        for name in _TOKEN_FIELDS:
+            width = {"token_types": features.MAX_TYPES, "token_colors": features.MAX_COLORS,
+                     "token_keywords": features.MAX_KEYWORDS, "token_counters": features.MAX_COUNTER_TYPES,
+                     "token_numeric": len(features.TOKEN_NUMERIC)}.get(name)
+            shape = (1, width) if width else (1,)
+            dtype = torch.float32 if name.endswith("numeric") else torch.long
+            out[name] = torch.full(shape, _PAD_VALUES.get(name, 0), dtype=dtype)
+        out["token_count"] = torch.tensor(1)
+    else:
+        out["token_count"] = torch.tensor(len(sample.token_name))
+    out["global_numeric"] = torch.tensor(sample.global_numeric, dtype=torch.float32)
+    out["phase"] = torch.tensor(sample.phase)
+    out["step"] = torch.tensor(sample.step)
+    out["chosen"] = torch.tensor(sample.chosen)
+    out["outcome"] = torch.tensor(sample.outcome, dtype=torch.float32)
+    return out
+
+
+def collate_tensors(samples: list[dict[str, torch.Tensor]], device: torch.device | str = "cpu") -> dict[str, torch.Tensor]:
+    """Fast batch assembly from [pretensorize] outputs; same result as [collate]."""
+    from torch.nn.utils.rnn import pad_sequence
+
+    out: dict[str, torch.Tensor] = {}
+    for name in _TOKEN_FIELDS + _CANDIDATE_FIELDS:
+        out[name] = pad_sequence([s[name] for s in samples], batch_first=True, padding_value=_PAD_VALUES.get(name, 0))
+    counts = torch.stack([s["token_count"] for s in samples])
+    out["token_pad"] = torch.arange(out["token_name"].shape[1]).unsqueeze(0) >= counts.unsqueeze(1)
+    candidate_counts = torch.tensor([s["candidate_kind"].shape[0] for s in samples])
+    out["candidate_pad"] = torch.arange(out["candidate_kind"].shape[1]).unsqueeze(0) >= candidate_counts.unsqueeze(1)
+    for name in ("global_numeric", "phase", "step", "chosen", "outcome"):
+        out[name] = torch.stack([s[name] for s in samples])
+    return {k: v.to(device, non_blocking=True) for k, v in out.items()}
+
+
 def collate(samples: list[EncodedSample], device: torch.device | str = "cpu") -> dict[str, torch.Tensor]:
     """Pad a list of encoded samples into one batch of tensors."""
     b = len(samples)

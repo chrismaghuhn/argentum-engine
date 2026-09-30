@@ -4,7 +4,7 @@ import torch
 from torch.nn import functional as F
 
 from argentum_ml.p1.features import Vocab, encode
-from argentum_ml.p1.model import P1Model, P1ModelConfig, collate
+from argentum_ml.p1.model import P1Model, P1ModelConfig, collate, collate_tensors, pretensorize
 from tests.test_p1_features import _sample
 
 
@@ -31,6 +31,13 @@ class P1ModelTest(unittest.TestCase):
         self.assertEqual(tuple(scores.shape), (3, 3))
         self.assertTrue(torch.isinf(scores[0, 2]).item())
         self.assertTrue(((value >= -1) & (value <= 1)).all().item())
+
+    def test_fast_collate_matches_reference_collate(self):
+        reference = collate(self.samples)
+        fast = collate_tensors([pretensorize(s) for s in self.samples])
+        self.assertEqual(set(reference), set(fast))
+        for name, tensor in reference.items():
+            self.assertTrue(torch.equal(tensor, fast[name]), name)
 
     def test_learns_a_tiny_batch(self):
         batch = collate(self.samples)

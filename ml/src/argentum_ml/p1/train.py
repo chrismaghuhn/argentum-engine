@@ -21,7 +21,7 @@ from safetensors.torch import save_file
 from torch.nn import functional as F
 
 from . import features
-from .model import P1Model, P1ModelConfig, collate
+from .model import P1Model, P1ModelConfig, collate_tensors, pretensorize
 
 CHECKPOINT_SCHEMA = "argentum-p1-checkpoint@v1"
 
@@ -47,7 +47,7 @@ def evaluate(model, samples, device, batch_size=256, value_weight=0.5, pass_kind
     totals = {"n": 0, "loss": 0.0, "policy": 0.0, "value": 0.0, "correct": 0,
               "nonPassN": 0, "nonPassCorrect": 0, "alwaysPassCorrect": 0, "valueSignCorrect": 0, "decidedN": 0}
     for chunk in _batches(samples, batch_size, False, None):
-        batch = collate(chunk, device)
+        batch = collate_tensors(chunk, device)
         loss, policy, value_loss, scores, value = _losses(model, batch, value_weight)
         n = len(chunk)
         predicted = scores.argmax(-1)
@@ -105,6 +105,8 @@ def main(argv=None):
 
     started = time.time()
     vocab, train, val = features.load_split(args.data)
+    train = [pretensorize(s) for s in train]
+    val = [pretensorize(s) for s in val]
     games = len(features.iter_game_files(args.data))
     print(f"data: {games} games, {len(train)} train / {len(val)} val samples, "
           f"{vocab.size('name')} card names, device={device}")
@@ -119,11 +121,12 @@ def main(argv=None):
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, total_steps=total_steps)
 
     history = []
+    best_state, best_epoch, best_loss = None, 0, float("inf")
     for epoch in range(1, args.epochs + 1):
         model.train()
         seen, running = 0, 0.0
         for chunk in _batches(train, args.batch_size, True, rng):
-            batch = collate(chunk, device)
+            batch = collate_tensors(chunk, device)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
                 loss, _, _, _, _ = _losses(model, batch, args.value_weight)
             optimizer.zero_grad(set_to_none=True)
@@ -136,10 +139,19 @@ def main(argv=None):
         metrics = evaluate(model, val, device, value_weight=args.value_weight, pass_kind=pass_kind)
         metrics.update({"epoch": epoch, "trainLoss": running / max(seen, 1)})
         history.append(metrics)
+        # Keep the epoch with the lowest validation loss; with few games the value head starts
+        # memorizing per-game outcomes after a couple of epochs.
+        if val and metrics["loss"] < best_loss:
+            best_loss, best_epoch = metrics["loss"], epoch
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         print(f"epoch {epoch}: train {metrics['trainLoss']:.4f} | val loss {metrics['loss']:.4f} "
               f"top1 {metrics['top1']:.3f} (non-pass {metrics['top1NonPass']:.3f}, always-pass "
               f"{metrics['alwaysPassBaseline']:.3f}) value-sign {metrics['valueSignAccuracy']:.3f}")
 
+    if best_state is not None:
+        model.load_state_dict(best_state)
+        print(f"keeping epoch {best_epoch} (lowest validation loss {best_loss:.4f})")
+    final = history[best_epoch - 1] if best_epoch else (history[-1] if history else None)
     out = next_checkpoint_dir(args.runs)
     out.mkdir(parents=True)
     save_file({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()}, str(out / "model.safetensors"))
@@ -163,7 +175,8 @@ def main(argv=None):
             "device": str(device), "seconds": round(time.time() - started, 1),
         },
         "history": history,
-        "final": history[-1] if history else None,
+        "selectedEpoch": best_epoch or len(history),
+        "final": final,
     }, indent=2), encoding="utf-8")
     print(f"wrote {out}")
     return out
