@@ -42,7 +42,14 @@ data class ProcessedAction(
  */
 class ActionProcessor(
     private val services: EngineServices,
-    private val computeUndo: Boolean = true
+    private val computeUndo: Boolean = true,
+    /**
+     * Maintain the per-player [KnownInformationLedger] after every action. Only observation history
+     * (the Gym perspective projector) reads the ledger; no rule and no AI decision does. A processor
+     * whose states are never observed — the AI's rollout playouts — may turn it off: the rules
+     * outcome is identical, and the ledger bookkeeping was ~13% of self-play data-generation CPU.
+     */
+    private val trackKnownInformation: Boolean = true,
 ) {
     /**
      * Backward-compatible constructor: wraps a CardRegistry in EngineServices.
@@ -103,11 +110,15 @@ class ActionProcessor(
         val result = com.wingedsheep.engine.mechanics.RevealedInHandTracker
             .applyAfterAction(executed)
             .let { knownInformationResult ->
-                KnownInformationLedger.applyAfterAction(
-                    beforeState = state,
-                    result = knownInformationResult,
-                    cardRegistry = services.cardRegistry,
-                )
+                if (!trackKnownInformation) {
+                    knownInformationResult
+                } else {
+                    KnownInformationLedger.applyAfterAction(
+                        beforeState = state,
+                        result = knownInformationResult,
+                        cardRegistry = services.cardRegistry,
+                    )
+                }
             }
         val undoPolicy = if (computeUndo) {
             UndoPolicyComputer.compute(action, state, result, services.cardRegistry)
