@@ -62,21 +62,36 @@ class GameSimulator(
      * the stack is empty (spells resolve) or a non-trivial decision is needed.
      * This ensures the evaluator sees the actual effect of casting a spell,
      * not just "spell on stack, lands tapped".
+     *
+     * [onTransition], when supplied, is told every [ActionProcessor] input this call processed, in
+     * order, with the result it produced — the submitted action first, then each automatic pass and
+     * forced answer of the quiet-state loop. That sequence is exactly the input stream that
+     * re-creates the returned state from [state], which is what a replay recorder needs.
      */
-    fun simulate(state: GameState, action: GameAction): SimulationResult {
+    fun simulate(
+        state: GameState,
+        action: GameAction,
+        onTransition: ((GameAction, ExecutionResult) -> Unit)? = null,
+    ): SimulationResult {
         val result = processor.process(state, action).result
-        return resolveToQuietState(result)
+        onTransition?.invoke(action, result)
+        return resolveToQuietState(result, onTransition)
     }
 
     /**
-     * Simulate a decision response on a paused state.
+     * Simulate a decision response on a paused state. [onTransition] as for [simulate].
      */
-    fun simulateDecision(state: GameState, response: DecisionResponse): SimulationResult {
+    fun simulateDecision(
+        state: GameState,
+        response: DecisionResponse,
+        onTransition: ((GameAction, ExecutionResult) -> Unit)? = null,
+    ): SimulationResult {
         val pending = state.pendingDecision
             ?: return SimulationResult.Illegal(state, emptyList(), "No pending decision")
         val action = SubmitDecision(pending.playerId, response)
         val result = processor.process(state, action).result
-        return resolveToQuietState(result)
+        onTransition?.invoke(action, result)
+        return resolveToQuietState(result, onTransition)
     }
 
     /**
@@ -109,7 +124,10 @@ class GameSimulator(
      * (lands tapped, creature not yet on battlefield), making every spell
      * look worse than passing.
      */
-    private fun resolveToQuietState(result: ExecutionResult): SimulationResult {
+    private fun resolveToQuietState(
+        result: ExecutionResult,
+        onTransition: ((GameAction, ExecutionResult) -> Unit)? = null,
+    ): SimulationResult {
         var current = result
         var allEvents = result.events
         var iterations = 0
@@ -128,6 +146,7 @@ class GameSimulator(
                 if (trivialResponse != null) {
                     val submitAction = SubmitDecision(decision.playerId, trivialResponse)
                     current = processor.process(current.state, submitAction).result
+                    onTransition?.invoke(submitAction, current)
                     allEvents = allEvents + current.events
                     iterations++
                     continue
@@ -141,6 +160,7 @@ class GameSimulator(
                         val response = resolver(current.state, decision)
                         val submitAction = SubmitDecision(decision.playerId, response)
                         current = processor.process(current.state, submitAction).result
+                        onTransition?.invoke(submitAction, current)
                         allEvents = allEvents + current.events
                         iterations++
                     } finally {
@@ -159,6 +179,7 @@ class GameSimulator(
             if (state.stack.isNotEmpty() && priorityPlayerId != null && !state.gameOver) {
                 val passAction = PassPriority(priorityPlayerId)
                 current = processor.process(state, passAction).result
+                onTransition?.invoke(passAction, current)
                 allEvents = allEvents + current.events
                 iterations++
                 continue
@@ -169,7 +190,9 @@ class GameSimulator(
             // candidate may be the damage; pass priority to advance the step and look again.
             if (resolveThroughCombatDamage && isPreDamageCombatState(state)) {
                 if (priorityPlayerId == null || state.gameOver) break
-                current = processor.process(state, PassPriority(priorityPlayerId)).result
+                val passAction = PassPriority(priorityPlayerId)
+                current = processor.process(state, passAction).result
+                onTransition?.invoke(passAction, current)
                 allEvents = allEvents + current.events
                 iterations++
                 continue
