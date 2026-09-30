@@ -6,6 +6,7 @@ import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedThisT
 import com.wingedsheep.engine.state.components.battlefield.HasBecomeTappedComponent
 import com.wingedsheep.engine.state.components.battlefield.TargetedByControllerThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.TimestampComponent
+import com.wingedsheep.engine.state.components.player.EquipActivationsThisTurnComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
@@ -171,6 +172,12 @@ object StateProgress {
      * itself has to be listed: the `{T}` cost stamps the marker and the untap does not clear it, so
      * without this entry the pay-its-own-cost-back no-op would read as a fresh position every time.
      *
+     * [EquipActivationsThisTurnComponent] is the player-level counterpart: every equip activation
+     * bumps it, including re-equipping an Equipment onto the creature it is already attached to,
+     * which changes nothing else. With equip free (Puresteel Paladin's metalcraft) the engine AI
+     * re-equipped Vulshok Morningstar to the same creature until the game hit its step cap. What
+     * the count gates — Forge Anew's free first equip — shows up in the position once it matters.
+     *
      * The list is a floor, not a ceiling: a memory component not named here makes an inert action
      * read as progress, so the AI takes it once more than it should. Which is why it fails in that
      * direction — a *missing* entry costs a wasted activation, whereas wrongly ignoring something
@@ -182,6 +189,7 @@ object StateProgress {
         TargetedByControllerThisTurnComponent::class.java,
         HasBecomeTappedComponent::class.java,
         TimestampComponent::class.java,
+        EquipActivationsThisTurnComponent::class.java,
     )
 
     private const val SEED = -0x340d631b7bdddcdbL

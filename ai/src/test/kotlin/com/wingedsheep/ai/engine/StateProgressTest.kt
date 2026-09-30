@@ -2,6 +2,7 @@ package com.wingedsheep.ai.engine
 
 import com.wingedsheep.engine.state.components.battlefield.HasBecomeTappedComponent
 import com.wingedsheep.engine.state.components.battlefield.TargetedByControllerThisTurnComponent
+import com.wingedsheep.engine.state.components.player.EquipActivationsThisTurnComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -150,6 +151,21 @@ class StateProgressTest : FunSpec({
             }
             StateProgress.digest(targeted) shouldBe here
         }
+    }
+
+    test("the per-turn equip activation count on a player is bookkeeping, not a position") {
+        // Re-equipping an Equipment onto the creature it is already attached to changes nothing on
+        // the board; the only trace it leaves is the player's equip-activation count. With equip
+        // made free (Puresteel Paladin's metalcraft), reading that count made every re-equip look
+        // like progress, and the engine AI re-equipped Vulshok Morningstar to the same creature
+        // until the locked Akiri vs Chevill Commander game hit its step cap.
+        val base = state()
+        val here = StateProgress.digest(base)
+        val player = base.turnOrder.first()
+
+        val counted = base.updateEntity(player) { it.with(EquipActivationsThisTurnComponent(count = 7)) }
+
+        StateProgress.digest(counted) shouldBe here
     }
 
     test("turn and step are part of the position, so a digest can only recur inside one window") {
