@@ -62,7 +62,9 @@ class PlayoutEngine(
     private val settings: RolloutSettings = RolloutSettings.DEFAULT,
     private val winProbabilityScale: Double = WinProbability.SCALE,
 ) : Playouts {
-    private val processor = ActionProcessor(EngineServices(cardRegistry), computeUndo = false)
+    // Playout states are scored and discarded, never observed, so the known-information ledger
+    // (read only by observation history) is dead weight here; see ActionProcessor.trackKnownInformation.
+    private val processor = ActionProcessor(EngineServices(cardRegistry), computeUndo = false, trackKnownInformation = false)
     private val enumerator = LegalActionEnumerator.create(cardRegistry)
 
     /**
