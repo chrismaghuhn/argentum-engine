@@ -962,6 +962,84 @@ class CastPermissionUtils(
     }
 
     /**
+     * The battlefield permanents whose printed statics can forbid an activation, gathered once per
+     * state. [isActivationPrevented] and [isActivationPreventedForPlayer] are asked once per
+     * ability source during legal-action enumeration, and each used to walk the whole battlefield
+     * resolving every permanent's card definition to find — on almost every board — nothing.
+     *
+     * Each entry keeps exactly what the walk derived per permanent (the controller whose
+     * perspective its filter reads, and its matching statics in printed order), and the entries
+     * keep battlefield order, so the per-source checks evaluate the same predicates in the same
+     * order as before.
+     */
+    private class ActivationPreventers(
+        val state: GameState,
+        val printed: List<PrintedPreventer>,
+        val playerScoped: List<PlayerScopedPreventer>,
+    )
+
+    private class PrintedPreventer(
+        val context: PredicateContext,
+        val abilities: List<PreventActivatedAbilities>,
+    )
+
+    private class PlayerScopedPreventer(
+        val permanentId: EntityId,
+        val controllerId: EntityId,
+        val abilities: List<PlayersCantActivateAbilities>,
+    )
+
+    /** Immutable (state, preventers) pair published through a volatile field; see [activationPreventers]. */
+    @Volatile
+    private var lastActivationPreventers: ActivationPreventers? = null
+
+    private fun activationPreventers(state: GameState): ActivationPreventers {
+        lastActivationPreventers?.let { if (it.state === state) return it }
+        val projected = state.projectedState
+        var printed: MutableList<PrintedPreventer>? = null
+        var playerScoped: MutableList<PlayerScopedPreventer>? = null
+        for (entityId in state.getBattlefield()) {
+            val container = state.getEntity(entityId) ?: continue
+            val card = container.get<CardComponent>() ?: continue
+            val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: continue
+            var prevents: MutableList<PreventActivatedAbilities>? = null
+            var playerPrevents: MutableList<PlayersCantActivateAbilities>? = null
+            for (ability in cardDef.script.staticAbilities) {
+                when (ability) {
+                    is PreventActivatedAbilities ->
+                        (prevents ?: mutableListOf<PreventActivatedAbilities>().also { prevents = it }).add(ability)
+                    is PlayersCantActivateAbilities ->
+                        (playerPrevents ?: mutableListOf<PlayersCantActivateAbilities>().also { playerPrevents = it })
+                            .add(ability)
+                    else -> {}
+                }
+            }
+            if (prevents == null && playerPrevents == null) continue
+            // Evaluate the filter from the *granting permanent's* controller's perspective, so a
+            // controller-relative predicate like `opponentControls()` ("lands your opponents
+            // control" on Sharkey) means opponents of the static's controller, not of the land.
+            // Face-down permanents are deliberately not skipped here (they never were).
+            val controller = projected.getController(entityId)
+                ?: container.get<ControllerComponent>()?.playerId
+                ?: continue
+            prevents?.let {
+                (printed ?: mutableListOf<PrintedPreventer>().also { printed = it }).add(
+                    PrintedPreventer(PredicateContext(controllerId = controller, sourceId = entityId), it)
+                )
+            }
+            // Face-down permanents (no abilities) are skipped as PlayersCantActivateAbilities granters.
+            if (container.has<FaceDownComponent>()) continue
+            playerPrevents?.let {
+                (playerScoped ?: mutableListOf<PlayerScopedPreventer>().also { playerScoped = it })
+                    .add(PlayerScopedPreventer(entityId, controller, it))
+            }
+        }
+        val result = ActivationPreventers(state, printed ?: emptyList(), playerScoped ?: emptyList())
+        lastActivationPreventers = result
+        return result
+    }
+
+    /**
      * True when any [PreventActivatedAbilities] static ability — printed on a battlefield
      * permanent (Cursed Totem, Damping Matrix, ...) or granted via
      * [com.wingedsheep.engine.event.GrantedStaticAbility] (Braided Net's durational
@@ -988,18 +1066,9 @@ class CastPermissionUtils(
         abilityIsManaAbility: Boolean = false
     ): Boolean {
         val projected = state.projectedState
-        for (entityId in state.getBattlefield()) {
-            val card = state.getEntity(entityId)?.get<CardComponent>() ?: continue
-            val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: continue
-            // Evaluate the filter from the *granting permanent's* controller's perspective, so a
-            // controller-relative predicate like `opponentControls()` ("lands your opponents
-            // control" on Sharkey) means opponents of the static's controller, not of the land.
-            val granterController = projected.getController(entityId)
-                ?: state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
-                ?: continue
-            val context = PredicateContext(controllerId = granterController, sourceId = entityId)
-            for (ability in cardDef.script.staticAbilities) {
-                val prevent = ability as? PreventActivatedAbilities ?: continue
+        for (preventer in activationPreventers(state).printed) {
+            val context = preventer.context
+            for (prevent in preventer.abilities) {
                 // "… can't be activated unless they're mana abilities" — exempt mana abilities.
                 if (prevent.nonManaAbilitiesOnly && abilityIsManaAbility) continue
                 if (predicateEvaluator.matches(state, projected, sourceId, prevent.filter, context)) {
@@ -1051,16 +1120,10 @@ class CastPermissionUtils(
         activatingPlayerId: EntityId
     ): Boolean {
         val projected = state.projectedState
-        for (permanentId in state.getBattlefield()) {
-            val container = state.getEntity(permanentId) ?: continue
-            if (container.has<FaceDownComponent>()) continue
-            val cardDef = container.get<CardComponent>()
-                ?.let { cardRegistry.getCard(it.cardDefinitionId) } ?: continue
-            for (sa in cardDef.script.staticAbilities) {
-                if (sa !is PlayersCantActivateAbilities) continue
-                val controller = projected.getController(permanentId)
-                    ?: container.get<ControllerComponent>()?.playerId
-                    ?: continue
+        for (preventer in activationPreventers(state).playerScoped) {
+            val permanentId = preventer.permanentId
+            val controller = preventer.controllerId
+            for (sa in preventer.abilities) {
                 if (!affectedPlayerMatches(sa.affected, controller, activatingPlayerId)) continue
                 val condition = sa.condition
                 if (condition != null) {

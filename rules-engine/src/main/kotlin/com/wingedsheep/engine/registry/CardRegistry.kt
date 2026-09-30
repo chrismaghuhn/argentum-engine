@@ -103,8 +103,10 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      * @return The card definition, or null if not found
      */
     fun getCard(name: String): CardDefinition? {
-        // First try exact match with collector number format
-        cardsByNameAndNumber[name]?.let { return it }
+        // First try exact match with collector number format. Every key in that index contains
+        // '#', so a plain name — nearly every call, since the engine resolves permanents by
+        // cardDefinitionId on hot paths — can skip the (always-missing) probe.
+        if (name.indexOf('#') >= 0) cardsByNameAndNumber[name]?.let { return it }
         // Fall back to name-only lookup, then to the parent registry for an overlay.
         cardsByName[name]?.let { return it }
         combinedDfcAliases[name]?.let { alias ->

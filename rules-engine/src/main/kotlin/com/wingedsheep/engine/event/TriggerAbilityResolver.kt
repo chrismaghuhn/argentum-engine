@@ -104,7 +104,7 @@ class TriggerAbilityResolver(
 
         // Merge in triggered abilities granted by static abilities on other permanents
         // (e.g., Hunter Sliver granting provoke to all Slivers)
-        val staticGrantedAbilities = getStaticGrantedTriggeredAbilities(entityId, state)
+        val staticGrantedAbilities = getStaticGrantedTriggeredAbilities(entityId, state, statics)
         val attachedGrantedAbilities = getAttachedGrantedTriggeredAbilities(entityId, state, statics)
         // "This creature has '<triggered ability>' [as long as …]" — a Scope.Self GrantTriggeredAbility
         // on the permanent's own definition, optionally gated by a ConditionalStaticAbility.
@@ -193,55 +193,56 @@ class TriggerAbilityResolver(
      * E.g., Hunter Sliver grants provoke to all Sliver creatures via
      * GrantTriggeredAbility.
      *
-     * Scans all battlefield permanents for this static ability type, checks if the
-     * target entity matches the filter using its projected card data.
+     * The grants come from [BattlefieldStaticsIndex.printedTriggerGrants] — the printed
+     * battlefield-scope grants of every face-up permanent, collected in the one walk that built
+     * [statics] — so resolving N entities no longer walks the battlefield N times. When [statics]
+     * was built from some other state the grants are collected from [state] here instead, so the
+     * answer is always the one [state] itself would give.
      */
-    private fun getStaticGrantedTriggeredAbilities(entityId: EntityId, state: GameState): List<TriggeredAbility> {
-        val registry = cardRegistry
+    private fun getStaticGrantedTriggeredAbilities(
+        entityId: EntityId,
+        state: GameState,
+        statics: BattlefieldStaticsIndex,
+    ): List<TriggeredAbility> {
         val targetContainer = state.getEntity(entityId) ?: return emptyList()
         val targetCard = targetContainer.get<CardComponent>() ?: return emptyList()
+        val grants = if (statics.sourceState === state) {
+            statics.printedTriggerGrants
+        } else {
+            BattlefieldStaticsIndex.build(state, cardRegistry).printedTriggerGrants
+        }
+        if (grants.isEmpty()) return emptyList()
         val projected = state.projectedState
         val targetControllerId = projected.getController(entityId)
 
         val result = mutableListOf<TriggeredAbility>()
 
-        for (permanentId in state.getBattlefield()) {
-            val container = state.getEntity(permanentId) ?: continue
-            val card = container.get<CardComponent>() ?: continue
-            // Skip face-down permanents — they have no abilities
-            if (container.has<FaceDownComponent>()) continue
-
-            val sourceControllerId = projected.getController(permanentId) ?: continue
-
-            val cardDef = registry.getCard(card.cardDefinitionId) ?: continue
-            for (ability in cardDef.staticAbilities) {
-                if (ability !is GrantTriggeredAbility) continue
-                if (ability.filter.scope !is Scope.Battlefield) continue
-
-                // Check if the target entity matches the filter's card predicates
-                val filter = ability.filter.baseFilter
-                val matchesAll = filter.cardPredicates.all { predicate ->
-                    when (predicate) {
-                        is com.wingedsheep.sdk.scripting.predicates.CardPredicate.IsCreature ->
-                            targetCard.typeLine.isCreature
-                        is com.wingedsheep.sdk.scripting.predicates.CardPredicate.HasSubtype ->
-                            targetCard.typeLine.hasSubtype(predicate.subtype)
-                        else -> true
-                    }
+        for (entry in grants) {
+            val ability = entry.grant
+            val sourceControllerId = entry.sourceControllerId
+            // Check if the target entity matches the filter's card predicates
+            val filter = ability.filter.baseFilter
+            val matchesAll = filter.cardPredicates.all { predicate ->
+                when (predicate) {
+                    is com.wingedsheep.sdk.scripting.predicates.CardPredicate.IsCreature ->
+                        targetCard.typeLine.isCreature
+                    is com.wingedsheep.sdk.scripting.predicates.CardPredicate.HasSubtype ->
+                        targetCard.typeLine.hasSubtype(predicate.subtype)
+                    else -> true
                 }
-                if (!matchesAll) continue
+            }
+            if (!matchesAll) continue
 
-                // Check controller predicate relative to the source permanent's controller
-                val controllerMatch = filter.controllerPredicate?.evaluateWith { leaf ->
-                    when (leaf) {
-                        is ControllerPredicate.ControlledByYou -> targetControllerId == sourceControllerId
-                        is ControllerPredicate.ControlledByOpponent -> targetControllerId != null && targetControllerId != sourceControllerId
-                        else -> null // leaf kinds this fast path can't evaluate don't constrain
-                    }
-                } ?: true
-                if (controllerMatch) {
-                    result.add(ability.ability)
+            // Check controller predicate relative to the source permanent's controller
+            val controllerMatch = filter.controllerPredicate?.evaluateWith { leaf ->
+                when (leaf) {
+                    is ControllerPredicate.ControlledByYou -> targetControllerId == sourceControllerId
+                    is ControllerPredicate.ControlledByOpponent -> targetControllerId != null && targetControllerId != sourceControllerId
+                    else -> null // leaf kinds this fast path can't evaluate don't constrain
                 }
+            } ?: true
+            if (controllerMatch) {
+                result.add(ability.ability)
             }
         }
 
