@@ -47,7 +47,12 @@ These are explicit, scoped exceptions to earlier contracts, not silent drift.
 ```
 
 Game `g` uses seed `baseSeed + g` (default `20260930`); seat order alternates every game and the
-starting player every two games. Output per run: `game-NNNNNN.jsonl.gz` (one sample per line),
+starting player every two games. The seed fixes the deal, not the play: the teacher profile's
+`TieredBudgetPolicy` stops search at wall-clock deadlines, so the engine AI's choices depend on CPU
+speed and load (two runs of the same seed on unchanged code diverged in 4 of 6 games while the
+machine was busy). Samples are still valid teacher play; they are not byte-reproducible, and a
+heavily loaded or slow machine yields a weaker teacher. A work-bounded budget (same tiers and
+allowances, no clock) removes both effects and is the recommended teacher budget for future runs. Output per run: `game-NNNNNN.jsonl.gz` (one sample per line),
 `summary-NNNNNN.tsv`, `manifest-NNNNNN.json` (source commit, teacher profile, seeds).
 
 A sample is written for every priority choice with **≥ 2 candidates after removing mana
