@@ -66,6 +66,13 @@ abilities**. Pending decisions are answered by the engine AI and not recorded. S
 
 Engine entity ids are never written; all references are indices into the sample's `cards`.
 
+Known P1 limitation: `GameEnvironment.step()` in LEGACY mode runs the simulator's quiet-state loop
+after each submitted action, passing priority automatically while the stack is non-empty (see
+`docs/ml/headless-replay-showcase.md`). Neither the teacher nor a model seat ever responds to an
+object on the stack, so P1 data contains no instant-speed responses. Candidates also include
+currently unaffordable actions without an affordability feature; the teacher never picks them,
+and tournament model seats mask them at inference.
+
 ## Next
 
 1. P1_02 — featurization and model (Python, `ml/`): card-name embeddings over the small fixed
