@@ -29,9 +29,8 @@ import com.wingedsheep.gym.contract.StructuredCardInfo
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.trainer.actor.LocalSourceBootstrapV1
 import com.wingedsheep.gym.trainer.actor.GitSourceBootstrapProbeV1
-import com.wingedsheep.gym.trainer.trajectory.SemanticDecisionIdentityV1
 import com.wingedsheep.gym.trainer.trajectory.SemanticReplayInputV1
-import com.wingedsheep.gym.trainer.trajectory.SemanticReplayPrefixV1
+import com.wingedsheep.gym.trainer.trajectory.SemanticReplayPrefixAccumulatorV1
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryV1
 import com.wingedsheep.gameserver.curriculum.CurriculumDeckSourceLoader
 import com.wingedsheep.gameserver.curriculum.CurriculumDeckSourceV1
@@ -659,7 +658,9 @@ class TransportedReplayReconstructorV1(
         freshVerification: com.wingedsheep.gym.contract.VerifiedReplayVerification,
     ): List<com.wingedsheep.gym.trainer.trajectory.DecisionRecordV1> {
         val decisions = claimant.decisions
-        var prefix = SemanticReplayPrefixV1()
+        // Linear prefix digest; rebuilding SemanticReplayPrefixV1 per decision was O(n^2) in
+        // episode length. Parity with the legacy digest is pinned by SemanticReplayPrefixAccumulatorTest.
+        val prefix = SemanticReplayPrefixAccumulatorV1()
         return decisions.mapIndexed { index, record ->
             val frame = freshVerification.frames.getOrNull(index)
                 ?: throw TransportedReplayReconstructionException(
@@ -739,9 +740,8 @@ class TransportedReplayReconstructorV1(
                 )
             }
             // Recompute the semantic decision identity from the fresh prefix + fresh boundaries.
-            val freshIdentity = SemanticDecisionIdentityV1.from(
+            val freshIdentity = prefix.semanticDecisionIdentity(
                 semanticEpisodeId = claimant.episodeMetadata.semanticEpisodeId,
-                prefix = prefix,
                 replayActionIndex = index,
                 observation = frame.observation,
                 domain = frame.completeLegalDomain,
@@ -757,7 +757,7 @@ class TransportedReplayReconstructorV1(
             }
             val input = chosenInput.chosenSemanticAction?.let(SemanticReplayInputV1::action)
                 ?: SemanticReplayInputV1.response(checkNotNull(chosenInput.chosenSemanticResponse))
-            prefix = prefix.copy(inputs = prefix.inputs + input)
+            prefix.append(input)
             com.wingedsheep.gym.trainer.trajectory.DecisionRecordV1(
                 decisionIndex = index,
                 replayActionIndex = index,
