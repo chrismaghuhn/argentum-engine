@@ -884,5 +884,7 @@ L5 apply recomputed every candidate's viability               -> apply checks ca
 ```text
 :gym:test on commit 0d0c577c2f (clean tree, before the remediation): BUILD SUCCESSFUL,
   872 tests passed, 31 skipped, 0 failed (6 min 11 s).
-:gym:test on the remediation commit: recorded in the final commit of this slice (section 27).
+:gym:test on the remediation commit eb15e74987 (clean tree): BUILD SUCCESSFUL,
+  874 tests passed, 30 skipped, 0 failed (3 min 28 s). The only commit after it changes this
+  report line (documentation only).
 ```
