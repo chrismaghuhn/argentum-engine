@@ -68,7 +68,9 @@ The rules engine itself (`GameGymEnv.step`, legal-action enumeration) was a smal
 ```text
 :game-server:test --tests 'com.wingedsheep.gameserver.replay.*'   148 tests, 0 failures
 :gym-trainer:test                                                 231 tests, 0 failures
-:gym:test                                                         see PR body
+:gym:test                                                         861 tests, 0 failures
+  (run on the committed tree: the actor source-revision bootstrap rejects a dirty tracked tree,
+   which otherwise shows up as 5 misleading KaggleActor04SmokeTest failures)
 :gym:kaggleActor07BenchmarkTest (2 episodes, before vs after)     identities IDENTICAL
 ```
 
