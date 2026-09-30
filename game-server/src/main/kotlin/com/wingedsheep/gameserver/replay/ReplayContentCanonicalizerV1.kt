@@ -932,22 +932,7 @@ object ReplayContentCanonicalizerV1 {
     ): SerialDescriptor? {
         if (descriptor == null || descriptor.kind !is PolymorphicKind) return descriptor
         val typeName = element["type"]?.jsonPrimitive?.contentOrNull ?: return descriptor
-        return descriptor.findConcreteDescriptor(typeName) ?: descriptor
-    }
-
-    private fun SerialDescriptor.findConcreteDescriptor(
-        typeName: String,
-        seen: MutableSet<String> = mutableSetOf(),
-    ): SerialDescriptor? {
-        if (!seen.add(serialName)) return null
-        if (serialName == typeName || serialName.substringAfterLast('.') == typeName.substringAfterLast('.')) {
-            return this
-        }
-        for (index in 0 until elementsCount) {
-            val match = getElementDescriptor(index).findConcreteDescriptor(typeName, seen)
-            if (match != null) return match
-        }
-        return null
+        return ConcreteDescriptorLookup.find(descriptor, typeName) ?: descriptor
     }
 
     private fun SerialDescriptor.fieldDescriptor(key: String): SerialDescriptor? {
