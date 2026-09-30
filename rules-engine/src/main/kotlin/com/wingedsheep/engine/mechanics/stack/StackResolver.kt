@@ -1256,9 +1256,18 @@ class StackResolver(
         // through their own spell continuation and must keep the historical popped-stack shape.
         // Only replacement ordering/optional-replacement prompts need the spell to remain a
         // coherent stack object: their continuation will perform the final zone transition.
-        val pendingContinuation = result.state.peekContinuation()
-        val replacementDecisionPending = pendingContinuation is OptionalReplacementContinuation ||
-            pendingContinuation is ReplacementChoiceContinuation
+        // That holds only when the prompt is about the spell's own move. A prompt about another
+        // object the spell's effect is moving (Chaos Warp tucking a commander, CR 903.9b) is an
+        // ordinary resolution choice: the spell's SpellResolutionContinuation later puts it into
+        // its destination zone without touching the stack, so re-adding it here would leave a
+        // hollow stack entry behind.
+        val pendingReplacementEvent = when (val pendingContinuation = result.state.peekContinuation()) {
+            is OptionalReplacementContinuation -> pendingContinuation.pendingEvent
+            is ReplacementChoiceContinuation -> pendingContinuation.pendingEvent
+            else -> null
+        }
+        val replacementDecisionPending =
+            (pendingReplacementEvent as? PendingGameEvent.ZoneChangePending)?.entityId == topId
         if (result.isPaused && replacementDecisionPending && container.has<SpellOnStackComponent>() &&
             result.state.getEntity(topId)?.has<SpellOnStackComponent>() == true &&
             topId !in result.state.stack
