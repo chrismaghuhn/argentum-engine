@@ -6,6 +6,8 @@ import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.registry.PrintingRegistry
+import com.wingedsheep.engine.registry.TokenArtRegistry
 import com.wingedsheep.gameserver.config.GameBeansConfig
 import com.wingedsheep.gameserver.config.GameProperties
 import com.wingedsheep.gameserver.curriculum.CurriculumDeckSourceLoader
@@ -26,8 +28,25 @@ object HeadlessEngineAiGame {
     const val AKIRI_SOURCE = "docs/ml/curriculum/akiri-v0.1.txt"
     const val CHEVILL_SOURCE = "docs/ml/curriculum/chevill-v0.1.txt"
 
-    /** The live server's own registry, so a recorded game re-simulates there exactly as here. */
-    val registry: CardRegistry by lazy { GameBeansConfig(GameProperties()).cardRegistry() }
+    private val beans by lazy { GameBeansConfig(GameProperties()) }
+
+    /**
+     * The live server's own registries, so a recorded game re-simulates there exactly as here. The
+     * printing and token-art registries matter: token art is part of the fingerprinted state.
+     */
+    val registry: CardRegistry by lazy { beans.cardRegistry() }
+    val printingRegistry: PrintingRegistry by lazy { beans.printingRegistry(registry) }
+    val tokenArtRegistry: TokenArtRegistry by lazy { beans.tokenArtRegistry() }
+
+    /** The reconstructor exactly as the server wires it. */
+    fun serverReconstructor(): ReplayReconstructor =
+        ReplayReconstructor(registry, printingRegistry, tokenArtRegistry)
+
+    fun environment(): GameEnvironment = GameEnvironment.create(
+        registry,
+        printingRegistry = printingRegistry,
+        tokenArtRegistry = tokenArtRegistry,
+    )
 
     data class Recorded(
         val replay: CompactReplay,
@@ -71,7 +90,7 @@ object HeadlessEngineAiGame {
         engineVersion: String = CompactReplay.UNKNOWN_VERSION,
     ): Recorded {
         val config = config(seed, startingPlayerIndex)
-        val environment = GameEnvironment.create(registry)
+        val environment = environment()
         val recorder = HeadlessReplayRecorder.start(environment, registry, config, maxSteps)
         val ais = environment.playerIds.associateWith { AIPlayer.create(registry, it, profile) }
 

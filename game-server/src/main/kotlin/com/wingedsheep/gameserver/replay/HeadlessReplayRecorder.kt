@@ -24,6 +24,11 @@ import java.time.Instant
  * zero-action and tail stamps, so [ReplayReconstructor] verifies the result as
  * [ReplayFidelity.EXACT] or tells exactly where it drifted.
  *
+ * Play the game with the registries the server replays it with — create the environment with the
+ * server's `printingRegistry` and `tokenArtRegistry` as well as its card registry. Token art is
+ * part of the fingerprinted state, so a game played without it drifts on the server at its first
+ * token even though every action still applies.
+ *
  * ```kotlin
  * val environment = GameEnvironment.create(registry)
  * val recorder = HeadlessReplayRecorder.start(environment, registry, config, maxSteps = 2_000)

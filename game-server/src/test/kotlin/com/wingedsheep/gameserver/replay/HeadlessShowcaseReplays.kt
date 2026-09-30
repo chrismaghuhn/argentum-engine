@@ -31,7 +31,7 @@ class HeadlessShowcaseReplays : FunSpec({
                 .toAbsolutePath().normalize()
             Files.createDirectories(outputDir)
             val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
-            val reconstructor = ReplayReconstructor(HeadlessEngineAiGame.registry, null)
+            val reconstructor = HeadlessEngineAiGame.serverReconstructor()
 
             val rows = mutableListOf<String>()
             val failures = mutableListOf<String>()

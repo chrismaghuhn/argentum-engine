@@ -5,7 +5,6 @@ import com.wingedsheep.gameserver.replay.CompactReplay
 import com.wingedsheep.gameserver.replay.HeadlessEngineAiGame
 import com.wingedsheep.gameserver.replay.InMemoryReplayStore
 import com.wingedsheep.gameserver.replay.ReplayCodec
-import com.wingedsheep.gameserver.replay.ReplayReconstructor
 import com.wingedsheep.gameserver.replay.ReplayService
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -15,11 +14,10 @@ import io.mockk.mockk
 
 class DevReplayImportControllerTest : FunSpec({
 
-    val registry = HeadlessEngineAiGame.registry
     val replay = HeadlessEngineAiGame.play(gameId = "dev-import-test", seed = 11L, maxSteps = 8).replay
 
     fun controller(): Pair<DevReplayImportController, ReplayService> {
-        val reconstructor = ReplayReconstructor(registry, null)
+        val reconstructor = HeadlessEngineAiGame.serverReconstructor()
         val service = ReplayService(InMemoryReplayStore(), reconstructor, mockk(relaxed = true))
         return DevReplayImportController(service, reconstructor) to service
     }

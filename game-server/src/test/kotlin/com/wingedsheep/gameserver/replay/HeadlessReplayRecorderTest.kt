@@ -30,17 +30,18 @@ class HeadlessReplayRecorderTest : FunSpec({
         val decoded = ReplayCodec.decode(ReplayCodec.encode(replay))
         decoded shouldBe replay
 
-        // The viewer's path — the replay verification every live game goes through. (The Gym
-        // trajectory binding, GymReplayFrameSource, is the stricter TRUSTED-data gate and rejects
-        // engine auto-pay by design; LEGACY showcase games are for watching, not for training.)
-        val reconstructed = ReplayReconstructor(registry, null).reconstruct(decoded)
+        // The viewer's path — the replay verification every live game goes through, wired exactly
+        // as the server wires it (token art is fingerprinted state). The Gym trajectory binding,
+        // GymReplayFrameSource, is the stricter TRUSTED-data gate and rejects engine auto-pay by
+        // design; LEGACY showcase games are for watching, not for training.
+        val reconstructed = HeadlessEngineAiGame.serverReconstructor().reconstruct(decoded)
         reconstructed.divergenceReason shouldBe null
         reconstructed.fidelity shouldBe ReplayFidelity.EXACT
         reconstructed.frameCount shouldBe replay.frameCount
     }
 
     test("finish refuses a recording whose environment was reset underneath it") {
-        val environment = GameEnvironment.create(registry)
+        val environment = HeadlessEngineAiGame.environment()
         val config = HeadlessEngineAiGame.config(seed = 3L)
         val recorder = HeadlessReplayRecorder.start(environment, registry, config)
         environment.reset(config)
@@ -50,7 +51,7 @@ class HeadlessReplayRecorderTest : FunSpec({
     }
 
     test("start requires a fixed seed and explicit seat ids") {
-        val environment = GameEnvironment.create(registry)
+        val environment = HeadlessEngineAiGame.environment()
         val config = HeadlessEngineAiGame.config(seed = 3L)
 
         shouldThrow<IllegalArgumentException> {
