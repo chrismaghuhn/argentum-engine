@@ -32,7 +32,7 @@ class Phase1TournamentTest : FunSpec({
             val games = System.getProperty("phase1.games")?.toInt() ?: 20
             val firstGame = System.getProperty("phase1.firstGame")?.toInt() ?: 0
             val workers = System.getProperty("phase1.workers")?.toInt() ?: 8
-            val maxSteps = System.getProperty("phase1.maxSteps")?.toInt() ?: 20_000
+            val maxSteps = System.getProperty("phase1.maxSteps")?.toInt() ?: 5_000
             val repositoryRoot = generateSequence(Path.of(System.getProperty("user.dir"))) { it.parent }
                 .first { Files.isDirectory(it.resolve("docs/ml/curriculum")) }
             val python = Path.of(System.getProperty("phase1.python") ?: repositoryRoot.resolve("ml/.venv/Scripts/python.exe").toString())
@@ -77,6 +77,7 @@ class Phase1TournamentTest : FunSpec({
                             put("engineSteps", result.engineSteps)
                             put("modelChoices", result.modelChoices)
                             put("modelFallbacks", result.modelFallbacks)
+                            put("loopBreaks", result.loopBreaks)
                             put("seconds", result.seconds)
                         }.toString()
                         synchronized(results) {
@@ -91,7 +92,7 @@ class Phase1TournamentTest : FunSpec({
                 println(
                     "# ${seatA.label} vs ${seatB.label}: games=${finished.size} A=$aWins B=$bWins " +
                         "unfinished=${finished.count { !it.terminal }} fallbacks=${finished.sumOf { it.modelFallbacks }}" +
-                        "/${finished.sumOf { it.modelChoices }}",
+                        "/${finished.sumOf { it.modelChoices }} loopBreaks=${finished.sumOf { it.loopBreaks }}",
                 )
             } finally {
                 pool.shutdown()

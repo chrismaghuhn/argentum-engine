@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.ai.engine.AIPlayer
 import com.wingedsheep.ai.engine.AiProfile
+import com.wingedsheep.ai.engine.StateProgress
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PassPriority
@@ -94,6 +95,7 @@ internal object Phase1Tournament {
         val engineSteps: Int,
         val modelChoices: Int,
         val modelFallbacks: Int,
+        val loopBreaks: Int,
         val seconds: Double,
     )
 
@@ -121,6 +123,10 @@ internal object Phase1Tournament {
         }
         var modelChoices = 0
         var modelFallbacks = 0
+        var loopBreaks = 0
+        // The engine AI refuses to act again from a position it already acted from (StateProgress);
+        // a model seat gets the same guard, or a free inert action (re-equip, self-untap) repeats forever.
+        val actedFrom = ids.associateWith { mutableSetOf<Long>() }
 
         while (!environment.isTerminal && !environment.isTruncated) {
             val actor = environment.agentToAct ?: break
@@ -143,6 +149,12 @@ internal object Phase1Tournament {
             }
             val legal = environment.legalActions()
             if (legal.isEmpty()) break
+            if (!actedFrom.getValue(actor).add(StateProgress.digest(state))) {
+                loopBreaks++
+                val pass = legal.firstOrNull { it.action is PassPriority }?.action
+                environment.step(pass ?: ai.chooseAction(state))
+                continue
+            }
             val built = observationBuilder.build(state, actor, legal)
             val observation = built.observation as? TrainingObservation
             val candidates = observation?.let(Phase1SelfPlayCollector::modelCandidates).orEmpty()
@@ -183,6 +195,7 @@ internal object Phase1Tournament {
             engineSteps = environment.stepCount,
             modelChoices = modelChoices,
             modelFallbacks = modelFallbacks,
+            loopBreaks = loopBreaks,
             seconds = (System.nanoTime() - started) / 1e9,
         )
     }
