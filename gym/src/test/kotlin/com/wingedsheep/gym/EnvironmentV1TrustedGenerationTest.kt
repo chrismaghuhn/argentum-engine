@@ -51,9 +51,8 @@ import com.wingedsheep.gym.trainer.trajectory.DecisionRecordV1
 import com.wingedsheep.gym.trainer.trajectory.EnvironmentIdentityV1
 import com.wingedsheep.gym.trainer.trajectory.EpisodeMetadataV1
 import com.wingedsheep.gym.trainer.trajectory.RosterSeatV1
-import com.wingedsheep.gym.trainer.trajectory.SemanticDecisionIdentityV1
 import com.wingedsheep.gym.trainer.trajectory.SemanticReplayInputV1
-import com.wingedsheep.gym.trainer.trajectory.SemanticReplayPrefixV1
+import com.wingedsheep.gym.trainer.trajectory.SemanticReplayPrefixAccumulatorV1
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryAdmissionResult
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryV1
 import com.wingedsheep.gym.trainer.trajectory.TrajectoryV1Reader
@@ -122,6 +121,8 @@ internal data class A9ActorScheduleV1(
 internal data class A9ActorEpisodeV1(
     val trajectory: TrajectoryV1,
     val replayTrajectoryBinding: com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1,
+    /** Live checkpoint fingerprints; excluded from replay content identity, so exposed for parity checks. */
+    val replayCheckpoints: List<ReplayCheckpoint> = emptyList(),
 )
 
 class EnvironmentV1TrustedGenerationTest : FunSpec({
@@ -216,6 +217,7 @@ internal object A9TrustedGenerationHarness {
         return A9ActorEpisodeV1(
             trajectory = generated.trajectory,
             replayTrajectoryBinding = generated.binding,
+            replayCheckpoints = generated.checkpoints,
         )
     }
 
@@ -622,6 +624,7 @@ internal object A9TrustedGenerationHarness {
             ),
             trajectory = trajectory,
             binding = binding,
+            checkpoints = decodedReplay.checkpoints,
         )
     }
 
@@ -659,15 +662,17 @@ internal object A9TrustedGenerationHarness {
         )
 
         val verification = binding.verificationBinding.verification
-        var prefix = SemanticReplayPrefixV1()
+        // Linear prefix digest: re-digesting the whole SemanticReplayPrefixV1 per decision made
+        // identity construction quadratic in episode length. The accumulator is parity-pinned
+        // against the legacy digest (SemanticReplayPrefixAccumulatorTest).
+        val prefix = SemanticReplayPrefixAccumulatorV1()
         val records = binding.chosenInputBinding.chosenInputs.mapIndexed { index, chosen ->
             val frame = verification.frames[index]
             check(frame.replayActionIndex == index)
             check(chosen.replayActionIndex == index)
             check(chosen.perspectivePlayerId == frame.perspectivePlayerId)
-            val identity = SemanticDecisionIdentityV1.from(
+            val identity = prefix.semanticDecisionIdentity(
                 semanticEpisodeId = metadata.semanticEpisodeId,
-                prefix = prefix,
                 replayActionIndex = index,
                 observation = frame.observation,
                 domain = frame.domain,
@@ -688,7 +693,7 @@ internal object A9TrustedGenerationHarness {
             )
             val input = chosen.chosenSemanticAction?.let(SemanticReplayInputV1::action)
                 ?: SemanticReplayInputV1.response(checkNotNull(chosen.chosenSemanticResponse))
-            prefix = prefix.copy(inputs = prefix.inputs + input)
+            prefix.append(input)
             record
         }
         val trajectoryBase = TrajectoryV1(
@@ -955,6 +960,7 @@ private data class GeneratedEpisode(
     val summary: EpisodeSummary,
     val trajectory: TrajectoryV1,
     val binding: com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1,
+    val checkpoints: List<ReplayCheckpoint>,
 )
 
 internal data class EpisodeSummary(

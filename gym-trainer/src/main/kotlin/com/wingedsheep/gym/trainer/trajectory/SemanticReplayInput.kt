@@ -164,8 +164,12 @@ data class SemanticReplayPrefixDigestV1(
  * The legacy [SemanticReplayPrefixV1.digest] remains the compatibility and parity authority. This
  * accumulator only avoids rebuilding the already appended JSON when a sequential caller asks for
  * a semantic identity. It retains no historical inputs or serialized prefix bytes.
+ *
+ * Public so sequential trajectory producers outside this module (the actor generation harness)
+ * can build identities in linear time instead of re-digesting the whole prefix per decision. Only
+ * [append] and [semanticDecisionIdentity] are exposed; the digest state itself stays internal.
  */
-internal class SemanticReplayPrefixAccumulatorV1 {
+class SemanticReplayPrefixAccumulatorV1 {
     private val digest = MessageDigest.getInstance("SHA-256")
     private var currentInputCount: Int = 0
     private var processedByteCountValue: Long = 0
@@ -182,7 +186,7 @@ internal class SemanticReplayPrefixAccumulatorV1 {
     }
 
     /** Append one already validated semantic input without retaining its historical value. */
-    internal fun append(input: SemanticReplayInputV1) {
+    fun append(input: SemanticReplayInputV1) {
         require(currentInputCount < Int.MAX_VALUE) {
             "Semantic replay-prefix accumulator input count overflow"
         }
@@ -196,7 +200,7 @@ internal class SemanticReplayPrefixAccumulatorV1 {
     /**
      * Build the current semantic identity without exposing a digest or snapshot-construction seam.
      */
-    internal fun semanticDecisionIdentity(
+    fun semanticDecisionIdentity(
         semanticEpisodeId: String,
         replayActionIndex: Int = currentInputCount,
         observation: PlayerObservationV1,
