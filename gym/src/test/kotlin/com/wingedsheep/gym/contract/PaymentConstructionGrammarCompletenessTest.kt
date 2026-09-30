@@ -10,12 +10,15 @@ import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
 import com.wingedsheep.engine.core.InitialPoolBucketV1
 import com.wingedsheep.engine.core.ManaResourceRefV1
 import com.wingedsheep.engine.core.PassPriority
+import com.wingedsheep.engine.core.PaymentAllocationV1
 import com.wingedsheep.engine.core.PaymentCostKindV1
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PaymentTargetV1
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.ProductionChoice
+import com.wingedsheep.engine.core.SourceActivationV2
 import com.wingedsheep.engine.core.canonicalizeInitialPoolBucketsV1
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
@@ -251,9 +254,10 @@ class PaymentConstructionGrammarCompletenessTest : FunSpec({
         var maxWork = 0L
         var budgetBinding = 0
         var noLegal = 0
+        var twoUnitInnerCompared = 0
         repeat(RANDOM_CASES) {
             val domain = randomDomain(random)
-            val reference = runCatching { PaymentConstructionFlatReferenceEnumerator.enumerate(domain) }
+            val reference = runCatching { PaymentConstructionFlatReferenceEnumerator.enumerate(domain, RANDOM_CASE_MAX_CANDIDATES) }
                 .getOrElse { error ->
                     if (error is IllegalStateException && error.message.orEmpty().startsWith("Reference fixture too large")) {
                         skipped++
@@ -284,6 +288,7 @@ class PaymentConstructionGrammarCompletenessTest : FunSpec({
                 walk.maxBranching.toLong() shouldBeLessThanOrEqual bounds.alternatives
                 walk.maxDepth.toLong() shouldBeLessThanOrEqual bounds.depth
             }
+            if (domain.sourceActivationOptions.any { it.atomicActivationManaCostUnits.size == 2 }) twoUnitInnerCompared++
             if (domain.fixedSelfDamageBudget != null &&
                 domain.sourceActivationOptions.sumOf { it.fixedSelfDamageAmount } > domain.fixedSelfDamageBudget!!
             ) {
@@ -294,10 +299,11 @@ class PaymentConstructionGrammarCompletenessTest : FunSpec({
         println(
             "GateA-DTO: cases=$RANDOM_CASES compared=$compared skipped=$skipped noLegalPayment=$noLegal " +
                 "plans=$totalPlans maxBranching=$maxBranching maxDepth=$maxDepth maxViabilityWork=$maxWork " +
-                "budgetBindingCases=$budgetBinding",
+                "budgetBindingCases=$budgetBinding twoUnitInnerCompared=$twoUnitInnerCompared",
         )
         compared shouldBeGreaterThan RANDOM_CASES * 9 / 10
         budgetBinding shouldBeGreaterThan 0
+        twoUnitInnerCompared shouldBeGreaterThan 0
         noLegal shouldBeGreaterThan 0
     }
 
@@ -358,10 +364,50 @@ class PaymentConstructionGrammarCompletenessTest : FunSpec({
         PaymentConstructionGrammarV1.apply(root, PaymentConstructionStepV1.Finalize)
             .shouldBeInstanceOf<PaymentConstructionResultV1.Failed>()
             .failure.shouldBeInstanceOf<PaymentConstructionFailureV1.InvalidPartialConstructionV1>()
-        // A hand-made prefix that skips the canonical target order is refused, never trusted.
+        // A hand-made finalized state with unpaid cost units is refused, never trusted.
         val forged = root.copy(finalized = true)
         PaymentConstructionGrammarV1.nextSteps(forged).shouldBeInstanceOf<PaymentConstructionResultV1.Failed>()
             .failure.shouldBeInstanceOf<PaymentConstructionFailureV1.InvalidPartialConstructionV1>()
+
+        val duplicateChoice = base.copy(
+            sourceActivationOptions = listOf(
+                painOption(EntityId.of("dup"), PaymentManaColor.RED).copy(
+                    productionChoices = listOf(ProductionChoice(PaymentManaColor.RED), ProductionChoice(PaymentManaColor.RED)),
+                ),
+            ),
+        )
+        PaymentConstructionGrammarV1.initial(duplicateChoice).shouldBeInstanceOf<PaymentConstructionResultV1.Failed>()
+            .failure.shouldBeInstanceOf<PaymentConstructionFailureV1.UnsupportedDomainShapeV1>()
+
+        val deep = base.copy(
+            outerAtomicCostUnits = (0 until MAX_PAYMENT_CONSTRUCTION_DEPTH).map { generic(0, it) },
+            initialPoolBuckets = listOf(
+                InitialPoolBucketV1(InitialPoolBucketKeyV1.UnrestrictedPoolBucket(PaymentManaColor.RED), MAX_PAYMENT_CONSTRUCTION_DEPTH),
+            ),
+        )
+        PaymentConstructionGrammarV1.initial(deep).shouldBeInstanceOf<PaymentConstructionResultV1.Failed>()
+            .failure.shouldBeInstanceOf<PaymentConstructionFailureV1.ConstructionBoundExceededV1>()
+            .bound shouldBe PaymentConstructionBoundV1.DEPTH
+
+        // Viability-work ceiling: 20 pain sources with pairwise distinct damage (so none collapse into
+        // one source type), a 14-white demand, and a budget of 100 < 1+2+...+14. The cost-free
+        // relaxation cannot see the budget, so the exhaustive search runs until the ceiling fails it
+        // closed instead of answering.
+        val exhausting = PaymentDomainV5(
+            requiredCost = "{W}x14",
+            outerAtomicCostUnits = (0 until 14).map {
+                AtomicManaCostUnitV1(it, 0, PaymentCostKindV1.COLORED, setOf(PaymentManaColor.WHITE))
+            },
+            initialPoolBuckets = emptyList(),
+            sourceActivationOptions = (1..20).map { damage ->
+                painOption(EntityId.of("pain-$damage"), PaymentManaColor.WHITE).copy(fixedSelfDamageAmount = damage)
+            },
+            reservedOuterLifePayment = 1,
+            fixedSelfDamageBudget = 100,
+        )
+        val exhausted = PaymentConstructionGrammarV1.initial(exhausting).shouldBeInstanceOf<PaymentConstructionResultV1.Failed>()
+            .failure.shouldBeInstanceOf<PaymentConstructionFailureV1.ConstructionBoundExceededV1>()
+        exhausted.bound shouldBe PaymentConstructionBoundV1.VIABILITY_WORK
 
         val bonus = base.copy(
             sourceActivationOptions = listOf(
@@ -382,6 +428,144 @@ class PaymentConstructionGrammarCompletenessTest : FunSpec({
             .failure.shouldBeInstanceOf<PaymentConstructionFailureV1.ConstructionBoundExceededV1>()
         refused.bound shouldBe PaymentConstructionBoundV1.ALTERNATIVES
         println("typed failures: Invalid/Unsupported/BoundExceeded(${refused.observed}>${refused.limit}) verified")
+    }
+
+    test("prefix replay rejects every forged ledger violation (L1-L7, order, publication)") {
+        val red = InitialPoolBucketKeyV1.UnrestrictedPoolBucket(PaymentManaColor.RED)
+        val a = EntityId.of("land-a")
+        val s = EntityId.of("paid-s")
+        val s2 = EntityId.of("paid-s2")
+        val p = EntityId.of("pain-p")
+        fun free(sourceId: EntityId, key: String, color: PaymentManaColor) =
+            painOption(sourceId, color).copy(manaAbilityKey = key, fixedSelfDamageAmount = 0)
+        fun paid(sourceId: EntityId) = free(sourceId, "paid", PaymentManaColor.COLORLESS).copy(
+            atomicActivationManaCostUnits = listOf(generic(0, 0)),
+            activationCostOrderOptions = listOf(
+                listOf(ActivationCostComponentRefV1.ManaComponent, ActivationCostComponentRefV1.DeterministicNonManaComponent(0)),
+            ),
+        )
+        val domain = PaymentDomainV5(
+            requiredCost = "{W}{1}",
+            outerAtomicCostUnits = listOf(
+                AtomicManaCostUnitV1(0, 0, PaymentCostKindV1.COLORED, setOf(PaymentManaColor.WHITE)),
+                generic(1, 0),
+            ),
+            initialPoolBuckets = listOf(InitialPoolBucketV1(red, 1)),
+            sourceActivationOptions = listOf(
+                free(a, "a1", PaymentManaColor.GREEN),
+                free(a, "a2", PaymentManaColor.WHITE),
+                paid(s),
+                paid(s2),
+                painOption(p, PaymentManaColor.WHITE),
+            ),
+            reservedOuterLifePayment = 1,
+            fixedSelfDamageBudget = 0,
+        )
+        PaymentConstructionGrammarV1.initial(domain).shouldBeInstanceOf<PaymentConstructionResultV1.Ok<PaymentConstructionStateV1>>()
+        val options = domain.sourceActivationOptions
+        fun act(index: Int, vararg inner: ManaResourceRefV1, position: Int = 0) = SourceActivationV2(
+            sourceId = options[index].sourceId,
+            manaAbilityKey = options[index].manaAbilityKey,
+            productionChoice = options[index].productionChoices.single(),
+            activationCostOrder = options[index].activationCostOrderOptions.single(),
+            activationCostAllocation = inner.map { PaymentAllocationV1(PaymentTargetV1.ActivationCostUnit(position, 0, 0), it) },
+        )
+        fun output(activation: Int) = ManaResourceRefV1.ActivationOutputUnit(activation, 0)
+        val pool = ManaResourceRefV1.InitialPoolResource(red)
+        val outerWhite = PaymentTargetV1.OuterCostUnit(0, 0)
+        val outerGeneric = PaymentTargetV1.OuterCostUnit(1, 0)
+
+        val forgeries = mapOf(
+            "non-canonical outer target order" to PaymentConstructionStateV1(
+                domain, outerAllocation = listOf(PaymentAllocationV1(outerGeneric, pool)),
+            ),
+            "L1 one source activated twice" to PaymentConstructionStateV1(domain, listOf(act(0), act(1))),
+            "L2 inner cost paid from its own output" to PaymentConstructionStateV1(domain, listOf(act(2, output(0)))),
+            "L2 inner cost paid from a later output" to PaymentConstructionStateV1(
+                domain, listOf(act(2, output(1)), act(0)),
+            ),
+            "L4 output spent twice" to PaymentConstructionStateV1(
+                domain, listOf(act(0), act(2, output(0), position = 1), act(3, output(0), position = 2)),
+            ),
+            "L5 bucket capacity exceeded" to PaymentConstructionStateV1(
+                domain, listOf(act(2, pool), act(3, pool, position = 1)),
+            ),
+            "L6 colour does not satisfy the unit" to PaymentConstructionStateV1(
+                domain, outerAllocation = listOf(PaymentAllocationV1(outerWhite, pool)),
+            ),
+            "L7 self-damage budget exceeded" to PaymentConstructionStateV1(domain, listOf(act(4))),
+            "activation after an unpaid activation" to PaymentConstructionStateV1(domain, listOf(act(2), act(0, position = 1))),
+            "unpublished option" to PaymentConstructionStateV1(domain, listOf(act(0).copy(manaAbilityKey = "unpublished"))),
+            "unpublished production" to PaymentConstructionStateV1(
+                domain, listOf(act(0).copy(productionChoice = ProductionChoice(PaymentManaColor.BLACK))),
+            ),
+            "unpublished cost order" to PaymentConstructionStateV1(
+                domain, listOf(act(0).copy(activationCostOrder = listOf(ActivationCostComponentRefV1.ManaComponent))),
+            ),
+            "outer allocation before the open activation is paid" to PaymentConstructionStateV1(
+                domain, listOf(act(2)), listOf(PaymentAllocationV1(outerWhite, pool)),
+            ),
+        )
+        for ((rule, state) in forgeries) {
+            withClue(rule) {
+                PaymentConstructionGrammarV1.nextSteps(state).shouldBeInstanceOf<PaymentConstructionResultV1.Failed>()
+                    .failure.shouldBeInstanceOf<PaymentConstructionFailureV1.InvalidPartialConstructionV1>()
+                PaymentConstructionGrammarV1.apply(state, PaymentConstructionStepV1.Finalize)
+                    .shouldBeInstanceOf<PaymentConstructionResultV1.Failed>()
+                    .failure.shouldBeInstanceOf<PaymentConstructionFailureV1.InvalidPartialConstructionV1>()
+            }
+        }
+        // A well-formed prefix built from the same helpers is accepted (the forgeries are not vacuous).
+        PaymentConstructionGrammarV1.nextSteps(PaymentConstructionStateV1(domain, listOf(act(1), act(2, pool, position = 1))))
+            .shouldBeInstanceOf<PaymentConstructionResultV1.Ok<List<PaymentConstructionStepV1>>>()
+        println("replay rejections verified: ${forgeries.keys}")
+    }
+
+    test("Gate A (DTO-level): a two-unit inner cost is paid unit by unit from mixed resources") {
+        // "{2},{T}: Add {C}{C}" shape plus a free green source and one red bucket; the outer {C}{C}
+        // can only come from the paid source, so every plan passes through a partly paid activation.
+        val paidSource = EntityId.of("two-unit-paid")
+        val land = EntityId.of("green-land")
+        val domain = PaymentDomainV5(
+            requiredCost = "{C}{C}",
+            outerAtomicCostUnits = (0 until 2).map {
+                AtomicManaCostUnitV1(it, 0, PaymentCostKindV1.COLORLESS, setOf(PaymentManaColor.COLORLESS))
+            },
+            initialPoolBuckets = listOf(
+                InitialPoolBucketV1(InitialPoolBucketKeyV1.UnrestrictedPoolBucket(PaymentManaColor.RED), 2),
+            ),
+            sourceActivationOptions = listOf(
+                PaymentSourceActivationDomainV2(
+                    sourceId = paidSource,
+                    sourceName = "dto two-unit paid source",
+                    manaAbilityKey = "cc",
+                    productionChoices = listOf(
+                        ProductionChoice(
+                            PaymentManaColor.COLORLESS,
+                            fixedOutputs = listOf(FixedManaOutput(0, PaymentManaColor.COLORLESS), FixedManaOutput(1, PaymentManaColor.COLORLESS)),
+                        ),
+                    ),
+                    atomicActivationManaCostUnits = listOf(generic(0, 0), generic(0, 1)),
+                    activationSupportKind = PaymentActivationSupportKindV1.FIXED_MANA_AND_TAP_SELF,
+                    deterministicNonManaCosts = listOf(PaymentDeterministicNonManaCostKindV1.TAP_SELF),
+                    activationCostOrderOptions = listOf(
+                        listOf(ActivationCostComponentRefV1.ManaComponent, ActivationCostComponentRefV1.DeterministicNonManaComponent(0)),
+                    ),
+                ),
+                painOption(land, PaymentManaColor.GREEN).copy(fixedSelfDamageAmount = 0),
+            ),
+        )
+        val referenceIds = PaymentConstructionFlatReferenceEnumerator.enumerate(domain).legalPlans
+            .map(PaymentConstructionFlatReferenceEnumerator::identity).toSet()
+        val walk = walkGrammar(domain)
+        walk.identities shouldBe referenceIds
+        walk.terminalPaths shouldBe walk.identities.size
+        val mixedPayments = walk.plans.count { plan ->
+            val inner = plan.activations.first { it.sourceId == paidSource }.activationCostAllocation
+            inner.map { it.resource::class }.toSet().size == 2
+        }
+        mixedPayments shouldBeGreaterThan 0
+        println("two-unit inner: plans=${walk.identities.size} mixedBucketAndOutputPayments=$mixedPayments states=${walk.states}")
     }
 
     // ------------------------------------------------------------------------- Gate H
@@ -413,6 +597,7 @@ class PaymentConstructionGrammarCompletenessTest : FunSpec({
         const val F5_EXPECTED = 20
         const val F6_EXPECTED = 44
         const val RANDOM_CASES = 600
+        const val RANDOM_CASE_MAX_CANDIDATES = 1_000_000L
 
         // ------------------------------------------------------------ fixture construction
 
@@ -806,7 +991,12 @@ class PaymentConstructionGrammarCompletenessTest : FunSpec({
                 repeat(random.nextInt(0, 4)) { sourceIndex ->
                     val sourceId = EntityId.of("rnd-$sourceIndex")
                     repeat(if (random.nextInt(4) == 0) 2 else 1) { optionIndex ->
-                        val inner = if (random.nextInt(3) == 0) listOf(unit(0)) else emptyList()
+                        // 0, 1, or 2 inner units: two units exercise partly paid open activations.
+                        val inner = when (random.nextInt(6)) {
+                            0 -> listOf(unit(0))
+                            1 -> listOf(unit(0), unit(1))
+                            else -> emptyList()
+                        }
                         val productions = if (random.nextInt(4) == 0) {
                             val bundle = listOf(color(), color())
                             listOf(

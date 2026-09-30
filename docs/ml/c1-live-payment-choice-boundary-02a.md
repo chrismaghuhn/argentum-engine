@@ -536,13 +536,15 @@ PaymentConstructionStepV1 =
 PaymentConstructionGrammarV1:
     initial(domain)            -> Ok(root) | Failed(typed)
     nextSteps(state)           -> Ok(complete canonical legal next steps) | Failed(typed)
-    apply(state, step)         -> Ok(successor) only if step in nextSteps(state)
+    apply(state, step)         -> Ok(successor) only if step in nextSteps(state) (checked as
+                                  candidate membership + viability of that one successor)
     isTerminal(state)          -> finalized
     materialize(state)         -> Ok(PaymentPlanV3(activations, outerAllocation)), pure assembly
     structuralBounds(domain)   -> (alternatives, depth) per-domain structural bounds
 Typed failures (PaymentConstructionFailureV1):
     UnsupportedDomainShapeV1      support kind != FixedManaAndTapSelf, non-mana costs != [TapSelf],
-                                  production choice with amount != 1 / bonusChoice / malformed bundle
+                                  production choice with amount != 1 / bonusChoice / malformed bundle,
+                                  duplicate production choice or cost order (would give one plan two paths)
     ConstructionBoundExceededV1   bound = ALTERNATIVES | DEPTH | VIABILITY_WORK (limit, observed)
     InvalidPartialConstructionV1  forged/non-canonical prefix, step not in nextSteps, premature
                                   materialize, prefix without legal completion
@@ -654,15 +656,21 @@ Gate G on EVERY visited state of every fixture: nextSteps deterministic (repeat 
 
 ```text
 600 seeded random PaymentDomainV5 instances inside the DTO contract (0-2 unrestricted buckets,
-0-3 sources with 1-2 options, single-choice / multi-choice / bundle productions, optional inner
-cost incl. two cost-order options, GENERIC / COLORLESS / COLORED / two-colour COLORED units,
+0-3 sources with 1-2 options, single-choice / multi-choice / bundle productions, 0-2 inner cost
+units incl. two cost-order options, GENERIC / COLORLESS / COLORED / two-colour COLORED units,
 optional pain damage and budget):
-  compared = 600, skipped (oracle too large) = 0
-  NoLegalPaymentV1 cases = 232 (reference empty in exactly those cases)
-  reachable plans compared = 31,360; grammar set == reference set in every case
+  compared = 575; skipped = 25 (the brute-force oracle would generate > 1,000,000 candidates;
+    counted and reported, never silently dropped; the test requires >= 90% compared)
+  cases with a two-unit inner cost compared = 158 (partly paid open activations, multi-unit
+    payments inside the complex search)
+  NoLegalPaymentV1 cases = 219 (reference empty in exactly those cases)
+  reachable plans compared = 26,603; grammar set == reference set in every compared case
   one path per plan in every case; every grammar plan passes the oracle's L1-L7 filter
-  max branching 11, max depth 9 (each within its structural bound), max viability work 101
-  budget-binding cases (total damage > budget) = 30
+  max branching 9, max depth 9 (each within its structural bound), max viability work 65
+  budget-binding cases (total damage > budget) = 41
+Dedicated DTO case "{2},{T}: Add {C}{C}" + free green source + red bucket (capacity 2), outer
+  {C}{C}: reference = grammar = 10 plans, 42 states, 4 plans pay the two inner units from a bucket
+  AND an earlier output.
 These DTOs are NOT claimed to be reachable Magic states; they test the grammar's contract
 generality (especially the viability search) beyond the real fixtures.
 ```
@@ -679,6 +687,12 @@ completes it. Hence P is reachable. Conversely every terminal path passes the pr
 (L1-L7 re-derived on each call), so every reachable plan satisfies L1-L7. The only non-trivial
 lemma is exactness of the viability check (section 15), which the 600-case differential test and
 the fixture set equality exercise; the Rules validator independently accepts every reachable plan.
+The rejection side of the replay is tested directly: 13 forged prefixes (non-canonical target
+order, L1 source twice, L2 own output, L2 later output, L4 output twice, L5 bucket over capacity,
+L6 wrong colour, L7 budget exceeded, activation after an unpaid activation, outer allocation before
+the open activation is paid, unpublished option / production / cost order) are each refused with
+InvalidPartialConstructionV1 by nextSteps and by apply; a well-formed prefix built from the same
+helpers is accepted, so the forgeries are not vacuous.
 
 | Dimension | Consumed by | Non-degenerate evidence |
 |---|---|---|
@@ -686,13 +700,13 @@ the fixture set equality exercise; the Rules validator independently accepts eve
 | D2 initialPoolBuckets | allocation resources, capacity | F2/F3/F8 certified buckets; DTO unrestricted buckets (capacity 2) |
 | D3 sourceActivationOptions | ActivateSource, L1 | F4/F5/F6 multi-source; DTO two options per sourceId (T2a measured it for Clifftop) |
 | D4 productionChoices | ActivateSource production index, outputs | F4/F5 five choices; F4b/F6 fixed bundles |
-| D5 atomicActivationManaCostUnits | inner allocation phase | F6 (40 plans pay the inner cost from an earlier output) |
+| D5 atomicActivationManaCostUnits | inner allocation phase | F6 (40 plans pay the inner cost from an earlier output); 158 random DTO cases and one dedicated case with a two-unit inner cost |
 | D6 activationCostOrderOptions | ActivateSource order index | real emission always publishes one order (T2b); DTO case with two orders: both reachable |
 | D7 deterministicNonManaCosts | admission (must be [TapSelf]) | typed UnsupportedDomainShape on other shapes; carries no choice |
 | D8 fixedSelfDamageAmount | L7 ledger, budget-relevant viability | DTO pain options; Chevill/Akiri envelope pain sources; City of Brass note O3 |
 | D9 reservedOuterLifePayment | no choice; only via D10 | real War Room domain: reservation 2 |
 | D10 fixedSelfDamageBudget | ActivateSource filter, L7, viability | DTO budget=1 case (no plan activates both pain sources); real War Room budget 38; 30 random budget-binding cases |
-| D11 version/order invariants | DTO init + grammar admission + prefix replay | typed-failure test (forged prefix, unsupported shape, bound) |
+| D11 version/order invariants | DTO init + grammar admission + prefix replay | typed-failure test (unsupported shape, duplicate choice, ALTERNATIVES / DEPTH / VIABILITY_WORK bounds) + 13 forged-prefix rejections |
 
 `requiredCost`, `sourceName`, `activationSupportKind` carry no construction choice (TASK 1 section 4).
 
@@ -748,6 +762,9 @@ DERIVED OPERATIONAL FAIL-CLOSED CEILINGS (NOT Magic maxima):
                                                        >= 101 recasts of headroom
   MAX_PAYMENT_CONSTRUCTION_VIABILITY_WORK = 1,000,000  measured max 1,228, 814x headroom;
                                                        coverage MEASURED, not proven (see limits)
+Each ceiling's typed refusal is produced by a test: ALTERNATIVES (1,026 > 512), DEPTH (257 > 256),
+and VIABILITY_WORK (20 pain sources with distinct damage, a 14-white demand, budget 100: the
+cost-free relaxation cannot see the budget and the search is failed closed at the ceiling).
 Above any ceiling: typed ConstructionBoundExceededV1 (never truncation, never a guess).
 The pregame 10_000 constant was not used as evidence (section 9).
 ```
@@ -794,8 +811,16 @@ O5 Performance: nextSteps runs one viability check per candidate; envelope steps
 ```text
 CAN_SMALL_DOMAIN_COMPLETENESS_BE_PROVEN = YES (PROVEN AND EXECUTED)
   Grammar-reachable terminal set == independent flat reference set under the frozen conservative
-  identity for F1-F8 (real cards) and 600 seeded DTO domains (31,360 plans); every reachable real
-  plan is accepted by the Rules validator, passes the trusted seam, and executes exactly.
+  identity for F1-F8 (real cards), 575 compared seeded DTO domains (26,603 plans, 158 with two-unit
+  inner costs) and a dedicated two-unit case; every reachable real plan is accepted by the Rules
+  validator, passes the trusted seam, and executes exactly.
+  Scope of "complete" (stated precisely): complete against the PUBLISHED PaymentDomainV5, i.e.
+  the ledger rules L1-L7 over what V5 publishes. (a) A plan the Rules validator would accept but
+  that uses a source/option V5 does not publish is outside the proof (V5 publication is TASK 1's
+  audited boundary). (b) The validator also accepts the same program with allocation lists in
+  another order; those are the same plan under the frozen identity (section 7), and the grammar
+  builds only the canonical order. Gate A+ checks the other direction (every reachable plan is
+  AcceptedV3).
 
 CAN_LARGE_DOMAIN_STRUCTURAL_COVERAGE_BE_PROVEN = YES
   Per-transition argument in section 19 (unique canonical path per legal plan, each step a
@@ -809,7 +834,7 @@ CAN_A_SAFE_PRODUCTION_BOUND_BE_DERIVED_NOW = YES, as OPERATIONAL FAIL-CLOSED CEI
   coverage is MEASURED (max 1,228), not proven; stated explicitly in section 21. None is a Magic
   maximum.
 
-MEASURED_MAX_BRANCHING = fixtures 10 (F5); DTO 11; envelope 56 (proven envelope bound 160)
+MEASURED_MAX_BRANCHING = fixtures 10 (F5); DTO 9; envelope 56 (proven envelope bound 160)
 MEASURED_MAX_DEPTH     = fixtures 7 (F6); DTO 9; envelope walks 28 (proven envelope bound 53 + tax)
 MISSING_GENERIC_PRIMITIVE = none
 PRODUCTION_SOURCE_PRIMITIVE = PaymentConstructionGrammarV1 (implemented; not wired into any live
@@ -820,9 +845,9 @@ PRODUCTION_SOURCE_PRIMITIVE = PaymentConstructionGrammarV1 (implemented; not wir
 
 ```text
 EXECUTED in this worktree (real runs, JDK 21, scripts/gradle-locked):
-  :gym:test --tests PaymentConstructionGrammarCompletenessTest   15/15 PASSED
-      (F1-F8, F4b, Gate A DTO 600 cases, Gate B DTO, typed failures, Gate H, Gate F Akiri,
-       Gate F Chevill)
+  :gym:test --tests PaymentConstructionGrammarCompletenessTest   17/17 PASSED (57 s)
+      (F1-F8, F4b, Gate A DTO 600 cases, Gate B DTO, typed failures, forged-prefix rejections,
+       two-unit inner DTO case, Gate H, Gate F Akiri, Gate F Chevill)
   :gym:test --tests PaymentConstructionGrammarTask1CharacterizationTest   6/6 PASSED
       (T3 flipped RED -> GREEN: the planned class now exists)
   full :gym:test on the committed head: see section 25
@@ -830,4 +855,34 @@ NOT EXECUTED:
   :gym:environmentV1TrustedGenerationTest (separate task, already red on main: A8 closure audit,
   CastWithKicker/CycleCard unclassified, unrelated); game-server suites (no game-server change);
   hosted CI (no PR opened without the user's consent).
+```
+
+## 25. Independent review and remediation (before any PR)
+
+A read-only, defect-first review of commit 0d0c577c2f (grammar, oracle, proof test, report)
+found NO correctness defect. It verified the eager/flexible dominance arguments, the open-activation
+payment order, both Hall relaxations (gross on proper colour subsets, net on the full set), the
+memo key/demand handling, the Edmonds-Karp residual updates, budget handling against the
+validator's cumulative check, replay-vs-validateV3 semantics, and oracle independence. It raised
+evidence gaps and hardening items, all addressed in the follow-up commit:
+
+```text
+M1 two-unit inner costs never compared with the oracle      -> random DTOs now draw 0-2 inner
+   units (158 compared cases) + a dedicated two-unit case (section 18)
+M2 replay rejection branches and DEPTH / VIABILITY_WORK       -> 13 forged-prefix rejections,
+   refusals untested                                              DEPTH and VIABILITY_WORK refusals
+                                                                   produced by tests (sections 19, 21)
+L3 duplicate production choice / cost order would give        -> refused at admission as
+   one plan two paths (DTO does not forbid duplicates)            UnsupportedDomainShapeV1
+L4 completeness wording vs the Rules validator                -> scope stated precisely (section 23)
+L5 apply recomputed every candidate's viability               -> apply checks candidate membership
+                                                                   and only its own successor
+```
+
+## 26. Full gym regression
+
+```text
+:gym:test on commit 0d0c577c2f (clean tree, before the remediation): BUILD SUCCESSFUL,
+  872 tests passed, 31 skipped, 0 failed (6 min 11 s).
+:gym:test on the remediation commit: recorded in the final commit of this slice (section 27).
 ```

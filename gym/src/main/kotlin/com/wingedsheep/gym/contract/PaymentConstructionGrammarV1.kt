@@ -258,23 +258,40 @@ object PaymentConstructionGrammarV1 {
         return PaymentConstructionResultV1.Ok(viable)
     }
 
-    /** Apply [step]; it must be one of [nextSteps] of [state]. */
+    /**
+     * Apply [step]; it must be one of [nextSteps] of [state]. Equivalent to that membership test,
+     * but only [step]'s own successor is checked for viability (admission already guarantees the
+     * alternatives ceiling).
+     */
     fun apply(
         state: PaymentConstructionStateV1,
         step: PaymentConstructionStepV1,
     ): PaymentConstructionResultV1<PaymentConstructionStateV1> {
-        val steps = when (val next = nextSteps(state)) {
-            is PaymentConstructionResultV1.Ok -> next.value
-            is PaymentConstructionResultV1.Failed -> return next
+        admissionFailure(state.domain)?.let { return PaymentConstructionResultV1.Failed(it) }
+        val ledger = when (val replayed = Ledger.replay(state)) {
+            is PaymentConstructionResultV1.Ok -> replayed.value
+            is PaymentConstructionResultV1.Failed -> return replayed
         }
-        if (step !in steps) {
+        val notLegal = PaymentConstructionResultV1.Failed(
+            PaymentConstructionFailureV1.InvalidPartialConstructionV1(
+                "Step is not a legal next payment-construction step: $step"
+            )
+        )
+        if (state.finalized || step !in candidateSteps(state, ledger)) return notLegal
+        val next = successor(state, step)
+        val nextLedger = (Ledger.replay(next) as PaymentConstructionResultV1.Ok).value
+        val viable = try {
+            ViabilitySearch(state.domain).isViable(next, nextLedger)
+        } catch (exceeded: ViabilityWorkExceeded) {
             return PaymentConstructionResultV1.Failed(
-                PaymentConstructionFailureV1.InvalidPartialConstructionV1(
-                    "Step is not a legal next payment-construction step: $step"
+                PaymentConstructionFailureV1.ConstructionBoundExceededV1(
+                    bound = PaymentConstructionBoundV1.VIABILITY_WORK,
+                    limit = MAX_PAYMENT_CONSTRUCTION_VIABILITY_WORK,
+                    observed = exceeded.observed,
                 )
             )
         }
-        return PaymentConstructionResultV1.Ok(successor(state, step))
+        return if (viable) PaymentConstructionResultV1.Ok(next) else notLegal
     }
 
     /** Pure assembly of the staged steps; only a finalized construction materializes. */
@@ -314,6 +331,15 @@ object PaymentConstructionGrammarV1 {
             if (option.productionChoices.any { outputColors(it) == null }) {
                 return PaymentConstructionFailureV1.UnsupportedDomainShapeV1(
                     "Unsupported production choice shape for source ${option.sourceId.value}"
+                )
+            }
+            // The DTO does not require distinct choices; a repeated one would give one plan two
+            // construction paths, so it is refused rather than silently deduplicated.
+            if (option.productionChoices.distinct().size != option.productionChoices.size ||
+                option.activationCostOrderOptions.distinct().size != option.activationCostOrderOptions.size
+            ) {
+                return PaymentConstructionFailureV1.UnsupportedDomainShapeV1(
+                    "Duplicate production choice or cost order for source ${option.sourceId.value}"
                 )
             }
         }

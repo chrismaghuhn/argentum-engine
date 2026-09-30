@@ -40,7 +40,7 @@ internal object PaymentConstructionFlatReferenceEnumerator {
         val generatedCandidates: Long,
     )
 
-    fun enumerate(domain: PaymentDomainV5): Enumeration {
+    fun enumerate(domain: PaymentDomainV5, maxCandidates: Long = MAX_GENERATED_CANDIDATES): Enumeration {
         val options = domain.sourceActivationOptions
         val legal = LinkedHashMap<String, PaymentPlanV3>()
         var generated = 0L
@@ -92,7 +92,7 @@ internal object PaymentConstructionFlatReferenceEnumerator {
                 }
                 val assignments = pow(resources.size.toLong(), targets.size)
                 generated += assignments
-                check(generated <= MAX_GENERATED_CANDIDATES) {
+                check(generated <= maxCandidates) {
                     "Reference fixture too large: $generated generated candidates"
                 }
                 for (assignment in functions(resources.size, targets.size)) {
