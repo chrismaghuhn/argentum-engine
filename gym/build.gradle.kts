@@ -79,6 +79,17 @@ tasks.register<Test>("kaggleActor07BenchmarkTest") {
     testLogging { showStandardStreams = true }
 }
 
+tasks.register<Test>("engineAiDeterminismTraceTest") {
+    description = "Opt-in: seeded engine AI self-play trace for behavior parity (-Dperf.trace=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/EngineAiDeterminismTraceTest*")
+    maxHeapSize = "6g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
 tasks.register<Test>("kaggleActor06CharacterizationTest") {
     description = "Runs the opt-in transported-replay reconstruction authority characterization."
     group = "verification"
@@ -136,6 +147,10 @@ tasks.withType<Test>().configureEach {
         "ka05.providerOutputCapBytes",
         "ka05.initialScratchEstimateBytes",
         "ka06.repositoryRoot",
+        "perf.trace",
+        "perf.games",
+        "perf.workers",
+        "perf.out",
         "ka07.benchmark",
         "ka07.episodes",
         "ka07.outputFile",
