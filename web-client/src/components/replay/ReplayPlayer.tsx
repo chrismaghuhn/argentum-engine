@@ -25,6 +25,8 @@ import { useViewportSize } from '@/hooks/useResponsive.ts'
 
 const HEADER_HEIGHT = 55
 const AUTOPLAY_INTERVAL_MS = 1000
+// Autoplay speeds cycled by the speed button; a long Commander replay has 600+ steps.
+const AUTOPLAY_SPEEDS = [1, 2, 4, 8] as const
 
 export type ReplayMetadata = PublicReplayData['metadata']
 
@@ -44,6 +46,7 @@ export function ReplayPlayer({
 }) {
   const [currentStep, setCurrentStep] = useState(0)
   const [autoPlay, setAutoPlay] = useState(false)
+  const [speed, setSpeed] = useState<number>(1)
   /**
    * Whether frame 0 has reached the store yet.
    *
@@ -115,9 +118,9 @@ export function ReplayPlayer({
         writeSnapshotToStore(snapshots[next]!)
         return next
       })
-    }, AUTOPLAY_INTERVAL_MS)
+    }, AUTOPLAY_INTERVAL_MS / speed)
     return () => clearInterval(timer)
-  }, [autoPlay, snapshots, writeSnapshotToStore])
+  }, [autoPlay, speed, snapshots, writeSnapshotToStore])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -230,6 +233,13 @@ export function ReplayPlayer({
             </button>
             <button onClick={() => goToStep(currentStep + 1)} disabled={currentStep >= snapshots.length - 1} style={styles.controlButton} title="Next (Right Arrow)">
               Next
+            </button>
+            <button
+              onClick={() => setSpeed((s) => AUTOPLAY_SPEEDS[(AUTOPLAY_SPEEDS.indexOf(s as (typeof AUTOPLAY_SPEEDS)[number]) + 1) % AUTOPLAY_SPEEDS.length]!)}
+              style={styles.controlButton}
+              title="Autoplay speed"
+            >
+              {speed}×
             </button>
           </div>
           <div style={styles.scrubberContainer}>
