@@ -79,6 +79,17 @@ tasks.register<Test>("kaggleActor07BenchmarkTest") {
     testLogging { showStandardStreams = true }
 }
 
+tasks.register<Test>("phase1SelfPlayMeasureTest") {
+    description = "Opt-in: engine AI vs engine AI on the locked Commander matchup (-Dphase1.measure=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1EngineAiCommanderSelfPlayMeasurementTest*")
+    maxHeapSize = "4g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
 tasks.register<Test>("kaggleActor06CharacterizationTest") {
     description = "Runs the opt-in transported-replay reconstruction authority characterization."
     group = "verification"
@@ -139,6 +150,12 @@ tasks.withType<Test>().configureEach {
         "ka07.benchmark",
         "ka07.episodes",
         "ka07.outputFile",
+        "phase1.measure",
+        "phase1.games",
+        "phase1.maxSteps",
+        "phase1.profile",
+        "phase1.outputFile",
+        "phase1.traceFrom",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }
