@@ -3769,7 +3769,11 @@ class ManaSolver(
     ): TapPermanentsBonusMana {
         val projected = state.projectedState
         val battlefieldCards = projected.getBattlefieldControlledBy(playerId)
-        val regularSourceIds = findAvailableManaSources(state, playerId).map { it.entityId }.toSet()
+        // Only a TapPermanents mana ability (Springleaf Drum style) reads this, and almost no
+        // board has one — so the full source search runs only when one is actually found.
+        val regularSourceIds by lazy(LazyThreadSafetyMode.NONE) {
+            findAvailableManaSources(state, playerId).map { it.entityId }.toSet()
+        }
 
         var anyColorTotal = 0
         val specificColorTotal = mutableMapOf<Color, Int>()
