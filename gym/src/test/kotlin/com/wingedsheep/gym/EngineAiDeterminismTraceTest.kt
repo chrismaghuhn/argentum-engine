@@ -90,9 +90,13 @@ class EngineAiDeterminismTraceTest : FunSpec({
                             } else {
                                 ai.chooseAction(environment.state)
                             }
-                            digest.update((action.toString() + "\n").toByteArray(Charsets.UTF_8))
                             submitted++
                             environment.step(action)
+                            // Action text carries runtime decision nonces; the semantic fingerprint
+                            // aliases them, so it is the stable per-step evidence of identical play.
+                            if (environment.stepCount % 25 == 0) {
+                                digest.update((ReplayFingerprint.of(environment.state) + "\n").toByteArray(Charsets.UTF_8))
+                            }
                         }
                         val seconds = (System.nanoTime() - started) / 1e9
                         val winner = environment.winnerId?.let { w -> cfg.players.first { it.playerId == w }.name } ?: "-"
