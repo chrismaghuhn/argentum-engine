@@ -94,7 +94,11 @@ def main(argv=None):
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--value-weight", type=float, default=0.5)
+    parser.add_argument("--value-weight", type=float, default=0.1)
+    parser.add_argument(
+        "--select-by", default="policyLoss",
+        help="validation metric (lower is better) that picks the kept epoch; the policy is what plays",
+    )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--note", default="")
     args = parser.parse_args(argv)
@@ -139,10 +143,11 @@ def main(argv=None):
         metrics = evaluate(model, val, device, value_weight=args.value_weight, pass_kind=pass_kind)
         metrics.update({"epoch": epoch, "trainLoss": running / max(seen, 1)})
         history.append(metrics)
-        # Keep the epoch with the lowest validation loss; with few games the value head starts
-        # memorizing per-game outcomes after a couple of epochs.
-        if val and metrics["loss"] < best_loss:
-            best_loss, best_epoch = metrics["loss"], epoch
+        # Keep the epoch with the best policy on held-out games. Selecting on the total loss picked
+        # epoch 1 on 509 games: the value head memorizes per-game outcomes and its loss rises while
+        # the policy keeps improving for several more epochs.
+        if val and metrics[args.select_by] < best_loss:
+            best_loss, best_epoch = metrics[args.select_by], epoch
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         print(f"epoch {epoch}: train {metrics['trainLoss']:.4f} | val loss {metrics['loss']:.4f} "
               f"top1 {metrics['top1']:.3f} (non-pass {metrics['top1NonPass']:.3f}, always-pass "
@@ -150,7 +155,7 @@ def main(argv=None):
 
     if best_state is not None:
         model.load_state_dict(best_state)
-        print(f"keeping epoch {best_epoch} (lowest validation loss {best_loss:.4f})")
+        print(f"keeping epoch {best_epoch} (lowest validation {args.select_by} {best_loss:.4f})")
     final = history[best_epoch - 1] if best_epoch else (history[-1] if history else None)
     out = next_checkpoint_dir(args.runs)
     out.mkdir(parents=True)
@@ -171,7 +176,7 @@ def main(argv=None):
         },
         "training": {
             "epochs": args.epochs, "batchSize": args.batch_size, "lr": args.lr,
-            "valueWeight": args.value_weight, "seed": args.seed, "parameters": parameters,
+            "valueWeight": args.value_weight, "selectBy": args.select_by, "seed": args.seed, "parameters": parameters,
             "device": str(device), "seconds": round(time.time() - started, 1),
         },
         "history": history,
