@@ -9,6 +9,12 @@ import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.legalactions.MeaningfulActionFilter
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.registry.PrintingRegistry
+import com.wingedsheep.engine.registry.TokenArtRegistry
+import com.wingedsheep.gameserver.config.ServerRegistries
+import com.wingedsheep.gameserver.replay.HeadlessReplayRecorder
+import com.wingedsheep.gameserver.replay.ReplayCodec
+import com.wingedsheep.gameserver.replay.ReplayReconstructor
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.sdk.model.EntityId
@@ -32,6 +38,18 @@ import java.nio.file.Path
  * engine cannot execute falls back to the engine AI's own action for that step and is counted.
  */
 internal object Phase1Tournament {
+
+    /**
+     * The server's own registries, so a recorded showcase game re-simulates EXACT when the web replay
+     * viewer plays it back (printing and token art are part of the fingerprinted state).
+     */
+    object Registries {
+        val card: CardRegistry by lazy { ServerRegistries.cardRegistry() }
+        val printing: PrintingRegistry by lazy { ServerRegistries.printingRegistry(card) }
+        val tokenArt: TokenArtRegistry by lazy { ServerRegistries.tokenArtRegistry() }
+    }
+
+    data class Showcase(val directory: Path, val gameId: String, val engineVersion: String)
 
     sealed interface SeatSpec {
         val label: String
@@ -102,21 +120,33 @@ internal object Phase1Tournament {
         val modelFallbacks: Int,
         val loopBreaks: Int,
         val seconds: Double,
+        val replayFile: String? = null,
+        val replayFidelity: String? = null,
     )
 
     fun playGame(
         game: Int,
         config: GameConfig,
-        registry: CardRegistry,
         seatA: SeatSpec,
         seatB: SeatSpec,
         workers: Map<Path, PolicyWorker>,
         maxSteps: Int,
+        showcase: Showcase? = null,
     ): GameResult {
-        val environment = GameEnvironment.create(cardRegistry = registry)
+        val registry = Registries.card
+        val environment = GameEnvironment.create(
+            registry,
+            printingRegistry = Registries.printing,
+            tokenArtRegistry = Registries.tokenArt,
+        )
         val observationBuilder = ObservationBuilder(cardRegistry = registry)
         val started = System.nanoTime()
-        environment.reset(config, maxSteps = maxSteps)
+        val recorder = if (showcase != null) {
+            HeadlessReplayRecorder.start(environment, registry, config, maxSteps)
+        } else {
+            environment.reset(config, maxSteps = maxSteps)
+            null
+        }
         val ids = config.players.map { checkNotNull(it.playerId) }
         val names = config.players.associate { checkNotNull(it.playerId) to it.name }
         // Seat A always sits in the seat whose deck the config gave it; see [configFor].
@@ -185,6 +215,18 @@ internal object Phase1Tournament {
             }
         }
 
+        var replayFile: String? = null
+        var replayFidelity: String? = null
+        if (recorder != null && showcase != null) {
+            val replay = recorder.finish(gameId = showcase.gameId, engineVersion = showcase.engineVersion)
+            replayFidelity = ReplayReconstructor(registry, Registries.printing, Registries.tokenArt)
+                .reconstruct(replay).fidelity.name
+            val file = showcase.directory.resolve("${showcase.gameId}.replay")
+            java.nio.file.Files.createDirectories(showcase.directory)
+            java.nio.file.Files.writeString(file, ReplayCodec.encode(replay))
+            replayFile = file.toString()
+        }
+
         val winnerId = environment.winnerId
         return GameResult(
             game = game,
@@ -204,6 +246,8 @@ internal object Phase1Tournament {
             modelFallbacks = modelFallbacks,
             loopBreaks = loopBreaks,
             seconds = (System.nanoTime() - started) / 1e9,
+            replayFile = replayFile,
+            replayFidelity = replayFidelity,
         )
     }
 }

@@ -189,6 +189,8 @@ tasks.withType<Test>().configureEach {
         "phase1.seatB",
         "phase1.results",
         "phase1.python",
+        "phase1.showcase",
+        "phase1.showcaseDir",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }

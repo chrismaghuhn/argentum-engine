@@ -39,8 +39,13 @@ class Phase1TournamentTest : FunSpec({
             val results = Path.of(
                 System.getProperty("phase1.results") ?: repositoryRoot.resolve("gym/build/phase1-tournament.jsonl").toString(),
             )
-            val registry = A9TrustedGenerationHarness.actorRegistry()
-            val resolver = DeckResolver(registry)
+            val showcaseGames = System.getProperty("phase1.showcase")?.toInt() ?: 0
+            val showcaseDir = Path.of(System.getProperty("phase1.showcaseDir") ?: results.parent.resolve("showcase").toString())
+            val sourceCommit = runCatching {
+                ProcessBuilder("git", "rev-parse", "HEAD").directory(repositoryRoot.toFile())
+                    .start().inputStream.bufferedReader().readText().trim()
+            }.getOrDefault("unknown")
+            val resolver = DeckResolver(Phase1Tournament.Registries.card)
             val decks = mapOf(
                 "Akiri" to Phase1SelfPlayCollector.lockedDeck(repositoryRoot, "akiri-v0.1.txt"),
                 "Chevill" to Phase1SelfPlayCollector.lockedDeck(repositoryRoot, "chevill-v0.1.txt"),
@@ -58,11 +63,19 @@ class Phase1TournamentTest : FunSpec({
                         val result = Phase1Tournament.playGame(
                             game = game,
                             config = Phase1SelfPlayCollector.gameConfig(game, TOURNAMENT_BASE_SEED, resolver, decks),
-                            registry = registry,
                             seatA = seatA,
                             seatB = seatB,
                             workers = policyWorkers,
                             maxSteps = maxSteps,
+                            showcase = if (game - firstGame < showcaseGames) {
+                                Phase1Tournament.Showcase(
+                                    directory = showcaseDir,
+                                    gameId = "p1-${seatA.label}-vs-${seatB.label}-g$game".replace(Regex("[^A-Za-z0-9._-]"), "-"),
+                                    engineVersion = sourceCommit,
+                                )
+                            } else {
+                                null
+                            },
                         )
                         val line = buildJsonObject {
                             put("schema", "argentum-p1-match-result@v1")
@@ -79,6 +92,8 @@ class Phase1TournamentTest : FunSpec({
                             put("modelFallbacks", result.modelFallbacks)
                             put("loopBreaks", result.loopBreaks)
                             put("seconds", result.seconds)
+                            result.replayFile?.let { put("replayFile", it) }
+                            result.replayFidelity?.let { put("replayFidelity", it) }
                         }.toString()
                         synchronized(results) {
                             Files.writeString(results, line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
