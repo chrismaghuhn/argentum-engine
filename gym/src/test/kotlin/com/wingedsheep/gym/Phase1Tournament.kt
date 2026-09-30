@@ -107,6 +107,61 @@ internal object Phase1Tournament {
         }
     }
 
+    sealed interface SeatSpec {
+        val label: String
+
+        data class Engine(val profile: AiProfile) : SeatSpec {
+            override val label: String get() = "engine:${profile.id}"
+        }
+
+        data class Model(val checkpoint: Path) : SeatSpec {
+            override val label: String get() = checkpoint.fileName.toString()
+        }
+
+        companion object {
+            /** `engine`, `engine:<profile>`, or a checkpoint directory path. */
+            fun parse(value: String): SeatSpec = when {
+                value == "engine" -> Engine(AiProfile.PRODUCTION_CANDIDATE_EXPIRING)
+                value.startsWith("engine:") -> Engine(Phase1SelfPlayCollector.profileFor(value.removePrefix("engine:")))
+                else -> Model(Path.of(value))
+            }
+        }
+    }
+
+    /** One `python -m argentum_ml.p1.serve` process; calls are serialized, inference is milliseconds. */
+    class PolicyWorker(checkpoint: Path, python: Path, mlRoot: Path) : AutoCloseable {
+        private val process: Process = ProcessBuilder(
+            python.toString(), "-m", "argentum_ml.p1.serve", "--checkpoint", checkpoint.toString(),
+        ).directory(mlRoot.toFile()).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        private val input: BufferedWriter = process.outputStream.bufferedWriter(Charsets.UTF_8)
+        private val output: BufferedReader = process.inputStream.bufferedReader(Charsets.UTF_8)
+
+        init {
+            val ready = output.readLine() ?: error("P1 policy worker for $checkpoint exited before ready")
+            check(Json.parseToJsonElement(ready).jsonObject.containsKey("ready")) { "Unexpected worker hello: $ready" }
+        }
+
+        /** Returns the chosen candidate index, or null when the worker reports an error. */
+        @Synchronized
+        fun choose(sample: kotlinx.serialization.json.JsonObject, allowed: List<Boolean>): Int? {
+            input.write(
+                buildJsonObject {
+                    put("sample", sample)
+                    put("allowed", kotlinx.serialization.json.JsonArray(allowed.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                }.toString(),
+            )
+            input.write("\n")
+            input.flush()
+            val reply = Json.parseToJsonElement(output.readLine() ?: return null).jsonObject
+            return reply["chosen"]?.jsonPrimitive?.int
+        }
+
+        override fun close() {
+            runCatching { input.close() }
+            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) process.destroyForcibly()
+        }
+    }
+
     data class GameResult(
         val game: Int,
         val seatA: String,
