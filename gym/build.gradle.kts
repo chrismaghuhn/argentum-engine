@@ -67,6 +67,18 @@ tasks.register<Test>("kaggleActor05CharacterizationTest") {
     maxHeapSize = "8g"
 }
 
+tasks.register<Test>("kaggleActor07BenchmarkTest") {
+    description = "Runs the opt-in shard-generation throughput benchmark (-Dka07.benchmark=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/KaggleActor07ShardGenerationBenchmarkTest*")
+    // Same heap as the A9 generation gate: one 2,000-step episode is canonicalized in memory.
+    maxHeapSize = "8g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
 tasks.register<Test>("kaggleActor06CharacterizationTest") {
     description = "Runs the opt-in transported-replay reconstruction authority characterization."
     group = "verification"
@@ -124,6 +136,9 @@ tasks.withType<Test>().configureEach {
         "ka05.providerOutputCapBytes",
         "ka05.initialScratchEstimateBytes",
         "ka06.repositoryRoot",
+        "ka07.benchmark",
+        "ka07.episodes",
+        "ka07.outputFile",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }

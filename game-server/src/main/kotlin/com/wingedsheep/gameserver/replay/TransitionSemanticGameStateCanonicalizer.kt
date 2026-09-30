@@ -668,23 +668,8 @@ internal object TransitionSemanticGameStateCanonicalizer {
         if (descriptor == null || descriptor.kind !is PolymorphicKind) return descriptor
         val typeName = element["type"]?.jsonPrimitive?.contentOrNull ?: return descriptor
         return polymorphicDescriptors[typeName]
-            ?: descriptor.findConcreteDescriptor(typeName)
+            ?: ConcreteDescriptorLookup.find(descriptor, typeName)
             ?: descriptor
-    }
-
-    private fun SerialDescriptor.findConcreteDescriptor(
-        typeName: String,
-        seen: MutableSet<String> = mutableSetOf(),
-    ): SerialDescriptor? {
-        if (!seen.add(serialName)) return null
-        if (serialName == typeName || serialName.substringAfterLast('.') == typeName.substringAfterLast('.')) {
-            return this
-        }
-        for (index in 0 until elementsCount) {
-            val match = getElementDescriptor(index).findConcreteDescriptor(typeName, seen)
-            if (match != null) return match
-        }
-        return null
     }
 
     private fun isPresentationOnlyField(key: String, descriptor: SerialDescriptor?): Boolean {
