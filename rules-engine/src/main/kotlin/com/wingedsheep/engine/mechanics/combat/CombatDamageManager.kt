@@ -1492,7 +1492,7 @@ internal class CombatDamageManager(
             sourceAttachmentIds = attachmentIdsOf(state, sourceId),
             recipientKind = DamageRecipientKind.PLAYER,
             recipientKinds = DamageRecipientKindSet.PLAYER,
-            damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, sourceId)))
+            damageSourceLastKnownSnapshot = DamageUtils.captureDamageRoleSnapshot(state, sourceId, cardRegistry, predicateEvaluator.conditions)))
         events.add(LifeChangedEvent(targetId, currentLife, newLife, LifeChangeReason.DAMAGE))
 
         // Commander damage (CR 903.10a)
@@ -1606,8 +1606,8 @@ internal class CombatDamageManager(
             sourceAttachmentIds = attachmentIdsOf(state, sourceId),
             recipientKind = recipientKind,
             recipientKinds = recipientKinds,
-            damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, sourceId),
-            damageRecipientLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, targetId)))
+            damageSourceLastKnownSnapshot = DamageUtils.captureDamageRoleSnapshot(state, sourceId, cardRegistry, predicateEvaluator.conditions),
+            damageRecipientLastKnownSnapshot = DamageUtils.captureDamageRoleSnapshot(state, targetId, cardRegistry, predicateEvaluator.conditions)))
         val removed = amount.coerceAtMost(currentCount)
         if (counterType == com.wingedsheep.sdk.core.CounterType.LOYALTY) {
             events.add(LoyaltyChangedEvent(targetId, targetName, -removed))
@@ -1740,7 +1740,7 @@ internal class CombatDamageManager(
                 sourceAttachmentIds = attachmentIdsOf(newState, sourceId),
                 recipientKind = DamageRecipientKind.PLAYER,
                 recipientKinds = recipientKinds,
-                damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, sourceId)))
+                damageSourceLastKnownSnapshot = DamageUtils.captureDamageRoleSnapshot(state, sourceId, cardRegistry, predicateEvaluator.conditions)))
             events.add(LifeChangedEvent(targetId, currentLife, newLife, LifeChangeReason.DAMAGE))
 
             // Commander damage (CR 903.10a)
@@ -1854,8 +1854,8 @@ internal class CombatDamageManager(
                 sourceAttachmentIds = attachmentIdsOf(newState, sourceId),
                 recipientKind = recipientKind,
                 recipientKinds = recipientKinds,
-                damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, sourceId),
-                damageRecipientLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, targetId)))
+                damageSourceLastKnownSnapshot = DamageUtils.captureDamageRoleSnapshot(state, sourceId, cardRegistry, predicateEvaluator.conditions),
+                damageRecipientLastKnownSnapshot = DamageUtils.captureDamageRoleSnapshot(state, targetId, cardRegistry, predicateEvaluator.conditions)))
         }
 
         return newState
@@ -1944,7 +1944,7 @@ internal class CombatDamageManager(
             sourceAttachmentIds = attachmentIdsOf(state, sourceId),
             recipientKind = DamageRecipientKind.PLAYER,
             recipientKinds = DamageRecipientKindSet.PLAYER,
-            damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, sourceId)))
+            damageSourceLastKnownSnapshot = DamageUtils.captureDamageRoleSnapshot(state, sourceId, cardRegistry, predicateEvaluator.conditions)))
         events.add(LifeChangedEvent(attackerController, attackerControllerLife, newLife, LifeChangeReason.DAMAGE))
 
         // Commander damage (CR 903.10a) — reflection still counts as combat damage from the commander

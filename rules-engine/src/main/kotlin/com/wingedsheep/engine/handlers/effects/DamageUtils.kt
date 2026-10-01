@@ -17,6 +17,9 @@ import com.wingedsheep.engine.core.LoyaltyChangedEvent
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
+import com.wingedsheep.engine.event.AttachedTriggerGrants
+import com.wingedsheep.engine.event.activeGrantedTriggeredAbilities
+import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.sdk.scripting.Duration
 import com.wingedsheep.engine.handlers.PredicateContext
@@ -195,6 +198,48 @@ object DamageUtils {
             wasAttacking = container.has<AttackingComponent>(),
             wasBlocking = container.has<BlockingComponent>(),
         )
+    }
+
+    /**
+     * The snapshot a [DamageDealtEvent] carries for its source or recipient role:
+     * [captureDamageEntitySnapshot] plus the triggered abilities the object has from grants, frozen
+     * into [EntitySnapshot.grantedTriggeredAbilities] — effect grants ("gains '<triggered ability>'
+     * until end of turn", [GameState.grantedTriggeredAbilities]) and Aura/Equipment grants
+     * ("enchanted/equipped creature has '…'", [AttachedTriggerGrants]).
+     *
+     * A damage trigger is checked against the object as it is immediately after the damage
+     * (CR 603.10), but combat damage reaches trigger detection only after its state-based actions,
+     * and a resolving effect can move the object before the resolution ends — either way the
+     * object may be gone, and its Equipment unattached or its Auras buried, by then. Its effect
+     * grants stay on [GameState] under the old entity id, which cannot tell the departed object
+     * from a newer one, so the departed-object path
+     * ([com.wingedsheep.engine.event.DamageTriggerDetector]) reads all of them from here instead.
+     */
+    fun captureDamageRoleSnapshot(
+        state: GameState,
+        entityId: EntityId?,
+        cardRegistry: CardRegistry,
+        conditionEvaluator: ConditionEvaluator,
+    ): EntitySnapshot? {
+        val snapshot = captureDamageEntitySnapshot(state, entityId) ?: return null
+        val id = snapshot.entityId
+        val granted = state.activeGrantedTriggeredAbilities(id) +
+            AttachedTriggerGrants.active(state, attachedPermanents(state, id), cardRegistry, conditionEvaluator)
+        return if (granted.isEmpty()) snapshot else snapshot.copy(grantedTriggeredAbilities = granted)
+    }
+
+    /**
+     * The battlefield permanents attached to [entityId] — what the live trigger lookup's attachment
+     * index ([com.wingedsheep.engine.event.BattlefieldStaticsIndex.attachmentsOn]) lists for it.
+     */
+    private fun attachedPermanents(state: GameState, entityId: EntityId): List<EntityId> {
+        val attachedIds = attachmentIdsOf(state, entityId)
+        if (attachedIds.isEmpty()) return attachedIds
+        val battlefield = state.getBattlefield()
+        return attachedIds.filter { attachmentId ->
+            attachmentId in battlefield &&
+                state.getEntity(attachmentId)?.get<AttachedToComponent>()?.targetId == entityId
+        }
     }
 
     /**
@@ -685,8 +730,12 @@ object DamageUtils {
                 sourceAttachmentIds = attachmentIdsOf(state, sourceId),
                 recipientKind = recipientKind,
                 recipientKinds = recipientKinds,
-                damageSourceLastKnownSnapshot = captureDamageEntitySnapshot(state, sourceId),
-                damageRecipientLastKnownSnapshot = captureDamageEntitySnapshot(state, targetId),
+                damageSourceLastKnownSnapshot = captureDamageRoleSnapshot(
+                    state, sourceId, zones.cardRegistry, zones.predicateEvaluator.conditions
+                ),
+                damageRecipientLastKnownSnapshot = captureDamageRoleSnapshot(
+                    state, targetId, zones.cardRegistry, zones.predicateEvaluator.conditions
+                ),
             )
         )
 
