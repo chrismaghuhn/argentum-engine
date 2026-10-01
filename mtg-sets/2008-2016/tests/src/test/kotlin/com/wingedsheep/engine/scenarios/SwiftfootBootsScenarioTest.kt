@@ -11,6 +11,8 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Swiftfoot Boots (M12 #219) — "Equipped creature has hexproof and haste. Equip {1}."
@@ -45,7 +47,7 @@ class SwiftfootBootsScenarioTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(creature))
             )
         )
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.state.projectedState.hasKeyword(creature, Keyword.HEXPROOF) shouldBe true
@@ -70,14 +72,14 @@ class SwiftfootBootsScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.passPriority(player)
         val bolt = driver.putCardInHand(opponent, "Lightning Bolt")
         driver.giveMana(opponent, com.wingedsheep.sdk.core.Color.RED, 1)
         driver.castSpellWithTargets(opponent, bolt, listOf(ChosenTarget.Permanent(creature)))
-            .isSuccess shouldBe false
+            .outcome shouldNotBe Outcome.Done
     }
 
     test("re-equipping transfers both granted keywords and a leaving host clears them") {
@@ -95,7 +97,7 @@ class SwiftfootBootsScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(first)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.projectedState.hasKeyword(first, Keyword.HASTE) shouldBe true
 
@@ -107,7 +109,7 @@ class SwiftfootBootsScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(second)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.projectedState.hasKeyword(first, Keyword.HASTE) shouldBe false
         driver.state.projectedState.hasKeyword(second, Keyword.HEXPROOF) shouldBe true
@@ -116,7 +118,7 @@ class SwiftfootBootsScenarioTest : FunSpec({
         val bolt = driver.putCardInHand(caster, "Lightning Bolt")
         driver.giveMana(caster, com.wingedsheep.sdk.core.Color.RED, 1)
         driver.castSpellWithTargets(caster, bolt, listOf(ChosenTarget.Permanent(second)))
-            .isSuccess shouldBe true
+            .outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.findPermanent(player, "Swiftfoot Boots") shouldBe boots

@@ -146,7 +146,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         val player = driver.activePlayer!!
         driver.putPermanentOnBattlefield(player, "Golgari Signet")
 
-        val solver = ManaSolver(driver.cardRegistry)
+        val solver = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
         val cost = ManaCost.parse("{G}")
 
         solver.solve(driver.state, player, cost) shouldBe null
@@ -157,7 +157,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         val player = driver.activePlayer!!
         driver.putPermanentOnBattlefield(player, "Golgari Signet")
 
-        ManaSolver(driver.cardRegistry).canPay(
+        ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).canPay(
             driver.state,
             player,
             ManaCost.parse("{G}"),
@@ -170,7 +170,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         val forest = driver.putLandOnBattlefield(player, "Forest")
         val signet = driver.putPermanentOnBattlefield(player, "Golgari Signet")
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             driver.state,
             player,
             ManaCost.parse("{B}{G}"),
@@ -188,7 +188,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         val firstSignet = driver.putPermanentOnBattlefield(player, "Golgari Signet")
         val secondSignet = driver.putPermanentOnBattlefield(player, "Golgari Signet")
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             driver.state,
             player,
             ManaCost.parse("{B}{B}"),
@@ -205,7 +205,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         driver.putPermanentOnBattlefield(player, "Golgari Signet")
         driver.putPermanentOnBattlefield(player, "Golgari Signet")
 
-        val solver = ManaSolver(driver.cardRegistry)
+        val solver = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
         val cost = ManaCost.parse("{B}{B}")
 
         solver.canPay(driver.state, player, cost) shouldBe false
@@ -218,7 +218,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         driver.giveColorlessMana(player, 1)
         driver.putPermanentOnBattlefield(player, "Golgari Signet")
 
-        ManaSolver(driver.cardRegistry).canPay(
+        ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).canPay(
             driver.state,
             player,
             ManaCost.parse("{G}"),
@@ -234,7 +234,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             .get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()!!
             .toManaPool()
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             driver.state,
             player,
             ManaCost.parse("{G}"),
@@ -253,7 +253,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         driver.giveColorlessMana(player, 1)
         driver.putPermanentOnBattlefield(player, "Golgari Signet")
 
-        ManaSolver(driver.cardRegistry).canPay(
+        ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).canPay(
             driver.state,
             player,
             ManaCost.parse("{1}{G}"),
@@ -273,7 +273,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             cardTypes = setOf(CardType.INSTANT),
         )
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}{X}"),
@@ -310,7 +310,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         driver.putLandOnBattlefield(player, "Forest")
         driver.putLandOnBattlefield(player, "Forest")
 
-        ManaSolver(driver.cardRegistry).canPay(
+        ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).canPay(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{X}{X}"),
@@ -323,7 +323,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         val player = driver.activePlayer!!
         driver.giveMana(player, Color.GREEN, 1)
 
-        ManaSolver(driver.cardRegistry).canPay(
+        ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).canPay(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{X}"),
@@ -340,7 +340,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             .get<ManaPoolComponent>()!!
             .toManaPool()
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G/B}{B}"),
@@ -359,7 +359,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             .get<ManaPoolComponent>()!!
             .toManaPool()
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{X}"),
@@ -380,7 +380,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             .get<ManaPoolComponent>()!!
             .toManaPool()
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{C}{C}"),
@@ -410,7 +410,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             cardTypes = setOf(CardType.INSTANT),
         )
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{X}"),
@@ -434,7 +434,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             .toManaPool()
 
         // canPay()/AutoPay passes the total X allocation (xValue * xCount) to solve().
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{X}{X}"),
@@ -464,7 +464,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             isInstantOrSorcery = true,
             cardTypes = setOf(CardType.INSTANT),
         )
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{X}"),
@@ -505,7 +505,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             .get<ManaPoolComponent>()!!
             .toManaPool()
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{1}{X}"),
@@ -550,7 +550,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             cardTypes = setOf(CardType.INSTANT),
         )
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}{X}"),
@@ -580,7 +580,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             cardTypes = setOf(CardType.INSTANT),
         )
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{1}{X}"),
@@ -611,7 +611,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             cardTypes = setOf(CardType.INSTANT),
         )
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G/U}{G}{X}"),
@@ -638,7 +638,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             cardTypes = setOf(CardType.INSTANT),
         )
 
-        ManaSolver(driver.cardRegistry).solve(
+        ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}{X}"),
@@ -808,7 +808,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             .get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()!!
             .toManaPool()
 
-        val solution = ManaSolver(driver.cardRegistry).solve(
+        val solution = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             driver.state,
             player,
             ManaCost.parse("{G}"),
@@ -831,7 +831,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             cardTypes = setOf(CardType.CREATURE),
         )
 
-        val solver = ManaSolver(driver.cardRegistry)
+        val solver = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
         solver.solve(
             driver.state,
             player,
@@ -864,7 +864,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             cardTypes = setOf(CardType.CREATURE),
         )
 
-        ManaSolver(driver.cardRegistry).solve(
+        ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             driver.state,
             player,
             ManaCost.parse("{B}"),
@@ -884,7 +884,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             cardTypes = setOf(CardType.CREATURE),
         )
 
-        val solver = ManaSolver(driver.cardRegistry)
+        val solver = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
         val solution = solver.solve(
             driver.state,
             player,
@@ -905,7 +905,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         val player = driver.activePlayer!!
         driver.putPermanentOnBattlefield(player, paidColorlessSource.name)
 
-        ManaSolver(driver.cardRegistry).canPay(
+        ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).canPay(
             driver.state,
             player,
             ManaCost.parse("{C}{C}"),
@@ -918,7 +918,7 @@ class ManaSolverSelfFundingTest : FunSpec({
         val forest = driver.putLandOnBattlefield(player, "Forest")
         val source = driver.putPermanentOnBattlefield(player, paidColorlessSource.name)
 
-        val solved = ManaSolver(driver.cardRegistry).solve(
+        val solved = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             driver.state,
             player,
             ManaCost.parse("{C}"),
@@ -938,7 +938,7 @@ class ManaSolverSelfFundingTest : FunSpec({
             .get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()!!
             .toManaPool()
 
-        val solved = ManaSolver(driver.cardRegistry).solve(
+        val solved = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             driver.state,
             player,
             ManaCost.parse("{C}{C}"),

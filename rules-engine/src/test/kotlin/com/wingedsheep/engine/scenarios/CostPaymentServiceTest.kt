@@ -1,5 +1,8 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.CardsSelectedResponse
@@ -31,6 +34,7 @@ import io.kotest.matchers.booleans.shouldBeTrue
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
+import io.kotest.matchers.nulls.shouldNotBeNull
 import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import io.kotest.matchers.shouldBe
@@ -348,6 +352,101 @@ class CostPaymentServiceTest : ScenarioTestBase() {
             ).shouldBeFalse()
         }
 
+        test("Sacrifice: paying sacrifices the chosen permanent") {
+            val game = scenario().withPlayers()
+                .withCardOnBattlefield(1, "Goblin Guide") // the cost's source
+                .withCardOnBattlefield(1, "Savannah Lions") // the fodder
+                .build()
+            val service = CostPaymentService(EngineServices(cardRegistry))
+            val source = bfCardByName(game.state, game.player1Id, "Goblin Guide")
+            val fodder = bfCardByName(game.state, game.player1Id, "Savannah Lions")
+            val cost = Costs.pay.Sacrifice(GameObjectFilter.Any, 1)
+
+            service.canAfford(game.state, game.player1Id, cost, source).shouldBeTrue()
+            val pending = service.pay(game.state, game.player1Id, cost, source) as PaymentResult.Pending
+            game.state = pending.state
+            game.submitDecision(CardsSelectedResponse(pending.pendingDecision.id, listOf(fodder)))
+
+            game.state.getBattlefield(game.player1Id) shouldContain source // source untouched
+            game.state.getZone(ZoneKey(game.player1Id, Zone.GRAVEYARD)) shouldContain fodder
+        }
+
+        // The `excludeSelf` contract, checked on the three paths that must agree about it:
+        // affordability, the prompt's candidate options, and the resumer's final validation.
+        // A blanket source exclusion used to make a self-inclusive cost falsely unaffordable on a
+        // board holding only the source (github.com/wingedsheep/argentum-engine/issues/1880).
+
+        test("Sacrifice: excludeSelf=false — the source alone can pay its own cost") {
+            val game = scenario().withPlayers().withCardOnBattlefield(1, "Goblin Guide").build()
+            val service = CostPaymentService(EngineServices(cardRegistry))
+            val source = bfCardByName(game.state, game.player1Id, "Goblin Guide")
+            val cost = Costs.pay.Sacrifice(GameObjectFilter.Any, 1)
+
+            service.canAfford(game.state, game.player1Id, cost, source).shouldBeTrue()
+            val pending = service.pay(game.state, game.player1Id, cost, source) as PaymentResult.Pending
+            pending.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
+                .options shouldBe listOf(source)
+
+            game.state = pending.state
+            game.submitDecision(CardsSelectedResponse(pending.pendingDecision.id, listOf(source)))
+            game.state.getBattlefield(game.player1Id) shouldNotContain source
+            game.state.getZone(ZoneKey(game.player1Id, Zone.GRAVEYARD)) shouldContain source
+        }
+
+        test("Sacrifice: excludeSelf=true — the source is unaffordable and never offered") {
+            val game = scenario().withPlayers().withCardOnBattlefield(1, "Goblin Guide").build()
+            val service = CostPaymentService(EngineServices(cardRegistry))
+            val source = bfCardByName(game.state, game.player1Id, "Goblin Guide")
+            val cost = Costs.pay.SacrificeAnother(GameObjectFilter.Any, 1)
+
+            service.canAfford(game.state, game.player1Id, cost, source).shouldBeFalse()
+            service.pay(game.state, game.player1Id, cost, source)
+                .shouldBeInstanceOf<PaymentResult.Unaffordable>()
+        }
+
+        test("Sacrifice: excludeSelf=true keeps the source out of the prompt's options") {
+            val game = scenario().withPlayers()
+                .withCardOnBattlefield(1, "Goblin Guide")
+                .withCardOnBattlefield(1, "Savannah Lions")
+                .build()
+            val service = CostPaymentService(EngineServices(cardRegistry))
+            val source = bfCardByName(game.state, game.player1Id, "Goblin Guide")
+            val fodder = bfCardByName(game.state, game.player1Id, "Savannah Lions")
+
+            val pending = service.pay(
+                game.state, game.player1Id, Costs.pay.SacrificeAnother(GameObjectFilter.Any, 1), source
+            ) as PaymentResult.Pending
+            pending.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
+                .options shouldBe listOf(fodder)
+        }
+
+        test("Sacrifice: excludeSelf=true rejects a client picking the source anyway") {
+            // Final validation and the offered domain are the same rule: because the prompt's
+            // options come from the source-relative candidate list, a response naming the excluded
+            // source is rejected and the decision stays pending instead of being paid.
+            val game = scenario().withPlayers()
+                .withCardOnBattlefield(1, "Goblin Guide")
+                .withCardOnBattlefield(1, "Savannah Lions")
+                .build()
+            val service = CostPaymentService(EngineServices(cardRegistry))
+            val source = bfCardByName(game.state, game.player1Id, "Goblin Guide")
+            val fodder = bfCardByName(game.state, game.player1Id, "Savannah Lions")
+
+            val pending = service.pay(
+                game.state, game.player1Id, Costs.pay.SacrificeAnother(GameObjectFilter.Any, 1), source
+            ) as PaymentResult.Pending
+            game.state = pending.state
+            val rejected = game.submitDecision(CardsSelectedResponse(pending.pendingDecision.id, listOf(source)))
+
+            rejected.error.shouldNotBeNull()
+            game.state.getBattlefield(game.player1Id) shouldContain source // not sacrificed
+            game.state.pendingDecision?.id shouldBe pending.pendingDecision.id // still pending
+
+            // The same decision accepts the candidate it *did* offer.
+            game.submitDecision(CardsSelectedResponse(pending.pendingDecision.id, listOf(fodder)))
+            game.state.getZone(ZoneKey(game.player1Id, Zone.GRAVEYARD)) shouldContain fodder
+        }
+
         // -----------------------------------------------------------------------------------------
         // ReturnToHand
         // -----------------------------------------------------------------------------------------
@@ -415,6 +514,20 @@ class CostPaymentServiceTest : ScenarioTestBase() {
             service.canAfford(game.state, game.player1Id, Costs.pay.Tap(GameObjectFilter.Any, 1), source).shouldBeTrue()
         }
 
+        test("Tap: excludeSelf=true — the untapped source is unaffordable and never offered") {
+            val game = scenario().withPlayers()
+                .withCardOnBattlefield(1, "Goblin Guide")
+                .withCardOnBattlefield(1, "Savannah Lions", tapped = true)
+                .build()
+            val service = CostPaymentService(EngineServices(cardRegistry))
+            val source = bfCardByName(game.state, game.player1Id, "Goblin Guide")
+            val cost = Costs.pay.TapAnother(GameObjectFilter.Any, 1)
+
+            service.canAfford(game.state, game.player1Id, cost, source).shouldBeFalse()
+            service.pay(game.state, game.player1Id, cost, source)
+                .shouldBeInstanceOf<PaymentResult.Unaffordable>()
+        }
+
         // -----------------------------------------------------------------------------------------
         // RemoveCounters
         // -----------------------------------------------------------------------------------------
@@ -430,7 +543,7 @@ class CostPaymentServiceTest : ScenarioTestBase() {
             }
             val cost = PayCost.Atom(
                 CostAtom.RemoveCounters(
-                    counterType = "+1/+1",
+                    counterType = CounterType.PLUS_ONE_PLUS_ONE,
                     count = DynamicAmount.Fixed(1),
                     self = true
                 )
@@ -556,9 +669,15 @@ class CostPaymentServiceTest : ScenarioTestBase() {
                 serializersModule = com.wingedsheep.engine.core.engineSerializersModule
                 encodeDefaults = true
             }
-            val original: com.wingedsheep.engine.core.ContinuationFrame =
-                com.wingedsheep.engine.core.CostPaymentContinuation(
-                    decisionId = "d1",
+            val original = Suspension(
+                question = ChooseOptionDecision(
+                    id = "payment-choice",
+                    playerId = EntityId.of("player-1"),
+                    prompt = "Choose a cost to pay",
+                    context = DecisionContext(sourceId = EntityId.of("src"), sourceName = "Goblin Guide"),
+                    options = listOf("Pay 3 life", "Discard a card")
+                ),
+                answer = com.wingedsheep.engine.core.CostPaymentContinuation(
                     payerId = EntityId.of("player-1"),
                     sourceId = EntityId.of("src"),
                     sourceName = "Goblin Guide",
@@ -566,6 +685,7 @@ class CostPaymentServiceTest : ScenarioTestBase() {
                     onPaid = Effects.DrawCards(1),
                     onDeclined = Effects.GainLife(2)
                 )
+            )
             val encoded = json.encodeToString(com.wingedsheep.engine.core.ContinuationFrame.serializer(), original)
             val decoded = json.decodeFromString(com.wingedsheep.engine.core.ContinuationFrame.serializer(), encoded)
             decoded shouldBe original

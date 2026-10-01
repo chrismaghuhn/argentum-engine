@@ -158,7 +158,7 @@ class PlumbTheForbiddenScenarioTest : FunSpec({
             }
         casts.size shouldBe 1
         val costInfo = casts.single().additionalCostInfo.shouldNotBeNull()
-        costInfo.costType shouldBe "VariableSacrifice"
+        costInfo.costType shouldBe "SacrificeVariable"
         costInfo.validSacrificeTargets shouldBe listOf(sacrificeA, sacrificeB)
         costInfo.sacrificeCount shouldBe 0
         costInfo.sacrificeMinCount shouldBe 0

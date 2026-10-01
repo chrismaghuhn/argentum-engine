@@ -27,7 +27,7 @@ class AttachmentTransferPipelineTest : DescribeSpec({
 
         pipeline.effects[1] shouldBe FilterCollectionEffect(
             from = "candidates",
-            filter = CollectionFilter.AttachableTo(EffectTarget.ContextTarget(0)),
+            collectionFilter = CollectionFilter.AttachableTo(EffectTarget.ContextTarget(0)),
             storeMatching = "legal",
         )
         pipeline.effects.last() shouldBe AttachCollectionToTargetEffect(

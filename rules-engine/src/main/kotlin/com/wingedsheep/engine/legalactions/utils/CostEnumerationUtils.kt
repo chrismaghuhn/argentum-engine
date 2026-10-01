@@ -1,8 +1,8 @@
 package com.wingedsheep.engine.legalactions.utils
 
+import com.wingedsheep.engine.mechanics.cost.PlayerCounterPayment
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
-import com.wingedsheep.engine.handlers.effects.permanent.counters.counterTypeToString
 import com.wingedsheep.engine.legalactions.*
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
 import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
@@ -11,6 +11,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaSource
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.TapForGeneric
+import com.wingedsheep.engine.mechanics.mana.projectedColorsOf
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -19,6 +20,7 @@ import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
@@ -53,7 +55,7 @@ class CostEnumerationUtils(
         sourceId: EntityId,
         cost: AbilityCost,
     ): Boolean = resolvePayLifeCostTotal(state, playerId, sourceId, cost)
-        ?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+        ?.let { it >= 0 && state.canPayLife(playerId, it) } == true
 
     /** Resolve all PayLife atoms in an activated-ability cost once. */
     fun resolvePayLifeCostTotal(
@@ -76,7 +78,7 @@ class CostEnumerationUtils(
         sourceId: EntityId,
         cost: AdditionalCost,
     ): Boolean = resolvePayLifeCostTotal(state, playerId, sourceId, cost)
-        ?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+        ?.let { it >= 0 && state.canPayLife(playerId, it) } == true
 
     /** Resolve all PayLife atoms in one additional cost once. */
     fun resolvePayLifeCostTotal(
@@ -99,7 +101,7 @@ class CostEnumerationUtils(
         sourceId: EntityId,
         costs: Iterable<AdditionalCost>,
     ): Boolean = resolvePayLifeCostTotal(state, playerId, sourceId, costs)
-        ?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+        ?.let { it >= 0 && state.canPayLife(playerId, it) } == true
 
     /** Resolve all PayLife atoms across additional costs against one pre-payment state. */
     fun resolvePayLifeCostTotal(
@@ -126,7 +128,7 @@ class CostEnumerationUtils(
         sourceId = sourceId,
         controllerId = playerId,
         cardRegistry = cardRegistry,
-    )?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+    )?.let { it >= 0 && state.canPayLife(playerId, it) } == true
 
     // --- Sacrifice targets ---
 
@@ -193,14 +195,25 @@ class CostEnumerationUtils(
 
     // --- Tap targets ---
 
+    /**
+     * Untapped battlefield permanents [playerId] controls that match a tap cost's [filter].
+     *
+     * [excludeEntityId] is the cost's own source when
+     * [CostAtom.TapPermanents.excludeSelf][com.wingedsheep.sdk.scripting.costs.CostAtom.TapPermanents.excludeSelf]
+     * is set — "tap another untapped …". Pass `if (atom.excludeSelf) sourceId else null` from every
+     * enumeration site so the offered pool matches what payment validation will accept; a plain
+     * "tap two untapped …" may tap the source itself, so null is correct there.
+     */
     fun findAbilityTapTargets(
         state: GameState,
         playerId: EntityId,
-        filter: GameObjectFilter
+        filter: GameObjectFilter,
+        excludeEntityId: EntityId? = null
     ): List<EntityId> {
         val predicateContext = PredicateContext(controllerId = playerId)
         val projected = state.projectedState
         return projected.getBattlefieldControlledBy(playerId).filter { entityId ->
+            if (entityId == excludeEntityId) return@filter false
             val container = state.getEntity(entityId) ?: return@filter false
             container.get<CardComponent>() ?: return@filter false
             if (container.has<TappedComponent>()) return@filter false
@@ -210,14 +223,22 @@ class CostEnumerationUtils(
 
     // --- Bounce targets ---
 
+    /**
+     * The permanents a bounce cost may be paid with. [youControl] mirrors
+     * [com.wingedsheep.sdk.scripting.costs.CostAtom.ReturnToHand.youControl]: the payer's own
+     * permanents by default, every permanent on the battlefield when the cost's ruling is
+     * control-agnostic.
+     */
     fun findAbilityBounceTargets(
         state: GameState,
         playerId: EntityId,
-        filter: GameObjectFilter
+        filter: GameObjectFilter,
+        youControl: Boolean = true
     ): List<EntityId> {
         val predicateContext = PredicateContext(controllerId = playerId)
         val projected = state.projectedState
-        return projected.getBattlefieldControlledBy(playerId).filter { entityId ->
+        val pool = if (youControl) projected.getBattlefieldControlledBy(playerId) else state.getBattlefield()
+        return pool.filter { entityId ->
             val container = state.getEntity(entityId) ?: return@filter false
             container.get<CardComponent>() ?: return@filter false
             predicateEvaluator.matches(state, projected, entityId, filter, predicateContext)
@@ -226,16 +247,40 @@ class CostEnumerationUtils(
 
     // --- Exile targets ---
 
+    /**
+     * The cards an exile cost may be paid with.
+     *
+     * [anyPlayersZone] widens the pool from the payer's copy of [zone] to every player's — Night
+     * Soil exiles "two creature cards from a single graveyard", and an opponent's graveyard is
+     * fair game. [singleZone] then adds that cost's other half: all [count] cards must come out of
+     * the *same* copy, so a graveyard holding fewer than [count] matches can never contribute to a
+     * legal payment and is dropped here. Dropping it is what keeps a naive "take the first
+     * [count]" consumer — the AI's strategist, the auto-payment path — from assembling a
+     * cross-graveyard selection the payment handler would reject.
+     */
     fun findExileTargets(
         state: GameState,
         playerId: EntityId,
         filter: GameObjectFilter,
-        zone: Zone
+        zone: Zone,
+        anyPlayersZone: Boolean = false,
+        singleZone: Boolean = false,
+        count: Int = 1,
+        /** The cost's source, left out of the pool for an "exile **another** …" cost. */
+        excludeSelfId: EntityId? = null,
     ): List<EntityId> {
-        val zoneKey = ZoneKey(playerId, zone)
         val predicateContext = PredicateContext(controllerId = playerId)
-        return state.getZone(zoneKey).filter { entityId ->
-            predicateEvaluator.matches(state, state.projectedState, entityId, filter, predicateContext)
+        val owners = if (anyPlayersZone) state.turnOrder else listOf(playerId)
+        val matchesByOwner = owners.map { owner ->
+            state.getZone(ZoneKey(owner, zone)).filter { entityId ->
+                entityId != excludeSelfId &&
+                    predicateEvaluator.matches(state, state.projectedState, entityId, filter, predicateContext)
+            }
+        }
+        return if (singleZone) {
+            matchesByOwner.filter { it.size >= count }.flatten()
+        } else {
+            matchesByOwner.flatten()
         }
     }
 
@@ -307,7 +352,9 @@ class CostEnumerationUtils(
             val cardComponent = container.get<CardComponent>() ?: return@mapNotNull null
             if (!projected.isCreature(entityId)) return@mapNotNull null
             if (container.has<TappedComponent>()) return@mapNotNull null
-            ConvokeCreatureData(entityId, cardComponent.name, cardComponent.colors)
+            // Projected colours, so the list offered here is the list `AlternativePaymentHandler`
+            // will accept — a creature turned another colour convokes for that colour.
+            ConvokeCreatureData(entityId, cardComponent.name, projectedColorsOf(projected, entityId))
         }
     }
 
@@ -589,11 +636,13 @@ class CostEnumerationUtils(
     fun canPayTapCost(state: GameState, entityId: EntityId): Boolean {
         val container = state.getEntity(entityId) ?: return false
         if (container.has<TappedComponent>()) return false
-        val cardComponent = container.get<CardComponent>() ?: return false
         // Read creature-ness / haste from projected state so a Vehicle or animated permanent
-        // that is currently a creature is gated. Lands keep the carve-out (basic-land mana
-        // abilities are not restricted by summoning sickness).
-        if (!cardComponent.typeLine.isLand && state.projectedState.isCreature(entityId) &&
+        // that is currently a creature is gated. Gating on `isCreature` alone (no `isLand`
+        // carve-out) is already correct for plain lands — a land that isn't also a creature
+        // never satisfies `isCreature` — and it's the only way to catch a land that *is* also a
+        // creature (Dryad Arbor: "This land ... is affected by summoning sickness"), which a
+        // land-wide carve-out would silently exempt.
+        if (state.projectedState.isCreature(entityId) &&
             SummoningSicknessRules.blocksTapOrUntapCost(entityId, container, state.projectedState)
         ) return false
         return true
@@ -626,31 +675,28 @@ class CostEnumerationUtils(
         state: GameState,
         playerId: EntityId,
         filter: GameObjectFilter,
-        counterType: String?
+        counterType: CounterType?,
+        sourceId: EntityId? = null
     ): List<CounterRemovalCreatureData> {
-        val context = PredicateContext(controllerId = playerId)
+        // The ability's source, so a "from among other …" filter (`notSourceItself()`) excludes it.
+        val context = PredicateContext(controllerId = playerId, sourceId = sourceId)
         val projected = state.projectedState
-        val resolvedType = counterType?.let {
-            com.wingedsheep.engine.handlers.effects.permanent.counters.resolveCounterType(it)
-        }
         return projected.getBattlefieldControlledBy(playerId).mapNotNull { eid ->
             if (!predicateEvaluator.matches(state, projected, eid, filter, context)) return@mapNotNull null
             val container = state.getEntity(eid) ?: return@mapNotNull null
             val counters = container.get<CountersComponent>() ?: return@mapNotNull null
             val card = container.get<CardComponent>() ?: return@mapNotNull null
 
-            val (total, byType) = if (resolvedType != null) {
-                val count = counters.getCount(resolvedType)
+            // Keyed by the printed spelling: the client shows these keys and echoes them back in
+            // `DistributedCounterRemoval.counterType`.
+            val (total, byType) = if (counterType != null) {
+                val count = counters.getCount(counterType)
                 if (count <= 0) return@mapNotNull null
-                count to mapOf(
-                    counterTypeToString(resolvedType) to count
-                )
+                count to mapOf(counterType.printed to count)
             } else {
                 val nonZero = counters.counters.filterValues { it > 0 }
                 if (nonZero.isEmpty()) return@mapNotNull null
-                nonZero.values.sum() to nonZero.mapKeys { (type, _) ->
-                    counterTypeToString(type)
-                }
+                nonZero.values.sum() to nonZero.mapKeys { (type, _) -> type.printed }
             }
 
             CounterRemovalCreatureData(
@@ -666,6 +712,30 @@ class CostEnumerationUtils(
     /**
      * Calculate max affordable X for activated abilities, considering various X cost types.
      */
+    /**
+     * Does this cost make the player choose an X that is *not* paid in mana — "remove any number
+     * of counters from ~" ([CostAtom.RemoveCounters] with an [DynamicAmount.XValue] count) or
+     * "tap X permanents"?
+     *
+     * Shared by every enumerator that builds a `LegalAction`, because the answer decides whether
+     * the client opens its X picker at all. An enumerator that forgets to ask hands the player an
+     * activation with no choice, which then pays X = 0 — the storage lands (Bottomless Vault and
+     * its cycle) removing zero counters for zero mana was exactly that.
+     */
+    fun hasPlayerChosenNonManaX(abilityCost: AbilityCost): Boolean {
+        fun isXCounterRemoval(cost: AbilityCost): Boolean =
+            cost is AbilityCost.Atom &&
+                ((cost.atom as? CostAtom.RemoveCounters)?.count is DynamicAmount.XValue ||
+                    (cost.atom as? CostAtom.PayPlayerCounters)?.amount is DynamicAmount.XValue)
+        return when (abilityCost) {
+            AbilityCost.LoyaltyX -> true
+            is AbilityCost.TapXPermanents -> true
+            is AbilityCost.Atom -> isXCounterRemoval(abilityCost)
+            is AbilityCost.Composite -> abilityCost.costs.any(::hasPlayerChosenNonManaX)
+            else -> false
+        }
+    }
+
     fun calculateMaxAffordableX(
         state: GameState,
         playerId: EntityId,
@@ -689,6 +759,16 @@ class CostEnumerationUtils(
             ((availableSources - fixedCost).coerceAtLeast(0)) / xSymbols
         } else {
             Int.MAX_VALUE
+        }
+
+        PlayerCounterPayment.abilityMaxX(state, playerId, abilityCost)?.let {
+            maxX = minOf(maxX, it)
+        }
+
+        if (abilityCost == AbilityCost.LoyaltyX) {
+            val loyalty = sourceId?.let { state.getEntity(it)?.get<CountersComponent>() }
+                ?.getCount(com.wingedsheep.sdk.core.CounterType.LOYALTY) ?: 0
+            maxX = minOf(maxX, loyalty)
         }
 
         // Cap by the graveyard cards an ExileXFromGraveyard cost could actually exile. The cap must
@@ -734,16 +814,12 @@ class CostEnumerationUtils(
                     // A self-scoped removal ("remove any number of counters from ~") comes off the
                     // source alone; counting every matching permanent would overstate the cap.
                     if (atom.self) {
-                        val type = atom.counterType?.let {
-                            com.wingedsheep.engine.handlers.effects.permanent.counters.resolveCounterType(it)
-                        }
+                        val type = atom.counterType
                         val counters = sourceId?.let { state.getEntity(it)?.get<CountersComponent>() }
                         return@map if (type != null) counters?.getCount(type) ?: 0
                         else counters?.counters?.values?.sum() ?: 0
                     }
-                    val type = atom.counterType?.let {
-                        com.wingedsheep.engine.handlers.effects.permanent.counters.resolveCounterType(it)
-                    }
+                    val type = atom.counterType
                     projected.getBattlefieldControlledBy(playerId).sumOf { entityId ->
                         if (!predicateEvaluator.matches(
                                 state, projected, entityId, atom.filter,

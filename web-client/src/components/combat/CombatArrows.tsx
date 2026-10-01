@@ -1,9 +1,18 @@
 import { useEffect, useState } from 'react'
+
+/**
+ * Functional-update helper that keeps the previous state when the freshly measured value is
+ * identical, so the 10 Hz re-measure below only re-renders when an arrow actually moved.
+ */
+function keepIfEqual<T>(next: T): (prev: T) => T {
+  const nextJson = JSON.stringify(next)
+  return (prev) => (JSON.stringify(prev) === nextJson ? prev : next)
+}
 import { useGameStore } from '@/store/gameStore.ts'
-import { selectGameState, selectViewingPlayerId, useViewedOpponent } from '@/store/selectors.ts'
-import { seatColor } from '@/styles/seatColors'
+import { selectGameState, selectViewingPlayerId, useViewedOpponent, selectTeamMap, identitySeatColor } from '@/store/selectors.ts'
 import type { EntityId } from '@/types'
 import { Step, ZoneType } from '@/types'
+import { defendingPlayerOf, isBattle } from '@/utils/combatTargets'
 
 interface Point {
   x: number
@@ -160,6 +169,32 @@ function getPlayerLifeCenter(playerId: EntityId): Point | null {
 }
 
 /**
+ * Point on a rect's border facing `from`, pushed out by `pad`, so an arrowhead lands
+ * beside a player's life total instead of on top of it.
+ */
+function edgeToward(rect: DOMRect, from: Point, pad = 10): Point {
+  const cx = rect.left + rect.width / 2
+  const cy = rect.top + rect.height / 2
+  const dx = from.x - cx
+  const dy = from.y - cy
+  if (dx === 0 && dy === 0) return { x: cx, y: cy }
+  const hw = rect.width / 2 + pad
+  const hh = rect.height / 2 + pad
+  const t = Math.min(dx !== 0 ? hw / Math.abs(dx) : Infinity, dy !== 0 ? hh / Math.abs(dy) : Infinity)
+  return { x: cx + dx * t, y: cy + dy * t }
+}
+
+/**
+ * Where an attack arrow aimed at a player should end: the edge of their life display
+ * facing the attacker, not its center.
+ */
+function getPlayerLifeAnchor(playerId: EntityId, from: Point): Point | null {
+  const element = document.querySelector(`[data-life-id="${playerId}"]`)
+  if (!element) return null
+  return edgeToward(element.getBoundingClientRect(), from)
+}
+
+/**
  * Get the edge positions of a card element for attack indicators.
  */
 function getCardEdgeCenter(cardId: EntityId): { topCenter: Point; bottomCenter: Point; centerY: number } | null {
@@ -232,6 +267,13 @@ function getBoardPlateCenter(playerId: EntityId): Point | null {
   return isOnScreen(p) ? p : null
 }
 
+/** Like [getBoardPlateCenter], but the plate's edge facing `from`. */
+function getBoardPlateAnchor(playerId: EntityId, from: Point): Point | null {
+  const element = document.querySelector(`[data-board-plate="${playerId}"]`)
+  if (!element) return null
+  return edgeToward(element.getBoundingClientRect(), from)
+}
+
 /**
  * Combat arrows overlay - draws arrows between blockers and attackers.
  *
@@ -257,6 +299,7 @@ export function CombatArrows() {
   const currentStep = gameState?.currentStep
   const cards = gameState?.cards
   const players = gameState?.players
+  const teamMap = useGameStore(selectTeamMap)
   const viewingPlayerId = useGameStore(selectViewingPlayerId)
   const viewedOpponent = useViewedOpponent()
   const viewedOpponentId = viewedOpponent?.playerId ?? null
@@ -276,12 +319,24 @@ export function CombatArrows() {
   // Check if we're still in combat phase
   const isInCombatPhase = currentStep && COMBAT_STEPS.has(currentStep as Step)
 
+  // The opponent's streamed declaration previews are only meaningful while that declaration is
+  // being made. Without this bound a preview that never became a declaration (the attacker
+  // cancelled, or declared no attackers) has nothing to clear it — `gameState.combat` stays
+  // null, which is the very condition the preview draws under — and its arrows stay painted
+  // for the rest of the game. The store clears the stale value too; this keeps it unpaintable.
+  const isDeclareAttackersStep = currentStep === Step.DECLARE_ATTACKERS
+  const isDeclareBlockersStep = currentStep === Step.DECLARE_BLOCKERS
+
   // Hide all arrows during full-screen overlay decisions (e.g., ChooseColorDecision)
-  // But keep arrows visible for combat trigger YesNo decisions (e.g., Gustcloak Savior)
+  // But keep arrows visible for combat trigger YesNo decisions (e.g., Gustcloak Savior) — only
+  // while the triggering permanent is still on the battlefield. A defeated Siege's "cast it
+  // transformed" prompt is triggered by a battle already in exile, and its modal must not have
+  // attack chevrons drawn over it.
+  const yesNoTrigger = pendingDecision?.type === 'YesNoDecision' ? pendingDecision.context.triggeringEntityId : undefined
   const hasOverlayDecision = pendingDecision != null &&
     pendingDecision.type !== 'ChooseTargetsDecision' &&
     !(pendingDecision.type === 'SelectCardsDecision' && pendingDecision.useTargetingUI) &&
-    !(pendingDecision.type === 'YesNoDecision' && pendingDecision.context.triggeringEntityId)
+    !(yesNoTrigger != null && cards?.[yesNoTrigger]?.zone?.zoneType === ZoneType.BATTLEFIELD)
 
   // Track mouse/touch position during drag (blocker or attacker)
   useEffect(() => {
@@ -290,20 +345,34 @@ export function CombatArrows() {
       return
     }
 
+    // Coalesce to one state update per frame — high-rate mice fire mousemove well above 60 Hz,
+    // and each update re-renders the whole arrow SVG.
+    let frame: number | null = null
+    let latest: Point | null = null
+    const schedule = (x: number, y: number) => {
+      latest = { x, y }
+      if (frame !== null) return
+      frame = requestAnimationFrame(() => {
+        frame = null
+        setMousePos(latest)
+      })
+    }
+
     const handleMouseMove = (e: MouseEvent) => {
-      setMousePos({ x: e.clientX, y: e.clientY })
+      schedule(e.clientX, e.clientY)
     }
 
     const handleTouchMove = (e: TouchEvent) => {
       const touch = e.touches[0]
       if (touch) {
-        setMousePos({ x: touch.clientX, y: touch.clientY })
+        schedule(touch.clientX, touch.clientY)
       }
     }
 
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('touchmove', handleTouchMove)
     return () => {
+      if (frame !== null) cancelAnimationFrame(frame)
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('touchmove', handleTouchMove)
     }
@@ -319,15 +388,25 @@ export function CombatArrows() {
     // 2. If we're the attacker and opponent is assigning blockers, use opponentBlockerAssignments
     // 3. Otherwise, use server-sent combat data (if blockers have been declared)
 
+    // Outside combat there is nothing to draw; don't keep a 10 Hz re-measure running all game.
+    if (!isInCombatPhase && !combatState && !gameStateCombat) {
+      setArrows(keepIfEqual<ArrowData[]>([]))
+      setAttackerArrows(keepIfEqual<AttackerArrowData[]>([]))
+      setBundledArrows(keepIfEqual<BundledArrowData[]>([]))
+      setAttackIndicators(keepIfEqual<AttackIndicatorData[]>([]))
+      return
+    }
+
     const updateArrows = () => {
       const newArrows: ArrowData[] = []
 
       // Seat-identity color for a defending player ("whose seat is this hitting").
       // Attacks against the viewing player stay combat red, as do all 2-player arrows.
+      // Identity colour (the team hue in 2HG), so an arrow matches the chip and plate it points at.
       const seatColorOf = (defenderId: EntityId): string => {
         if (!isMulti || !players || defenderId === viewingPlayerId) return '#ff4444'
         const idx = players.findIndex((p) => p.playerId === defenderId)
-        return idx >= 0 ? seatColor(idx).base : '#ff4444'
+        return idx >= 0 ? identitySeatColor(teamMap, defenderId, idx).base : '#ff4444'
       }
 
       // Card anchor that survives the multiplayer board strip: a card on a
@@ -360,7 +439,7 @@ export function CombatArrows() {
             }
           }
         }
-      } else if (opponentBlockerAssignments && Object.keys(opponentBlockerAssignments).length > 0 && isInCombatPhase) {
+      } else if (opponentBlockerAssignments && Object.keys(opponentBlockerAssignments).length > 0 && isDeclareBlockersStep) {
         // Use opponent's real-time blocker assignments (for attacking player, only during combat)
         for (const [blockerIdStr, attackerIds] of Object.entries(opponentBlockerAssignments)) {
           const blockerId = blockerIdStr as EntityId
@@ -428,10 +507,11 @@ export function CombatArrows() {
         }
       }
 
-      setArrows(newArrows)
+      setArrows(keepIfEqual(newArrows))
 
       // Compute attacker arrows (visible to all players and spectators during combat).
-      // 2-player: only when planeswalkers exist — red triangle indicators suffice
+      // 2-player: only when an attackable permanent (planeswalker, battle) exists — red
+      // triangle indicators suffice
       // otherwise. Multiplayer: always — "whose spell, at whom" needs the arrows.
       // Attacks against a defender whose board is slid away bundle into one arrow
       // per defender, from the attacker group's centroid to their rail chip.
@@ -441,10 +521,10 @@ export function CombatArrows() {
       const pushAttackArrow = (attackerId: EntityId, targetId: EntityId) => {
         const attackerPos = getCardCenter(attackerId)
         if (!attackerPos) return
-        // The target is a planeswalker (a card) or a player; the defending player
-        // is the planeswalker's controller (CR 802.2a) or the player themself.
+        // The target is a player, a planeswalker, or a battle; the defending player is the
+        // player themself, the planeswalker's controller, or the battle's protector.
         const targetCard = cards?.[targetId]
-        const defenderId = targetCard ? targetCard.controllerId : targetId
+        const defenderId = defendingPlayerOf(targetId, cards)
         const isOtherOpponent =
           isMulti && defenderId !== viewingPlayerId && defenderId !== viewedOpponentId
         // A defender board sharing the strip (table overview / combat defender-focus
@@ -464,8 +544,8 @@ export function CombatArrows() {
         const targetPos = (cardPos && (!isMulti || isOnScreen(cardPos)) ? cardPos : null)
           // Player attacked on a visible shared-strip board: their cell's name plate is
           // the "face" of the board (and also carries their data-life-id anchors).
-          ?? platePos
-          ?? getPlayerLifeCenter(defenderId)
+          ?? (platePos ? getBoardPlateAnchor(defenderId, attackerPos) : null)
+          ?? getPlayerLifeAnchor(defenderId, attackerPos)
         if (!targetPos) return
         newAttackerArrows.push({
           start: attackerPos,
@@ -475,10 +555,11 @@ export function CombatArrows() {
         })
       }
 
-      const hasPlaneswalkerOnBattlefield = cards && Object.values(cards).some(
-        (card) => card.zone?.zoneType === ZoneType.BATTLEFIELD && card.cardTypes.includes('PLANESWALKER'),
+      const hasAttackablePermanent = cards && Object.values(cards).some(
+        (card) => card.zone?.zoneType === ZoneType.BATTLEFIELD &&
+          (card.cardTypes.includes('PLANESWALKER') || isBattle(card)),
       )
-      if ((hasPlaneswalkerOnBattlefield || isMulti) && gameStateCombat && gameStateCombat.attackers.length > 0) {
+      if ((hasAttackablePermanent || isMulti) && gameStateCombat && gameStateCombat.attackers.length > 0) {
         for (const attacker of gameStateCombat.attackers) {
           // Check if attacker is still on battlefield
           const attackerCard = cards?.[attacker.creatureId]
@@ -505,15 +586,15 @@ export function CombatArrows() {
       }
 
       // Compute opponent's real-time attacker target arrows (for defending player and spectators, always show)
-      if (opponentAttackerTargets && opponentAttackerTargets.selectedAttackers.length > 0 && !gameStateCombat) {
+      if (opponentAttackerTargets && opponentAttackerTargets.selectedAttackers.length > 0 && !gameStateCombat && isDeclareAttackersStep) {
         for (const [attackerIdStr, targetId] of Object.entries(opponentAttackerTargets.attackerTargets)) {
           const attackerId = attackerIdStr as EntityId
           if (!opponentAttackerTargets.selectedAttackers.includes(attackerId)) continue
           pushAttackArrow(attackerId, targetId)
         }
       }
-      setAttackerArrows(newAttackerArrows)
-      setBundledArrows(
+      setAttackerArrows(keepIfEqual(newAttackerArrows))
+      setBundledArrows(keepIfEqual(
         Array.from(bundleAcc.entries()).map(([defenderId, acc]) => ({
           defenderId,
           count: acc.count,
@@ -524,7 +605,7 @@ export function CombatArrows() {
           },
           color: seatColorOf(defenderId),
         })),
-      )
+      ))
 
       // Compute attack direction indicators (red triangles)
       const newIndicators: AttackIndicatorData[] = []
@@ -533,8 +614,7 @@ export function CombatArrows() {
       // Seat color for an indicator given the attack's target id (player or planeswalker).
       const indicatorColorFor = (targetId: EntityId | undefined): string => {
         if (!targetId) return '#ff4444'
-        const targetCard = cards?.[targetId]
-        return seatColorOf(targetCard ? targetCard.controllerId : targetId)
+        return seatColorOf(defendingPlayerOf(targetId, cards))
       }
 
       if (combatState?.mode === 'declareAttackers' && combatState.selectedAttackers.length > 0) {
@@ -551,7 +631,7 @@ export function CombatArrows() {
             newIndicators.push({ x: pos.x, y: pos.y, direction, attackerId, color: indicatorColorFor(targetId) })
           }
         }
-      } else if (opponentAttackerTargets && opponentAttackerTargets.selectedAttackers.length > 0 && !gameStateCombat) {
+      } else if (opponentAttackerTargets && opponentAttackerTargets.selectedAttackers.length > 0 && !gameStateCombat && isDeclareAttackersStep) {
         // Opponent's real-time attacker selections (for defending player and spectators)
         for (const attackerId of opponentAttackerTargets.selectedAttackers) {
           const targetId = opponentAttackerTargets.attackerTargets[attackerId]
@@ -587,14 +667,14 @@ export function CombatArrows() {
           }
         }
       }
-      setAttackIndicators(newIndicators)
+      setAttackIndicators(keepIfEqual(newIndicators))
     }
 
     // Update immediately and on animation frames for smooth updates
     updateArrows()
     const interval = setInterval(updateArrows, 100)
     return () => clearInterval(interval)
-  }, [combatState, gameStateCombat, opponentAttackerTargets, opponentBlockerAssignments, isDeclaringBlockers, isInCombatPhase, cards, isSpectating, players, isMulti, viewedOpponentId, viewingPlayerId])
+  }, [combatState, gameStateCombat, opponentAttackerTargets, opponentBlockerAssignments, isDeclaringBlockers, isInCombatPhase, isDeclareAttackersStep, isDeclareBlockersStep, cards, isSpectating, players, teamMap, isMulti, viewedOpponentId, viewingPlayerId])
 
   // Don't render during full-screen overlay decisions
   if (hasOverlayDecision) {
@@ -603,11 +683,12 @@ export function CombatArrows() {
 
   // Don't render if no arrows to show (only show during combat phase)
   const hasBlockers = isDeclaringBlockers ||
-    (opponentBlockerAssignments && Object.keys(opponentBlockerAssignments).length > 0 && isInCombatPhase) ||
+    (opponentBlockerAssignments && Object.keys(opponentBlockerAssignments).length > 0 && isDeclareBlockersStep) ||
     (gameStateCombat && gameStateCombat.blockers.length > 0 && isInCombatPhase)
   const hasAttackers = gameStateCombat && gameStateCombat.attackers.length > 0
   const hasSelectedAttackers = combatState?.mode === 'declareAttackers' && combatState.selectedAttackers.length > 0
-  const hasOpponentAttackers = opponentAttackerTargets && opponentAttackerTargets.selectedAttackers.length > 0
+  const hasOpponentAttackers =
+    opponentAttackerTargets && opponentAttackerTargets.selectedAttackers.length > 0 && isDeclareAttackersStep
   if (!hasBlockers && !hasAttackers && !hasSelectedAttackers && !hasOpponentAttackers && !draggingBlockerId && !draggingAttackerId) {
     return null
   }

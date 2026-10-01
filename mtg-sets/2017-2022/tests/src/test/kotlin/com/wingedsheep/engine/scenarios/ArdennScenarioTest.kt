@@ -13,6 +13,8 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
@@ -41,14 +43,14 @@ class ArdennScenarioTest : ScenarioTestBase() {
         manaCost = "{1}{W}"
         typeLine = "Enchantment — Aura"
         oracleText = "Enchant creature"
-        auraTarget = Targets.Creature
+        auraTarget = TargetObject(filter = TargetFilter.Creature)
     }
 
     private val invalidAura = card(INVALID_AURA) {
         manaCost = "{1}{U}"
         typeLine = "Enchantment — Aura"
         oracleText = "Enchant artifact"
-        auraTarget = Targets.Artifact
+        auraTarget = TargetObject(filter = TargetFilter.Artifact)
     }
 
     private val equipmentA = card(EQUIPMENT_A) {
@@ -83,7 +85,7 @@ class ArdennScenarioTest : ScenarioTestBase() {
         manaCost = "{0}"
         typeLine = "Enchantment — Aura"
         oracleText = "Enchant creature"
-        auraTarget = Targets.Creature
+        auraTarget = TargetObject(filter = TargetFilter.Creature)
     }
 
     private val artifactHost = card(ARTIFACT_HOST) {

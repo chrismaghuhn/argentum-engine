@@ -2,9 +2,9 @@ package com.wingedsheep.mtg.sets.definitions.mh1.cards
 
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
 /**
@@ -20,19 +20,15 @@ val GenerousGift = card("Generous Gift") {
     oracleText = "Destroy target permanent. Its controller creates a 3/3 green Elephant creature token."
 
     spell {
-        val target = target("target", Targets.Permanent)
-        effect = Effects.Composite(
-            listOf(
-                Effects.Destroy(target),
-                Effects.CreateToken(
-                    power = 3,
-                    toughness = 3,
-                    colors = setOf(Color.GREEN),
-                    creatureTypes = setOf("Elephant"),
-                    controller = EffectTarget.TargetController,
-                ),
-            ),
-        )
+        val target = target(TargetFilter.Permanent)
+        effect = Effects.Destroy(target) then
+            Effects.CreateToken(
+                power = 3,
+                toughness = 3,
+                colors = setOf(Color.GREEN),
+                creatureTypes = setOf("Elephant"),
+                controller = EffectTarget.TargetController,
+            )
     }
 
     metadata {

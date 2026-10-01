@@ -3,6 +3,10 @@ package com.wingedsheep.mtg.sets.definitions.blc.cards
 import com.wingedsheep.sdk.model.Printing
 import com.wingedsheep.sdk.model.Rarity
 
+/**
+ * Swiftfoot Boots reprint in BLC. Canonical CardDefinition lives in M12, the card's earliest
+ * real printing; this file contributes only the BLC presentation row.
+ */
 val SwiftfootBootsReprint = Printing(
     oracleId = "c8b143ad-43ec-4e0d-a440-e348daa31391",
     name = "Swiftfoot Boots",

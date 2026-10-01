@@ -27,6 +27,8 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.KeywordAbility
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * RED characterization for CR 601.2g mana activation before 601.2h non-mana cost payment.
@@ -171,8 +173,8 @@ class CastManaAbilityActivationOrderTest : FunSpec({
             )
         )
 
-        println("SACRIFICE_OVERLAP_RED success=${result.isSuccess} error=${result.error}")
-        result.isSuccess shouldBe true
+        println("SACRIFICE_OVERLAP_RED success=${(result.outcome is Outcome.Done)} error=${result.error}")
+        result.outcome shouldBe Outcome.Done
         fixture.driver.state.getZone(com.wingedsheep.engine.state.ZoneKey(fixture.player, Zone.GRAVEYARD))
             .toList() shouldBe listOf(fixture.source)
         fixture.driver.state.stack.any { it.value == fixture.spell.value } shouldBe true
@@ -191,8 +193,8 @@ class CastManaAbilityActivationOrderTest : FunSpec({
             )
         )
 
-        println("CASUALTY_OVERLAP_RED success=${result.isSuccess} error=${result.error}")
-        result.isSuccess shouldBe true
+        println("CASUALTY_OVERLAP_RED success=${(result.outcome is Outcome.Done)} error=${result.error}")
+        result.outcome shouldBe Outcome.Done
         fixture.driver.state.getZone(com.wingedsheep.engine.state.ZoneKey(fixture.player, Zone.GRAVEYARD))
             .toList() shouldBe listOf(fixture.source)
         fixture.driver.events shouldBe beforeEvents + result.events
@@ -212,8 +214,8 @@ class CastManaAbilityActivationOrderTest : FunSpec({
             )
         )
 
-        println("FORAGE_OVERLAP_RED success=${result.isSuccess} error=${result.error}")
-        result.isSuccess shouldBe true
+        println("FORAGE_OVERLAP_RED success=${(result.outcome is Outcome.Done)} error=${result.error}")
+        result.outcome shouldBe Outcome.Done
         fixture.driver.state.getZone(com.wingedsheep.engine.state.ZoneKey(fixture.player, Zone.GRAVEYARD))
             .toList() shouldBe listOf(fixture.source)
         fixture.driver.events shouldBe beforeEvents + result.events
@@ -234,7 +236,7 @@ class CastManaAbilityActivationOrderTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         fixture.driver.state shouldBe beforeState
         fixture.driver.events shouldBe beforeEvents
     }

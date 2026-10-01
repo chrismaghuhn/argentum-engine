@@ -77,8 +77,12 @@ abstract class ScenarioTestBase : FunSpec() {
             register(set.code, TokenArtData.forSet(set), set.cards.map { it.name })
         }
     }
-    protected val actionProcessor = ActionProcessor(EngineServices(cardRegistry, tokenArtRegistry = tokenArtRegistry))
-    protected val stateTransformer = ClientStateTransformer(cardRegistry)
+    protected val services = EngineServices(cardRegistry, tokenArtRegistry = tokenArtRegistry)
+    protected val actionProcessor = ActionProcessor(services)
+
+    /** The engine's zone service — for tests that move a card the way an effect would. */
+    protected val zones get() = services.zones
+    protected val stateTransformer = ClientStateTransformer(cardRegistry, predicateEvaluator = services.predicateEvaluator)
 
     /**
      * Builder for constructing test scenarios with specific game states.
@@ -243,9 +247,9 @@ abstract class ScenarioTestBase : FunSpec() {
                 // A battle enters with its printed defense as defense counters (CR 310.4b), and its
                 // defense *is* that count (CR 310.4c). Same reasoning as loyalty above, but with a
                 // sharper failure: a battle seeded at 0 defense is put into its owner's graveyard by
-                // the very next state-based action check (CR 704.5v).
+                // the very next state-based action check (CR 704.5v/w).
                 //
-                // No protector is seeded — that is the CR 704.5w state-based action's job, and
+                // No protector is seeded — that is the CR 704.5x state-based action's job, and
                 // letting it run is what a scenario should be exercising.
                 cardDef.startingDefense?.let { defense ->
                     val counters = container.get<com.wingedsheep.engine.state.components.battlefield.CountersComponent>()
@@ -274,6 +278,9 @@ abstract class ScenarioTestBase : FunSpec() {
                             ownerId = it.ownerId,
                             spellEffect = frontFaceDef.spellEffect,
                             imageUri = frontFaceDef.metadata.imageUri,
+                            // By construction this is the front face of a double-faced card; the
+                            // 712.8a restore swaps this component back in, so the flag has to survive it.
+                            isDoubleFaced = true,
                         )
                     }
                     if (frontFaceCard != null) {
@@ -491,6 +498,7 @@ abstract class ScenarioTestBase : FunSpec() {
                 player1Id = player1Id!!,
                 player2Id = player2Id!!,
                 cardRegistry = cardRegistry,
+                services = services,
                 actionProcessor = actionProcessor,
                 stateTransformer = stateTransformer
             )
@@ -518,6 +526,7 @@ abstract class ScenarioTestBase : FunSpec() {
                 hasNonManaActivatedAbility = cardDef.hasNonManaActivatedAbility,
                 originalSetCode = cardDef.setCode,
                 hasAdventure = cardDef.isAdventure,
+                isDoubleFaced = cardDef.isDoubleFaced,
             )
 
             var container = ComponentContainer.of(
@@ -549,21 +558,24 @@ abstract class ScenarioTestBase : FunSpec() {
         val player1Id: EntityId,
         val player2Id: EntityId,
         private val cardRegistry: CardRegistry,
+        private val services: EngineServices,
         private val actionProcessor: ActionProcessor,
         private val stateTransformer: ClientStateTransformer
     ) {
+        /** The engine's zone service — for tests that move a card the way an effect would. */
+        val zones get() = services.zones
+
         /**
          * Run one full state-based action pass (CR 704) against the current state.
          *
          * A scenario built with [ScenarioBuilder] seeds permanents directly onto the battlefield
          * without ever giving a player priority, so SBAs have not run yet. Call this when the
          * scenario depends on an SBA having fired — e.g. a battle's protector, which is designated
-         * by the CR 704.5w state-based action rather than at entry. Pauses (an SBA that needs a
+         * by the CR 704.5x state-based action rather than at entry. Pauses (an SBA that needs a
          * player decision) surface as `pendingDecision`, exactly as in a real game.
          */
         fun checkStateBasedActions(): ExecutionResult {
-            val result = com.wingedsheep.engine.mechanics.StateBasedActionChecker(cardRegistry = cardRegistry)
-                .checkAndApply(state)
+            val result = services.sbaChecker.checkAndApply(state)
             if (result.error == null) {
                 state = result.state
             }
@@ -702,6 +714,55 @@ abstract class ScenarioTestBase : FunSpec() {
             }
 
             return execute(CastSpell(playerId, cardId, targets, useAlternativeCost = true))
+        }
+
+        /**
+         * Cast a spell using a **battlefield-granted** alternative cost whose non-mana half is
+         * collect evidence (CR 701.59) — Conspiracy Unraveler's "You may collect evidence 10 rather
+         * than pay the mana cost for spells you cast".
+         *
+         * Distinct from [castSpellCollectingEvidence]: that declares the *spell's own* optional
+         * additional cost and stamps `ChoiceSlot.EVIDENCE_COLLECTED`, so the spell's linked "if
+         * evidence was collected" clause reads true. This is an *alternative* cost belonging to
+         * another permanent, so it stamps [AlternativeCostType.GRANTED] and no choice slot — which
+         * is exactly why it does not satisfy such a clause.
+         *
+         * [evidenceNames] must total mana value 10 or greater; passing less is how a test pins the
+         * engine's rejection of an under-total payment.
+         */
+        fun castSpellWithGrantedAlternativeCost(
+            playerNumber: Int,
+            spellName: String,
+            evidenceNames: List<String>,
+            targetIds: List<EntityId> = emptyList(),
+        ): ExecutionResult {
+            val playerId = if (playerNumber == 1) player1Id else player2Id
+            val cardId = state.getHand(playerId).find { entityId ->
+                state.getEntity(entityId)?.get<CardComponent>()?.name == spellName
+            } ?: error("Card '$spellName' not found in player $playerNumber's hand")
+
+            val graveyard = state.getZone(ZoneKey(playerId, Zone.GRAVEYARD)).toMutableList()
+            val evidenceIds = evidenceNames.map { name ->
+                val found = graveyard.find { entityId ->
+                    state.getEntity(entityId)?.get<CardComponent>()?.name == name
+                } ?: error("Card '$name' not found in player $playerNumber's graveyard")
+                // Remove so repeating a name picks distinct copies rather than the same card twice.
+                graveyard.remove(found)
+                found
+            }
+
+            return execute(
+                CastSpell(
+                    playerId = playerId,
+                    cardId = cardId,
+                    targets = targetIds.map { ChosenTarget.Permanent(it) },
+                    useAlternativeCost = true,
+                    alternativeCostType = AlternativeCostType.GRANTED,
+                    additionalCostPayment = com.wingedsheep.sdk.scripting.AdditionalCostPayment(
+                        exiledCards = evidenceIds
+                    ),
+                )
+            )
         }
 
         /**
@@ -1052,7 +1113,6 @@ abstract class ScenarioTestBase : FunSpec() {
         // Built lazily and shared across calls; both are stateless (they take the
         // current [state] as an argument), so a single pair serves the whole game.
         private val legalActionEngine by lazy {
-            val services = EngineServices(cardRegistry)
             LegalActionEnumerator(
                 services.cardRegistry, services.manaSolver, services.costCalculator,
                 services.predicateEvaluator, services.conditionEvaluator, services.turnManager
@@ -1070,7 +1130,7 @@ abstract class ScenarioTestBase : FunSpec() {
         fun getLegalActions(playerNumber: Int): List<LegalActionInfo> {
             val playerId = if (playerNumber == 1) player1Id else player2Id
             val priorityPlayer = state.priorityPlayerId ?: return emptyList()
-            if (state.actorFor(priorityPlayer) != playerId) return emptyList()
+            if (com.wingedsheep.engine.mechanics.combat.CombatDeclarationControl.inputActorFor(state, priorityPlayer) != playerId) return emptyList()
             if (state.pendingDecision != null) return emptyList()
             val (enumerator, enricher) = legalActionEngine
             val engineActions = enumerator.enumerate(state, priorityPlayer)

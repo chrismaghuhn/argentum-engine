@@ -5,10 +5,9 @@ import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
 
 /**
- * Marks a creature as attacking.
- *
- * @property bandId If non-null, this attacker is part of a band (CR 702.22). Every attacker
- *   in the same band shares this id, attacks the same defender, and is blocked as a group.
+ * A creature's declared attack target kind. The target id alone is not enough after declaration:
+ * CR 506.4 removes an attacked planeswalker/battle from combat when its controller/protector
+ * changes, while CR 506.4c leaves the creature in combat with no damage recipient.
  */
 @Serializable
 enum class AttackedDefenderKind {
@@ -18,13 +17,14 @@ enum class AttackedDefenderKind {
 }
 
 /**
- * A creature's declared attack target kind. The target id alone is not enough after declaration:
- * CR 506.4 removes an attacked planeswalker/battle from combat when its controller/protector
- * changes, while CR 506.4c leaves the creature in combat with no damage recipient.
+ * Marks a creature as attacking.
+ *
+ * @property bandId If non-null, this attacker is part of a band (CR 702.22). Every attacker
+ *   in the same band shares this id, attacks the same defender, and is blocked as a group.
  */
 @Serializable
 data class AttackingComponent(
-    val defenderId: EntityId,  // Player or planeswalker being attacked
+    val defenderId: EntityId,  // Player, planeswalker, or battle being attacked
     val bandId: String? = null,
     /** The target kind and defending relationship captured at attack declaration. */
     val defenderKindAtDeclaration: AttackedDefenderKind? = null,
@@ -34,6 +34,29 @@ data class AttackingComponent(
     val defenderBattlefieldObjectTimestampAtDeclaration: Long? = null,
     /** CR 506.4: once an attacked object leaves combat, restoring its relationship does not return it. */
     val defenderRelationshipInvalidated: Boolean = false,
+    /**
+     * The planeswalker or battle this creature was attacking has been removed from combat
+     * (CR 506.4). The creature is still attacking and may be blocked, but it is attacking nothing
+     * and deals no combat damage if unblocked (CR 506.4c, 510.1b). [defenderId] is kept: "the
+     * defending player" still means the one it was attacking before (CR 508.5).
+     *
+     * Set by [com.wingedsheep.engine.mechanics.sba.permanent.AttackedPermanentRemovedFromCombatCheck];
+     * the per-attacker declaration snapshot above is latched separately through
+     * [defenderRelationshipInvalidated]. Either one ends the attacked object's recipient status.
+     */
+    val attackTargetRemoved: Boolean = false,
+) : Component
+
+/**
+ * On a planeswalker or battle that is being attacked: its controller and protector at the moment
+ * it was first attacked. CR 506.4 removes an attacked permanent from combat when either changes, so
+ * [com.wingedsheep.engine.mechanics.sba.permanent.AttackedPermanentRemovedFromCombatCheck] compares
+ * the live values against this snapshot. Cleared with the rest of combat.
+ */
+@Serializable
+data class BeingAttackedComponent(
+    val controllerId: EntityId,
+    val protectorId: EntityId?,
 ) : Component
 
 /**
@@ -64,6 +87,19 @@ data class BlockedComponent(
 data object BlockedOrWasBlockedByLegendaryThisTurnComponent : Component
 
 /**
+ * The creatures this creature blocked, or was blocked by, at any point during the current turn.
+ * Stamped on **both** creatures of each blocking pair at block-declaration time and cleared at
+ * end-of-turn cleanup, so the history survives the pairing ending (a partner dying, removal from
+ * combat, the combat phase ending) and a second combat in the same turn adds to it. Backs
+ * [com.wingedsheep.sdk.scripting.predicates.StatePredicate.BlockedOrWasBlockedByEntityThisTurn]
+ * (Gaze of the Gorgon).
+ */
+@Serializable
+data class CombatPartnersThisTurnComponent(
+    val partnerIds: Set<EntityId>
+) : Component
+
+/**
  * Marks a creature that was declared as an attacker at least once during the current combat
  * (CR 508.1). Stamped at attacker-declaration time and cleared when the combat phase ends
  * ([com.wingedsheep.engine.mechanics.combat.CombatManager.endCombat]). Unlike the turn-scoped,
@@ -83,6 +119,20 @@ data object AttackedThisCombatComponent : Component
  */
 @Serializable
 data object BlockedThisCombatComponent : Component
+
+/**
+ * Marker: this creature was declared as a blocker at least once **this turn** (CR 509.1).
+ *
+ * Stamped alongside [BlockedThisCombatComponent] at blocker declaration, but cleared at end of turn
+ * rather than at end of combat — so, unlike its per-combat sibling, it survives into the postcombat
+ * main phase and across a second combat in the same turn.
+ *
+ * The blocking half of "unless it attacked or blocked this turn" (Lurker). The attacking half needs
+ * no equivalent: it is already answered by the controller's `PlayerAttackersThisTurnComponent`,
+ * which is turn-scoped for the same reason.
+ */
+@Serializable
+data object BlockedThisTurnComponent : Component
 
 /**
  * Combat damage assignment for a creature.
@@ -154,6 +204,23 @@ enum class DamageAssignmentReason {
  */
 @Serializable
 data object AttackersDeclaredThisCombatComponent : Component
+
+/**
+ * The turn-scoped sibling of [AttackersDeclaredThisCombatComponent]: this player reached a Declare
+ * Attackers Step at some point this turn. Like that marker it is stamped even when no creature was
+ * declared, because the question it answers is whether the *opportunity* existed, not whether it
+ * was taken — [PlayerAttackedThisTurnComponent] already answers the latter.
+ *
+ * Backs the first clause of `StatePredicate.CouldNotHaveAttackedThisTurn` (Season of the Witch).
+ * Its absence is what distinguishes "declared no attackers" from "never got to declare": an effect
+ * that skips the combat phase (False Peace, Fatespinner) means no creature could have been declared
+ * as an attacker, so none of them stayed home by choice.
+ *
+ * Persists past END_COMBAT — that is the whole point, since the end step is where it gets read —
+ * and is removed at end of turn during cleanup.
+ */
+@Serializable
+data object AttackersDeclaredThisTurnComponent : Component
 
 /**
  * Marker component added to the defending player when blockers have been declared this combat.
@@ -231,9 +298,31 @@ data object PlayerAttackedThisTurnComponent : Component
  * (e.g., Deepway Navigator: "as long as you attacked with three or more Merfolk this turn").
  *
  * The set is the union across all combat phases this turn. Cleared at end of turn.
+ *
+ * [battleAttackerIds] is the subset declared as attacking a **battle** (CR 508.1) in any combat
+ * this turn — backs `StatePredicate.AttackedABattleThisTurn` (War Historian).
  */
 @Serializable
 data class PlayerAttackersThisTurnComponent(
+    val attackerIds: Set<EntityId>,
+    val battleAttackerIds: Set<EntityId> = emptySet()
+) : Component
+
+/**
+ * The [PlayerAttackersThisTurnComponent] set as it stood at the end of this player's **own most
+ * recent turn** — "creatures that attacked during your last turn".
+ *
+ * Rolled over in the cleanup step of that player's turn, immediately before the this-turn set is
+ * cleared, and *only* on their own turn: cleanup runs at the end of every turn, so rolling
+ * unconditionally would let an intervening opponent's turn (during which this player declared no
+ * attackers) blank the record and make "your last turn" mean "the previous turn in the game".
+ *
+ * Backs `StatePredicate.AttackedLastTurn` — Goblin Rock Sled and Tangle Kelp's "doesn't untap
+ * during your untap step if it attacked during your last turn". Note the untap step it gates runs
+ * *before* that turn's cleanup, so the record read there is genuinely the previous turn's.
+ */
+@Serializable
+data class PlayerAttackersLastTurnComponent(
     val attackerIds: Set<EntityId>
 ) : Component
 

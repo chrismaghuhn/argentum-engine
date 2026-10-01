@@ -164,6 +164,7 @@ data class ChosenSemanticActionV1 private constructor(
                 is SaddleMount,
                 is SuspendCardFromHand,
                 is TakeMulligan,
+                is TakePlayerAction,
                 is TurnFaceUp,
                 is TypecycleCard,
                 is UnlockRoomDoor -> Unit

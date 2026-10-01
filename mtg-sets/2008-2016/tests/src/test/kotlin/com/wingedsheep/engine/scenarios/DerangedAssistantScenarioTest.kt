@@ -11,15 +11,23 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Deranged Assistant (ISD #52) — {1}{U} 1/1 Human Wizard, "{T}, Mill a card: Add {C}."
  *
  * Covers the `CostAtom.Mill` cost vocabulary this card introduced:
- * - payment mills the top card and produces {C} (happy path),
- * - CR 701.17b — the mana ability is surfaced as unaffordable on an empty library and submitting it
+ * - payment mills the top card and the ability then produces {C} (happy path),
+ * - CR 701.17b — the ability is surfaced as unaffordable on an empty library and submitting it
  *   anyway is rejected, rather than silently producing free mana,
  * - the mill is a *cost*, so the card is already in the graveyard by the time the mana exists.
+ *
+ * **This is not a mana ability.** CR 605.1a gained "and its cost and effect don't move any card to
+ * or from a library" on August 7, 2026, and the mill cost is exactly that, so the ability uses the
+ * stack like any other. The split that buys — cost paid at activation, mana only at resolution — is
+ * asserted below, because it is the entire observable difference and nothing on the printed card
+ * says which side of it this ability falls on.
  */
 class DerangedAssistantScenarioTest : FunSpec({
 
@@ -50,15 +58,24 @@ class DerangedAssistantScenarioTest : FunSpec({
 
         driver.submitSuccess(ActivateAbility(playerId = you, sourceId = assistant, abilityId = abilityId))
 
-        // {C} produced.
-        driver.state.getEntity(you)?.get<ManaPoolComponent>()?.colorless shouldBe 1
-        // Tapped as part of the cost.
+        // CR 605.1a — the mill cost keeps this off the mana-ability path, so the ability is on the
+        // stack and no mana exists yet.
+        driver.assertStackSize(1)
+        driver.state.getEntity(you)?.get<ManaPoolComponent>()?.colorless shouldBe 0
+
+        // Costs are still paid on activation, not on resolution: tapped, and the card already
+        // milled — one card, off the top, not a chosen one.
         driver.isTapped(assistant) shouldBe true
-        // The top card is now in the graveyard — one card, off the top, not a chosen one.
         libraryOf(driver, you).size shouldBe libraryBefore.size - 1
         driver.getGraveyard(you).size shouldBe graveyardBefore + 1
         (topCard in driver.getGraveyard(you)) shouldBe true
         (topCard in libraryOf(driver, you)) shouldBe false
+
+        driver.bothPass()
+
+        // {C} produced, once the ability resolved.
+        driver.assertStackSize(0)
+        driver.state.getEntity(you)?.get<ManaPoolComponent>()?.colorless shouldBe 1
     }
 
     test("CR 701.17b — the ability is unaffordable and rejected with an empty library") {
@@ -73,7 +90,7 @@ class DerangedAssistantScenarioTest : FunSpec({
         fun assistantAction() = driver.legalActions(you)
             .single { it.action.let { a -> a is ActivateAbility && a.sourceId == assistant } }
 
-        // With a library, the mana ability is offered and affordable.
+        // With a library, the ability is offered and affordable.
         assistantAction().affordable shouldBe true
 
         driver.replaceState(
@@ -85,7 +102,7 @@ class DerangedAssistantScenarioTest : FunSpec({
 
         // …and submitting it anyway is rejected — no free {C}.
         val result = driver.submit(ActivateAbility(playerId = you, sourceId = assistant, abilityId = abilityId))
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.state.getEntity(you)?.get<ManaPoolComponent>()?.colorless shouldBe 0
         driver.isTapped(assistant) shouldBe false
     }
@@ -103,9 +120,11 @@ class DerangedAssistantScenarioTest : FunSpec({
         driver.submitSuccess(ActivateAbility(playerId = you, sourceId = assistant, abilityId = abilityId))
         val second = driver.submit(ActivateAbility(playerId = you, sourceId = assistant, abilityId = abilityId))
 
-        second.isSuccess shouldBe false
+        second.outcome shouldNotBe Outcome.Done
         // Exactly one card milled — the failed second activation paid nothing.
         libraryOf(driver, you).size shouldBe libraryBefore - 1
+
+        driver.bothPass()
         driver.state.getEntity(you)?.get<ManaPoolComponent>()?.colorless shouldBe 1
     }
 })

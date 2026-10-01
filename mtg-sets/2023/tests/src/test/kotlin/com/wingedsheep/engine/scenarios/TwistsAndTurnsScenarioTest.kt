@@ -14,6 +14,7 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Twists and Turns // Mycoid Maze (LCI #217).
@@ -22,7 +23,7 @@ import io.kotest.matchers.shouldBe
  * that creature explores." + ETB "target creature you control explores" + "when a land you control
  * enters, if you control seven or more lands, transform".
  *
- * The headline feature is the [com.wingedsheep.sdk.scripting.ModifyExplore] replacement (CR 614).
+ * The headline feature is the [com.wingedsheep.sdk.scripting.ModifyKeywordAction] replacement (CR 614).
  * The discriminating test seeds a nonland on top of the library and a land beneath it: the
  * replacement's scry 1 lets the controller bottom the nonland so the explore that follows reveals
  * the land (→ hand, no +1/+1 counter). Without the replacement the explore would reveal the nonland
@@ -56,7 +57,7 @@ class TwistsAndTurnsScenarioTest : FunSpec({
 
         val twists = driver.putCardInHand(p1, "Twists and Turns")
         driver.giveMana(p1, Color.GREEN, 1)
-        driver.castSpell(p1, twists).isSuccess shouldBe true
+        driver.castSpell(p1, twists).outcome shouldBe Outcome.Done
 
         var sawScry = false
         var guard = 0
@@ -94,7 +95,7 @@ class TwistsAndTurnsScenarioTest : FunSpec({
         repeat(6) { driver.putLandOnBattlefield(p1, "Forest") }
 
         val seventh = driver.putCardInHand(p1, "Forest")
-        driver.playLand(p1, seventh).isSuccess shouldBe true
+        driver.playLand(p1, seventh).outcome shouldBe Outcome.Done
         var guard = 0
         while (guard++ < 20 && (driver.pendingDecision != null || driver.state.stack.isNotEmpty())) {
             if (driver.pendingDecision != null) driver.autoResolveDecision() else driver.bothPass()
@@ -110,7 +111,7 @@ class TwistsAndTurnsScenarioTest : FunSpec({
         repeat(4) { driver.putLandOnBattlefield(p1, "Forest") }
 
         val fifth = driver.putCardInHand(p1, "Forest")
-        driver.playLand(p1, fifth).isSuccess shouldBe true
+        driver.playLand(p1, fifth).outcome shouldBe Outcome.Done
         var guard = 0
         while (guard++ < 20 && (driver.pendingDecision != null || driver.state.stack.isNotEmpty())) {
             if (driver.pendingDecision != null) driver.autoResolveDecision() else driver.bothPass()

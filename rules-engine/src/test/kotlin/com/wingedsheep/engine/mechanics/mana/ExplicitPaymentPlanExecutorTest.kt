@@ -94,7 +94,7 @@ class ExplicitPaymentPlanExecutorTest : FunSpec({
         )
         val services = EngineServices(driver.cardRegistry)
         val result = ExplicitPaymentPlanExecutor(
-            manaSolver = ManaSolver(driver.cardRegistry),
+            manaSolver = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator),
             manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
         ).executeV2(
             state = driver.state,
@@ -124,7 +124,7 @@ class ExplicitPaymentPlanExecutorTest : FunSpec({
         )
         val originalState = driver.state
         val result = ExplicitPaymentPlanExecutor(
-            manaSolver = ManaSolver(driver.cardRegistry),
+            manaSolver = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator),
             manaAbilitySideEffectExecutor = EngineServices(driver.cardRegistry).manaAbilitySideEffectExecutor,
         ).executeV2(
             state = originalState,
@@ -143,7 +143,7 @@ class ExplicitPaymentPlanExecutorTest : FunSpec({
 
     test("V2 materialization preserves unspent fixed outputs and source provenance") {
         val (driver, player, sourceId) = setupWithFixedBundle()
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
         val manaAbilityKey = source.manaAbilityOptionsFor(Color.RED)
@@ -187,7 +187,7 @@ class ExplicitPaymentPlanExecutorTest : FunSpec({
             ability = null,
         )
         val result = ExplicitPaymentPlanExecutor(
-            manaSolver = ManaSolver(driver.cardRegistry),
+            manaSolver = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator),
             manaAbilitySideEffectExecutor = EngineServices(driver.cardRegistry).manaAbilitySideEffectExecutor,
         ).executeV2(
             state = driver.state,

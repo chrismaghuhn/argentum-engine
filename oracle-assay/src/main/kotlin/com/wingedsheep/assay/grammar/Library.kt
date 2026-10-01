@@ -5,6 +5,7 @@ import com.wingedsheep.assay.syntax.alternate
 import com.wingedsheep.assay.syntax.bind
 import com.wingedsheep.assay.syntax.phrase
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Patterns
 import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.scripting.GameObjectFilter
@@ -14,7 +15,6 @@ import com.wingedsheep.sdk.scripting.effects.CardSource
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
 import com.wingedsheep.sdk.scripting.effects.GatherCardsEffect
-import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.scripting.effects.MoveCollectionEffect
 import com.wingedsheep.sdk.scripting.effects.SearchDestination
 import com.wingedsheep.sdk.scripting.effects.SelectFromCollectionEffect
@@ -108,14 +108,14 @@ object Library {
     /**
      * "You may shuffle." — the optional shuffle Omen ends on.
      *
-     * `MayEffect` is the SDK's spelling of a player-chosen action inside a spell's effect. Note the
+     * `Effects.May` is the SDK's spelling of a player-chosen action inside a spell's effect. Note the
      * deliberate asymmetry with [Triggers]: on a *triggered ability* the same English lowers to the
      * ability's `optional` flag instead, because that is the field the hand-written cards set and
      * the one the trigger's own sentence introduces. Two SDK spellings of "you may", each canonical
      * in the sentence context that owns it, and [Triggers.abilityFor] is the lowering between them.
      */
     private val mayShuffle: Phrase<CardScript> = run {
-        val script = CardScript(spellEffect = MayEffect(ShuffleLibraryEffect()))
+        val script = CardScript(spellEffect = Effects.May(ShuffleLibraryEffect()))
         phrase("you may shuffle", name = "you may shuffle") {
             build { script }
             match { if (it == script) bind() else null }
@@ -203,16 +203,18 @@ object Library {
         canonicalForm: Boolean = true,
         destination: SearchDestination,
         reveal: Boolean = false,
+        entersTapped: Boolean = false,
     ): Phrase<CardScript> {
         fun scriptFor(filter: GameObjectFilter) = CardScript(
             spellEffect = Patterns.Library.searchLibrary(
                 filter = filter,
                 destination = destination,
+                entersTapped = entersTapped,
                 reveal = reveal,
             )
         )
         val rule = phrase<CardScript>(template, name = name) {
-            slot("filter", Filters.indefinite)
+            slot("filter", Filters.indefiniteCard)
             build { scriptFor(it.value("filter")) }
             match { script ->
                 val filter = searchedFilter(script) ?: return@match null
@@ -249,11 +251,14 @@ object Library {
             )
         )
         phrase(
-            "search your library for up to {n} {filter} cards, reveal them, put them into your hand, then shuffle",
+            "search your library for up to {n} {filter}, reveal them, put them into your hand, then shuffle",
             name = "search your library for several cards",
         ) {
             slot("n", Cardinals.word)
-            slot("filter", Filters.plural)
+            // The card noun, not [Filters.plural]: Oracle inflects the head noun and leaves the type
+            // phrase in front of it singular, so "creature cards" — never "creatures cards", which is
+            // what this rule printed while the noun was in its own template.
+            slot("filter", Filters.pluralCards)
             build { scriptFor(it.int("n"), it.value("filter")) }
             match { script ->
                 val filter = searchedFilter(script) ?: return@match null
@@ -294,12 +299,12 @@ object Library {
             )
         )
         phrase(
-            "search your library for {first} card and {second} card, reveal them, put them into " +
+            "search your library for {first} and {second}, reveal them, put them into " +
                 "your hand, then shuffle",
             name = "search your library for two cards",
         ) {
-            slot("first", Filters.indefinite)
-            slot("second", Filters.indefinite)
+            slot("first", Filters.indefiniteCard)
+            slot("second", Filters.indefiniteCard)
             build { scriptFor(it.value("first"), it.value("second")) }
             match { script ->
                 // `then` splices the *left* recipe's steps and appends the right one whole, so the
@@ -390,11 +395,11 @@ object Library {
             )
         )
         phrase(
-            "reveal the top card of your library. if it's {filter} card, put it onto the " +
+            "reveal the top card of your library. if it's {filter}, put it onto the " +
                 "battlefield. otherwise, put it into your graveyard",
             name = "reveal the top card and sort it",
         ) {
-            slot("filter", Filters.indefinite)
+            slot("filter", Filters.indefiniteCard)
             build { scriptFor(it.value("filter")) }
             match { script ->
                 val steps = (script.spellEffect as? CompositeEffect)?.effects ?: return@match null
@@ -414,30 +419,57 @@ object Library {
         mayShuffle,
         lookAtOpponentTopAndBury,
         search(
-            "search your library for {filter} card, put that card onto the battlefield, then shuffle",
+            "search your library for {filter}, put that card onto the battlefield, then shuffle",
             "search your library for a card to the battlefield",
             destination = SearchDestination.BATTLEFIELD,
         ),
         search(
-            "search your library for {filter} card, put it onto the battlefield, then shuffle",
+            "search your library for {filter}, put it onto the battlefield, then shuffle",
             "search your library for a card to the battlefield (pronoun)",
             canonicalForm = false,
             destination = SearchDestination.BATTLEFIELD,
         ),
+        // The tapped fetch — Evolving Wilds, Rampant Growth — is the same recipe with
+        // `entersTapped`. Here the pronoun is the majority printing (Oracle prints "put it onto the
+        // battlefield tapped" about five times as often as "put that card …"), so it is canonical
+        // and "that card" is the alternate, the reverse of the untapped pair above.
         search(
-            "search your library for {filter} card, reveal it, then shuffle and put that card on top",
+            "search your library for {filter}, put it onto the battlefield tapped, then shuffle",
+            "search your library for a card to the battlefield tapped",
+            destination = SearchDestination.BATTLEFIELD,
+            entersTapped = true,
+        ),
+        search(
+            "search your library for {filter}, put that card onto the battlefield tapped, then shuffle",
+            "search your library for a card to the battlefield tapped (that card)",
+            canonicalForm = false,
+            destination = SearchDestination.BATTLEFIELD,
+            entersTapped = true,
+        ),
+        search(
+            "search your library for {filter}, reveal it, then shuffle and put that card on top",
             "search your library for a card, revealed, to the top",
             destination = SearchDestination.TOP_OF_LIBRARY,
             reveal = true,
         ),
         search(
-            "search your library for {filter} card, put it into your hand, then shuffle",
+            "search your library for {filter}, put it into your hand, then shuffle",
             "search your library for a card to your hand",
             destination = SearchDestination.HAND,
         ),
         search(
-            "search your library for {filter} card, reveal it, put it into your hand, then shuffle",
+            "search your library for {filter}, reveal it, put it into your hand, then shuffle",
             "search your library for a card, revealed, to your hand",
+            destination = SearchDestination.HAND,
+            reveal = true,
+        ),
+        // Oracle spells the anaphor in the reveal clause both ways — "reveal it" and "reveal that
+        // card" — for one model, so the minority is an `alternate` on this rule's shape rather than
+        // a rule of its own. Goblin Matron, Wirewood Herald and the Harbinger cycle print it.
+        search(
+            "search your library for {filter}, reveal that card, put it into your hand, then shuffle",
+            "search your library for a card, revealed, to your hand (that card)",
+            canonicalForm = false,
             destination = SearchDestination.HAND,
             reveal = true,
         ),

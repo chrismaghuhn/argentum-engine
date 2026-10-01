@@ -6,6 +6,8 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutorRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.engine.core.Outcome
+import com.wingedsheep.engine.core.Rejection
 
 /**
  * Executes a list of effects in sequence, handling pauses, errors, and context updates.
@@ -32,7 +34,6 @@ class EffectContinuationRunner(
 
             val stateForExecution = if (stillRemaining.isNotEmpty()) {
                 val remainingContinuation = EffectContinuation(
-                    decisionId = "pending",
                     remainingEffects = stillRemaining,
                     effectContext = currentContext
                 )
@@ -54,12 +55,13 @@ class EffectContinuationRunner(
                 return EffectResult(
                     state = cleanState,
                     events = allEvents + result.events,
-                    error = result.error ?: "Unsupported path during continuation execution",
+                    outcome = result.outcome as? Outcome.Rejected
+                        ?: Outcome.Rejected(Rejection.ExecutionFailed("Unsupported path during continuation execution")),
                     diagnostics = allDiagnostics,
                 )
             }
 
-            if (!result.isSuccess && !result.isPaused) {
+            if (result.outcome !is Outcome.Done && result.outcome !is Outcome.Paused) {
                 currentState = if (stillRemaining.isNotEmpty()) {
                     val (_, stateWithoutCont) = result.state.popContinuation()
                     stateWithoutCont
@@ -70,10 +72,9 @@ class EffectContinuationRunner(
                 continue
             }
 
-            if (result.isPaused) {
-                return EffectResult.paused(
+            if (result.outcome is Outcome.Paused) {
+                return EffectResult.propagatePause(
                     result.state,
-                    result.pendingDecision!!,
                     allEvents + result.events,
                     diagnostics = allDiagnostics,
                 )
@@ -86,6 +87,7 @@ class EffectContinuationRunner(
                 result.state
             }
             allEvents.addAll(result.events)
+            currentContext = currentContext.authorizeObjectMoves(result.events)
 
             if (result.updatedCollections.isNotEmpty() ||
                 result.updatedSubtypeGroups.isNotEmpty() ||

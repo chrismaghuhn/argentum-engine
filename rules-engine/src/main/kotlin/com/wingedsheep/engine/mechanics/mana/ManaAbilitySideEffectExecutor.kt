@@ -1,12 +1,15 @@
 package com.wingedsheep.engine.mechanics.mana
 
+import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.LifeChangeReason
+import com.wingedsheep.engine.core.Outcome
 import com.wingedsheep.engine.core.TappedEvent
-import com.wingedsheep.engine.core.tap
+import com.wingedsheep.engine.core.tapForMana
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.DamageUtils
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
 import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.registry.CardRegistry
@@ -42,24 +45,21 @@ import com.wingedsheep.sdk.scripting.effects.Effect
  * (which the auto-tap path has already accounted for).
  */
 class ManaAbilitySideEffectExecutor(
+    private val zones: ZoneTransitionService,
     private val cardRegistry: CardRegistry,
     private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult
 ) {
 
-    /**
-     * Run side effects for a single auto-tapped source.
-     *
-     * @param state Current game state (already mutated by the caller to reflect tap).
-     * @param sourceId Permanent that was tapped.
-     * @param producedColor Color the source produced for the payment, or null for colorless.
-     * @param controllerId Player who controls the source / paid the cost.
-     */
     /**
      * Tap every source in [solution] (emitting [TappedEvent]) and run any
      * non-mana side effects of the matching mana ability. This is the
      * one-shot form for callers that already have a [ManaSolution] from
      * [ManaSolver]; the produced mana itself is still consumed separately
      * via [ManaSolution.manaProduced].
+     *
+     * The whole tap-and-side-effect sequence is one payment operation: when any selected
+     * ability's dynamic life payment or effect execution fails, the result is unsuccessful and
+     * carries the untouched input state.
      */
     fun tapSourcesWithSideEffects(
         state: GameState,
@@ -69,9 +69,9 @@ class ManaAbilitySideEffectExecutor(
         var currentState = state
         val events = mutableListOf<GameEvent>()
         for (source in solution.sources) {
-            val (tappedState, event) = tap(currentState, source.entityId)
+            val (tappedState, tapEvents) = tapForMana(currentState, source.entityId, controllerId)
             currentState = tappedState
-            event?.let(events::add)
+            events.addAll(tapEvents)
 
             val production = solution.manaProduced[source.entityId]
             val selectedUse = solution.manaAbilityUses[source.entityId]
@@ -83,15 +83,30 @@ class ManaAbilitySideEffectExecutor(
                 return ManaSideEffectExecution(state, emptyList(), success = false)
             }
 
+            val producedColor = selectedUse?.producedColor ?: production?.color
+            val selectedAbility = selectedUse?.ability
+                ?: production?.manaAbility
+                ?: production?.color?.let(source::manaAbilityFor)
+                ?: if (production != null) source.manaAbilityFor(null) else null
+
+            // Auto-tapping a source *is* the player activating its mana ability — the fast path is
+            // a UI shortcut, not a different game action (CR 605.3). Emit the activation event the
+            // manual path emits so "whenever you activate an ability" triggers see it (Elrond,
+            // Moon-Reader off an auto-tapped Llanowar Elves). Emitted after the TappedEvent: the
+            // tap is the cost, and the ability is activated once its costs are paid.
+            activationEvent(
+                currentState,
+                source.entityId,
+                controllerId,
+                selectedAbility ?: matchingManaAbility(currentState, source.entityId, producedColor),
+            )?.let(events::add)
+
             val sideEffectResult = runSideEffects(
                 state = currentState,
                 sourceId = source.entityId,
-                producedColor = selectedUse?.producedColor ?: production?.color,
+                producedColor = producedColor,
                 controllerId = controllerId,
-                selectedAbility = selectedUse?.ability
-                    ?: production?.manaAbility
-                    ?: production?.color?.let(source::manaAbilityFor)
-                    ?: if (production != null) source.manaAbilityFor(null) else null,
+                selectedAbility = selectedAbility,
             )
             if (!sideEffectResult.success) {
                 // Auto-tap is one payment operation. Roll back the tap and every earlier side
@@ -104,6 +119,80 @@ class ManaAbilitySideEffectExecutor(
         return ManaSideEffectExecution(currentState, events, success = true)
     }
 
+    /**
+     * The [AbilityActivatedEvent] for an auto-tapped mana source, or null if [sourceId] isn't a
+     * card (nothing to name in the event).
+     *
+     * `costsTap` is true by construction — this path only ever reaches sources it taps — so the
+     * Antiquities "without {T} in its activation cost" template correctly ignores these. `isExhaust`
+     * is read off the matching printed ability where one is found; an intrinsic land mana ability
+     * has no [ActivatedAbility] entry to consult and is never exhaust anyway.
+     */
+    fun activationEvent(
+        state: GameState,
+        sourceId: EntityId,
+        producedColor: Color?,
+        controllerId: EntityId,
+    ): AbilityActivatedEvent? = activationEvent(
+        state, sourceId, controllerId, matchingManaAbility(state, sourceId, producedColor)
+    )
+
+    private fun activationEvent(
+        state: GameState,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        matchingAbility: ActivatedAbility?,
+    ): AbilityActivatedEvent? {
+        val card = state.getEntity(sourceId)?.get<CardComponent>() ?: return null
+        return AbilityActivatedEvent(
+            sourceId = sourceId,
+            sourceName = card.name,
+            controllerId = controllerId,
+            abilityEntityId = null,
+            costsTap = true,
+            isManaAbility = true,
+            isExhaust = matchingAbility?.isExhaust == true
+        )
+    }
+
+    /**
+     * The mana ability of [sourceId] that produced [producedColor], if there is one: a printed one
+     * first, then one a resolved effect granted it (`GameState.grantedActivatedAbilities` — the
+     * auto-payer taps those too, e.g. Emrakul, the Exigent Doom's "{T}: Add {C}{C}").
+     */
+    private fun matchingManaAbility(
+        state: GameState,
+        sourceId: EntityId,
+        producedColor: Color?,
+    ): ActivatedAbility? = manaAbilityCandidates(state, sourceId, producedColor).firstOrNull()
+
+    /** Every printed, then runtime-granted, mana ability of [sourceId] that produces [producedColor]. */
+    private fun manaAbilityCandidates(
+        state: GameState,
+        sourceId: EntityId,
+        producedColor: Color?,
+    ): List<ActivatedAbility> {
+        val card = state.getEntity(sourceId)?.get<CardComponent>() ?: return emptyList()
+        val printed = cardRegistry.getCard(card.cardDefinitionId)?.script?.activatedAbilities.orEmpty()
+        val granted = state.grantedActivatedAbilities.asSequence()
+            .filter { it.entityId == sourceId }
+            .map { it.ability }
+        return (printed.asSequence() + granted)
+            .filter { it.isManaAbility && abilityProducesColor(it, producedColor) }
+            .toList()
+    }
+
+    /**
+     * Run side effects for a single auto-tapped source.
+     *
+     * @param state Current game state (already mutated by the caller to reflect tap).
+     * @param sourceId Permanent that was tapped.
+     * @param producedColor Color the source produced for the payment, or null for colorless.
+     * @param controllerId Player who controls the source / paid the cost.
+     * @param selectedAbility The exact mana ability the payment selected; when null the single
+     *   matching ability is used, and more than one candidate fails closed.
+     * @param resolvedPayLifeCost The life cost already resolved by the caller, if any.
+     */
     fun runSideEffects(
         state: GameState,
         sourceId: EntityId,
@@ -112,15 +201,12 @@ class ManaAbilitySideEffectExecutor(
         selectedAbility: ActivatedAbility? = null,
         resolvedPayLifeCost: Int? = null,
     ): ManaSideEffectExecution {
-        val card = state.getEntity(sourceId)?.get<CardComponent>()
+        state.getEntity(sourceId)?.get<CardComponent>()
             ?: return ManaSideEffectExecution(state, emptyList(), success = true)
-        val cardDef = cardRegistry.getCard(card.cardDefinitionId)
 
         val matchingAbility = selectedAbility ?: run {
-            val candidates = cardDef?.script?.activatedAbilities
-                ?.filter { it.isManaAbility && abilityProducesColor(it, producedColor) }
-                .orEmpty()
-            // No printed mana ability means there is no side effect to run (basic/intrinsic
+            val candidates = manaAbilityCandidates(state, sourceId, producedColor)
+            // No mana ability means there is no side effect to run (basic/intrinsic
             // sources use this path). Multiple candidates are unsafe without solver provenance.
             when {
                 candidates.isEmpty() -> return ManaSideEffectExecution(state, emptyList(), success = true)
@@ -147,11 +233,11 @@ class ManaAbilitySideEffectExecutor(
             sourceId = sourceId,
             controllerId = controllerId,
         )
-        if (lifeCost == null || lifeCost < 0 || currentState.lifeTotal(controllerId) < lifeCost) {
+        if (lifeCost == null || lifeCost < 0 || !currentState.canPayLife(controllerId, lifeCost)) {
             return ManaSideEffectExecution(state, emptyList(), success = false)
         }
         if (lifeCost > 0) {
-            val payment = LifePaymentService.pay(currentState, controllerId, lifeCost)
+            val payment = LifePaymentService.pay(zones, currentState, controllerId, lifeCost)
                 ?: return ManaSideEffectExecution(state, emptyList(), success = false)
             currentState = payment.first
             events.addAll(payment.second)
@@ -167,14 +253,14 @@ class ManaAbilitySideEffectExecutor(
 
         for (sub in sideEffects) {
             val result = effectExecutor(currentState, sub, context)
-            if (!result.isSuccess) {
+            // Side effects from auto-tap should never pause for player decisions
+            // (mana abilities don't use the stack); a pause or a rejection is therefore a
+            // failed auto-payment and is rolled back transactionally.
+            if (result.outcome !is Outcome.Done) {
                 return ManaSideEffectExecution(state, emptyList(), success = false)
             }
             currentState = result.state
             events.addAll(result.events)
-            // Side effects from auto-tap should never pause for player decisions
-            // (mana abilities don't use the stack); a pause is therefore a failed
-            // auto-payment and was handled transactionally above.
         }
         return ManaSideEffectExecution(currentState, events, success = true)
     }
@@ -231,8 +317,8 @@ class ManaAbilitySideEffectExecutor(
          * built without an [EngineServices] wiring). Side effects are dropped on the
          * floor — production code must use the executor wired by [EngineServices].
          */
-        fun noOp(cardRegistry: CardRegistry): ManaAbilitySideEffectExecutor =
-            ManaAbilitySideEffectExecutor(cardRegistry) { state, _, _ ->
+        fun noOp(zones: ZoneTransitionService): ManaAbilitySideEffectExecutor =
+            ManaAbilitySideEffectExecutor(zones, zones.cardRegistry) { state, _, _ ->
                 EffectResult.success(state)
             }
     }

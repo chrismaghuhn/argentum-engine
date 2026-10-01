@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.actions.room
 
+import com.wingedsheep.engine.mechanics.mana.withSpendingColors
 import com.wingedsheep.engine.core.DoorUnlockedEvent
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
@@ -7,14 +8,11 @@ import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.RoomFullyUnlockedEvent
-import com.wingedsheep.engine.core.tap
+import com.wingedsheep.engine.core.tapForMana
 import com.wingedsheep.engine.core.UnlockRoomDoor
-import com.wingedsheep.engine.event.TriggerDetector
-import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.handlers.actions.ActionHandler
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
-import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.layers.StaticAbilityHandler
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
@@ -44,8 +42,6 @@ import kotlin.reflect.KClass
 class UnlockRoomDoorHandler(
     private val manaSolver: ManaSolver,
     private val costHandler: CostHandler,
-    private val triggerDetector: TriggerDetector,
-    private val triggerProcessor: TriggerProcessor,
     private val manaAbilitySideEffectExecutor: ManaAbilitySideEffectExecutor,
     cardRegistry: com.wingedsheep.engine.registry.CardRegistry,
 ) : ActionHandler<UnlockRoomDoor> {
@@ -63,7 +59,7 @@ class UnlockRoomDoorHandler(
     private val staticAbilityHandler = StaticAbilityHandler(cardRegistry)
 
     override fun validate(state: GameState, action: UnlockRoomDoor): String? {
-        if (state.priorityPlayerId != action.playerId) {
+        if (!state.hasPriority(action.playerId)) {
             return "You don't have priority"
         }
         if (!state.isActiveTurnFor(action.playerId)) {
@@ -108,7 +104,7 @@ class UnlockRoomDoorHandler(
             is PaymentStrategy.FromPool -> {
                 val poolComponent = state.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
-                val pool = poolComponent.toManaPool()
+                val pool = poolComponent.toManaPool().withSpendingColors(state, action.playerId)
                 if (!costHandler.canPayManaCost(pool, cost, unlockContext)) {
                     return "Insufficient mana in pool to unlock ${face.name}"
                 }
@@ -157,7 +153,7 @@ class UnlockRoomDoorHandler(
             is PaymentStrategy.FromPool -> {
                 val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
-                val pool = poolComponent.toManaPool()
+                val pool = poolComponent.toManaPool().withSpendingColors(currentState, action.playerId)
                 val newPool = costHandler.payManaCost(pool, cost, unlockContext)
                     ?: return ExecutionResult.error(currentState, "Insufficient mana in pool")
                 currentState = currentState.updateEntity(action.playerId) { c ->
@@ -181,7 +177,7 @@ class UnlockRoomDoorHandler(
             is PaymentStrategy.AutoPay -> {
                 val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
-                val pool = poolComponent.toManaPool()
+                val pool = poolComponent.toManaPool().withSpendingColors(currentState, action.playerId)
                 val partialResult = pool.payPartial(cost, unlockContext)
                 val poolAfterPayment = partialResult.newPool
                 val remainingCost = partialResult.remainingCost
@@ -237,9 +233,9 @@ class UnlockRoomDoorHandler(
             }
             is PaymentStrategy.Explicit -> {
                 for (sourceId in action.paymentStrategy.manaAbilitiesToActivate) {
-                    val (tappedState, tapEvent) = tap(currentState, sourceId)
+                    val (tappedState, tapEvents) = tapForMana(currentState, sourceId, action.playerId)
                     currentState = tappedState
-                    tapEvent?.let(events::add)
+                    events.addAll(tapEvents)
                 }
             }
             is PaymentStrategy.ExplicitV2 ->
@@ -262,25 +258,6 @@ class UnlockRoomDoorHandler(
         currentState = stateAfterUnlock
         events.addAll(unlockEvents)
 
-        // Detect and process triggers from the door-unlock events.
-        val triggers = triggerDetector.detectTriggers(currentState, events)
-        if (triggers.isNotEmpty()) {
-            val triggerResult = triggerProcessor.processTriggers(currentState, triggers)
-            if (triggerResult.isPaused) {
-                return ExecutionResult.paused(
-                    triggerResult.state.withPriority(action.playerId),
-                    triggerResult.pendingDecision!!,
-                    events + triggerResult.events,
-                    diagnostics = triggerResult.diagnostics,
-                )
-            }
-            return ExecutionResult.success(
-                triggerResult.newState.withPriority(action.playerId),
-                events + triggerResult.events,
-                triggerResult.diagnostics,
-            )
-        }
-
         // Player retains priority after the special action; clear priorityPassedBy so
         // the opponent's prior pass doesn't carry over.
         return ExecutionResult.success(currentState.withPriority(action.playerId), events)
@@ -291,8 +268,6 @@ class UnlockRoomDoorHandler(
             UnlockRoomDoorHandler(
                 manaSolver = services.manaSolver,
                 costHandler = services.costHandler,
-                triggerDetector = services.triggerDetector,
-                triggerProcessor = services.triggerProcessor,
                 manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
                 cardRegistry = services.cardRegistry,
             )

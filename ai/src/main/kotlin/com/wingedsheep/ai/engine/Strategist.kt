@@ -28,13 +28,16 @@ import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.DeclareBlockers
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.PermanentAttachedEvent
+import com.wingedsheep.engine.handlers.costs.GraveyardTotalExileResolver
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.MeaningfulActionFilter
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 
 /**
  * Chooses which [LegalAction] to take when the AI has priority.
@@ -219,8 +222,16 @@ class Strategist(
         val dropped = if (insightSink != null) mutableListOf<AiActionOption>() else null
         var searched = 0
         if (pass != null) {
+            val passSimulation = simulator.simulate(evaluationState, pass.action)
             leaves += pass
-            leafStates += simulator.simulate(evaluationState, pass.action).state
+            // The pass leaf is positional — `leafScores.first()` below is this entry — so an
+            // unfinished simulation cannot drop it. Fall back to the position we are standing in,
+            // which is the same "do nothing" reference the no-pass branch uses.
+            leafStates += if (passSimulation is SimulationResult.StoppedAtLimit) {
+                evaluationState
+            } else {
+                passSimulation.state
+            }
             leafMoves.add(emptySet())
         }
         for (action in affordable) {
@@ -234,6 +245,9 @@ class Strategist(
                 // authoritative processor, it is not a candidate the AI may submit.
                 simulation is SimulationResult.Illegal -> false
                 movesAgain -> false
+                // Automatic resolution ran out of transitions, so the retained board is mid-flight.
+                // Scoring it would rank a candidate on a position it never actually reaches.
+                simulation is SimulationResult.StoppedAtLimit -> false
                 simulation is SimulationResult.NeedsDecision -> true
                 // A line that walks back into a position we have already acted from has accomplished
                 // nothing, whatever the leaf score says — and it is not a one-off mistake, because it
@@ -257,6 +271,8 @@ class Strategist(
                         note = when {
                             illegal -> "dropped — illegal once materialized"
                             movesAgain -> "dropped — moves an attachment already moved twice this step"
+                            simulation is SimulationResult.StoppedAtLimit ->
+                                "dropped — simulation ran out of automatic transitions"
                             else -> "dropped — leads back to a position already acted from"
                         },
                         submittable = !illegal,
@@ -304,7 +320,7 @@ class Strategist(
         // while a pump that is about to wear off in cleanup gets a penalty instead of an
         // encouragement. Keeping both would double-count the first and cancel the second.
         val adjustedPassScore =
-            if (!holdPolicy.isEnabled && state.activePlayerId != playerId && state.step == Step.END) {
+            if (!holdPolicy.isEnabled && !state.isActiveTurnFor(playerId) && state.step == Step.END) {
                 passScore - 1.5
             } else {
                 passScore
@@ -396,7 +412,7 @@ class Strategist(
                 turnNumber = state.turnNumber,
                 step = state.step.name,
                 activePlayerId = state.activePlayerId,
-                onOwnTurn = state.activePlayerId == playerId,
+                onOwnTurn = state.isActiveTurnFor(playerId),
                 baselineLabel = "Pass priority",
                 baselineScore = adjustedPassScore,
                 chosenLabel = options.firstOrNull { it.chosen }?.label ?: "Pass priority",
@@ -455,7 +471,13 @@ class Strategist(
         // Ordered so the budget that already refines pays nothing at all here — no digest, no
         // second simulation. `chooseAction` digests the leaf it keeps either way.
         if (budget.allowances.refineTargetsBySimulation) return materialized to simulation
-        if (simulation is SimulationResult.Illegal || simulation is SimulationResult.NeedsDecision) {
+        // The three results whose state `chooseAction` never digests. A StoppedAtLimit board is
+        // mid-flight, so refining targets against its digest would compare against a position the
+        // candidate does not actually reach — hand it back and let the caller drop it.
+        if (simulation is SimulationResult.Illegal ||
+            simulation is SimulationResult.NeedsDecision ||
+            simulation is SimulationResult.StoppedAtLimit
+        ) {
             return materialized to simulation
         }
         if (StateProgress.digest(simulation.settledState) != here) return materialized to simulation
@@ -609,7 +631,7 @@ class Strategist(
                 turnNumber = state.turnNumber,
                 step = state.step.name,
                 activePlayerId = state.activePlayerId,
-                onOwnTurn = state.activePlayerId == playerId,
+                onOwnTurn = state.isActiveTurnFor(playerId),
                 baselineLabel = baselineLabel,
                 baselineScore = baselineScore,
                 chosenLabel = chosenLabel,
@@ -721,13 +743,16 @@ class Strategist(
         forceTargetRefinement: Boolean = false,
     ): com.wingedsheep.engine.core.GameAction {
         val baseAction = withAutomaticPayments(action)
-        if (TargetSelection.targetsAlreadyFilled(baseAction) != false) return baseAction
+        if (TargetSelection.targetsAlreadyFilled(baseAction) != false) {
+            return withSumGatedExilePayment(state, action, baseAction)
+        }
         if (!budget.allowances.refineTargetsBySimulation && !forceTargetRefinement) {
             return heuristicTargets(state, action, playerId)
         }
         val targetInfos = TargetSelection.fillableRequirements(action, useMeaningfulFilter)
             ?: return heuristicTargets(state, action, playerId)
 
+        val rankTarget = TargetSelection.ranker(state, action, playerId, intents)
         // Heuristic baseline for every requirement, then refine each one by simulation.
         val chosenTargets = mutableListOf<com.wingedsheep.engine.state.components.stack.ChosenTarget>()
         val chosenIds = mutableSetOf<EntityId>()
@@ -738,11 +763,16 @@ class Strategist(
             } else {
                 info.validTargets
             }
-            val selectedId = available.maxByOrNull { TargetSelection.rank(state, it, playerId, intents) }
-                ?: return heuristicTargets(state, action, playerId)
-            chosenTargets += TargetSelection.toChosenTarget(state, info, selectedId, playerId)
-            chosenIds += selectedId
-            chosenTargetIds += selectedId
+            val picks = TargetSelection.pick(state, info, available, rankTarget)
+            if (picks.isEmpty() || picks.size < info.minTargets) return heuristicTargets(state, action, playerId)
+            picks.forEach { chosenTargets += TargetSelection.toChosenTarget(state, info, it, playerId) }
+            chosenIds += picks
+            chosenTargetIds += picks
+        }
+        // The refinement below swaps target `i` for requirement `i`, which only lines up while every
+        // requirement holds exactly one target; a multi-target slot keeps its heuristic picks.
+        if (chosenTargets.size != targetInfos.size) {
+            return withSumGatedExilePayment(state, action, TargetSelection.applyTargets(baseAction, chosenTargets))
         }
 
         // Only paid for once a requirement actually has rival targets to simulate — every
@@ -760,7 +790,7 @@ class Strategist(
             val priorIds = chosenTargetIds.take(i).toSet()
             val candidates = info.validTargets
                 .filterNot { info.mustDifferFromEarlier && it in priorIds }
-                .sortedByDescending { TargetSelection.rank(state, it, playerId, intents) }
+                .sortedByDescending(rankTarget)
                 .take(targetCandidates)
             if (candidates.size <= 1) continue
             val best = candidates.maxByOrNull { candidate ->
@@ -770,17 +800,23 @@ class Strategist(
                 // A target that resolves back into the position we are standing in is not a target
                 // choice, it is a no-op wearing one — Aphetto Alchemist untapping itself. Rank it
                 // below every real option, so `chooseAction` only ever drops the whole ability as
-                // inert when *no* target does anything.
-                if (StateProgress.digest(result.settledState) == here) {
-                    Double.NEGATIVE_INFINITY
-                } else {
-                    evaluator.evaluate(result.state, result.state.projectedState, playerId)
+                // inert when *no* target does anything. A target whose simulation never finished
+                // ranks there too, for the same reason: we cannot say what it does. The *settled*
+                // leaf is what is compared — see [SimulationResult.settledState].
+                result.scoreOrRankLast { leaf ->
+                    if (StateProgress.digest(result.settledState) == here) {
+                        Double.NEGATIVE_INFINITY
+                    } else {
+                        evaluator.evaluate(leaf, leaf.projectedState, playerId)
+                    }
                 }
             } ?: continue
             chosenTargets[i] = TargetSelection.toChosenTarget(state, info, best, playerId)
             chosenTargetIds[i] = best
         }
-        return TargetSelection.applyTargets(baseAction, chosenTargets)
+        return withSumGatedExilePayment(
+            state, action, TargetSelection.applyTargets(baseAction, chosenTargets)
+        )
     }
 
     /** The cheap target pick — one heuristic choice per requirement, no simulation. */
@@ -788,9 +824,12 @@ class Strategist(
         state: GameState,
         action: LegalAction,
         playerId: EntityId,
-    ): com.wingedsheep.engine.core.GameAction = TargetSelection.fillHeuristically(
-        state, action.copy(action = withAutomaticPayments(action)), playerId,
-        fillPartialRequirements = useMeaningfulFilter, intents = intents
+    ): com.wingedsheep.engine.core.GameAction = withSumGatedExilePayment(
+        state, action,
+        TargetSelection.fillHeuristically(
+            state, action.copy(action = withAutomaticPayments(action)), playerId,
+            fillPartialRequirements = useMeaningfulFilter, intents = intents
+        ),
     )
 
     /**
@@ -804,6 +843,100 @@ class Strategist(
      */
     private fun withAutomaticPayments(action: LegalAction): GameAction =
         AutomaticPaymentSelection.fill(action)
+
+    /** The entity a chosen target points at, whichever arm of the union it is. */
+    private fun targetEntityId(target: ChosenTarget): EntityId = when (target) {
+        is ChosenTarget.Player -> target.playerId
+        is ChosenTarget.Permanent -> target.entityId
+        is ChosenTarget.Card -> target.cardId
+        is ChosenTarget.Spell -> target.spellEntityId
+    }
+
+    /**
+     * Pay a **sum-gated graveyard exile** cast cost — collect evidence N and its filtered sibling —
+     * once the targets are known.
+     *
+     * Every other additional cost is filled by [withAutomaticPayments] before targeting, which is
+     * where the AI picks its targets from. This one can't be: Urgent Necropsy's threshold *is* the
+     * summed mana value of the targets ("collect evidence X, where X is the total mana value of the
+     * permanents this spell targets"), so it isn't determined until CR 601.2f, after the targets are
+     * announced at 601.2c. `exileWeightPerTarget` is what the enumerator ships for exactly that, and
+     * this runs on the finished action rather than the bare one.
+     *
+     * Cards are spent highest-mana-value-first, the same choice `CollectEvidenceResolver.autoSelect`
+     * makes, so the AI's selection and the engine's fallback can't disagree about what a payment
+     * looks like. When the graveyard can't cover what was targeted the *targets* give way, trimmed
+     * from the end until the price is affordable (down to none, which prices at 0 and is always
+     * payable): per the printed ruling an unreachable threshold means the caster "can't choose to
+     * collect evidence at all", so such a cast would simply be rejected — trimming turns a rejected
+     * action into a smaller legal one, and never into a worse one, since a target the AI drops was
+     * one it could not have kept.
+     */
+    private fun withSumGatedExilePayment(
+        state: GameState,
+        action: LegalAction,
+        gameAction: GameAction,
+    ): GameAction {
+        val cast = gameAction as? CastSpell ?: return gameAction
+        val info = action.additionalCostInfo ?: return gameAction
+        if (info.costType != "CollectEvidence" && info.costType != "ExileForTotal") return gameAction
+        if (info.exileCardTypes.isNotEmpty()) return withCardTypeUnionExilePayment(state, info, cast)
+
+        // Most expensive first: the fewest cards that clear the floor.
+        val pool = info.validExileTargets
+            .filter { state.getEntity(it) != null }
+            .sortedByDescending { info.exileCardWeights[it] ?: 0 }
+        val available = pool.sumOf { info.exileCardWeights[it] ?: 0 }
+
+        var targets = cast.targets
+        var required = info.exileMinTotalWeight + targets.sumOf {
+            info.exileWeightPerTarget[targetEntityId(it)] ?: 0
+        }
+        while (required > available && targets.isNotEmpty()) {
+            targets = targets.dropLast(1)
+            required = info.exileMinTotalWeight + targets.sumOf {
+                info.exileWeightPerTarget[targetEntityId(it)] ?: 0
+            }
+        }
+        if (required > available) return gameAction // nothing left to trim; the engine will refuse
+
+        val chosen = mutableListOf<EntityId>()
+        var total = 0
+        for (cardId in pool) {
+            if (total >= required) break
+            chosen += cardId
+            total += info.exileCardWeights[cardId] ?: 0
+        }
+        return cast.copy(
+            targets = targets,
+            additionalCostPayment = (cast.additionalCostPayment ?: AdditionalCostPayment())
+                .copy(exiledCards = chosen),
+        )
+    }
+
+    /**
+     * The union-measured form of [withSumGatedExilePayment] — "with four or more card types among
+     * them" (Nethergoyf's escape). Delegates to the engine's own greedy cover so the AI and the
+     * fallback pick can't drift.
+     */
+    private fun withCardTypeUnionExilePayment(
+        state: GameState,
+        info: com.wingedsheep.engine.legalactions.AdditionalCostData,
+        cast: CastSpell,
+    ): GameAction {
+        val pool = info.validExileTargets.filter { state.getEntity(it) != null }
+        val candidates = GraveyardTotalExileResolver.Candidates(
+            cards = pool,
+            weightById = info.exileCardWeights,
+            typesById = pool.associateWith { info.exileCardTypes[it].orEmpty().toSet() },
+        )
+        val chosen = GraveyardTotalExileResolver.autoSelect(candidates, info.exileMinTotalWeight)
+        if (chosen.isEmpty()) return cast // unreachable; the engine will refuse
+        return cast.copy(
+            additionalCostPayment = (cast.additionalCostPayment ?: AdditionalCostPayment())
+                .copy(exiledCards = chosen),
+        )
+    }
 
     /**
      * When both a normal cast and a kicker/offspring variant of the same card are

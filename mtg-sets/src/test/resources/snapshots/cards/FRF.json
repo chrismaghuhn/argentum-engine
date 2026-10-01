@@ -1,3 +1,87 @@
+// Bathe in Dragonfire
+{
+    "name": "Bathe in Dragonfire",
+    "manaCost": "{2}{R}",
+    "typeLine": "Sorcery",
+    "oracleText": "Bathe in Dragonfire deals 4 damage to target creature.",
+    "script": {
+        "spellEffect": {
+            "type": "DealDamage",
+            "amount": {
+                "type": "Fixed",
+                "amount": 4
+            },
+            "target": {
+                "type": "BoundVariable",
+                "name": "t0"
+            }
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "creature"
+                },
+                "id": "t0"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "92",
+        "artist": "Chris Rallis",
+        "flavorText": "The scent of cooked flesh lingers in the charred landscape of Tarkir.",
+        "imageUri": "https://cards.scryfall.io/normal/front/b/8/b8cc6931-2005-4d0a-a42a-ce8bc279372e.jpg?1783938691"
+    },
+    "colorIdentityOverride": [
+        "RED"
+    ]
+}
+
+// Collateral Damage
+{
+    "name": "Collateral Damage",
+    "manaCost": "{R}",
+    "typeLine": "Instant",
+    "oracleText": "As an additional cost to cast this spell, sacrifice a creature.\nCollateral Damage deals 3 damage to any target.",
+    "script": {
+        "spellEffect": {
+            "type": "DealDamage",
+            "amount": {
+                "type": "Fixed",
+                "amount": 3
+            },
+            "target": {
+                "type": "BoundVariable",
+                "name": "t0"
+            }
+        },
+        "targetRequirements": [
+            {
+                "type": "AnyTarget",
+                "id": "t0"
+            }
+        ],
+        "additionalCosts": [
+            {
+                "type": "AdditionalAtom",
+                "atom": {
+                    "type": "AtomSacrifice",
+                    "filter": "creature"
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "95",
+        "artist": "Ryan Barger",
+        "flavorText": "It is much easier to create fire than to contain it.",
+        "imageUri": "https://cards.scryfall.io/normal/front/f/b/fb738362-b0b4-4811-9fbf-5f45c852c822.jpg?1783938691"
+    },
+    "colorIdentityOverride": [
+        "RED"
+    ]
+}
+
 // Feral Krushok
 {
     "name": "Feral Krushok",
@@ -35,7 +119,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Flamewake Phoenix:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "BEGIN_COMBAT"
@@ -122,6 +206,53 @@
     ]
 }
 
+// Mardu Strike Leader
+{
+    "name": "Mardu Strike Leader",
+    "manaCost": "{2}{B}",
+    "typeLine": "Creature — Human Warrior",
+    "oracleText": "Whenever this creature attacks, create a 2/1 black Warrior creature token.\nDash {3}{B} (You may cast this spell for its dash cost. If you do, it gains haste, and it's returned from the battlefield to its owner's hand at the beginning of the next end step.)",
+    "creatureStats": {
+        "power": 3,
+        "toughness": 2
+    },
+    "keywordAbilities": [
+        {
+            "type": "Dash",
+            "cost": "{3}{B}"
+        }
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Mardu Strike Leader:1",
+                "trigger": "AttackEvent",
+                "effect": {
+                    "type": "CreateToken",
+                    "power": 2,
+                    "toughness": 1,
+                    "colors": [
+                        "BLACK"
+                    ],
+                    "creatureTypes": [
+                        "Warrior"
+                    ]
+                },
+                "descriptionOverride": "Whenever this creature attacks, create a 2/1 black Warrior creature token."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "75",
+        "rarity": "RARE",
+        "artist": "Jason Rainville",
+        "imageUri": "https://cards.scryfall.io/normal/front/c/9/c93fd5f0-fb62-42cc-8c7d-c0368e191c4b.jpg?1783938696"
+    },
+    "colorIdentityOverride": [
+        "BLACK"
+    ]
+}
+
 // Monastery Mentor
 {
     "name": "Monastery Mentor",
@@ -138,7 +269,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Monastery Mentor:1",
                 "trigger": {
                     "type": "SpellCastEvent",
                     "spellFilter": {
@@ -162,7 +293,7 @@
                 }
             },
             {
-                "id": "ability_2",
+                "id": "Monastery Mentor:2",
                 "trigger": {
                     "type": "SpellCastEvent",
                     "spellFilter": {
@@ -232,7 +363,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Noxious Dragon:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "from": "Battlefield",
@@ -245,7 +376,7 @@
                         "type": "MoveToZone",
                         "target": {
                             "type": "BoundVariable",
-                            "name": "target"
+                            "name": "t0"
                         },
                         "destination": "Graveyard",
                         "byDestruction": true
@@ -256,7 +387,7 @@
                     "filter": {
                         "baseFilter": "creature mv<=3"
                     },
-                    "id": "target"
+                    "id": "t0"
                 }
             }
         ]
@@ -282,7 +413,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Outpost Siege:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -300,11 +431,11 @@
                                     "amount": 1
                                 }
                             },
-                            "storeAs": "exiledCard"
+                            "storeAs": "gathered0"
                         },
                         {
                             "type": "MoveCollection",
-                            "from": "exiledCard",
+                            "from": "gathered0",
                             "destination": {
                                 "type": "ToZone",
                                 "zone": "Exile"
@@ -312,7 +443,7 @@
                         },
                         {
                             "type": "GrantMayPlayFromExile",
-                            "from": "exiledCard"
+                            "from": "gathered0"
                         }
                     ]
                 },
@@ -322,7 +453,7 @@
                 }
             },
             {
-                "id": "ability_2",
+                "id": "Outpost Siege:2",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "filter": "creature ctrl:you",
@@ -337,12 +468,12 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirement": {
                     "type": "AnyTarget",
-                    "id": "target"
+                    "id": "t0"
                 },
                 "triggerRestriction": {
                     "type": "SourceChosenModeIs",
@@ -398,7 +529,7 @@
                         "keyword": "INDESTRUCTIBLE",
                         "target": {
                             "type": "BoundVariable",
-                            "name": "target"
+                            "name": "t0"
                         }
                     },
                     "targetRequirements": [
@@ -407,7 +538,7 @@
                             "filter": {
                                 "baseFilter": "creature"
                             },
-                            "id": "target"
+                            "id": "t0"
                         }
                     ],
                     "description": "Target creature gains indestructible until end of turn. (Damage and effects that say \"destroy\" don't destroy it.)"
@@ -417,7 +548,7 @@
                         "type": "MoveToZone",
                         "target": {
                             "type": "BoundVariable",
-                            "name": "target"
+                            "name": "t1"
                         },
                         "destination": "Graveyard",
                         "byDestruction": true
@@ -428,7 +559,7 @@
                             "filter": {
                                 "baseFilter": "creature tou>=4"
                             },
-                            "id": "target"
+                            "id": "t1"
                         }
                     ],
                     "description": "Destroy target creature with toughness 4 or greater"

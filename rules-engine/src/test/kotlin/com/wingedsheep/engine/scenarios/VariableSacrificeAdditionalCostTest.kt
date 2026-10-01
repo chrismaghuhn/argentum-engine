@@ -26,6 +26,8 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /** Characterization tests for the generic optional variable sacrifice cost rail. */
 class VariableSacrificeAdditionalCostTest : FunSpec({
@@ -92,7 +94,7 @@ class VariableSacrificeAdditionalCostTest : FunSpec({
             }
 
         val costInfo = action.additionalCostInfo.shouldNotBeNull()
-        costInfo.costType shouldBe "VariableSacrifice"
+        costInfo.costType shouldBe "SacrificeVariable"
         costInfo.validSacrificeTargets shouldBe listOf(first, second)
         costInfo.sacrificeMinCount shouldBe 1
         costInfo.sacrificeMaxCount shouldBe 2
@@ -107,7 +109,7 @@ class VariableSacrificeAdditionalCostTest : FunSpec({
 
         driver.submit(
             CastSpell(playerId = player, cardId = spell, paymentStrategy = PaymentStrategy.AutoPay)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         (fodder in driver.state.getBattlefield()) shouldBe true
         stackSpell(driver).sacrificedPermanents shouldBe emptyList()
@@ -120,7 +122,7 @@ class VariableSacrificeAdditionalCostTest : FunSpec({
         val spell = driver.putCardInHand(player, variableSacrificeProbe.name)
         driver.putLandOnBattlefield(player, "Plains")
 
-        castWithVariableSacrifice(driver, player, spell, listOf(fodder)).isSuccess shouldBe true
+        castWithVariableSacrifice(driver, player, spell, listOf(fodder)).outcome shouldBe Outcome.Done
 
         val stackSpell = stackSpell(driver)
         stackSpell.sacrificedPermanents.map { it.entityId } shouldBe listOf(fodder)
@@ -137,7 +139,7 @@ class VariableSacrificeAdditionalCostTest : FunSpec({
         val spell = driver.putCardInHand(player, variableSacrificeProbe.name)
         driver.putLandOnBattlefield(player, "Plains")
 
-        castWithVariableSacrifice(driver, player, spell, listOf(normal, token)).isSuccess shouldBe true
+        castWithVariableSacrifice(driver, player, spell, listOf(normal, token)).outcome shouldBe Outcome.Done
 
         val stackSpell = stackSpell(driver)
         stackSpell.sacrificedPermanents.map { it.entityId } shouldBe listOf(normal, token)
@@ -169,7 +171,7 @@ class VariableSacrificeAdditionalCostTest : FunSpec({
         action.affordable shouldBe false
         action.additionalCostInfo?.sacrificeMaxCount shouldBe 0
 
-        castWithVariableSacrifice(driver, player, spell, emptyList()).isSuccess shouldBe false
+        castWithVariableSacrifice(driver, player, spell, emptyList()).outcome shouldNotBe Outcome.Done
         (spell in driver.state.getZone(ZoneKey(player, Zone.HAND))) shouldBe true
         driver.state.stack.any { it == spell } shouldBe false
     }
@@ -183,8 +185,8 @@ class VariableSacrificeAdditionalCostTest : FunSpec({
         val spell = driver.putCardInHand(player, variableSacrificeProbe.name)
         driver.putLandOnBattlefield(player, "Plains")
 
-        castWithVariableSacrifice(driver, player, spell, listOf(own, own)).isSuccess shouldBe false
-        castWithVariableSacrifice(driver, player, spell, listOf(theirs)).isSuccess shouldBe false
+        castWithVariableSacrifice(driver, player, spell, listOf(own, own)).outcome shouldNotBe Outcome.Done
+        castWithVariableSacrifice(driver, player, spell, listOf(theirs)).outcome shouldNotBe Outcome.Done
         (own in driver.state.getBattlefield()) shouldBe true
         (theirs in driver.state.getBattlefield()) shouldBe true
         (spell in driver.state.getZone(ZoneKey(player, Zone.HAND))) shouldBe true

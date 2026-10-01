@@ -8,6 +8,7 @@ import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import com.wingedsheep.engine.legalactions.TargetInfo
@@ -61,7 +62,8 @@ import com.wingedsheep.sdk.scripting.TimingRule
 import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -174,7 +176,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         colorIdentity = "U"
         typeLine = "Instant"
         spell {
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.GainLife(1)
         }
     }
@@ -195,7 +197,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             )
         }
         spell {
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.GainLife(1)
         }
     }
@@ -216,7 +218,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             )
         }
         spell {
-            target = TargetCreature(optional = true)
+            target = TargetObject(filter = TargetFilter.Creature, optional = true)
             effect = Effects.GainLife(1)
         }
     }
@@ -228,7 +230,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         spell {
             modal(chooseCount = 1) {
                 mode("Target creature gains 1 life") {
-                    target("target creature", Targets.Creature)
+                    target(TargetFilter.Creature)
                     effect = Effects.GainLife(1)
                 }
                 mode("Gain 1 life") {
@@ -256,7 +258,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         spell {
             modal(chooseCount = 1) {
                 mode("Target creature gains 1 life") {
-                    target("target creature", Targets.Creature)
+                    target(TargetFilter.Creature)
                     effect = Effects.GainLife(1)
                 }
                 mode("Gain 1 life") {
@@ -282,7 +284,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         spell {
             modal(chooseCount = 1) {
                 mode("Target opponent gains 1 life") {
-                    target("target opponent", Targets.Opponent)
+                    target(Targets.Opponent)
                     effect = Effects.GainLife(1)
                 }
                 mode("Gain 1 life") {
@@ -1073,7 +1075,8 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         action.manaCostString shouldBe "{U}"
         action.validTargets!!.toSet() shouldBe setOf(targets.first, targets.second)
 
-        val calculator = CostCalculator(registry())
+        val calculatorRegistry = registry()
+        val calculator = CostCalculator(calculatorRegistry, PredicateEvaluator(calculatorRegistry))
         val cardDef = registry().requireCard(targetDependentSpell.name)
         calculator.calculateEffectiveCost(
             environment.state,
@@ -1704,7 +1707,8 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             AbilityId.intrinsicMana('G'),
             grantedAnyColorManaAbility.id,
         )
-        ManaSolver(registry())
+        val solverRegistry = registry()
+        ManaSolver(solverRegistry, PredicateEvaluator(solverRegistry))
             .findAvailableManaSources(environment.state, player)
             .single { it.entityId == forestId }
             .supportsPaymentPlanV1() shouldBe false

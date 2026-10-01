@@ -121,13 +121,24 @@ export interface TargetingState {
   /** If set, this spell requires damage distribution after target selection */
   requiresDamageDistribution?: boolean
   /**
-   * Collect evidence N (CR 701.59a): the floor on the combined mana value of the selected cards.
-   * When set, the confirm button stays disabled until the running total reaches it, and the
-   * overlay shows that total — `minTargets` / `maxTargets` say nothing useful here, because the
-   * cost constrains no card count at all. An empty selection is exempt so an optional collection
-   * can still be declined.
+   * The sum gate shared by the graveyard exile costs that constrain a *total* rather than a count
+   * — collect evidence N (CR 701.59a, mana value) and Baron Helmut Zemo's black-pip total.
+   * `minTotalWeight` is the floor, `cardWeights` gives each selectable card's server-computed
+   * contribution, and `weightUnit` names one unit for the tally ("mana value"); all three are set
+   * together. When set, the confirm button stays disabled until the running total reaches the
+   * floor, and the overlay shows that total — `minTargets` / `maxTargets` say nothing useful here,
+   * because the cost constrains no card count at all. An empty selection is exempt so an optional
+   * collection can still be declined.
    */
-  minTotalManaValue?: number
+  minTotalWeight?: number
+  cardWeights?: Record<string, number>
+  weightUnit?: string
+  /**
+   * Per-card card types for a union-measured exile (Nethergoyf's "four or more card types among
+   * them"). When set, the tally toward `minTotalWeight` is the count of distinct types across the
+   * selection instead of the sum of `cardWeights`.
+   */
+  cardTypes?: Record<string, readonly string[]>
   /** The zone the current targets are in (e.g., "Graveyard"). Set by server via targetRequirements. */
   targetZone?: string
   /** Description of the current target requirement (e.g., "non-Zombie creature") */
@@ -162,6 +173,7 @@ export interface TargetingState {
  * Combat mode state for declaring attackers or blockers.
  */
 export interface CombatState {
+  interactionEpoch: string | null
   mode: 'declareAttackers' | 'declareBlockers'
   /**
    * The seat this declaration is being made for, from the legal action's
@@ -277,6 +289,8 @@ export interface ManaSelectionState {
   sourceColors: Readonly<Record<EntityId, readonly string[]>>
   /** Mana amount per source: entityId -> amount (e.g., 3 for Gilded Lotus) */
   sourceManaAmounts: Readonly<Record<EntityId, number>>
+  /** Indices of Phyrexian pips selected to be paid with life. */
+  phyrexianLifePipIndices: readonly number[]
 }
 
 /**
@@ -309,6 +323,8 @@ export interface XSelectionState {
   selectedX: number
   /** When true, this is a repeat count selector (not X cost) */
   isRepeatCount?: boolean
+  /** When true, this picks the optional extra mana paid for entry counters (Chorus of the Conclave) */
+  isAdditionalManaForCounters?: boolean
 }
 
 /**
@@ -469,6 +485,8 @@ export interface HarmonizeSelectionState {
  */
 export interface TapForPowerSelectionState {
   actionInfo: LegalActionInfo
+  /** The source permanent (Vehicle or Mount) being paid for. */
+  sourceId: EntityId
   /** The source permanent's name (Vehicle or Mount). */
   sourceName: string
   /** The verb shown to the player: "Crew" or "Saddle". */
@@ -479,6 +497,9 @@ export interface TapForPowerSelectionState {
   selectedCreatures: EntityId[]
   /** All valid creatures that can be tapped. */
   validCreatures: readonly TapForPowerCreatureInfo[]
+  /** Saddle only: the Mount already carries the saddled designation (CR 702.171b), so this
+   * activation only adds saddlers for "creatures that saddled it this turn" payoffs. */
+  alreadySaddled: boolean
 }
 
 /**
@@ -567,7 +588,8 @@ export interface DraftState {
   packNumber: number
   pickNumber: number
   pickedCards: readonly SealedCardInfo[]
-  timeRemaining: number
+  /** Seconds left to pick, or `null` when the draft has no time limit. */
+  timeRemaining: number | null
   passDirection: 'LEFT' | 'RIGHT'
   picksPerRound: number
   queuedPacks: number
@@ -595,7 +617,8 @@ export interface WinstonDraftState {
   knownOpponentCards: readonly SealedCardInfo[]
   unknownOpponentCardCount: number
   lastAction: string | null
-  timeRemaining: number
+  /** Seconds left to pick, or `null` when the draft has no time limit. */
+  timeRemaining: number | null
   lastPickedCards: readonly SealedCardInfo[]
 }
 
@@ -612,7 +635,8 @@ export interface GridDraftState {
   pickedCardsByOthers: Record<string, readonly SealedCardInfo[]>
   lastPickedCards: readonly SealedCardInfo[]
   lastAction: string | null
-  timeRemaining: number
+  /** Seconds left to pick, or `null` when the draft has no time limit. */
+  timeRemaining: number | null
   availableSelections: readonly string[]
   playerOrder: readonly string[]
   currentPickerIndex: number
@@ -657,6 +681,12 @@ export interface TournamentState {
   nextOpponentName: string | null
   /** True if player has a BYE in the next round */
   nextRoundHasBye: boolean
+  /**
+   * True once every match in `currentRound` is finished. While false, we are an early finisher and
+   * the round is still being played at other tables — `lastRoundResults` being populated says only
+   * that *our* match ended, so it must never be read as "the round is over".
+   */
+  currentRoundComplete: boolean
 }
 
 /**
@@ -708,6 +738,8 @@ export interface SpectatingState {
 export interface MatchIntro {
   playerName: string
   opponentName: string
+  /** Every opponent's name in seat order (length > 1 in a multiplayer game). */
+  opponentNames: string[]
   round?: number
   playerRecord?: string
   opponentRecord?: string
@@ -728,9 +760,11 @@ export interface LogEntry {
  */
 export interface DrawAnimation {
   id: string
-  cardId: EntityId
+  cardId: EntityId | null
   cardName: string | null
   imageUri: string | null
+  /** The drawing player — picks *which* opponent's library and hand the card flies between. */
+  playerId: EntityId
   isOpponent: boolean
   startTime: number
 }
@@ -755,6 +789,15 @@ export interface CoinFlipAnimation {
   won: boolean
   isOpponent: boolean
   startTime: number
+  /** This coin was flipped but ignored by a Krark's Thumb-style replacement. */
+  ignored?: boolean
+  /**
+   * Position of this coin among the ones showing at the same moment, used to fan a batch out
+   * horizontally instead of stacking every coin on the centre of the screen.
+   */
+  laneIndex?: number
+  /** How many coins are showing at the same moment, so each can be placed within the fan. */
+  laneCount?: number
 }
 
 /**
@@ -770,7 +813,9 @@ export interface TargetReselectedAnimation {
 }
 
 /**
- * A life change animation (damage or life gain).
+ * A floating number for damage or life gain. `targetIsPlayer` picks which of the two it is:
+ * a player's life total, anchored to their life display, or a permanent that was dealt damage,
+ * anchored to the card itself — which it tracks, since the board reflows underneath it.
  */
 export interface DamageAnimation {
   id: string
@@ -792,6 +837,8 @@ export type PipelinePhase =
   | { type: 'modalModes' }
   | { type: 'counterDistribution' }
   | { type: 'xSelection' }
+  /** "You may pay any amount of mana" as an additional cost (Chorus of the Conclave). */
+  | { type: 'additionalManaForCounters' }
   | { type: 'delve' }
   | { type: 'convoke' }
   | { type: 'tapForGeneric' }
@@ -823,11 +870,12 @@ export type PhaseResult =
       distributedCounterRemovals: ReadonlyArray<{ entityId: EntityId; counterType: string; count: number }>
     }
   | { type: 'xSelection'; xValue: number; isRepeatCount?: boolean }
+  | { type: 'additionalManaForCounters'; amount: number }
   | { type: 'delve'; delvedCards: EntityId[]; modifiedManaCost: string }
   | { type: 'convoke'; convokedCreatures: Record<string, { color: string | null }> }
   | { type: 'tapForGeneric'; tapForGenericPermanents: EntityId[] }
   | { type: 'harmonize'; harmonizeCreature: EntityId | null; reduction: number }
-  | { type: 'manaSource'; selectedSources: EntityId[] }
+  | { type: 'manaSource'; selectedSources: EntityId[]; phyrexianLifePayments?: string[] }
   | { type: 'costPayment'; costType: string; selectedTargets: EntityId[] }
   | { type: 'blightVariable'; blightAmount: number }
   | { type: 'payXLife'; payXLifeAmount: number }
@@ -839,6 +887,7 @@ export type PhaseResult =
  * Pipeline coordinator state: tracks the action being built and remaining phases.
  */
 export interface ActionPipelineState {
+  interactionEpoch: string
   actionInfo: import('../../types').LegalActionInfo
   accumulatedAction: import('../../types').GameAction
   remainingPhases: readonly PipelinePhase[]
@@ -873,6 +922,7 @@ export type GameStore = {
 
   // Gameplay slice
   gameState: ClientGameState | null
+  interactionEpoch: string | null
   legalActions: readonly LegalActionInfo[]
   pendingDecision: PendingDecision | null
   opponentDecisionStatus: OpponentDecisionStatus | null
@@ -897,28 +947,30 @@ export type GameStore = {
   createGame: (deckList: Record<string, number>, setCode?: string) => void
   createAiGame: (deckList: Record<string, number>, setCode?: string) => void
   joinGame: (sessionId: string, deckList: Record<string, number>) => void
-  submitAction: (action: GameAction) => void
-  submitDecision: (selectedCards: readonly EntityId[]) => void
-  submitTargetsDecision: (selectedTargets: Record<number, readonly EntityId[]>) => void
-  submitOrderedDecision: (orderedObjects: readonly EntityId[]) => void
-  submitYesNoDecision: (choice: boolean) => void
-  submitBatchYesNoDecision: (choice: boolean, applyToAll: boolean) => void
-  submitNumberDecision: (number: number) => void
-  submitOptionDecision: (optionIndex: number) => void
-  submitReplacementDecision: (fromIndex: number, toIndex: number) => void
-  submitBudgetModalDecision: (selectedModeIndices: readonly number[]) => void
-  submitDistributeDecision: (distribution: Record<EntityId, number>) => void
-  submitDamageAssignmentDecision: (assignments: Record<EntityId, number>) => void
-  submitCombatResolutionDecision: (edges: ReadonlyArray<{ edgeId: string; amount: number }>) => void
-  submitColorDecision: (color: string) => void
+  submitAction: (action: GameAction, interactionEpoch: string | null | undefined) => void
+  /** The decision ID must come from the rendered prompt, never from a later store snapshot. */
+  submitDecision: (decisionId: string, selectedCards: readonly EntityId[]) => void
+  submitTargetsDecision: (decisionId: string, selectedTargets: Record<number, readonly EntityId[]>) => void
+  submitOrderedDecision: (decisionId: string, orderedObjects: readonly EntityId[]) => void
+  submitYesNoDecision: (decisionId: string, choice: boolean) => void
+  submitBatchYesNoDecision: (decisionId: string, choice: boolean, applyToAll: boolean) => void
+  submitNumberDecision: (decisionId: string, number: number) => void
+  submitOptionDecision: (decisionId: string, optionIndex: number) => void
+  submitReplacementDecision: (decisionId: string, fromIndex: number, toIndex: number) => void
+  submitBudgetModalDecision: (decisionId: string, selectedModeIndices: readonly number[]) => void
+  submitDistributeDecision: (decisionId: string, distribution: Record<EntityId, number>) => void
+  submitDamageAssignmentDecision: (decisionId: string, assignments: Record<EntityId, number>) => void
+  submitCombatResolutionDecision: (decisionId: string, edges: ReadonlyArray<{ edgeId: string; amount: number }>) => void
+  submitColorDecision: (decisionId: string, color: string, colors?: readonly string[]) => void
   submitManaSourcesDecision: (
+    decisionId: string,
     selectedSources: readonly EntityId[],
     autoPay: boolean,
     waterbendPermanents?: readonly EntityId[],
     declined?: boolean,
   ) => void
-  submitCancelDecision: () => void
-  submitSplitPilesDecision: (piles: readonly (readonly EntityId[])[]) => void
+  submitCancelDecision: (decisionId: string) => void
+  submitSplitPilesDecision: (decisionId: string, piles: readonly (readonly EntityId[])[]) => void
   keepHand: () => void
   mulligan: () => void
   chooseBottomCards: (cardIds: readonly EntityId[]) => void
@@ -978,7 +1030,11 @@ export type GameStore = {
   removeQuickGameAi: () => void
   joinQuickGameLobby: (lobbyId: string) => void
   leaveQuickGameLobby: () => void
-  submitQuickGameLobbyDeck: (deckList: Record<string, number>, commander?: string | null) => void
+  submitQuickGameLobbyDeck: (
+    deckList: Record<string, number>,
+    commander?: string | null,
+    sideboard?: Record<string, number>,
+  ) => void
   setQuickGameLobbyReady: (ready: boolean) => void
   setQuickGameLobbySetCode: (setCodes: readonly string[]) => void
   setQuickGameLobbyPublic: (isPublic: boolean) => void
@@ -1044,21 +1100,28 @@ export type GameStore = {
   followAction: boolean
   overviewMode: boolean
   collapsedSeats: readonly EntityId[]
+  expandedStackCardIds: ReadonlySet<EntityId>
   eliminatedSpectating: boolean
   eliminatedBottomSeatId: EntityId | null
   spectatorBottomSeatId: EntityId | null
   teamByPlayerId: Readonly<Record<EntityId, number>>
   teamSharedLife: boolean
+  teamSharedTurns: boolean
   viewOpponent: (playerId: EntityId, opts?: { pin?: boolean }) => void
   unpinView: () => void
   toggleFollowAction: () => void
   toggleOverviewMode: () => void
   toggleSeatCollapsed: (playerId: EntityId) => void
+  setStackExpanded: (cardIds: readonly EntityId[], expanded: boolean) => void
   enterEliminatedSpectate: () => void
   setEliminatedBottomSeat: (playerId: EntityId | null) => void
   followViewTo: (playerId: EntityId) => void
   setSpectatorBottomSeat: (playerId: EntityId | null) => void
-  setSeatTeams: (teamByPlayerId: Record<EntityId, number>, sharedLife?: boolean) => void
+  setSeatTeams: (
+    teamByPlayerId: Record<EntityId, number>,
+    sharedLife?: boolean,
+    sharedTurns?: boolean,
+  ) => void
   resetBoardView: () => void
 
   // UI slice
@@ -1098,6 +1161,13 @@ export type GameStore = {
      * `false` = an opponent. Absent for single-player reveals (use [isYourReveal]).
      */
     cardOwnerIsYours?: readonly boolean[]
+    /**
+     * Owner of each revealed card (parallel to cardIds), present alongside [cardOwnerIsYours].
+     * Lets a multiplayer reveal name *which* opponent a card belongs to (clash).
+     */
+    cardOwnerIds?: readonly EntityId[]
+    /** Player who performed the reveal; absent for locally-triggered reveals. */
+    revealingPlayerId?: EntityId
     /** Zone the card came from (e.g., 'Graveyard', 'Exile') when this reveal is a zone transition. */
     fromZone?: string | null
     /** Zone the card moved to (e.g., 'Hand', 'Library') when this reveal is a zone transition. */
@@ -1125,8 +1195,8 @@ export type GameStore = {
   startTargeting: (state: TargetingState) => void
   addTarget: (targetId: EntityId) => void
   removeTarget: (targetId: EntityId) => void
-  cancelTargeting: () => void
-  confirmTargeting: () => void
+  cancelTargeting: (interactionEpoch: string | null) => void
+  confirmTargeting: (interactionEpoch: string | null) => void
   goBackTargeting: () => void
   startCombat: (state: CombatState) => void
   toggleAttacker: (creatureId: EntityId) => void
@@ -1141,77 +1211,83 @@ export type GameStore = {
   assignDefenderToSelectedAttackers: (defenderId: EntityId) => void
   startDraggingCard: (cardId: EntityId) => void
   stopDraggingCard: () => void
-  confirmCombat: () => void
-  cancelCombat: () => void
+  confirmCombat: (interactionEpoch: string | null) => void
+  cancelCombat: (interactionEpoch: string | null) => void
   attackWithAll: () => void
   clearAttackers: () => void
   clearCombat: () => void
   removeBand: (bandIndex: number) => void
   clearBands: () => void
-  linkBand: (sourceId: EntityId, targetId: EntityId, sourceHasBanding: boolean, targetHasBanding: boolean) => void
+  linkBand: (sourceId: EntityId, targetId: EntityId) => void
   startXSelection: (state: XSelectionState) => void
   updateXValue: (x: number) => void
-  cancelXSelection: () => void
+  cancelXSelection: (interactionEpoch: string | null) => void
   startModalModeSelection: (state: ModalModeSelectionState) => void
-  confirmModalModeSelection: (chosenModes: number[]) => void
-  cancelModalModeSelection: () => void
-  confirmXSelection: () => void
+  confirmModalModeSelection: (interactionEpoch: string | null, chosenModes: number[]) => void
+  cancelModalModeSelection: (interactionEpoch: string | null) => void
+  confirmXSelection: (interactionEpoch: string | null) => void
   blightVariableSelectionState: BlightVariableSelectionState | null
   startBlightVariableSelection: (state: BlightVariableSelectionState) => void
   updateBlightVariableX: (x: number) => void
-  cancelBlightVariableSelection: () => void
-  confirmBlightVariableSelection: () => void
+  cancelBlightVariableSelection: (interactionEpoch: string | null) => void
+  confirmBlightVariableSelection: (interactionEpoch: string | null) => void
   payXLifeSelectionState: PayXLifeSelectionState | null
   startPayXLifeSelection: (state: PayXLifeSelectionState) => void
   updatePayXLifeX: (x: number) => void
-  cancelPayXLifeSelection: () => void
-  confirmPayXLifeSelection: () => void
+  cancelPayXLifeSelection: (interactionEpoch: string | null) => void
+  confirmPayXLifeSelection: (interactionEpoch: string | null) => void
   startConvokeSelection: (state: ConvokeSelectionState) => void
   toggleConvokeCreature: (entityId: EntityId, name: string, payingColor: string | null) => void
-  cancelConvokeSelection: () => void
-  confirmConvokeSelection: () => void
+  cancelConvokeSelection: (interactionEpoch: string | null) => void
+  confirmConvokeSelection: (interactionEpoch: string | null) => void
   startTapForGenericSelection: (state: TapForGenericSelectionState) => void
   toggleTapForGenericPermanent: (entityId: EntityId) => void
-  cancelTapForGenericSelection: () => void
-  confirmTapForGenericSelection: () => void
+  cancelTapForGenericSelection: (interactionEpoch: string | null) => void
+  confirmTapForGenericSelection: (interactionEpoch: string | null) => void
   harmonizeSelectionState: HarmonizeSelectionState | null
   startHarmonizeSelection: (state: HarmonizeSelectionState) => void
   toggleHarmonizeCreature: (entityId: EntityId) => void
-  cancelHarmonizeSelection: () => void
-  confirmHarmonizeSelection: () => void
+  cancelHarmonizeSelection: (interactionEpoch: string | null) => void
+  confirmHarmonizeSelection: (interactionEpoch: string | null) => void
   startTapForPowerSelection: (state: TapForPowerSelectionState) => void
   toggleTapForPowerCreature: (entityId: EntityId) => void
-  cancelTapForPowerSelection: () => void
-  confirmTapForPowerSelection: () => void
+  setTapForPowerCreatures: (entityIds: readonly EntityId[]) => void
+  cancelTapForPowerSelection: (interactionEpoch: string | null) => void
+  confirmTapForPowerSelection: (interactionEpoch: string | null) => void
   startDelveSelection: (state: DelveSelectionState) => void
   toggleDelveCard: (entityId: EntityId) => void
-  cancelDelveSelection: () => void
-  confirmDelveSelection: () => void
+  cancelDelveSelection: (interactionEpoch: string | null) => void
+  confirmDelveSelection: (interactionEpoch: string | null) => void
   startManaColorSelection: (state: ManaColorSelectionState) => void
-  confirmManaColorSelection: (color: string) => void
-  cancelManaColorSelection: () => void
+  confirmManaColorSelection: (interactionEpoch: string | null, color: string) => void
+  cancelManaColorSelection: (interactionEpoch: string | null) => void
   startDecisionSelection: (state: DecisionSelectionState) => void
   toggleDecisionSelection: (cardId: EntityId) => void
-  cancelDecisionSelection: () => void
-  confirmDecisionSelection: () => void
+  cancelDecisionSelection: (decisionId: string) => void
+  confirmDecisionSelection: (decisionId: string) => void
   startDamageDistribution: (state: DamageDistributionState) => void
   updateDamageDistribution: (targetId: EntityId, amount: number) => void
-  cancelDamageDistribution: () => void
-  confirmDamageDistribution: () => void
+  cancelDamageDistribution: (interactionEpoch: string | null) => void
+  confirmDamageDistribution: (interactionEpoch: string | null) => void
   initDistribute: (state: DistributeState) => void
   incrementDistribute: (targetId: EntityId) => void
   decrementDistribute: (targetId: EntityId) => void
-  confirmDistribute: () => void
+  confirmDistribute: (decisionId: string) => void
   clearDistribute: () => void
   startCounterDistribution: (state: CounterDistributionState) => void
   incrementCounterRemoval: (entityId: EntityId, counterType: string) => void
   decrementCounterRemoval: (entityId: EntityId, counterType: string) => void
-  cancelCounterDistribution: () => void
-  confirmCounterDistribution: () => void
+  cancelCounterDistribution: (interactionEpoch: string | null) => void
+  confirmCounterDistribution: (interactionEpoch: string | null) => void
   startManaSelection: (actionInfo: LegalActionInfo) => void
   toggleManaSource: (entityId: EntityId) => void
-  cancelManaSelection: () => void
-  confirmManaSelection: () => void
+  togglePhyrexianLifePayment: (pipIndex: number) => void
+  cancelManaSelection: (interactionEpoch: string | null) => void
+  confirmManaSelection: (
+    interactionEpoch: string | null,
+    selection: ManaSelectionState,
+    executeAction: (actionInfo: LegalActionInfo) => void,
+  ) => void
   showRevealedHand: (cardIds: readonly EntityId[]) => void
   dismissRevealedHand: () => void
   showRevealedCards: (cardIds: readonly EntityId[], cardNames: readonly string[], imageUris: readonly (string | null)[], source: string | null, isYourReveal: boolean) => void

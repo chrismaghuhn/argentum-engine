@@ -46,6 +46,7 @@ export interface ActionOption {
    * When present, the button renders a mana-font loyalty icon instead of a text prefix.
    */
   loyaltyChange?: number
+  loyaltyX?: boolean
   /**
    * For the impending cast option (CR 702.176): the number of time counters the permanent enters
    * with. When present, the button renders a time-counter glyph + count to mark the option as
@@ -198,6 +199,72 @@ function reductionHintFor(action: LegalActionInfo): { hint: string } | null {
 }
 
 /**
+ * A keyword alternative cost the *player* chooses when casting — impending (CR 702.176) and evoke
+ * (CR 702.74). Both read "you may cast this card by paying [cost] rather than paying its mana
+ * cost", which makes the printed cost and the keyword cost two live prices for the same card, not
+ * a price and a fallback.
+ *
+ * That is why the cost lives on [ClientCard] and not just in `legalActions`: the server enumerates
+ * only the casts it can *afford*, so the side the player can't pay for arrives as nothing at all.
+ * Building the button off the card lets the menu show both prices and gray out the unpayable one —
+ * and, just as importantly, stops the drag-to-play path from silently firing the lone affordable
+ * cast (see `shouldShowCastModal`). Evoking a Mulldrifter you meant to hard-cast is not a choice
+ * the player should make by accident.
+ */
+export interface KeywordAlternativeCost {
+  /** Option key, also the discriminator the tests and the menu identify the row by. */
+  readonly key: 'impending' | 'evoke' | 'bestow'
+  /** Button label. */
+  readonly label: string
+  /** The alternative mana cost, e.g. "{2}{U}". */
+  readonly cost: string
+  /** `CastSpell.alternativeCostType` naming this cast on the server side. */
+  readonly alternativeCostType: string
+  /** One short line under the label saying what paying this cost does to you. */
+  readonly hint?: string
+  /** Impending only: time counters the permanent enters with, rendered as a glyph. */
+  readonly impendingTime?: number
+}
+
+/**
+ * The keyword alternative cost this card offers, or null when it has none. At most one: no printed
+ * card carries two of these keywords, and a second one would need its own row rather than a
+ * different shape of this one.
+ */
+export function keywordAlternativeCostFor(cardInfo: ClientCard): KeywordAlternativeCost | null {
+  if (cardInfo.bestow) {
+    return {
+      key: 'bestow',
+      label: `Bestow ${cardInfo.name}`,
+      cost: cardInfo.bestow.cost || '{0}',
+      alternativeCostType: 'BESTOW',
+      hint: ['cast as an Aura enchanting a creature', cardInfo.bestow.additionalCostDescription].filter(Boolean).join(' — '),
+    }
+  }
+  if (cardInfo.impending) {
+    return {
+      key: 'impending',
+      label: 'Cast for Impending',
+      cost: cardInfo.impending.cost,
+      alternativeCostType: 'IMPENDING',
+      impendingTime: cardInfo.impending.time,
+    }
+  }
+  if (cardInfo.evoke) {
+    return {
+      key: 'evoke',
+      label: `Evoke ${cardInfo.name}`,
+      cost: cardInfo.evoke,
+      alternativeCostType: 'EVOKE',
+      // The sacrifice is the whole point of the cheaper price, and it is the half a player who
+      // dragged the card out to hard-cast it needs to see before clicking.
+      hint: 'evoke — sacrificed as it enters, keeping only its ETB',
+    }
+  }
+  return null
+}
+
+/**
  * Build all potential action options for a card from server-sent legal actions.
  * The server sends ALL potential actions with isAffordable flags.
  */
@@ -207,6 +274,8 @@ export function buildActionOptions(
 ): ActionOption[] {
   const options: ActionOption[] = []
   if (!cardInfo) return options
+
+  const keywordAltCost = keywordAlternativeCostFor(cardInfo)
 
   // Find each type of action - server sends all potential actions with isAffordable flag
   const castActions = legalActions.filter(
@@ -219,7 +288,9 @@ export function buildActionOptions(
   const typecycleAction = legalActions.find((a) => a.action.type === 'TypecycleCard')
   const plotAction = legalActions.find((a) => a.action.type === 'PlotCard')
   const suspendAction = legalActions.find((a) => a.action.type === 'SuspendCardFromHand')
-  const playLandAction = legalActions.find((a) => a.action.type === 'PlayLand')
+  // A modal double-faced land (the Zendikar Rising Pathway cycle) sends *two* PlayLand actions
+  // for one card — one per land face, CR 712.12 — so this is a filter, not a find.
+  const playLandActions = legalActions.filter((a) => a.action.type === 'PlayLand')
 
   // 1. Modal spell modes — show one button per mode instead of a single "Cast" button
   const modeActions = legalActions.filter((a) => a.actionType === 'CastSpellMode')
@@ -248,15 +319,15 @@ export function buildActionOptions(
         actionType: 'cast',
       })
     })
-  } else if (cardInfo.impending && castActions.length > 0) {
-    // 1a-bis. Impending (CR 702.176) — an alternative cost the player chooses, so always present
-    // BOTH the normal cast and the impending cast, graying out whichever can't be paid for. The
-    // impending option is marked with a time-counter glyph (the card enters with `time` time
-    // counters and isn't a creature until the last is removed). The server only emits the cast
-    // actions it can afford; we synthesize a disabled placeholder (action: null) for the other.
-    const impendingInfo = cardInfo.impending
-    const impendingCast = castActions.find(
-      (a) => (a.action as { alternativeCostType?: string }).alternativeCostType === 'IMPENDING'
+  } else if (keywordAltCost && castActions.length > 0) {
+    // 1a-bis. A keyword alternative cost the player chooses — impending (CR 702.176), evoke
+    // (CR 702.74). Both mean "you may cast this for <cost> rather than its mana cost", so the menu
+    // presents BOTH the normal cast and the alternative every time, graying out whichever can't be
+    // paid. The server only emits the cast actions it can afford, so whichever side it left out is
+    // synthesized here as a disabled placeholder (action: null) — the alternative's cost comes off
+    // the card rather than off a legal action for exactly that reason.
+    const altCast = castActions.find(
+      (a) => (a.action as { alternativeCostType?: string }).alternativeCostType === keywordAltCost.alternativeCostType
     ) ?? null
     const normalCast = castActions.find((a) => a.actionType === 'CastSpell') ?? null
 
@@ -280,30 +351,32 @@ export function buildActionOptions(
           }
     )
     options.push(
-      impendingCast
+      altCast
         ? {
-            key: 'impending',
-            label: 'Cast for Impending',
-            ...costFieldsFor(impendingCast, impendingInfo.cost),
-            isAvailable: impendingCast.isAffordable !== false,
-            action: impendingCast,
+            key: keywordAltCost.key,
+            label: keywordAltCost.label,
+            ...costFieldsFor(altCast, keywordAltCost.cost),
+            ...(keywordAltCost.hint ? { hint: keywordAltCost.hint } : {}),
+            isAvailable: altCast.isAffordable !== false,
+            action: altCast,
             actionType: 'cast',
-            impendingTime: impendingInfo.time,
+            ...(keywordAltCost.impendingTime !== undefined ? { impendingTime: keywordAltCost.impendingTime } : {}),
           }
         : {
-            key: 'impending',
-            label: 'Cast for Impending',
-            manaCost: impendingInfo.cost || null,
+            key: keywordAltCost.key,
+            label: keywordAltCost.label,
+            manaCost: keywordAltCost.cost || null,
+            ...(keywordAltCost.hint ? { hint: keywordAltCost.hint } : {}),
             isAvailable: false,
             action: null,
             actionType: 'cast',
-            impendingTime: impendingInfo.time,
+            ...(keywordAltCost.impendingTime !== undefined ? { impendingTime: keywordAltCost.impendingTime } : {}),
           }
     )
     // Any further cost variant the server offered (e.g. a gift promise per opponent — CR 702.174a)
     // has to survive this branch too, or picking impending's sibling silently drops the option.
     castActions
-      .filter((ca) => ca !== normalCast && ca !== impendingCast)
+      .filter((ca) => ca !== normalCast && ca !== altCast)
       .forEach((ca, index) => {
         options.push({
           key: `cast-extra-${index}`,
@@ -330,10 +403,13 @@ export function buildActionOptions(
   } else if (castAction) {
     // 1c. Normal cast (for non-land, non-modal cards). When the *only* offered cast is an
     // alternative-cost one (emerge with the hard cast unaffordable), the server's description names
-    // the mechanic — "Cast X" would hide that the cast eats a creature.
+    // the mechanic — "Cast X" would hide that the cast eats a creature. Likewise a cast of one
+    // specific face (a prepare-spell copy in exile, an adventure-only permission) is named by the
+    // server after that face: "Cast Bloodline Recollector" would hide that it casts Ancestral Craving.
+    const castFaceIndex = (castAction.action as { faceIndex?: number | null }).faceIndex
     options.push({
       key: 'cast',
-      label: castAction.actionType === 'CastWithAlternativeCost'
+      label: castAction.actionType === 'CastWithAlternativeCost' || castFaceIndex != null
         ? castAction.description
         : `Cast ${cardInfo.name}`,
       ...costFieldsFor(castAction, cardInfo.manaCost),
@@ -355,14 +431,19 @@ export function buildActionOptions(
   }
 
   // 2. Play land (for land cards)
-  if (playLandAction) {
-    options.push({
-      key: 'playLand',
-      label: `Play ${cardInfo.name}`,
-      manaCost: null,
-      isAvailable: playLandAction.isAffordable !== false,
-      action: playLandAction,
-      actionType: 'playLand',
+  if (playLandActions.length > 0) {
+    playLandActions.forEach((playLandAction, index) => {
+      options.push({
+        // One entry per land face. The server's description already names the face being
+        // played ("Play Lavaglide Pathway"), which is the only thing telling the two apart —
+        // `cardInfo.name` is the front face's name for both.
+        key: index === 0 ? 'playLand' : `playLand-${index}`,
+        label: playLandActions.length > 1 ? playLandAction.description : `Play ${cardInfo.name}`,
+        manaCost: null,
+        isAvailable: playLandAction.isAffordable !== false,
+        action: playLandAction,
+        actionType: 'playLand',
+      })
     })
   } else if (cycleAction && cardInfo.cardTypes.includes('LAND')) {
     // Land with cycling but no PlayLand action (already played a land this turn)
@@ -475,6 +556,7 @@ export function buildActionOptions(
         action: match ?? null,
         actionType: 'activate',
         loyaltyChange: pw.loyaltyChange,
+        loyaltyX: pw.loyaltyX ?? false,
       })
     })
   }

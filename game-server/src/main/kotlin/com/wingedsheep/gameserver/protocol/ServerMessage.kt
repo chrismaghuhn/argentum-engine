@@ -82,6 +82,12 @@ sealed interface ServerMessage {
          * same on every seat); lets the client render a shared-life team header vs. per-player life.
          */
         val teamSharedLife: Boolean = false,
+        /**
+         * True when the team takes one shared turn and holds priority as a unit (CR 805 / 810.2),
+         * so any member may act while their team has priority (CR 805.5a). False for Team vs. Team,
+         * whose teammates take individual turns (CR 808.4). Game-level, like [teamSharedLife].
+         */
+        val teamSharedTurns: Boolean = false,
     )
 
     /**
@@ -110,7 +116,10 @@ sealed interface ServerMessage {
         val playerId: String,
         val decisionType: String,
         val displayText: String,
-        val sourceName: String? = null
+        val sourceName: String? = null,
+        /** The spell/ability source entity, so the client can show its card from its own
+         *  (already viewer-masked) game state. */
+        val sourceId: String? = null
     )
 
     /**
@@ -136,6 +145,8 @@ sealed interface ServerMessage {
         val priorityMode: String? = null,
         /** Monotonically increasing version — clients use this to detect missed messages */
         val stateVersion: Long = 0,
+        /** Originating live timeline for browser and asynchronous AI action submissions. */
+        val interactionEpoch: String? = null,
     ) : ServerMessage
 
     /**
@@ -161,7 +172,9 @@ sealed interface ServerMessage {
         /** Current priority mode for this player */
         val priorityMode: String? = null,
         /** Monotonically increasing version — clients use this to detect missed messages */
-        val stateVersion: Long = 0
+        val stateVersion: Long = 0,
+        /** Originating live timeline for browser and asynchronous AI action submissions. */
+        val interactionEpoch: String? = null,
     ) : ServerMessage
 
     /**
@@ -192,7 +205,13 @@ sealed interface ServerMessage {
         val winnerId: EntityId?,
         val reason: GameOverReason,
         val message: String? = null,
-        val gameId: String? = null
+        val gameId: String? = null,
+        /**
+         * Every seat that won — the winning team in a team game (CR 810.8a), else just [winnerId].
+         * Clients decide "did I win?" from this; [winnerId] is one representative and stays for
+         * the spectator / replay readers that predate teams. Empty for a draw.
+         */
+        val winnerIds: List<EntityId> = emptyList()
     ) : ServerMessage
 
     /**
@@ -577,7 +596,8 @@ sealed interface ServerMessage {
         val packNumber: Int,           // 1, 2, or 3
         val pickNumber: Int,           // 1-15
         val cards: List<SealedCardInfo>,
-        val timeRemainingSeconds: Int,
+        /** Seconds left to pick, or `null` when the draft has no time limit. */
+        val timeRemainingSeconds: Int?,
         val passDirection: String,     // "LEFT" or "RIGHT"
         val picksPerRound: Int = 1,    // Cards to pick this round (1 or 2)
         val pickedCards: List<SealedCardInfo> = emptyList(),  // Cards already picked (for reconnect)
@@ -652,8 +672,8 @@ sealed interface ServerMessage {
         val unknownOpponentCardCount: Int = 0,
         /** Description of the last action */
         val lastAction: String? = null,
-        /** Seconds remaining on the turn timer */
-        val timeRemainingSeconds: Int = 0,
+        /** Seconds remaining on the turn timer, or `null` when there is no time limit. */
+        val timeRemainingSeconds: Int? = 0,
         /** Cards from the last opponent pick (empty if no pick yet or it was your pick) */
         val lastPickedCards: List<SealedCardInfo> = emptyList()
     ) : ServerMessage
@@ -679,7 +699,8 @@ sealed interface ServerMessage {
         /** Other players' picked cards: playerName -> cards */
         val pickedCardsByOthers: Map<String, List<SealedCardInfo>> = emptyMap(),
         val lastAction: String?,
-        val timeRemainingSeconds: Int,
+        /** Seconds left to pick, or `null` when the draft has no time limit. */
+        val timeRemainingSeconds: Int?,
         /** Available row/column selections (e.g., ["ROW_0", "COL_1"]) */
         val availableSelections: List<String>,
         /** Player names in pick order */
@@ -733,7 +754,10 @@ sealed interface ServerMessage {
         val player2Id: String?,
         val winnerId: String?,
         val isDraw: Boolean = false,
-        val isBye: Boolean = false
+        val isBye: Boolean = false,
+        /** True when the result was simulated rather than played — an AI-vs-AI match on a server that
+         *  has `game.tournament.simulate-ai-matches` on. Such a match has no replay to open. */
+        val isSimulated: Boolean = false
     )
 
     /**
@@ -809,6 +833,15 @@ sealed interface ServerMessage {
         val nextRoundHasBye: Boolean = false,
         /** True if the tournament is complete (no more rounds) */
         val isTournamentComplete: Boolean = false,
+        /**
+         * True when every match in [round] is finished. False means this player finished early and
+         * [round] is still running — the client must keep showing it as in progress instead of
+         * advertising the next one, and a `RoundComplete` for it is still to come.
+         *
+         * Named for [round], not for the tournament's current round: eager starting means a later
+         * round's match can finish while an earlier round is still the current one.
+         */
+        val roundComplete: Boolean = false,
     ) : ServerMessage
 
     /**
@@ -819,8 +852,11 @@ sealed interface ServerMessage {
     @SerialName("playerReadyForRound")
     data class PlayerReadyForRound(
         val lobbyId: String,
-        val playerId: String,
-        val playerName: String,
+        /** The player whose ready flag just went up; null when this is a plain snapshot re-broadcast. */
+        val playerId: String? = null,
+        /** Name of [playerId]; null on a snapshot re-broadcast. */
+        val playerName: String? = null,
+        /** The authoritative ready set — clients replace their own copy with this, they don't merge. */
         val readyPlayerIds: List<String>,
         val totalConnectedPlayers: Int
     ) : ServerMessage
@@ -946,7 +982,9 @@ sealed interface ServerMessage {
         val playerId: String,
         val decisionType: String,
         val displayText: String,
-        val sourceName: String? = null
+        val sourceName: String? = null,
+        /** The spell/ability source entity; the client resolves its card from the masked spectator state. */
+        val sourceId: String? = null
     )
 
     /**

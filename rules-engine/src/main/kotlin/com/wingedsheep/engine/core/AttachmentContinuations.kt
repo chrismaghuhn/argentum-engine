@@ -12,7 +12,6 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class AttachCollectionOrderContinuation(
-    override val decisionId: String,
     val effect: AttachCollectionToTargetEffect,
     val effectContext: EffectContext,
     /** The selected collection, frozen before the ordering decision. */
@@ -23,4 +22,4 @@ data class AttachCollectionOrderContinuation(
     val targetId: EntityId,
     /** CR 400.7 identity stamps for selected battlefield objects at the order boundary. */
     val selectedAttachmentIdentityStamps: Map<EntityId, Long> = emptyMap(),
-) : ContinuationFrame
+) : AnswerContinuation

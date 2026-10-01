@@ -1,14 +1,13 @@
 package com.wingedsheep.engine.handlers.actions.morph
 
+import com.wingedsheep.engine.mechanics.mana.withSpendingColors
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.PaymentStrategy
-import com.wingedsheep.engine.core.tap
+import com.wingedsheep.engine.core.tapForMana
 import com.wingedsheep.engine.core.TurnFaceUp
 import com.wingedsheep.engine.core.TurnFaceUpEvent
-import com.wingedsheep.engine.event.TriggerDetector
-import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.handlers.actions.ActionHandler
@@ -33,6 +32,8 @@ import com.wingedsheep.engine.state.components.identity.MorphDataComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.player.TurnedPermanentFaceUpThisTurnComponent
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.core.ManaSymbol
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
@@ -53,8 +54,6 @@ class TurnFaceUpHandler(
     private val manaSolver: ManaSolver,
     private val costHandler: CostHandler,
     private val costCalculator: CostCalculator,
-    private val triggerDetector: TriggerDetector,
-    private val triggerProcessor: TriggerProcessor,
     private val effectExecutorRegistry: com.wingedsheep.engine.handlers.effects.EffectExecutorRegistry,
     private val manaAbilitySideEffectExecutor: com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor,
     private val costPaymentService: CostPaymentService,
@@ -66,8 +65,25 @@ class TurnFaceUpHandler(
     // Creeping Peeper) be recognized when paying a turn-face-up cost from the pool.
     private val faceUpContext = SpellPaymentContext(isTurnFaceUpAction = true)
 
+    /**
+     * The turn-up cost as a *concrete* amount of mana, with the chosen X folded in.
+     *
+     * A `{X}` symbol has no mana of its own (CR 107.3 — X is 0 until a value is announced), so a
+     * cost like Aurelia's Vindicator's `Disguise {X}{3}{W}` reads as `{3}{W}` to anything that just
+     * pays a [ManaCost]. The [ManaSolver] paths take `xValue` as a separate argument and charge it
+     * themselves; [ManaPool.pay] has no such argument, so the pool paths must resolve X into
+     * generic mana up front or the player flips for free. `xCount` is the number of `{X}` symbols
+     * (`{X}{X}{R}` charges X twice).
+     */
+    private fun withXResolved(cost: ManaCost, xValue: Int): ManaCost {
+        if (!cost.hasX) return cost
+        val xMana = xValue * cost.xCount.coerceAtLeast(1)
+        val withoutX = ManaCost(cost.symbols.filterNot { it is ManaSymbol.X })
+        return if (xMana > 0) withoutX + ManaCost(listOf(ManaSymbol.generic(xMana))) else withoutX
+    }
+
     override fun validate(state: GameState, action: TurnFaceUp): String? {
-        if (state.priorityPlayerId != action.playerId) {
+        if (!state.hasPriority(action.playerId)) {
             return "You don't have priority"
         }
 
@@ -102,8 +118,6 @@ class TurnFaceUpHandler(
             ?: return "No such turn-up procedure: ${action.procedureIndex}"
 
         // Validate cost payment based on morph cost type.
-        // Apply morph cost increases from permanents like Exiled Doomsayer.
-        val morphCostIncrease = costCalculator.calculateMorphCostIncrease(state)
         val morphCost = procedure.cost
         val manaMorph = (morphCost as? PayCost.Atom)?.atom as? CostAtom.Mana
         when {
@@ -111,7 +125,11 @@ class TurnFaceUpHandler(
                 // Mana morph payment stays in this handler: it carries the rich up-front UX
                 // (explicit mana-source selection, X, auto-tap preview) that the shared
                 // CostPaymentService's yes/no mana path deliberately doesn't model.
-                val manaCost = costCalculator.increaseGenericCost(manaMorph.cost, morphCostIncrease)
+                // Increases (Exiled Doomsayer) then the procedure's own reduction (Fugitive
+                // Codebreaker) — the same pricing the enumerator quoted.
+                val manaCost = costCalculator.calculateTurnFaceUpCost(
+                    state, manaMorph.cost, procedure.costReduction, action.playerId, action.sourceId
+                )
                 val xValue = action.xValue ?: 0
                 when (action.paymentStrategy) {
                     is PaymentStrategy.AutoPay -> {
@@ -122,8 +140,8 @@ class TurnFaceUpHandler(
                     is PaymentStrategy.FromPool -> {
                         val poolComponent = state.getEntity(action.playerId)?.get<ManaPoolComponent>()
                             ?: ManaPoolComponent()
-                        val pool = poolComponent.toManaPool()
-                        if (!costHandler.canPayManaCost(pool, manaCost, faceUpContext)) {
+                        val pool = poolComponent.toManaPool().withSpendingColors(state, action.playerId)
+                        if (!costHandler.canPayManaCost(pool, withXResolved(manaCost, xValue), faceUpContext)) {
                             return "Insufficient mana in pool to turn this creature face up"
                         }
                     }
@@ -184,8 +202,7 @@ class TurnFaceUpHandler(
         val cardDef = cardRegistry.getCard(morphData.originalCardDefinitionId)
         val cardName = cardDef?.name ?: cardComponent?.name ?: "Unknown"
 
-        // Pay the morph cost (including any morph cost increases)
-        val morphCostIncrease = costCalculator.calculateMorphCostIncrease(currentState)
+        // Pay the morph cost (including any morph cost increases and self-scoped reductions)
         val xValue = action.xValue ?: 0
         val morphCost = procedure.cost
         // CR 702.37b ties megamorph's +1/+1 counter to the megamorph cost specifically, so the
@@ -195,14 +212,16 @@ class TurnFaceUpHandler(
         val manaMorph = (morphCost as? PayCost.Atom)?.atom as? CostAtom.Mana
         when {
             manaMorph != null -> {
-                val manaCost = costCalculator.increaseGenericCost(manaMorph.cost, morphCostIncrease)
+                val manaCost = costCalculator.calculateTurnFaceUpCost(
+                    currentState, manaMorph.cost, procedure.costReduction, action.playerId, action.sourceId
+                )
                 when (action.paymentStrategy) {
                     is PaymentStrategy.FromPool -> {
                         val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                             ?: ManaPoolComponent()
-                        val pool = poolComponent.toManaPool()
+                        val pool = poolComponent.toManaPool().withSpendingColors(currentState, action.playerId)
 
-                        val newPool = costHandler.payManaCost(pool, manaCost, faceUpContext)
+                        val newPool = costHandler.payManaCost(pool, withXResolved(manaCost, xValue), faceUpContext)
                             ?: return ExecutionResult.error(currentState, "Insufficient mana in pool")
 
                         currentState = currentState.updateEntity(action.playerId) { c ->
@@ -229,7 +248,7 @@ class TurnFaceUpHandler(
                         // Use floating mana first
                         val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                             ?: ManaPoolComponent()
-                        val pool = poolComponent.toManaPool()
+                        val pool = poolComponent.toManaPool().withSpendingColors(currentState, action.playerId)
 
                         val partialResult = pool.payPartial(manaCost, faceUpContext)
                         var poolAfterPayment = partialResult.newPool
@@ -317,9 +336,9 @@ class TurnFaceUpHandler(
 
                     is PaymentStrategy.Explicit -> {
                         for (sourceId in action.paymentStrategy.manaAbilitiesToActivate) {
-                            val (tappedState, tapEvent) = tap(currentState, sourceId)
+                            val (tappedState, tapEvents) = tapForMana(currentState, sourceId, action.playerId)
                             currentState = tappedState
-                            tapEvent?.let(events::add)
+                            events.addAll(tapEvents)
                         }
                     }
                     is PaymentStrategy.ExplicitV2 ->
@@ -345,7 +364,7 @@ class TurnFaceUpHandler(
             else -> {
                 val flip: com.wingedsheep.sdk.scripting.effects.Effect =
                     faceUpEffect
-                        ?.let { Effects.Composite(TurnFaceUpEffect(EffectTarget.Self), it) }
+                        ?.let { TurnFaceUpEffect(EffectTarget.Self) then it }
                         ?: TurnFaceUpEffect(EffectTarget.Self)
                 return when (
                     val result = costPaymentService.pay(
@@ -353,11 +372,14 @@ class TurnFaceUpHandler(
                         action.playerId,
                         morphCost,
                         action.sourceId,
-                        CostPaymentContext(onPaid = flip)
+                        CostPaymentContext(onPaid = flip, objectReferences = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(
+                            captured = true, origin = currentState.objectRef(action.sourceId),
+                            source = currentState.objectRef(action.sourceId),
+                            resolutionKey = "morph:${action.sourceId.value}:${currentState.objectRef(action.sourceId)?.generation}"))
                     )
                 ) {
                     is PaymentResult.Pending ->
-                        ExecutionResult.paused(result.state, result.pendingDecision, events + result.events)
+                        ExecutionResult.propagatePause(result.state, events + result.events)
                     is PaymentResult.Unaffordable ->
                         ExecutionResult.error(currentState, "Cannot pay the morph cost to turn this creature face up")
                     // Selection / yes-no payments never settle synchronously — they always pause first.
@@ -381,6 +403,9 @@ class TurnFaceUpHandler(
         if (faceUpEffect != null) {
             val effectContext = com.wingedsheep.engine.handlers.EffectContext(
                 sourceId = action.sourceId,
+                objectReferences = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(captured = true,
+                    origin = currentState.objectRef(action.sourceId), source = currentState.objectRef(action.sourceId),
+                    resolutionKey = "face-up:${action.sourceId.value}:${currentState.objectRef(action.sourceId)?.generation}"),
                 controllerId = action.playerId,
             )
             val effectResult = effectExecutorRegistry.execute(currentState, faceUpEffect, effectContext)
@@ -409,27 +434,6 @@ class TurnFaceUpHandler(
             container.with(TurnedPermanentFaceUpThisTurnComponent(existing.count + 1))
         }
 
-        // Detect and process "when turned face up" triggers
-        val triggers = triggerDetector.detectTriggers(currentState, events)
-        if (triggers.isNotEmpty()) {
-            val triggerResult = triggerProcessor.processTriggers(currentState, triggers)
-
-            if (triggerResult.isPaused) {
-                return ExecutionResult.paused(
-                    triggerResult.state.withPriority(action.playerId),
-                    triggerResult.pendingDecision!!,
-                    events + triggerResult.events,
-                    diagnostics = triggerResult.diagnostics,
-                )
-            }
-
-            return ExecutionResult.success(
-                triggerResult.newState.withPriority(action.playerId),
-                events + triggerResult.events,
-                triggerResult.diagnostics,
-            )
-        }
-
         // Player retains priority after turning face up.
         // Must call withPriority to clear priorityPassedBy — otherwise the opponent's
         // earlier pass is treated as still valid, causing both players to appear "passed"
@@ -444,11 +448,9 @@ class TurnFaceUpHandler(
                 services.manaSolver,
                 services.costHandler,
                 services.costCalculator,
-                services.triggerDetector,
-                services.triggerProcessor,
                 services.effectExecutorRegistry,
                 services.manaAbilitySideEffectExecutor,
-                CostPaymentService(services)
+                services.costPaymentService
             )
         }
     }

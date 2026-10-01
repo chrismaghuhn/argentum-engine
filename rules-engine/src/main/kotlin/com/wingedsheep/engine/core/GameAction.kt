@@ -5,6 +5,7 @@ import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
 import com.wingedsheep.sdk.scripting.ChoiceSlot
@@ -85,6 +86,16 @@ data class CastSpell(
      */
     val declaredCostSlot: ChoiceSlot? = null,
     /**
+     * How many times the declared optional cost is paid (CR 601.2b "announces their intentions to
+     * pay any or all of those costs"). Always 1 for a once-only cost; a repeatable one
+     * ([com.wingedsheep.sdk.scripting.KeywordAbility.OptionalAdditionalCost.multi] — replicate,
+     * CR 702.56a) may declare more, and the handler charges the cost that many times over.
+     * Ignored when [declaredCostSlot] is null.
+     */
+    val declaredCostTimes: Int = 1,
+    /** Explicit branches of named additional-cost choices; retained independently of payment. */
+    val additionalCostChoices: Map<ChoiceSlot, Int> = emptyMap(),
+    /**
      * Whether the spell's *optional* waterbend additional cost was elected (Avatar: The Last
      * Airbender — [com.wingedsheep.sdk.scripting.SpellWaterbendCost] with `optional = true`).
      * Always `false` for spells with no optional waterbend cost, and irrelevant for a *mandatory*
@@ -94,6 +105,14 @@ data class CastSpell(
      * `Conditions.WaterbendWasPaid`.
      */
     val wasWaterbendPaid: Boolean = false,
+    /**
+     * The optional "pay any amount of mana" additional cost granted by an
+     * [com.wingedsheep.sdk.scripting.AdditionalManaForEntryCounters] static the caster controls
+     * (Chorus of the Conclave), announced while casting (CR 601.2b). `0` declines it. The handler
+     * adds `{N}` generic to the total cost and rejects a non-zero amount when no such static applies
+     * to this spell; the permanent the spell becomes enters with N extra counters.
+     */
+    val additionalManaForCounters: Int = 0,
     /**
      * The opponent promised this spell's **gift** (CR 702.174a, Bloomburrow — "as an additional
      * cost to cast this spell, you may choose an opponent"), or `null` when the gift wasn't
@@ -222,7 +241,13 @@ data class GraveyardCastRiderSelection(
      * Yawgmoth's Agenda when both apply to one card, and the handler's auto-pick could apply or skip
      * the exile the player didn't choose.
      */
-    val exileInsteadOfGraveyard: Boolean = false
+    val exileInsteadOfGraveyard: Boolean = false,
+    /**
+     * The grant's own additional cost (a continuous retrace grant — Six's "discard a land card").
+     * Part of the identity so a player holding both a free grant and a retrace grant picks which
+     * one they cast through — and thus whether they discard — rather than the handler choosing.
+     */
+    val additionalCost: AdditionalCost? = null
 )
 
 /**
@@ -244,6 +269,14 @@ enum class AlternativeCostType {
      */
     MAYHEM,
     /**
+     * Escape ([com.wingedsheep.sdk.scripting.KeywordAbility.Escape], CR 702.138) — graveyard, at the
+     * spell's normal timing. Pays the escape mana instead of the mana cost plus its bundled
+     * non-mana half (usually "exile N other cards from your graveyard"). Like [MAYHEM] and unlike
+     * [FLASHBACK]/[HARMONIZE] the spell is NOT exiled on resolution; a resolving permanent is
+     * marked as having escaped (CR 702.138b).
+     */
+    ESCAPE,
+    /**
      * Disturb ([com.wingedsheep.sdk.scripting.KeywordAbility.Disturb], CR 702.146) — graveyard, at
      * the *back* face's normal timing. Pays the disturb mana instead of the mana cost and puts the
      * card on the stack transformed (back face up, CR 712.8c), so the spell's type line, targets and
@@ -262,6 +295,7 @@ enum class AlternativeCostType {
     DASH,
     /** Evoke ([com.wingedsheep.sdk.scripting.KeywordAbility.Evoke]) — hand. */
     EVOKE,
+    BESTOW,
     /**
      * Emerge ([com.wingedsheep.sdk.scripting.KeywordAbility.Emerge], CR 702.119) — hand, at the
      * spell's normal timing. Pays the emerge mana *reduced by the sacrificed creature's mana value*
@@ -357,12 +391,16 @@ sealed interface PaymentStrategy {
      * is present.
      * @property paymentPlan Complete externally selected source production, pool spend, and cost
      * allocation. Runtime mana ability handles are never serialized in this plan.
+     * @property phyrexianLifePayments Multiset of Phyrexian pip colors paid with 2 life each
+     * instead of mana.
      */
     @Serializable
     @SerialName("Explicit")
     data class Explicit(
         val manaAbilitiesToActivate: List<EntityId> = emptyList(),
         val paymentPlan: PaymentPlanV1? = null,
+        /** Multiset of Phyrexian pip colors paid with 2 life each instead of mana. */
+        val phyrexianLifePayments: List<com.wingedsheep.sdk.core.Color> = emptyList(),
     ) : PaymentStrategy
 
     /** Explicit payment carrier for the complete source/color/subtype floating bucket key. */
@@ -546,12 +584,20 @@ data class TypecycleCard(
 
 /**
  * Player plays a land.
+ *
+ * @property asBackFace Play a modal double-faced card as its **back** face (CR 712.12 — *"A player
+ *   playing a modal double-faced card as a land chooses one of its faces that's a land before
+ *   putting it onto the battlefield. It enters the battlefield with that face up."*). The Zendikar
+ *   Rising Pathway cycle is the whole user: Riverglide Pathway // Lavaglide Pathway is one card
+ *   offering two land plays, and this flag is which one was taken. Defaults to false — the printed
+ *   front face — so every single-faced land play is unchanged.
  */
 @Serializable
 @SerialName("PlayLand")
 data class PlayLand(
     override val playerId: EntityId,
-    val cardId: EntityId
+    val cardId: EntityId,
+    val asBackFace: Boolean = false
 ) : GameAction
 
 // =============================================================================
@@ -780,3 +826,8 @@ data class UnlockRoomDoor(
     val faceId: RoomFaceId,
     val paymentStrategy: PaymentStrategy = PaymentStrategy.AutoPay
 ) : GameAction
+
+/** Repeatable special action created by a resolving effect; never an activated ability. */
+@Serializable
+@SerialName("TakePlayerAction")
+data class TakePlayerAction(override val playerId: EntityId, val permissionId: String) : GameAction

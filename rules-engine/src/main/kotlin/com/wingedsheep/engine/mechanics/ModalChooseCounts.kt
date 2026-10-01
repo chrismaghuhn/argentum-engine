@@ -1,7 +1,6 @@
 package com.wingedsheep.engine.mechanics
 
 import com.wingedsheep.engine.handlers.ConditionEvaluator
-import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
@@ -35,7 +34,8 @@ object ModalChooseCounts {
 
     /**
      * The inclusive `min..max` range of mode counts this cast may choose. Both ends are clamped to
-     * `[minChooseCount, modes.size]`, and `min` never exceeds `max`.
+     * `[minChooseCount, modes.size]` — or to `[minChooseCount, ∞)` when [ModalEffect.allowRepeat]
+     * lets one mode fill every pick — and `min` never exceeds `max`.
      */
     fun forCast(
         state: GameState,
@@ -66,10 +66,16 @@ object ModalChooseCounts {
             xValue = 0,
             declaredCostSlot = declaredCostSlot
         )
-        val evaluator = DynamicAmountEvaluator(conditionEvaluator = conditionEvaluator)
+        val evaluator = conditionEvaluator.amounts
+        // The mode list caps the count only when each mode can be picked once. With
+        // [ModalEffect.allowRepeat] the same mode stays on the menu for every pick (CR 700.2d), so
+        // a three-mode spell can absorb any number of picks and clamping to `modes.size` would
+        // silently shrink the evaluated count. ModalEffectExecutor makes the same distinction for
+        // the resolution-time path; keep the two in step.
+        val ceiling = if (modalEffect.allowRepeat) Int.MAX_VALUE else modalEffect.modes.size
         fun evaluate(amount: com.wingedsheep.sdk.scripting.values.DynamicAmount) =
             evaluator.evaluate(state, amount, context)
-                .coerceIn(modalEffect.minChooseCount, modalEffect.modes.size)
+                .coerceIn(modalEffect.minChooseCount, maxOf(modalEffect.minChooseCount, ceiling))
 
         val max = evaluate(dynamicMax)
         val min = modalEffect.dynamicMinChooseCount?.let { evaluate(it) } ?: modalEffect.minChooseCount

@@ -1,9 +1,9 @@
 package com.wingedsheep.engine.handlers.effects.library
 
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.CastAnyNumberFromCollectionContinuation
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
-import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.SearchCardInfo
 import com.wingedsheep.engine.core.SelectCardsDecision
@@ -16,7 +16,6 @@ import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.CastAnyNumberFromCollectionWithoutPayingCostEffect
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -34,6 +33,15 @@ import kotlin.reflect.KClass
  * whatever it's handed and leaves uncast cards in place. Timing restrictions based on card type
  * are ignored because the synthesized casts go through `CastSpellHandler.execute` directly
  * (the player-action `validate()` timing gate never runs), exactly like Cascade.
+ *
+ * A non-null `maxCasts` is the remaining budget for the "cast **up to N** spells from among
+ * them" wording: an exhausted budget (`<= 0`) ends the loop before the decision is offered, and
+ * the budget rides on the continuation so the resumer can re-enter with one fewer once a cast
+ * actually initiates (a pick that can't be cast for want of a legal target doesn't spend one).
+ *
+ * A non-null `maxTotalManaValue` is the remaining budget for the "spells with total mana value N
+ * or less" wording: only cards whose mana value fits are offered, and the resumer re-enters with
+ * the cast card's mana value spent (again only once the cast actually initiates).
  */
 class CastAnyNumberFromCollectionWithoutPayingCostExecutor :
     EffectExecutor<CastAnyNumberFromCollectionWithoutPayingCostEffect> {
@@ -46,12 +54,20 @@ class CastAnyNumberFromCollectionWithoutPayingCostExecutor :
         effect: CastAnyNumberFromCollectionWithoutPayingCostEffect,
         context: EffectContext,
     ): EffectResult {
+        val remainingCasts = effect.maxCasts
+        if (remainingCasts != null && remainingCasts <= 0) return EffectResult.success(state)
+
+        val remainingManaValue = effect.maxTotalManaValue
+        if (remainingManaValue != null && remainingManaValue < 0) return EffectResult.success(state)
+
+        // A "total mana value N or less" budget offers only the cards that still fit in it; a card
+        // that doesn't fit now never will (the budget only shrinks), so it leaves the pool.
         val candidates = stillCastable(state, context.pipeline.storedCollections[effect.from].orEmpty())
+            .filter { id -> remainingManaValue == null || manaValueOf(state, id) <= remainingManaValue }
         if (candidates.isEmpty()) return EffectResult.success(state)
 
         val controllerId = context.controllerId
         val sourceName = context.sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name }
-        val decisionId = UUID.randomUUID().toString()
 
         val cardInfo = candidates.associateWith { cardId ->
             val cardComponent = state.getEntity(cardId)?.get<CardComponent>()
@@ -64,11 +80,16 @@ class CastAnyNumberFromCollectionWithoutPayingCostExecutor :
             )
         }
 
-        val decision = SelectCardsDecision(
+        val decision = { decisionId: String -> SelectCardsDecision(
             id = decisionId,
             playerId = controllerId,
-            prompt = if (effect.payManaCost) "Choose a spell to cast, or select none to stop"
-            else "Choose a spell to cast for free, or select none to stop",
+            prompt = buildString {
+                append(if (effect.payManaCost) "Choose a spell to cast" else "Choose a spell to cast for free")
+                // "$n remaining", not "$n more": the card being chosen right now is one of them.
+                if (remainingCasts != null) append(" ($remainingCasts remaining)")
+                if (remainingManaValue != null) append(" (total mana value $remainingManaValue remaining)")
+                append(", or select none to stop")
+            },
             context = DecisionContext(
                 sourceId = context.sourceId,
                 sourceName = sourceName,
@@ -78,7 +99,7 @@ class CastAnyNumberFromCollectionWithoutPayingCostExecutor :
             minSelections = 0,
             maxSelections = 1,
             cardInfo = cardInfo,
-        )
+        ) }
 
         // Normalize the collection to the still-castable set so the resumer's bookkeeping
         // (remaining = collection − chosen) matches exactly what was offered.
@@ -89,29 +110,20 @@ class CastAnyNumberFromCollectionWithoutPayingCostExecutor :
         )
 
         val continuation = CastAnyNumberFromCollectionContinuation(
-            decisionId = decisionId,
             from = effect.from,
             effectContext = normalizedContext,
             payManaCost = effect.payManaCost,
+            maxCasts = effect.maxCasts,
+            maxTotalManaValue = effect.maxTotalManaValue,
         )
 
-        val pausedState = state
-            .pushContinuation(continuation)
-            .withPendingDecision(decision)
-            .withPriority(controllerId)
+        return EffectResult.from(state.withPriority(controllerId).suspendForDecision(decision, continuation, emptyList()))
+    }
 
-        return EffectResult.paused(
-            pausedState,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = controllerId,
-                    decisionType = "SELECT_CARDS",
-                    prompt = decision.prompt,
-                )
-            ),
-        )
+    companion object {
+        /** A card's mana value off the stack — X counts as 0, which a free cast also forces (CR 107.3b). */
+        fun manaValueOf(state: GameState, id: EntityId): Int =
+            state.getEntity(id)?.get<CardComponent>()?.manaValue ?: 0
     }
 
     /** Cards from the collection that are still in their owner's exile (castable from there). */

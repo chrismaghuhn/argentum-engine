@@ -30,11 +30,10 @@ val ZurTheEnchanter = card("Zur the Enchanter") {
     toughness = 4
     keywords(Keyword.FLYING)
     triggeredAbility {
-        trigger = Triggers.Attacks
+        trigger = Triggers.self.attacks()
         optional = true
         effect = Patterns.Library.searchLibrary(
-            filter = GameObjectFilter.Any,
-            count = 3,
+            filter = GameObjectFilter.Enchantment.manaValueAtMost(3),
             destination = SearchDestination.BATTLEFIELD
         )
     }

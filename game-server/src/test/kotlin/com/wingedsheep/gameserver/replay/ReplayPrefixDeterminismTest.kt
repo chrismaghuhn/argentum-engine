@@ -153,7 +153,10 @@ class ReplayPrefixDeterminismTest : ScenarioTestBase() {
 
                 val setup = replay.setup
                 val seats = setup.players.map { SpectatorSeat(EntityId(it.playerId), it.name) }
-                val builder = SpectatorStateBuilder(cardRegistry, ClientStateTransformer(cardRegistry))
+                val builder = SpectatorStateBuilder(
+                    cardRegistry,
+                    ClientStateTransformer(cardRegistry, predicateEvaluator = services.predicateEvaluator),
+                )
                 builder.buildState(reconstructed, seats, setup.seatRoster, replay.gameId) shouldBe
                     builder.buildState(live, seats, setup.seatRoster, replay.gameId)
 

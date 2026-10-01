@@ -140,6 +140,12 @@ export interface PlayerSeatInfo {
    * team header vs. per-player life.
    */
   readonly teamSharedLife?: boolean
+  /**
+   * True when the team takes one shared turn and holds priority as a unit (CR 805 / 810.2), so any
+   * member may act while their team has priority (CR 805.5a). False for Team vs. Team's individual
+   * turns (CR 808.4). Game-level, like `teamSharedLife`.
+   */
+  readonly teamSharedTurns?: boolean
 }
 
 /**
@@ -168,6 +174,8 @@ export interface OpponentDecisionStatus {
   readonly decisionType: string
   readonly displayText: string
   readonly sourceName?: string | null
+  /** The source entity; resolve its card from the (viewer-masked) game state. */
+  readonly sourceId?: EntityId | null
 }
 
 /**
@@ -203,6 +211,8 @@ export interface StateUpdateMessage {
   readonly priorityMode?: PriorityModeValue | null
   /** Monotonically increasing version — used to detect missed messages */
   readonly stateVersion?: number
+  /** Live timeline on which actions in this snapshot originate. */
+  readonly interactionEpoch?: string | null
 }
 
 /**
@@ -242,6 +252,8 @@ export interface StateDelta {
   readonly winnerId?: EntityId | null
   /** Day/night designation (CR 731). Null means unchanged — the game never returns to neither. */
   readonly dayNight?: ClientGameState['dayNight'] | null
+  /** Whether the Void condition holds this turn. Null means unchanged. */
+  readonly voidActive?: boolean | null
   /** Combat state changes */
   readonly combat?: ClientCombatState | null
   readonly combatCleared?: boolean | null
@@ -254,6 +266,8 @@ export interface StateDelta {
   readonly hotseat?: boolean | null
   /** The viewer's decklist, present only when a `remaining` count moved (draw, mill, tutor). */
   readonly deck?: readonly ClientDeckCard[] | null
+  /** The viewer's persistent yields, present only when they changed. */
+  readonly activeYields?: ClientGameState['activeYields'] | null
 }
 
 /**
@@ -272,6 +286,8 @@ export interface StateDeltaUpdateMessage {
   readonly priorityMode?: PriorityModeValue | null
   /** Monotonically increasing version — used to detect missed messages */
   readonly stateVersion?: number
+  /** Live timeline on which actions in this snapshot originate. */
+  readonly interactionEpoch?: string | null
 }
 
 // ============================================================================
@@ -345,6 +361,12 @@ export interface SelectCardsDecision extends PendingDecisionBase {
   readonly onePerCardType?: boolean
   /** When true, at most one card of each colour may be selected (colourless unconstrained) */
   readonly onePerColor?: boolean
+  /**
+   * When true, at most one card of each name may be selected ("cards with different names" —
+   * Behold the Sinister Six!, Extrapolate the Impossible). The server enforces this; the UI
+   * disables cards sharing an already-selected card's name.
+   */
+  readonly onePerCardName?: boolean
   /**
    * When true, at most one land of each basic land type may be selected (a kept land claims
    * every basic type it has); a land with no basic land type can't be selected (Global Ruin).
@@ -425,6 +447,12 @@ export interface TargetRequirementInfo {
    * Already resolved to a concrete number server-side.
    */
   readonly totalManaValueAtMost?: number | null
+  /**
+   * True for "another target" wording: a pick here must differ from every target chosen for an
+   * earlier requirement. Absent/false lets separate "target" instances choose the same object
+   * (Seeds of Strength), so earlier picks stay in this requirement's pool.
+   */
+  readonly mustDifferFromEarlier?: boolean
 }
 
 /**
@@ -564,6 +592,8 @@ export interface DistributeDecision extends PendingDecisionBase {
 export interface ChooseColorDecision extends PendingDecisionBase {
   readonly type: 'ChooseColorDecision'
   readonly availableColors: readonly string[]
+  /** How many distinct colors may be chosen; >1 means "one or more" (toggle + confirm). */
+  readonly maxColors?: number
 }
 
 /**
@@ -580,6 +610,8 @@ export interface ManaSourceOption {
    * Auto-pay never picks these; manual selection performs the sacrifice explicitly.
    */
   readonly requiresSacrifice?: boolean
+  /** How much mana one activation adds (Gilded Lotus: 3). Absent on older servers — read as 1. */
+  readonly manaAmount?: number
 }
 
 /**
@@ -813,12 +845,20 @@ export interface LegalActionTargetInfo {
    * selectable targets to the X chosen at cast time.
    */
   readonly xConstrainsCount?: boolean
+  /**
+   * True for "another target" wording: a pick here must differ from every target chosen for an
+   * earlier requirement. Absent/false lets separate "target" instances choose the same object
+   * (Seeds of Strength), so earlier picks stay in this requirement's pool.
+   */
+  readonly mustDifferFromEarlier?: boolean
 }
 
 /**
  * Information about a legal action the player can take.
  */
 export interface LegalActionInfo {
+  /** Client-attached snapshot origin; preserved while targets and payments are selected. */
+  readonly interactionEpoch?: string | null
   readonly actionType: string
   readonly description: string
   readonly action: GameAction
@@ -874,6 +914,11 @@ export interface LegalActionInfo {
   readonly hasXCost?: boolean
   /** Maximum X value the player can afford (null if not X cost spell) */
   readonly maxAffordableX?: number
+  /**
+   * Set when the caster may pay "any amount of mana" as an additional cost (Chorus of the
+   * Conclave): the upper bound for the amount picker. Sent back as `additionalManaForCounters`.
+   */
+  readonly maxAdditionalManaForCounters?: number
   /** Minimum X value (usually 0) */
   readonly minX?: number
   /** Whether this is a mana ability (doesn't highlight card as playable) */
@@ -925,6 +970,17 @@ export interface LegalActionInfo {
    * and waterbend are generic-only, harmonize taps one creature.
    */
   readonly minimumManaCostString?: string
+  /**
+   * Mana this spell adds to its own cost per target beyond the first — Officious Interrogation
+   * ("This spell costs {W}{U} more to cast for each target beyond the first") sends `'{W}{U}'`.
+   * Absent for every spell that doesn't tax itself per target.
+   *
+   * When set, `manaCostString` is only the one-target minimum, so targeting has to be settled
+   * before the player can sensibly pick mana sources by hand: `computePhases` orders `targeting`
+   * ahead of `manaSource`, and `startManaSelection` scales the cost it charges by the targets
+   * actually picked.
+   */
+  readonly manaCostPerExtraTarget?: string
   /** Whether this spell requires damage distribution at cast time (for DividedDamageEffect) */
   readonly requiresDamageDistribution?: boolean
   /** Total damage to distribute for DividedDamageEffect spells */
@@ -954,6 +1010,13 @@ export interface LegalActionInfo {
   readonly availableManaColors?: readonly string[]
   /** Source zone if this action is from a non-hand zone (e.g., "LIBRARY" for Future Sight) */
   readonly sourceZone?: string
+  /**
+   * True when this cast puts the card on the stack **back face up** (CR 712.8c) — a disturb cast
+   * (CR 702.146a). The card is sitting in its zone printed *front* face up, so the offer must be
+   * rendered from the card's `backFace*` fields, not from its own name/art/text. Server-decided:
+   * which face a cast uses is a rules question, never one the client derives from a keyword.
+   */
+  readonly castsTransformed?: boolean
   /** Max block counts for blockers that can block more than one attacker */
   readonly blockerMaxBlockCounts?: Readonly<Record<EntityId, number>>
   /** Pre-computed mandatory blocker→attacker assignments from Provoke / MustBeBlockedByAll */
@@ -1025,6 +1088,10 @@ export interface TapForPowerCreatureInfo {
   readonly name: string
   /** Projected power of this creature */
   readonly power: number
+  /** Whether the server says this creature could legally attack right now (CR 508.1a). Paying with
+   * it taps it, so it drops out of combat — the auto-pick spends creatures that couldn't attack
+   * anyway first, and the HUD flags the ones that could. */
+  readonly canAttack?: boolean
 }
 
 /**
@@ -1098,18 +1165,51 @@ export interface AdditionalCostInfo {
   readonly tapBatchMaxActivations?: number
   readonly validDiscardTargets?: readonly EntityId[]
   readonly discardCount?: number
+  /**
+   * Cards in your hand that could pay a reveal-from-hand additional cost ("reveal an Elf card from
+   * your hand or pay {3}"), and how many to pick. Distinct from `validBeholdTargets` because
+   * behold also offers battlefield permanents (CR 701.4a); a reveal never does. Picks are
+   * submitted as `additionalCostPayment.revealedCards` — the cards stay in hand (CR 701.20b).
+   */
+  readonly validRevealTargets?: readonly EntityId[]
+  readonly revealCount?: number
   readonly validBounceTargets?: readonly EntityId[]
   readonly bounceCount?: number
   readonly validExileTargets?: readonly EntityId[]
   readonly exileMinCount?: number
   readonly exileMaxCount?: number
   /**
-   * Floor on the summed mana value of the exiled cards — collect evidence N (CR 701.59a).
-   * Set only for `costType === 'CollectEvidence'`, where the constraint is a sum rather than a
-   * count and `exileMinCount` / `exileMaxCount` merely bound the selection at 1 and the whole
-   * graveyard.
+   * Floor on the summed *measure* of the exiled cards, with the per-card weights the sum is taken
+   * over and the name of one unit for the tally. Set for the graveyard exile costs whose
+   * constraint is a total rather than a count — `costType === 'CollectEvidence'` (CR 701.59a,
+   * mana value) and `'ExileForTotal'` (Baron Helmut Zemo's "fifteen or more black mana symbols
+   * among their mana costs") — where `exileMinCount` / `exileMaxCount` merely bound the selection
+   * at 1 and the whole graveyard.
+   *
+   * The client never computes a weight: the server ships them (a pip total is a reading of the
+   * printed cost the client can't do, and sending mana values too keeps this one code path).
    */
-  readonly exileMinTotalManaValue?: number
+  readonly exileMinTotalWeight?: number
+  readonly exileCardWeights?: Readonly<Record<EntityId, number>>
+  readonly exileWeightUnit?: string
+  /**
+   * Each offered card's card types, for a cost measured by a *union* rather than a sum —
+   * Nethergoyf's "four or more card types among them". When present, the running total is the
+   * number of distinct types across the selected cards, not the sum of `exileCardWeights`.
+   */
+  readonly exileCardTypes?: Readonly<Record<EntityId, readonly string[]>>
+  /**
+   * What each legal target would add to `exileMinTotalWeight` — present only for a cost whose
+   * threshold is priced off the spell's targets rather than printed (Urgent Necropsy's "collect
+   * evidence X, where X is the total mana value of the permanents this spell targets").
+   *
+   * Its presence says the threshold isn't final and the picker has to wait: `exileMinTotalWeight`
+   * carries only the part already known, and the real floor is that plus these weights summed over
+   * whatever the caster targets. So the cost-payment step runs *after* the targeting step for this
+   * cost — the same deferral `manaCostPerExtraTarget` already does for mana sources. Like every
+   * other weight here, the numbers are the server's, not the client's.
+   */
+  readonly exileWeightPerTarget?: Readonly<Record<EntityId, number>>
   readonly validBeholdTargets?: readonly EntityId[]
   readonly beholdCount?: number
   readonly counterRemovalCreatures?: readonly CounterRemovalCreatureInfo[]
@@ -1208,7 +1308,10 @@ export interface WaitingForOpponentMulliganMessage {
  */
 export interface GameOverMessage {
   readonly type: 'gameOver'
+  /** One representative of the winning side; kept for readers that predate teams. */
   readonly winnerId: EntityId | null
+  /** Every seat that won — the whole winning team in Two-Headed Giant (CR 810.8a). Empty for a draw. */
+  readonly winnerIds?: readonly EntityId[]
   readonly reason: GameOverReason
   readonly message?: string
   readonly gameId?: string
@@ -1349,7 +1452,7 @@ export interface AvailableSet {
   readonly name: string
   /**
    * True when the set isn't fully implemented for sealed/draft (not sealed-supported, or flagged
-   * incomplete). The lobby set picker hides partial sets behind a default-off toggle.
+   * incomplete). The lobby set picker hides partial sets while browsing by default; search includes them.
    */
   readonly partial?: boolean
   /**
@@ -1489,7 +1592,8 @@ export interface DraftPackReceivedMessage {
   readonly packNumber: number
   readonly pickNumber: number
   readonly cards: readonly SealedCardInfo[]
-  readonly timeRemainingSeconds: number
+  /** Seconds left to pick, or `null` when the draft has no time limit. */
+  readonly timeRemainingSeconds: number | null
   readonly passDirection: 'LEFT' | 'RIGHT'
   readonly picksPerRound: number  // Cards to pick this round (1 or 2)
   readonly pickedCards?: readonly SealedCardInfo[]  // Cards already picked (for reconnect)
@@ -1552,7 +1656,8 @@ export interface WinstonDraftStateMessage {
   readonly knownOpponentCards: readonly SealedCardInfo[]
   readonly unknownOpponentCardCount: number
   readonly lastAction: string | null
-  readonly timeRemainingSeconds: number
+  /** Seconds left to pick, or `null` when the draft has no time limit. */
+  readonly timeRemainingSeconds: number | null
   readonly lastPickedCards: readonly SealedCardInfo[]
 }
 
@@ -1574,7 +1679,8 @@ export interface GridDraftStateMessage {
   readonly totalPickedByOthers: Record<string, number>
   readonly pickedCardsByOthers: Record<string, readonly SealedCardInfo[]>
   readonly lastAction: string | null
-  readonly timeRemainingSeconds: number
+  /** Seconds left to pick, or `null` when the draft has no time limit. */
+  readonly timeRemainingSeconds: number | null
   /** Available row/column selections (e.g., ["ROW_0", "COL_1"]) */
   readonly availableSelections: readonly string[]
   /** Player names in pick order */
@@ -1620,6 +1726,8 @@ export interface MatchResultInfo {
   readonly winnerId: string | null
   readonly isDraw: boolean
   readonly isBye: boolean
+  /** True when the server decided this AI-vs-AI match without playing it. No game, so no replay. */
+  readonly isSimulated?: boolean
 }
 
 export interface TournamentStartedMessage {
@@ -1673,13 +1781,23 @@ export interface MatchCompleteMessage {
   readonly nextRoundHasBye?: boolean
   /** True if the tournament is complete (no more rounds) */
   readonly isTournamentComplete?: boolean
+  /**
+   * True when every match in `round` is finished. False means we finished early and `round` is still
+   * running, so the overlay must keep naming it instead of advertising the next one; a `roundComplete`
+   * message for the same round still follows. Named for `round`, not for the tournament's current
+   * round — eager starting lets a later round's match finish while an earlier one is still current.
+   */
+  readonly roundComplete?: boolean
 }
 
 export interface PlayerReadyForRoundMessage {
   readonly type: 'playerReadyForRound'
   readonly lobbyId: string
-  readonly playerId: string
-  readonly playerName: string
+  /** The player whose ready flag just went up; absent when this is a plain snapshot re-broadcast. */
+  readonly playerId?: string | null
+  /** Name of `playerId`; absent on a snapshot re-broadcast. */
+  readonly playerName?: string | null
+  /** The authoritative ready set — replace the local copy with this, never merge into it. */
   readonly readyPlayerIds: readonly string[]
   readonly totalConnectedPlayers: number
 }
@@ -1812,6 +1930,8 @@ export interface SpectatorDecisionStatus {
   readonly decisionType: string
   readonly displayText: string
   readonly sourceName?: string | null
+  /** The source entity; resolve its card from the (viewer-masked) game state. */
+  readonly sourceId?: EntityId | null
 }
 
 export interface SpectatorStateUpdateMessage {
@@ -2065,6 +2185,7 @@ export interface JoinGameMessage {
 export interface SubmitActionMessage {
   readonly type: 'submitAction'
   readonly action: GameAction
+  readonly interactionEpoch: string
 }
 
 /**
@@ -2268,8 +2389,8 @@ export function createJoinGameMessage(
   }
 }
 
-export function createSubmitActionMessage(action: GameAction): SubmitActionMessage {
-  return { type: 'submitAction', action }
+export function createSubmitActionMessage(action: GameAction, interactionEpoch: string): SubmitActionMessage {
+  return { type: 'submitAction', action, interactionEpoch }
 }
 
 export function createKeepHandMessage(): KeepHandMessage {
@@ -3036,6 +3157,11 @@ export interface SubmitQuickGameLobbyDeckMessage {
   readonly cardEntries?: readonly DeckEntry[]
   /** Optional pinned printing for the commander. Ignored when `commander` is null. */
   readonly commanderPrinting?: PrintingRef
+  /**
+   * Constructed sideboard ("outside the game", CR 400.11a), card name → count. Omitted for a
+   * random pool, whose sideboard the server derives from the pool instead.
+   */
+  readonly sideboard?: Record<string, number>
 }
 
 export interface SetQuickGameLobbyReadyMessage {
@@ -3095,6 +3221,7 @@ export function createSubmitQuickGameLobbyDeckMessage(
   commander?: string | null,
   cardEntries?: readonly DeckEntry[],
   commanderPrinting?: PrintingRef,
+  sideboard?: Record<string, number>,
 ): SubmitQuickGameLobbyDeckMessage {
   return {
     type: 'submitQuickGameLobbyDeck',
@@ -3102,6 +3229,7 @@ export function createSubmitQuickGameLobbyDeckMessage(
     ...(commander ? { commander } : {}),
     ...(cardEntries && cardEntries.length > 0 ? { cardEntries } : {}),
     ...(commanderPrinting ? { commanderPrinting } : {}),
+    ...(sideboard && Object.keys(sideboard).length > 0 ? { sideboard } : {}),
   }
 }
 export function createSetQuickGameLobbyReadyMessage(ready: boolean): SetQuickGameLobbyReadyMessage {

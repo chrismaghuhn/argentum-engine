@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.mechanics.mana
 
+import com.wingedsheep.engine.handlers.actions.ability.extractManaCost
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.CardType
@@ -19,12 +20,14 @@ import com.wingedsheep.sdk.model.EntityId
  *
  * [ability] is the activated ability whose cost is being paid. It is a required parameter (nullable
  * rather than defaulted) so every activation site has to state what it is activating: facts about
- * the *ability* rather than its source — currently only "is this an equip ability", CR 702.6, for
- * [com.wingedsheep.sdk.scripting.effects.ManaRestriction.EquipAbilityActivationOnly] — can't be
- * recovered from [cardComponent]. A zone-scoped keyword activation such as Cycling may pass null
- * when there is no equip-specific property to claim; that still produces an activated-ability
- * context and is not an unrestricted/null payment context. For any other unresolved ability the
- * equip fact also reads false, i.e. the restriction refuses, which is the safe direction.
+ * the *ability* rather than its source — "is this an equip ability" (CR 702.6, for
+ * [com.wingedsheep.sdk.scripting.effects.ManaRestriction.EquipAbilityActivationOnly]) and "does its
+ * cost contain {X}" (for [com.wingedsheep.sdk.scripting.effects.ManaRestriction.CostsContainingXOnly])
+ * — can't be recovered from [cardComponent]. A zone-scoped keyword activation such as Cycling may pass null
+ * when there is no ability-specific property to claim; that still produces an activated-ability
+ * context and is not an unrestricted/null payment context. For any other unresolved ability (a granted
+ * ability the caller can't look up) both facts also read false, i.e. the restriction refuses, which is
+ * the safe direction.
  */
 fun buildAbilityPaymentContext(
     cardComponent: CardComponent,
@@ -42,5 +45,6 @@ fun buildAbilityPaymentContext(
         abilitySourceCardTypes = cardTypes,
         subtypes = subtypes,
         isEquipAbilityActivation = ability?.isEquipAbility == true,
+        hasXInCost = ability?.cost?.extractManaCost()?.hasX == true,
     )
 }

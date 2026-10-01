@@ -2,6 +2,7 @@ package com.wingedsheep.engine.mechanics.sba.creature
 
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.mechanics.sba.SbaOrder
 import com.wingedsheep.engine.mechanics.sba.SbaZoneMovementHelper
 import com.wingedsheep.engine.mechanics.sba.StateBasedActionCheck
@@ -14,13 +15,16 @@ import com.wingedsheep.sdk.core.Keyword
  * 704.5g - A creature that's been dealt lethal damage is destroyed.
  * 704.5h - A creature that's been dealt damage by a source with deathtouch is destroyed.
  * Note: Indestructible creatures are not destroyed by lethal damage (Rule 702.12b).
- * Creatures with regeneration shields are regenerated instead of destroyed.
+ * Creatures with regeneration shields are regenerated instead of destroyed; umbra armor
+ * (CR 702.89a) spends an Aura instead.
  */
-class LethalDamageCheck : StateBasedActionCheck {
+class LethalDamageCheck(private val zones: ZoneTransitionService) : StateBasedActionCheck {
     override val name = "704.5g/h Lethal Damage"
     override val order = SbaOrder.LETHAL_DAMAGE
 
-    override fun check(state: GameState): ExecutionResult {
+    override fun check(state: GameState): ExecutionResult = check(state, state)
+
+    override fun check(state: GameState, passStartState: GameState): ExecutionResult {
         var newState = state
         val events = mutableListOf<com.wingedsheep.engine.core.GameEvent>()
         // CR 704.3: state-based actions are checked, then all applicable ones are performed
@@ -75,8 +79,25 @@ class LethalDamageCheck : StateBasedActionCheck {
                     continue
                 }
 
+                // Umbra armor (CR 702.89a). Which Auras shield this creature is read off
+                // `passStartState`: every destruction in this pass is simultaneous (CR 704.3).
+                val umbraAura = ZoneMovementUtils.findUmbraArmorAura(newState, entityId, passStartState)
+                if (umbraAura != null) {
+                    val umbraResult = ZoneMovementUtils.applyUmbraArmor(zones, newState, entityId, umbraAura)
+                    newState = umbraResult.newState
+                    events.addAll(umbraResult.events)
+                    continue
+                }
+
+                // `passStartState` — not `newState` — decides which battlefield permanents can
+                // replace this death. Everything this SBA pass performs is one simultaneous event
+                // (CR 704.3), so a "would die → exile it instead" shield dying in the same batch
+                // still shields the rest (CR 614.1). Reading the mutated state instead would let
+                // battlefield iteration order decide it: a Head of the Hunt that traded with the
+                // creatures it was meant to exile happened to be moved first, so they died.
                 val result = SbaZoneMovementHelper.putCreatureInGraveyard(
-                    newState, entityId, cardComponent, "lethal damage"
+                    zones,
+                    newState, entityId, cardComponent, "lethal damage", passStartState
                 )
                 newState = result.newState
                 events.addAll(result.events)

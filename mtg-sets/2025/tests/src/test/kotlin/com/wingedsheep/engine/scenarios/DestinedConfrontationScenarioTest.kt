@@ -15,6 +15,7 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Destined Confrontation (TLA) — {2}{W}{W} Sorcery.
@@ -166,12 +167,12 @@ class DestinedConfrontationScenarioTest : FunSpec({
         }
         val decision = driver.pendingDecision as SelectCardsDecision
         val invalid = driver.submitCardSelection(me, listOf(oneA, four))
-        invalid.isSuccess shouldBe false
+        invalid.outcome shouldNotBe Outcome.Done
         invalid.error shouldNotBe null
         driver.pendingDecision?.id shouldBe decision.id
 
         // A legal retry is accepted and the spell can then resolve normally.
-        driver.submitCardSelection(me, listOf(oneA)).isSuccess shouldBe true
+        driver.submitCardSelection(me, listOf(oneA)).outcome shouldBe Outcome.Done
         var guard = 0
         while ((driver.pendingDecision != null || driver.state.stack.isNotEmpty()) && guard < 100) {
             driver.pendingDecision shouldBe null

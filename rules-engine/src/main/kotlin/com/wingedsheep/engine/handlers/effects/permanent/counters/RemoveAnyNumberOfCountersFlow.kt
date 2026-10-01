@@ -1,16 +1,16 @@
 package com.wingedsheep.engine.handlers.effects.permanent.counters
 
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.ChooseNumberDecision
 import com.wingedsheep.engine.core.CountersRemovedEvent
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
-import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.RemoveAnyNumberOfCountersContinuation
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.model.EntityId
-import java.util.UUID
 
 /**
  * The prompt-per-counter-kind walk behind
@@ -59,7 +59,7 @@ object RemoveAnyNumberOfCountersFlow {
         targetName: String,
         sourceId: EntityId?,
         sourceName: String?,
-        order: List<String>,
+        order: List<CounterType>,
         budget: Int?,
         floor: Int,
         priorEvents: List<GameEvent> = emptyList()
@@ -81,14 +81,12 @@ object RemoveAnyNumberOfCountersFlow {
                 continue
             }
 
-            val maxHere = remainingBudget?.let { minOf(live, it) } ?: live
-            if (maxHere <= 0) break
-
-            // What the kinds after this one could still supply toward the floor. Clamped to the
-            // budget, since the budget bounds the total however it's spread across kinds.
-            val othersRaw = rest.sumOf { countOf(currentState, targetId, it) }
-            val others = remainingBudget?.let { minOf(othersRaw, it) } ?: othersRaw
-            val minHere = (remainingFloor - others).coerceIn(0, maxHere)
+            val (minHere, maxHere) = kindBounds(
+                live = live,
+                laterAvailable = rest.sumOf { countOf(currentState, targetId, it) },
+                budget = remainingBudget,
+                floor = remainingFloor
+            ) ?: break
 
             if (minHere == maxHere) {
                 // Nothing left to decide — apply it rather than asking a question with one answer.
@@ -101,11 +99,10 @@ object RemoveAnyNumberOfCountersFlow {
                 continue
             }
 
-            val decisionId = UUID.randomUUID().toString()
-            val decision = ChooseNumberDecision(
+            val decision = { decisionId: String -> ChooseNumberDecision(
                 id = decisionId,
                 playerId = controllerId,
-                prompt = "Remove how many $kind counters from $targetName? ($minHere-$maxHere)",
+                prompt = "Remove how many ${kind.printed} counters from $targetName? ($minHere-$maxHere)",
                 context = DecisionContext(
                     sourceId = sourceId,
                     sourceName = sourceName,
@@ -113,9 +110,8 @@ object RemoveAnyNumberOfCountersFlow {
                 ),
                 minValue = minHere,
                 maxValue = maxHere
-            )
+            ) }
             val continuation = RemoveAnyNumberOfCountersContinuation(
-                decisionId = decisionId,
                 targetId = targetId,
                 controllerId = controllerId,
                 currentCounterType = kind,
@@ -128,44 +124,54 @@ object RemoveAnyNumberOfCountersFlow {
                 remainingBudget = remainingBudget,
                 remainingFloor = remainingFloor
             )
-            events.add(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = controllerId,
-                    decisionType = "CHOOSE_NUMBER",
-                    prompt = decision.prompt
-                )
-            )
+            val pause = currentState.suspendForDecision(decision, continuation, events)
             return Outcome.Prompt(
-                state = currentState.withPendingDecision(decision).pushContinuation(continuation),
-                decision = decision,
-                events = events
+                state = pause.state,
+                decision = pause.pendingDecision as ChooseNumberDecision,
+                events = pause.events
             )
         }
 
         return Outcome.Done(currentState, events)
     }
 
+    /**
+     * The `(min, max)` one kind's prompt offers, or null when the budget leaves nothing to take.
+     * Shared with [MoveChosenCountersFlow], which walks the same budget-and-floor shape.
+     *
+     * @param live how many of this kind are there now
+     * @param laterAvailable how many the kinds after this one carry between them
+     * @param budget counters still takeable in total, or null for no cap
+     * @param floor counters that still *must* be taken in total
+     */
+    fun kindBounds(live: Int, laterAvailable: Int, budget: Int?, floor: Int): Pair<Int, Int>? {
+        val maxHere = budget?.let { minOf(live, it) } ?: live
+        if (maxHere <= 0) return null
+        // What the later kinds could still supply toward the floor. Clamped to the budget, since
+        // the budget bounds the total however it's spread across kinds.
+        val others = budget?.let { minOf(laterAvailable, it) } ?: laterAvailable
+        return (floor - others).coerceIn(0, maxHere) to maxHere
+    }
+
     /** Live count of [kind] on [targetId]; 0 when the entity is gone or tracks no counters. */
-    fun countOf(state: GameState, targetId: EntityId, kind: String): Int =
+    fun countOf(state: GameState, targetId: EntityId, kind: CounterType): Int =
         state.getEntity(targetId)
             ?.get<CountersComponent>()
-            ?.getCount(resolveCounterType(kind))
+            ?.getCount(kind)
             ?: 0
 
     /** Apply a removal, paired with the event to emit (null when [count] is 0). */
     fun removeCounters(
         state: GameState,
         targetId: EntityId,
-        kind: String,
+        kind: CounterType,
         count: Int,
         targetName: String
     ): Pair<GameState, CountersRemovedEvent?> {
         if (count <= 0) return state to null
-        val counterType = resolveCounterType(kind)
         val current = state.getEntity(targetId)?.get<CountersComponent>() ?: return state to null
         val updated = state.updateEntity(targetId) { container ->
-            container.with(current.withRemoved(counterType, count))
+            container.with(current.withRemoved(kind, count))
         }
         return updated to CountersRemovedEvent(targetId, kind, count, targetName)
     }

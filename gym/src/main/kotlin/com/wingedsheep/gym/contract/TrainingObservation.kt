@@ -10,6 +10,33 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
 /**
+ * Stable serialized order for the per-player zone views in [TrainingObservation.zones].
+ *
+ * The order is written out rather than derived from [Zone.entries] because it is a schema
+ * guarantee: reordering the enum's declarations must not silently permute model-facing inputs.
+ * Together with [NON_PLAYER_KEYED_ZONES] this classifies every [Zone] the engine models, so a new
+ * engine zone cannot be added without deciding here whether an agent observes it per player.
+ *
+ * Known gap: emblems are zone-less entities (they carry `EmblemSourceComponent` and live in no
+ * zone at all), so no zone view reaches them. Surfacing them needs its own contract field.
+ */
+val TRAINING_OBSERVATION_ZONE_ORDER: List<Zone> = listOf(
+    Zone.HAND,
+    Zone.LIBRARY,
+    Zone.GRAVEYARD,
+    Zone.EXILE,
+    Zone.BATTLEFIELD,
+    Zone.COMMAND,
+    Zone.SIDEBOARD,
+)
+
+/**
+ * Zones deliberately absent from [TRAINING_OBSERVATION_ZONE_ORDER] because they are not keyed per
+ * player: [TrainingObservation.stack] carries the stack's own ordered representation.
+ */
+val NON_PLAYER_KEYED_ZONES: Set<Zone> = setOf(Zone.STACK)
+
+/**
  * The payload an agent receives from any gym environment after `observe` / `step`.
  *
  * A gym env is no longer only a game of Magic — deckbuilding is its own env type
@@ -77,7 +104,11 @@ data class TrainingObservation(
     val players: List<PlayerView>,
 
     /**
-     * Per-zone entity views. A `(ownerId, zoneType)` pair appears at most once.
+     * Per-zone entity views: every player in turn order crossed with
+     * [TRAINING_OBSERVATION_ZONE_ORDER], in that order, empty zones included. So a
+     * `(ownerId, zoneType)` pair appears exactly once and the list is a fixed-width, fixed-order
+     * input a consumer may index positionally.
+     *
      * Hidden members are omitted from [ZoneView.cards], while [ZoneView.size]
      * always reports the total number of entities in the zone. A zone may be
      * mixed-visibility (for example, face-down exile).
@@ -161,13 +192,21 @@ data class ZoneView(
  *
  * Not every field is populated for every zone:
  * - On the battlefield: all fields relevant to a permanent are set.
- * - In the library/hand/graveyard/exile: the card's static properties are set;
+ * - Outside the battlefield (library/hand/graveyard/exile/command/sideboard): the card's static
+ *   properties are set;
  *   dynamic properties (tapped, damage, counters) default to their "not present" values.
  */
 @Serializable
 data class EntityFeatures(
     val entityId: EntityId,
+    /** Null for a face-down object the perspective player may not look at. */
     val cardDefinitionId: String?,
+    /**
+     * The projected name — what Layer 3 renamed the object to (Witness Protection), else the
+     * printed one. `"Face-down creature"` / `"Face-down card"` for a face-down object the
+     * perspective player may not look at, whose [oracleText], [manaCost] and [manaValue] are
+     * blanked to match.
+     */
     val name: String,
     val zone: Zone,
     val ownerId: EntityId?,
@@ -205,6 +244,13 @@ data class EntityFeatures(
     val toughness: Int?,
 
     val tapped: Boolean = false,
+    /**
+     * The object entered under this controller too recently (the engine's summoning-sickness
+     * marker) and it is currently a creature. Haste is not folded in: a hasty creature that just
+     * entered still reports `true`, and its haste is visible in [keywords]. This keeps the meaning
+     * the fork's trained P1 models were fed; upstream's contract reports `false` for hasty
+     * creatures instead (a deliberate divergence, revisit when the P1 feature set is retrained).
+     */
     val summoningSick: Boolean = false,
     val faceDown: Boolean = false,
     val damageMarked: Int = 0,
@@ -219,13 +265,19 @@ data class EntityFeatures(
 @Serializable
 data class StackItemView(
     val entityId: EntityId,
+    /** The caster of a spell, or the controller of an ability. */
     val controllerId: EntityId?,
     /** Public source object for an ability, or the spell object itself for a spell. */
     val sourceEntityId: EntityId? = null,
+    /** The spell's card name, or the source name of an ability. */
     val name: String,
     val kind: StackItemKind,
-    /** Printed oracle text of the card backing this stack item — empty for stackless triggers. */
+    /** Printed oracle text of the card, or an ability's description. */
     val oracleText: String = "",
+    /**
+     * The chosen targets, in the order they were chosen, flattened to entity ids. A player
+     * target contributes the player's own entity id.
+     */
     val targets: List<EntityId> = emptyList()
 )
 

@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.legalactions
 
+import com.wingedsheep.engine.legality.LegalityKernel
 import com.wingedsheep.engine.core.TurnManager
 import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.PredicateEvaluator
@@ -58,6 +59,8 @@ class EnumerationContext(
     val targetUtils by lazy { TargetEnumerationUtils(predicateEvaluator) }
     val costUtils by lazy { CostEnumerationUtils(manaSolver, costCalculator, predicateEvaluator, cardRegistry) }
     val castPermissionUtils by lazy { CastPermissionUtils(cardRegistry, predicateEvaluator, conditionEvaluator) }
+    // The one legality kernel the handlers' `validate` also asks, so what is offered is what is accepted.
+    val legality by lazy { LegalityKernel(cardRegistry, conditionEvaluator) }
     // Plot (CR 718) cost reduction — Doc Aurlock-style "plotting cards costs {N} less".
     val plotCostReducer by lazy { com.wingedsheep.engine.mechanics.mana.PlotCostReducer(cardRegistry) }
 
@@ -67,6 +70,12 @@ class EnumerationContext(
 
     // Projected state
     val projected: ProjectedState by lazy { state.projectedState }
+
+    // Global Layer 3 color-word changes (Swirl the Mists), computed once per pass; merge with a
+    // permanent's own rules via TextChanges.merge.
+    val globalTextChanges: List<com.wingedsheep.engine.state.components.identity.TextReplacement> by lazy {
+        com.wingedsheep.engine.state.components.identity.TextChanges.global(state)
+    }
 
     // Battlefield permanents controlled by player (via projected state)
     val battlefieldPermanents: List<EntityId> by lazy {
@@ -93,8 +102,37 @@ class EnumerationContext(
         val landDrops = state.getEntity(playerId)?.get<LandDropsComponent>()
         val remaining = landDrops?.remaining ?: 0
         val staticBonus = castPermissionUtils.getAdditionalLandDrops(state, playerId)
-        canPlaySorcerySpeed && (remaining + staticBonus > 0)
+        canPlaySorcerySpeed && (remaining + staticBonus > 0) &&
+            // Worms of the Earth's "players can't play lands". Mirrored in PlayLandHandler: a
+            // legal-action list that offers a land drop the handler will refuse is worse than
+            // either check alone.
+            !com.wingedsheep.engine.legalactions.utils.LandDropUtils
+                .playerCantPlayLands(state, playerId, cardRegistry, conditionEvaluator = conditionEvaluator)
     }
+
+    // Whether any battlefield permanent carries a *filtered* land-play lock at all — a cheap guard
+    // so [cantPlayLand] stays O(1) when none exists (the common case). The land-play mirror of
+    // [perSpellCastRestrictionPresent], and it matters more here: land enumeration reaches every
+    // card in hand on every priority pass and every AI/MCTS node.
+    private val filteredLandLockPresent: Boolean by lazy {
+        com.wingedsheep.engine.legalactions.utils.LandDropUtils
+            .anyFilteredLandLockPresent(state, cardRegistry)
+    }
+
+    /**
+     * Whether a *filtered* [com.wingedsheep.sdk.scripting.PlayersCantPlayLands] lock forbids this
+     * player from playing the specific land [cardId] (City in a Bottle's "players can't … play
+     * lands with a name originally printed in the Arabian Nights expansion").
+     *
+     * The per-card sibling of [canPlayLand]'s blanket probe, mirroring how [cantCastSpell] sits
+     * beside [cantCastSpells]: the blanket flag suppresses the land drop wholesale, this one only
+     * removes the lands the lock actually names. Consulted by every PlayLand enumeration branch,
+     * and mirrored in `PlayLandHandler` so the offered list and the handler agree.
+     */
+    fun cantPlayLand(cardId: EntityId): Boolean =
+        filteredLandLockPresent &&
+            com.wingedsheep.engine.legalactions.utils.LandDropUtils
+                .playerCantPlayLands(state, playerId, cardRegistry, landCardId = cardId, conditionEvaluator = conditionEvaluator)
 
     // Cast restrictions — blanket, spell-independent locks (a Silence-style CantCastSpellsComponent
     // or a RestrictSpellsCastPerTurn per-turn limit). Cached once per enumeration pass.
@@ -168,8 +206,9 @@ class EnumerationContext(
         return costCalculator.hasFreeCastPermission(state, playerId, cardDef, castFromZone)
     }
 
-    // Alternative casting costs from battlefield permanents (e.g., Jodah's WUBRG).
-    val alternativeCastingCosts: List<ManaCost> by lazy {
+    // Alternative casting costs from battlefield permanents (e.g., Jodah's WUBRG, or Conspiracy
+    // Unraveler's "collect evidence 10" in the grant's non-mana half).
+    val alternativeCastingCosts: List<CostCalculator.AlternativeCastingCostGrant> by lazy {
         costCalculator.findAlternativeCastingCosts(state, playerId)
     }
 

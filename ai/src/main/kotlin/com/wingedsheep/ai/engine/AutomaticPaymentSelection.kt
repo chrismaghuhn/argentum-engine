@@ -40,6 +40,10 @@ object AutomaticPaymentSelection {
             )
             "BouncePermanent" -> existing.copy(bouncedPermanents = info.validBounceTargets.take(info.bounceCount))
             "ExileFromGraveyard" -> existing.copy(exiledCards = info.validExileTargets.take(info.exileMinCount))
+            // "Sacrifice any number of …": only the floor, so a zero-floor cost sacrifices nothing.
+            "SacrificeVariable" -> existing.copy(
+                variableCostPermanents = info.validSacrificeTargets.take(info.sacrificeCount)
+            )
             "TapForTotalPower" -> {
                 val required = info.tapForPowerRequired
                 val contributors = info.tapForPowerCreatures.filter { it.power > 0 }

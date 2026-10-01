@@ -38,6 +38,68 @@
     ]
 }
 
+// Stratus Walk
+{
+    "name": "Stratus Walk",
+    "manaCost": "{1}{U}",
+    "typeLine": "Enchantment — Aura",
+    "oracleText": "Enchant creature\nWhen this Aura enters, draw a card.\nEnchanted creature has flying. (It can't be blocked except by creatures with flying or reach.)\nEnchanted creature can block only creatures with flying.",
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Stratus Walk:1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "to": "Battlefield"
+                },
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                }
+            }
+        ],
+        "staticAbilities": [
+            {
+                "type": "GrantKeyword",
+                "keyword": "FLYING"
+            },
+            {
+                "type": "CanOnlyBlockCreaturesWith",
+                "blockerFilter": {
+                    "cardPredicates": [
+                        "IsCreature",
+                        {
+                            "type": "HasKeyword",
+                            "keyword": "FLYING"
+                        }
+                    ]
+                },
+                "filter": {
+                    "baseFilter": "permanent",
+                    "scope": "AttachedTo"
+                }
+            }
+        ],
+        "auraTarget": {
+            "type": "TargetObject",
+            "filter": {
+                "baseFilter": "creature"
+            }
+        }
+    },
+    "metadata": {
+        "collectorNumber": "52",
+        "artist": "Aaron Miller",
+        "imageUri": "https://cards.scryfall.io/normal/front/4/4/44744725-6ba7-40bd-b25b-788a1032ecf4.jpg"
+    },
+    "colorIdentityOverride": [
+        "BLUE"
+    ]
+}
+
 // Swordwise Centaur
 {
     "name": "Swordwise Centaur",
@@ -67,7 +129,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Temple of Enlightenment:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -80,7 +142,7 @@
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Temple of Enlightenment:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -90,7 +152,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_3",
+                "id": "Temple of Enlightenment:3",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -125,7 +187,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Temple of Malice:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -138,7 +200,7 @@
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Temple of Malice:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -148,7 +210,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_3",
+                "id": "Temple of Malice:3",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -183,7 +245,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Temple of Plenty:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -196,7 +258,7 @@
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Temple of Plenty:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -206,7 +268,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_3",
+                "id": "Temple of Plenty:3",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -229,5 +291,37 @@
     "colorIdentityOverride": [
         "WHITE",
         "GREEN"
+    ]
+}
+
+// Weight of the Underworld
+{
+    "name": "Weight of the Underworld",
+    "manaCost": "{3}{B}",
+    "typeLine": "Enchantment — Aura",
+    "oracleText": "Enchant creature\nEnchanted creature gets -3/-2.",
+    "script": {
+        "staticAbilities": [
+            {
+                "type": "ModifyStats",
+                "powerBonus": -3,
+                "toughnessBonus": -2
+            }
+        ],
+        "auraTarget": {
+            "type": "TargetObject",
+            "filter": {
+                "baseFilter": "creature"
+            }
+        }
+    },
+    "metadata": {
+        "collectorNumber": "86",
+        "artist": "Wesley Burt",
+        "flavorText": "Proud Alkmenos, who would not bow to Erebos in death, is now bowed by his own hubris for all eternity.",
+        "imageUri": "https://cards.scryfall.io/normal/front/a/9/a99bcecd-0b5a-4806-824b-4885fcad1449.jpg"
+    },
+    "colorIdentityOverride": [
+        "BLACK"
     ]
 }

@@ -16,6 +16,8 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Abrade (HOU #83) — choose one: deal 3 damage to a creature or destroy an artifact.
@@ -46,7 +48,7 @@ class AbradeScenarioTest : FunSpec({
                 chosenModes = listOf(mode),
                 modeTargetsOrdered = listOf(listOf(chosenTarget))
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -90,7 +92,7 @@ class AbradeScenarioTest : FunSpec({
 
         // Omitting choices must pause for the player's mode decision; the engine may not
         // silently choose the first mode or target.
-        driver.submit(CastSpell(playerId = player, cardId = abrade)).isPaused shouldBe true
+        driver.submit(CastSpell(playerId = player, cardId = abrade)).outcome.shouldBeInstanceOf<Outcome.Paused>()
         val modeDecision = driver.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
         modeDecision.options shouldBe listOf(
             "Abrade deals 3 damage to target creature",
@@ -127,7 +129,7 @@ class AbradeScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.findPermanent(opponent, "Mind Stone") shouldBe artifact
     }
 
@@ -151,7 +153,7 @@ class AbradeScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.findPermanent(opponent, "Grizzly Bears") shouldBe creature
     }
 })

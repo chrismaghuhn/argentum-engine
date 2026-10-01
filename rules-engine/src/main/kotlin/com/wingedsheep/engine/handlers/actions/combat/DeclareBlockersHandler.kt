@@ -1,10 +1,9 @@
 package com.wingedsheep.engine.handlers.actions.combat
 
 import com.wingedsheep.engine.core.DeclareBlockers
+import com.wingedsheep.engine.state.components.combat.BlockersDeclaredThisCombatComponent
+import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.core.ExecutionResult
-import com.wingedsheep.engine.core.PendingTriggersContinuation
-import com.wingedsheep.engine.event.TriggerDetector
-import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.handlers.actions.ActionHandler
 import com.wingedsheep.engine.mechanics.combat.CombatManager
@@ -15,13 +14,11 @@ import kotlin.reflect.KClass
 /**
  * Handler for the DeclareBlockers action.
  *
- * Delegates to CombatManager for the actual block declaration,
- * then processes any block triggers.
+ * Delegates to CombatManager for the actual block declaration. Block triggers are put on the
+ * stack by the settle boundary.
  */
 class DeclareBlockersHandler(
-    private val combatManager: CombatManager,
-    private val triggerDetector: TriggerDetector,
-    private val triggerProcessor: TriggerProcessor
+    private val combatManager: CombatManager
 ) : ActionHandler<DeclareBlockers> {
     override val actionType: KClass<DeclareBlockers> = DeclareBlockers::class
 
@@ -38,69 +35,32 @@ class DeclareBlockersHandler(
     }
 
     override fun execute(state: GameState, action: DeclareBlockers): ExecutionResult {
+        // Block triggers ("whenever this creature blocks") are the settle boundary's job, including
+        // those that wait out a block tax's payment question.
         val result = combatManager.declareBlockers(state, action.playerId, action.blockers)
+        if (result.error != null || result.pendingDecision != null) return result
+        return ExecutionResult.success(handToNextUndeclaredDefender(result.newState), result.events, result.diagnostics)
+    }
 
-        if (result.isPaused) {
-            // Paused for a block tax (the only remaining mid-declare pause now that damage-
-            // assignment ordering is folded into the combat resolution board). If any block
-            // triggers were detected, queue them as a PendingTriggersContinuation so they fire
-            // after the pause resolves (via checkForMoreContinuations).
-            val triggers = triggerDetector.detectTriggers(result.newState, result.events)
-            if (triggers.isNotEmpty()) {
-                val pendingTriggers = PendingTriggersContinuation(
-                    decisionId = "block-triggers-${java.util.UUID.randomUUID()}",
-                    remainingTriggers = triggers
-                )
-                // Insert BELOW the top continuation so the pause resolves first, then
-                // checkForMoreContinuations picks up the triggers afterwards.
-                val stack = result.newState.continuationStack
-                val newStack = stack.dropLast(1) + pendingTriggers + stack.last()
-                val stateWithTriggers = result.newState.copy(continuationStack = newStack)
-                return ExecutionResult.paused(
-                    stateWithTriggers,
-                    result.pendingDecision!!,
-                    result.events,
-                    diagnostics = result.diagnostics,
-                )
-            }
-            return result
-        }
-
-        if (!result.isSuccess) {
-            return result
-        }
-
-        // Detect and process block triggers (e.g., "when this creature blocks")
-        val triggers = triggerDetector.detectTriggers(result.newState, result.events)
-        if (triggers.isNotEmpty()) {
-            val triggerResult = triggerProcessor.processTriggers(result.newState, triggers)
-
-            if (triggerResult.isPaused) {
-                return ExecutionResult.paused(
-                    triggerResult.state,
-                    triggerResult.pendingDecision!!,
-                    result.events + triggerResult.events,
-                    diagnostics = result.diagnostics + triggerResult.diagnostics,
-                )
-            }
-
-            return ExecutionResult.success(
-                triggerResult.newState,
-                result.events + triggerResult.events,
-                result.diagnostics + triggerResult.diagnostics,
-            )
-        }
-
-        return result
+    /**
+     * CR 802.4 / 509.1: with more than one defending player, each declares blockers in APNAP order
+     * and nobody receives priority until every declaration is in. The declare-blockers round is
+     * driven by the priority baton, so after one defender declares, the baton goes straight to the
+     * next defender who still owes a declaration — not on a lap of the table, where a seat that is
+     * not being attacked would get a real priority window (and could Giant Growth the next
+     * defender's would-be blocker) before that defender has declared. Once every defender has
+     * declared the baton stays with the last declarer, exactly as before.
+     */
+    private fun handToNextUndeclaredDefender(state: GameState): GameState {
+        val next = CombatDefenders.defendingPlayersInApnapOrder(state).firstOrNull { defender ->
+            state.getEntity(defender)?.has<BlockersDeclaredThisCombatComponent>() != true
+        } ?: return state
+        return state.withPriority(next)
     }
 
     companion object {
         fun create(services: EngineServices): DeclareBlockersHandler {
-            return DeclareBlockersHandler(
-                services.combatManager,
-                services.triggerDetector,
-                services.triggerProcessor
-            )
+            return DeclareBlockersHandler(services.combatManager)
         }
     }
 }

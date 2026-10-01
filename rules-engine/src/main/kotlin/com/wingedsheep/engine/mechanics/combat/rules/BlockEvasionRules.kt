@@ -1,5 +1,7 @@
 package com.wingedsheep.engine.mechanics.combat.rules
 
+import com.wingedsheep.engine.mechanics.targeting.SourceKindProtection
+import com.wingedsheep.engine.mechanics.targeting.ColorProtection
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
@@ -69,18 +71,21 @@ class HorsemanshipRule : BlockEvasionRule {
 }
 
 /**
- * Shadow: Can only be blocked by creatures with shadow.
+ * Shadow: shadow and non-shadow creatures can't block one another.
+ *
+ * CR 702.28b — "A creature with shadow can't be blocked by creatures without shadow, and a
+ * creature without shadow can't be blocked by creatures with shadow." Both halves matter: the
+ * reminder text on every shadow card reads "can block **or be blocked by** only creatures with
+ * shadow", so a shadow blocker is just as restricted as a shadow attacker.
  */
 class ShadowRule : BlockEvasionRule {
     override fun check(ctx: BlockCheckContext): String? {
-        if (ctx.projected.hasKeyword(ctx.attackerId, Keyword.SHADOW)) {
-            if (!ctx.projected.hasKeyword(ctx.blockerId, Keyword.SHADOW)) {
-                val blockerName = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>()?.name ?: "Creature"
-                val attackerName = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>()?.name ?: "Creature"
-                return "$blockerName cannot block $attackerName (shadow)"
-            }
-        }
-        return null
+        val attackerHasShadow = ctx.projected.hasKeyword(ctx.attackerId, Keyword.SHADOW)
+        val blockerHasShadow = ctx.projected.hasKeyword(ctx.blockerId, Keyword.SHADOW)
+        if (attackerHasShadow == blockerHasShadow) return null
+        val blockerName = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>()?.name ?: "Creature"
+        val attackerName = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>()?.name ?: "Creature"
+        return "$blockerName cannot block $attackerName (shadow)"
     }
 }
 
@@ -106,10 +111,33 @@ class FearRule : BlockEvasionRule {
 }
 
 /**
+ * Intimidate: Can only be blocked by artifact creatures and/or creatures that share a color with it.
+ *
+ * CR 702.13b — "A creature with intimidate can't be blocked except by artifact creatures and/or
+ * creatures that share a color with it." Both halves of the test read *projected* characteristics:
+ * a creature turned artifact or recoloured by a continuous effect satisfies the exception, and a
+ * colorless intimidator (nothing to share) can only be blocked by artifact creatures.
+ */
+class IntimidateRule : BlockEvasionRule {
+    override fun check(ctx: BlockCheckContext): String? {
+        if (!ctx.projected.hasKeyword(ctx.attackerId, Keyword.INTIMIDATE)) return null
+
+        if (ctx.projected.hasType(ctx.blockerId, "ARTIFACT")) return null
+
+        val attackerColors = ctx.projected.getColors(ctx.attackerId)
+        val blockerColors = ctx.projected.getColors(ctx.blockerId)
+        if (attackerColors.any { it in blockerColors }) return null
+
+        val blockerName = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>()?.name ?: "Creature"
+        val attackerName = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>()?.name ?: "Creature"
+        return "$blockerName cannot block $attackerName (intimidate)"
+    }
+}
+
+/**
  * Landwalk: Cannot be blocked if defending player controls land of that type.
  */
 class LandwalkRule : BlockEvasionRule {
-
     private val landwalkToSubtype = mapOf(
         Keyword.FORESTWALK to Subtype.FOREST,
         Keyword.SWAMPWALK to Subtype.SWAMP,
@@ -206,17 +234,24 @@ class CantBeBlockedByRule(
     }
 
     /**
-     * Restrictions projected onto the attacker by a *different* battlefield permanent through the
-     * static's [com.wingedsheep.sdk.scripting.filters.unified.GroupFilter] — an Equipment or Aura
-     * whose "equipped/enchanted creature can't be blocked by …" clause lives on the attachment, not
-     * on the attacker's own card (Blazing Torch, Artifact Ward). Mirrors the host-scoped
-     * `MustBeBlocked` scan in `BlockPhaseManager`: the filter's scope is resolved relative to the
-     * permanent carrying the static, and the attacker must also satisfy the filter's base filter.
+     * Restrictions projected onto the attacker by a battlefield permanent through the static's
+     * [com.wingedsheep.sdk.scripting.filters.unified.GroupFilter] — an Equipment or Aura whose
+     * "equipped/enchanted creature can't be blocked by …" clause lives on the attachment, not on
+     * the attacker's own card (Blazing Torch, Artifact Ward), or a permanent that hands the
+     * restriction to a whole battlefield group (Wall Crawl's Spiders, Storm, Windrider's "creatures
+     * with flying can't block creatures you control"). Mirrors the host-scoped `MustBeBlocked` scan
+     * in `BlockPhaseManager`: the filter's scope is resolved relative to the permanent carrying the
+     * static, and the attacker must also satisfy the filter's base filter.
+     *
+     * The host is **not** skipped when it is itself the attacker: a `Scope.Battlefield` group
+     * clause on a creature covers that creature too whenever it matches the group ("creatures you
+     * control" includes the creature saying so). `Scope.Self` is excluded here because the
+     * attacker's own printed read above already covers it, and `excludeSelf` on the group filter
+     * is honored so an "other creatures you control …" clause still leaves the host out.
      */
     private fun hostScopedRestrictions(ctx: BlockCheckContext): List<CantBeBlockedBy> {
         val result = mutableListOf<CantBeBlockedBy>()
         for (hostId in ctx.state.getBattlefield()) {
-            if (hostId == ctx.attackerId) continue
             val container = ctx.state.getEntity(hostId) ?: continue
             if (container.has<FaceDownComponent>()) continue
             val hostCard = container.get<CardComponent>() ?: continue
@@ -231,6 +266,8 @@ class CantBeBlockedByRule(
                     is Scope.Self -> false // already covered by the attacker's own printed read
                 }
                 if (!scopeMatches) continue
+                // "Other creatures …": the host never grants the clause to itself.
+                if (hostId == ctx.attackerId && ability.filter.excludeSelf) continue
                 val hostController = ctx.projected.getController(hostId) ?: continue
                 val baseMatches = predicateEvaluator.matches(
                     ctx.state, ctx.projected, ctx.attackerId, ability.filter.baseFilter,
@@ -240,6 +277,31 @@ class CantBeBlockedByRule(
             }
         }
         return result
+    }
+}
+
+/**
+ * CantBlockSpecificAttacker: this blocker can't block *this one* attacker (floating effect).
+ *
+ * The restriction mirror of provoke's `MustBlockSpecificAttacker`, and unlike the blanket
+ * `SetCantBlock` it is pairwise — the blocker is free to block every other attacker, so it can't
+ * be a projected per-creature flag. Screeching Griffin's "{R}: Target creature can't block this
+ * creature this turn"; the floating effect's affectedEntities holds the blocker and the
+ * modification holds the attacker it may not block.
+ */
+class CantBlockSpecificAttackerRule : BlockEvasionRule {
+    override fun check(ctx: BlockCheckContext): String? {
+        val forbidden = ctx.state.floatingEffects.any { floatingEffect ->
+            val modification = floatingEffect.effect.modification
+            modification is SerializableModification.CantBlockSpecificAttacker &&
+                modification.attackerId == ctx.attackerId &&
+                ctx.blockerId in floatingEffect.effect.affectedEntities
+        }
+        if (!forbidden) return null
+
+        val blockerName = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>()?.name ?: "Creature"
+        val attackerName = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>()?.name ?: "Creature"
+        return "$blockerName can't block $attackerName this turn"
     }
 }
 
@@ -427,12 +489,9 @@ class ProtectionFromColorRule : BlockEvasionRule {
         val attackerName = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>()?.name ?: "Creature"
         val blockerName = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>()?.name ?: "Creature"
 
-        for (colorName in ctx.projected.getColors(ctx.blockerId)) {
-            if (ctx.projected.hasKeyword(ctx.attackerId, "PROTECTION_FROM_$colorName")) {
-                return "$attackerName has protection from ${colorName.lowercase()} and can't be blocked by $blockerName"
-            }
-        }
-        return null
+        val quality = ColorProtection.matchedQuality(ctx.projected, ctx.attackerId, ctx.projected.getColors(ctx.blockerId))
+            ?: return null
+        return "$attackerName has protection from ${ColorProtection.describe(quality)} and can't be blocked by $blockerName"
     }
 }
 
@@ -451,6 +510,19 @@ class ProtectionFromEachOpponentRule : BlockEvasionRule {
         val attackerName = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>()?.name ?: "Creature"
         val blockerName = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>()?.name ?: "Creature"
         return "$attackerName has protection from each of its controller's opponents and can't be blocked by $blockerName"
+    }
+}
+
+/**
+ * Protection from a kind of source (CR 702.16f): an attacker with protection from permanents that
+ * were cast this turn can't be blocked by a creature cast this turn (Emrakul, the World Anew).
+ */
+class ProtectionFromSourceKindRule : BlockEvasionRule {
+    override fun check(ctx: BlockCheckContext): String? {
+        if (!SourceKindProtection.isProtectedFromObject(ctx.state, ctx.attackerId, ctx.blockerId)) return null
+        val attackerName = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>()?.name ?: "Creature"
+        val blockerName = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>()?.name ?: "Creature"
+        return "$attackerName has protection from permanents that were cast this turn and can't be blocked by $blockerName"
     }
 }
 
@@ -688,15 +760,17 @@ class RingBearerCantBeBlockedByGreaterPowerRule : BlockEvasionRule {
  * Default set of block evasion rules, ordered for efficient short-circuiting.
  */
 fun defaultBlockEvasionRules(
-    predicateEvaluator: PredicateEvaluator = PredicateEvaluator()
+    predicateEvaluator: PredicateEvaluator
 ): List<BlockEvasionRule> = listOf(
     UnblockableRule(),
     FlyingRule(),
     HorsemanshipRule(),
     ShadowRule(),
     FearRule(),
+    IntimidateRule(),
     LandwalkRule(),
     CantBeBlockedByRule(predicateEvaluator),
+    CantBlockSpecificAttackerRule(),
     CantBeBlockedExceptByColorRule(),
     CantBeBlockedByColorRule(),
     CantBeBlockedExceptByRule(predicateEvaluator),
@@ -709,6 +783,7 @@ fun defaultBlockEvasionRules(
     ProtectionFromSupertypeRule(),
     ProtectionFromCardTypeRule(),
     ProtectionFromEachOpponentRule(),
+    ProtectionFromSourceKindRule(),
     CanOnlyBlockCreaturesWithRule(predicateEvaluator),
     CantBlockCreaturesWithGreaterPowerRule(),
     CantBeBlockedByCreaturesWithLessPowerRule(),

@@ -10,7 +10,6 @@ import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.KeywordAbility
@@ -22,6 +21,9 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /** A transformed may-play permission must use the back face for target legality. */
 class TargetingSourceTransformedPermissionEnumerationTest : FunSpec({
@@ -30,7 +32,7 @@ class TargetingSourceTransformedPermissionEnumerationTest : FunSpec({
         colorIdentity = "R"
         typeLine = "Instant"
         spell {
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
         }
     }
@@ -40,7 +42,7 @@ class TargetingSourceTransformedPermissionEnumerationTest : FunSpec({
         colorIdentity = "U"
         typeLine = "Instant"
         spell {
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
         }
     }
@@ -111,7 +113,7 @@ class TargetingSourceTransformedPermissionEnumerationTest : FunSpec({
         )
 
         // Desired behavior — RED before the strict handler reads castTransformed's back face.
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         result.error shouldBe null
         driver.state shouldNotBe beforeState
         driver.events shouldNotBe beforeEvents

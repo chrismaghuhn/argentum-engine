@@ -23,6 +23,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Tests for the Omen mechanic (Tarkir: Dragonstorm).
@@ -91,7 +92,7 @@ class OmenMechanicTest : FunSpec({
                 paymentStrategy = PaymentStrategy.FromPool
             )
         )
-        cast.isSuccess shouldBe true
+        cast.outcome shouldBe Outcome.Done
 
         // Resolve the spell.
         driver.bothPass()
@@ -130,7 +131,7 @@ class OmenMechanicTest : FunSpec({
                 paymentStrategy = PaymentStrategy.FromPool
             )
         )
-        cast.isSuccess shouldBe true
+        cast.outcome shouldBe Outcome.Done
 
         driver.bothPass()
         driver.isPaused shouldBe false
@@ -165,12 +166,12 @@ class OmenMechanicTest : FunSpec({
                 paymentStrategy = PaymentStrategy.FromPool
             )
         )
-        cast.isSuccess shouldBe true
+        cast.outcome shouldBe Outcome.Done
 
         // Resolution reaches the pre-move library boundary. The 903.9b prompt must leave the
         // spell physically and semantically on the stack until the owner answers it.
         val resolution = driver.bothPass()
-        resolution.isPaused shouldBe true
+        (resolution.outcome is Outcome.Paused) shouldBe true
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>().playerId shouldBe player
         driver.state.stack shouldContain omen
         driver.state.getEntity(omen)!!.has<SpellOnStackComponent>() shouldBe true

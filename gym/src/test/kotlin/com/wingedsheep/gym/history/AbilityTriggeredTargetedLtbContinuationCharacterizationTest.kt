@@ -3,10 +3,8 @@ package com.wingedsheep.gym.history
 import com.wingedsheep.engine.core.AbilityTriggeredEvent
 import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.core.ZoneChangeEvent
-import com.wingedsheep.engine.event.TriggerDetector
-import com.wingedsheep.engine.event.TriggerProcessor
-import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.support.GameTestDriver
@@ -21,17 +19,20 @@ import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.TriggeredAbility
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 private val targetedLtbContinuationSource = CardDefinition.creature(
     name = "Targeted LTB Continuation Source",
@@ -48,7 +49,9 @@ private val targetedLtbContinuationSource = CardDefinition.creature(
             ),
             binding = TriggerBinding.SELF,
             effect = Effects.Destroy(EffectTarget.ContextTarget(0)),
-            targetRequirement = Targets.Creature,
+            targetRequirement = TargetObject(filter = TargetFilter.Creature),
+            // Built outside card { }, so there is no AbilityIdScope to mint the id from.
+            id = AbilityId("Targeted LTB Continuation Source:1"),
         )
     ),
 )
@@ -106,18 +109,18 @@ class AbilityTriggeredTargetedLtbContinuationCharacterizationTest : FunSpec({
         leaveEvent.lastKnown?.entityId shouldBe sourceId
         leaveEvent.lastKnown?.objectIncarnationStamp shouldBe sourceStamp
 
-        val pending = TriggerDetector(driver.cardRegistry)
+        val pending = driver.services.triggerDetector
             .detectTriggers(afterLeave, listOf(leaveEvent))
             .single { it.sourceId == sourceId }
         pending.triggerContext.triggeringEntityEndpointAuthority shouldBe
             AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
 
-        val paused = TriggerProcessor(
-            cardRegistry = driver.cardRegistry,
-            stackResolver = StackResolver(driver.cardRegistry),
-        ).processTriggers(afterLeave, listOf(pending))
+        val paused = driver.services.triggerProcessor.processTriggers(afterLeave, listOf(pending))
         val decision = paused.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        // The answer continuation now travels inside the Suspension that holds the question.
         val continuation = paused.newState.peekContinuation()
+            .shouldBeInstanceOf<Suspension>()
+            .answer
             .shouldBeInstanceOf<com.wingedsheep.engine.core.TriggeredAbilityContinuation>()
         continuation.sourceEndpointAuthority shouldBe
             AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
@@ -130,7 +133,7 @@ class AbilityTriggeredTargetedLtbContinuationCharacterizationTest : FunSpec({
         driver.replaceState(paused.newState)
         val resumeBefore = driver.state
         val resumed = driver.submitTargetSelection(driver.player1, listOf(targetId))
-        resumed.isSuccess shouldBe true
+        resumed.outcome shouldBe Outcome.Done
         val triggered = resumed.events.filterIsInstance<AbilityTriggeredEvent>().single()
         triggered.sourceEndpointAuthority shouldBe
             AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT

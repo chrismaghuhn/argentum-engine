@@ -13,6 +13,8 @@ import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContainIgnoringCase
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /** Regression coverage for nonbasic landwalk on lands with basic-land subtypes. */
 class NonbasicLandwalkEvasionTest : FunSpec({
@@ -51,7 +53,7 @@ class NonbasicLandwalkEvasionTest : FunSpec({
         driver.putPermanentOnBattlefield(defendingPlayer, "Nonbasic Dual")
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).isSuccess shouldBe true
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
 
         val result = driver.submitExpectFailure(
@@ -61,7 +63,7 @@ class NonbasicLandwalkEvasionTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         result.error shouldContainIgnoringCase "nonbasic landwalk"
         result.error shouldContainIgnoringCase "cannot be blocked"
     }

@@ -11,6 +11,8 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Golgari Signet (RAV #262) — {1}, {T}: Add {B}{G}.
@@ -42,7 +44,7 @@ class GolgariSignetScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.isTapped(signet) shouldBe true
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.black shouldBe 1
@@ -66,7 +68,7 @@ class GolgariSignetScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.isTapped(signet) shouldBe true
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.colorless shouldBe 1
@@ -88,7 +90,7 @@ class GolgariSignetScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.isTapped(signet) shouldBe false
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.black shouldBe 0
@@ -112,7 +114,7 @@ class GolgariSignetScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.isTapped(signet) shouldBe false
         val pool = driver.state.getEntity(opponent)?.get<ManaPoolComponent>()!!
         pool.colorless shouldBe 1

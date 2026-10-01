@@ -1,3 +1,34 @@
+// Alloy Myr
+{
+    "name": "Alloy Myr",
+    "manaCost": "{3}",
+    "typeLine": "Artifact Creature — Myr",
+    "oracleText": "{T}: Add one mana of any color.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Alloy Myr:1",
+                "cost": "CostTap",
+                "effect": "AddManaOfChoice",
+                "timing": "ManaAbility",
+                "isManaAbility": true
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "129",
+        "rarity": "UNCOMMON",
+        "artist": "Matt Cavotta",
+        "flavorText": "With or without witnesses, the suns continued their prismatic dance.",
+        "imageUri": "https://cards.scryfall.io/normal/front/a/b/abd3350b-89fb-40b4-a942-28e0c8c274aa.jpg?1783941297"
+    },
+    "colorIdentityOverride": []
+}
+
 // Beast Within
 {
     "name": "Beast Within",
@@ -12,7 +43,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target permanent"
+                        "name": "t0"
                     },
                     "destination": "Graveyard",
                     "byDestruction": true
@@ -37,7 +68,7 @@
                 "filter": {
                     "baseFilter": "permanent"
                 },
-                "id": "target permanent"
+                "id": "t0"
             }
         ]
     },
@@ -55,6 +86,136 @@
     },
     "colorIdentityOverride": [
         "GREEN"
+    ]
+}
+
+// Deceiver Exarch
+{
+    "name": "Deceiver Exarch",
+    "manaCost": "{2}{U}",
+    "typeLine": "Creature — Phyrexian Cleric",
+    "oracleText": "Flash (You may cast this spell any time you could cast an instant.)\nWhen this creature enters, choose one —\n• Untap target permanent you control.\n• Tap target permanent an opponent controls.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 4
+    },
+    "keywords": [
+        "FLASH"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Deceiver Exarch:1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "to": "Battlefield"
+                },
+                "effect": {
+                    "type": "Modal",
+                    "modes": [
+                        {
+                            "effect": {
+                                "type": "TapUntap",
+                                "target": {
+                                    "type": "BoundVariable",
+                                    "name": "t0"
+                                },
+                                "tap": false
+                            },
+                            "targetRequirements": [
+                                {
+                                    "type": "TargetObject",
+                                    "filter": {
+                                        "baseFilter": "permanent ctrl:you"
+                                    },
+                                    "id": "t0"
+                                }
+                            ],
+                            "description": "Untap target permanent you control."
+                        },
+                        {
+                            "effect": {
+                                "type": "TapUntap",
+                                "target": {
+                                    "type": "BoundVariable",
+                                    "name": "t1"
+                                }
+                            },
+                            "targetRequirements": [
+                                {
+                                    "type": "TargetObject",
+                                    "filter": {
+                                        "baseFilter": "permanent ctrl:opponent"
+                                    },
+                                    "id": "t1"
+                                }
+                            ],
+                            "description": "Tap target permanent an opponent controls."
+                        }
+                    ]
+                },
+                "descriptionOverride": "When this creature enters, choose one — Untap target permanent you control; or tap target permanent an opponent controls."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "33",
+        "rarity": "UNCOMMON",
+        "artist": "Izzy",
+        "imageUri": "https://cards.scryfall.io/normal/front/1/f/1f123ad6-fe84-4fed-9c0f-6b41921e9c26.jpg"
+    },
+    "colorIdentityOverride": [
+        "BLUE"
+    ]
+}
+
+// Dismember
+{
+    "name": "Dismember",
+    "manaCost": "{1}{B/P}{B/P}",
+    "typeLine": "Instant",
+    "oracleText": "Target creature gets -5/-5 until end of turn.",
+    "script": {
+        "spellEffect": {
+            "type": "ModifyStats",
+            "powerModifier": {
+                "type": "Fixed",
+                "amount": -5
+            },
+            "toughnessModifier": {
+                "type": "Fixed",
+                "amount": -5
+            },
+            "target": {
+                "type": "BoundVariable",
+                "name": "t0"
+            }
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "creature"
+                },
+                "id": "t0"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "57",
+        "rarity": "UNCOMMON",
+        "artist": "Terese Nielsen",
+        "flavorText": "\"You serve Phyrexia. Your pieces would better serve Phyrexia elsewhere.\"\n—Azax-Azog, the Demon Thane",
+        "imageUri": "https://cards.scryfall.io/normal/front/0/6/064dfdeb-485f-473e-9fa0-8fdb7638cdc6.jpg?1783941314",
+        "rulings": [
+            {
+                "date": "2024-06-07",
+                "text": "A Phyrexian mana symbol contributes 1 toward the mana value of a card, even if life is paid for it. Specifically, Dismember's mana value is always 3."
+            }
+        ]
+    },
+    "colorIdentityOverride": [
+        "BLACK"
     ]
 }
 
@@ -98,6 +259,108 @@
     ]
 }
 
+// Phyrexian Obliterator
+{
+    "name": "Phyrexian Obliterator",
+    "manaCost": "{B}{B}{B}{B}",
+    "typeLine": "Creature — Phyrexian Horror",
+    "oracleText": "Trample\nWhenever a source deals damage to this creature, that source's controller sacrifices that many permanents of their choice.",
+    "creatureStats": {
+        "power": 5,
+        "toughness": 5
+    },
+    "keywords": [
+        "TRAMPLE"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Phyrexian Obliterator:1",
+                "trigger": "DamageReceivedEvent",
+                "effect": {
+                    "type": "ForceSacrifice",
+                    "filter": {},
+                    "target": {
+                        "type": "PlayerRef",
+                        "player": "ControllerOfTriggeringEntity"
+                    },
+                    "dynamicCount": {
+                        "type": "ContextProperty",
+                        "key": "TRIGGER_DAMAGE_AMOUNT"
+                    }
+                },
+                "descriptionOverride": "Whenever a source deals damage to this creature, that source's controller sacrifices that many permanents of their choice."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "68",
+        "rarity": "MYTHIC",
+        "artist": "Todd Lockwood",
+        "flavorText": "\"Behold blessed perfection.\"\n—Sheoldred, Whispering One",
+        "imageUri": "https://cards.scryfall.io/normal/front/4/4/44c4476d-58f9-420d-9545-f5d580c589de.jpg?1783941312",
+        "rulings": [
+            {
+                "date": "2023-02-04",
+                "text": "If creatures an opponent controls are dealt lethal damage at the same time that Phyrexian Obliterator is dealt damage, those creatures will be destroyed before that player chooses permanents to sacrifice."
+            }
+        ]
+    },
+    "colorIdentityOverride": [
+        "BLACK"
+    ]
+}
+
+// Pristine Talisman
+{
+    "name": "Pristine Talisman",
+    "manaCost": "{3}",
+    "typeLine": "Artifact",
+    "oracleText": "{T}: Add {C}. You gain 1 life.",
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Pristine Talisman:1",
+                "cost": "CostTap",
+                "effect": {
+                    "type": "Composite",
+                    "effects": [
+                        {
+                            "type": "AddColorlessMana",
+                            "amount": {
+                                "type": "Fixed",
+                                "amount": 1
+                            }
+                        },
+                        {
+                            "type": "GainLife",
+                            "amount": {
+                                "type": "Fixed",
+                                "amount": 1
+                            }
+                        }
+                    ]
+                },
+                "timing": "ManaAbility",
+                "isManaAbility": true
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "151",
+        "artist": "Matt Cavotta",
+        "flavorText": "\"Tools and artisans can be destroyed, but the act of creation is inviolate.\"\n—Elspeth Tirel",
+        "imageUri": "https://cards.scryfall.io/normal/front/b/3/b31d96cf-7276-46c4-ad17-d6a5c85f1315.jpg",
+        "rulings": [
+            {
+                "date": "2011-06-01",
+                "text": "Pristine Talisman has a mana ability. Its ability doesn't use the stack and can't be responded to."
+            }
+        ]
+    },
+    "colorIdentityOverride": []
+}
+
 // Puresteel Paladin
 {
     "name": "Puresteel Paladin",
@@ -111,7 +374,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Puresteel Paladin:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "filter": "Equipment ctrl:you",
@@ -137,7 +400,7 @@
                 "ability": {
                     "type": "GrantActivatedAbility",
                     "ability": {
-                        "id": "ability_2",
+                        "id": "Puresteel Paladin:2",
                         "cost": {
                             "type": "CostAtomWrapper",
                             "atom": {

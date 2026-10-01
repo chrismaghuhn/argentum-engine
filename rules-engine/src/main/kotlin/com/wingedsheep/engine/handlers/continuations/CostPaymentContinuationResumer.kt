@@ -1,11 +1,11 @@
 package com.wingedsheep.engine.handlers.continuations
 
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.CostPaymentContinuation
 import com.wingedsheep.engine.core.CostPaymentManaSelectionContinuation
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
-import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
 import com.wingedsheep.engine.mechanics.mana.PendingManaPaymentPlanExecutor
@@ -18,7 +18,6 @@ import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
-import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.mechanics.cost.CostPaymentContext
 import com.wingedsheep.engine.mechanics.cost.CostPaymentService
 import com.wingedsheep.engine.mechanics.cost.PaymentResult
@@ -30,6 +29,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
 import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Resumer for [CostPaymentContinuation] — the single resume path for every [PayCost] variant paid
@@ -44,7 +44,7 @@ class CostPaymentContinuationResumer(
     private val services: EngineServices
 ) : ContinuationResumerModule {
 
-    private val paymentService = CostPaymentService(services)
+    private val paymentService get() = services.costPaymentService
 
     override fun resumers(): List<ContinuationResumer<*>> = listOf(
         resumer(CostPaymentContinuation::class, ::resume),
@@ -61,20 +61,31 @@ class CostPaymentContinuationResumer(
         // Resolved away before the frame is built; should never reach the resumer.
         is PayCost.OwnManaCost ->
             ExecutionResult.error(state, "OwnManaCost should have been resolved before payment")
+        // Lowered to a concrete PayLife before the frame is built; should never reach the resumer.
+        is PayCost.DynamicLife ->
+            ExecutionResult.error(state, "DynamicLife should have been resolved before payment")
         is PayCost.Atom -> when (val atom = cost.atom) {
             // Yes/no costs: mana, life, mill (the milled cards are the top of the library, so
             // there is nothing to select), and random discard.
-            is CostAtom.Mana, is CostAtom.PayLife, is CostAtom.Mill ->
+            is CostAtom.PayPlayerCounters, is CostAtom.Mana, is CostAtom.PayLife, is CostAtom.Mill,
+            // Exiling the top N takes no selection either, for the same reason Mill doesn't.
+            is CostAtom.ExileTopOfLibrary,
+            // Discarding the whole hand takes no selection — every card goes.
+            is CostAtom.DiscardHand ->
                 resumeYesNo(state, continuation, cost, response, checkForMore)
             is CostAtom.Discard ->
                 if (atom.random) resumeYesNo(state, continuation, cost, response, checkForMore)
                 else resumeSelection(state, continuation, cost, response, checkForMore)
             // Selection costs.
             is CostAtom.ExileFrom, is CostAtom.RevealFromHand, is CostAtom.Sacrifice,
+            is CostAtom.PutFromHandOnTopOfLibrary,
             is CostAtom.ReturnToHand, is CostAtom.TapPermanents,
             // Collect evidence is a selection cost too — the sum gate rides on the decision's
             // `minTotalManaValue`, so resuming it is the ordinary selection path.
-            is CostAtom.CollectEvidence ->
+            is CostAtom.CollectEvidence,
+            // Never reaches a PayCost prompt (canPayCost reports it unpayable), but it is the same
+            // sum-gated selection shape if one is ever built.
+            is CostAtom.ExileFromGraveyardForTotal ->
                 resumeSelection(state, continuation, cost, response, checkForMore)
             is CostAtom.RemoveCounters ->
                 if (atom.self || atom.counterType == null) {
@@ -85,6 +96,21 @@ class CostPaymentContinuationResumer(
             // Ability-scoped only; never reaches a PayCost prompt, but it is a yes/no shape
             // (nothing to select) if one is ever built.
             is CostAtom.PutCountersOnSelf ->
+                resumeYesNo(state, continuation, cost, response, checkForMore)
+            // Selected-permanent counter placement — one permanent chosen on the battlefield.
+            is CostAtom.PutCountersOnPermanent ->
+                resumeSelection(state, continuation, cost, response, checkForMore)
+            // Ability-scoped only (it reads a note on the source permanent), and it takes no
+            // selection — never reaches a PayCost prompt.
+            is CostAtom.RevealNotedCreatureType ->
+                resumeYesNo(state, continuation, cost, response, checkForMore)
+            // Ability-scoped only (it reads the source's own attachment), and it takes no
+            // selection — never reaches a PayCost prompt.
+            is CostAtom.Unattach ->
+                resumeYesNo(state, continuation, cost, response, checkForMore)
+            // PayOrSuffer reports it unpayable, so it never reaches a PayCost prompt — but it takes
+            // no selection, so the yes/no path is the right one if it ever does.
+            is CostAtom.SacrificeAll ->
                 resumeYesNo(state, continuation, cost, response, checkForMore)
             // VariablePermanents is an activated-ability-only cost, never a PayCost — unreachable here.
             is CostAtom.VariablePermanents ->
@@ -128,38 +154,26 @@ class CostPaymentContinuationResumer(
         val manaCost = ((cost as? PayCost.Atom)?.atom as? CostAtom.Mana)?.cost ?: return null
         if (ManaPaymentWindow.floatingManaCovers(state, continuation.payerId, manaCost)) return null
 
-        val decisionId = java.util.UUID.randomUUID().toString()
-        val decision = ManaPaymentWindow.buildDecision(
-            state = state,
-            playerId = continuation.payerId,
-            cost = manaCost,
-            decisionId = decisionId,
-            prompt = "Pay $manaCost",
-            context = DecisionContext(
-                sourceId = continuation.sourceId,
-                sourceName = continuation.sourceName,
-                phase = DecisionPhase.RESOLUTION
-            ),
-            canDecline = true,
-            cardRegistry = services.cardRegistry
-        )
-        val frame = CostPaymentManaSelectionContinuation(
-            decisionId = decisionId,
-            inner = continuation,
-            manaCost = manaCost,
-            availableSources = decision.availableSources
-        )
-        return ExecutionResult.paused(
-            state.withPendingDecision(decision).pushContinuation(frame),
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = continuation.payerId,
-                    decisionType = "SELECT_MANA_SOURCES",
-                    prompt = decision.prompt
-                )
-            )
+        return state.suspendForDecision(
+            question = { decisionId -> ManaPaymentWindow.buildDecision(
+                state = state,
+                playerId = continuation.payerId,
+                cost = manaCost,
+                decisionId = decisionId,
+                prompt = "Pay $manaCost",
+                context = DecisionContext(
+                    sourceId = continuation.sourceId,
+                    sourceName = continuation.sourceName,
+                    phase = DecisionPhase.RESOLUTION
+                ),
+                canDecline = true,
+                manaSolver = services.manaSolver
+            ) },
+            answer = { decision -> CostPaymentManaSelectionContinuation(
+                inner = continuation,
+                manaCost = manaCost,
+                availableSources = decision.availableSources
+        ) },
         )
     }
 
@@ -190,6 +204,7 @@ class CostPaymentContinuationResumer(
             return paid(explicit.state, explicit.events, inner, checkForMore)
         }
         val floated = ManaPaymentWindow.floatSelectedMana(
+            services.zones,
             state, inner.payerId, continuation.manaCost, response, continuation.availableSources, services
         )
         if (!floated.paid) return declined(floated.state, inner, checkForMore)
@@ -224,6 +239,11 @@ class CostPaymentContinuationResumer(
         if (selectedCount < paymentService.requiredCount(cost)) {
             return declined(state, continuation, checkForMore)
         }
+        // No domain re-check here: `DecisionValidators.validateSelectCards` already rejects anything
+        // outside the decision's `options`, and those options come from
+        // `CostPaymentService.selectionCandidates` — the same source-relative rule affordability
+        // counted. So a pick outside the domain (the source itself under an `excludeSelf` cost)
+        // never reaches this payment.
         // "Sacrifice N ... with different names" — reject selections that repeat a name (CR 601.2g costs
         // must be paid in full and legally). The chosen permanents must be pairwise distinctly named.
         if (atom is CostAtom.Sacrifice && atom.distinctNames &&
@@ -284,7 +304,7 @@ class CostPaymentContinuationResumer(
         val firstCommander = commanderIds.first()
         val ownerId = state.getEntity(firstCommander)?.get<OwnerComponent>()?.playerId
             ?: continuation.payerId
-        val result = ZoneTransitionService.moveToZoneWithReplacements(
+        val result = services.zones.moveToZoneWithReplacements(
             state = state,
             entityId = firstCommander,
             destinationZone = Zone.HAND,
@@ -295,8 +315,7 @@ class CostPaymentContinuationResumer(
             ),
             completion = completion,
         )
-        if (result.isPaused) return result.toExecutionResult()
-        if (!result.isSuccess) return result.toExecutionResult()
+        if (result.outcome !is Outcome.Done) return result.toExecutionResult()
 
         return resumeAfterCommanderZoneChange(
             state = result.state,
@@ -322,7 +341,7 @@ class CostPaymentContinuationResumer(
             )
             val ownerId = state.getEntity(nextCommander)?.get<OwnerComponent>()?.playerId
                 ?: completion.continuation.payerId
-            val result = ZoneTransitionService.moveToZoneWithReplacements(
+            val result = services.zones.moveToZoneWithReplacements(
                 state = state,
                 entityId = nextCommander,
                 destinationZone = Zone.HAND,
@@ -333,12 +352,14 @@ class CostPaymentContinuationResumer(
                 ),
                 completion = remaining,
             )
-            if (result.isPaused) {
+            if (result.outcome is Outcome.Paused) {
                 return result.toExecutionResult()
                     .copy(events = priorEvents + result.events)
                     .withDiagnosticsFrom(priorDiagnostics)
             }
-            if (!result.isSuccess) return result.toExecutionResult().withDiagnosticsFrom(priorDiagnostics)
+            if (result.outcome is Outcome.Rejected) {
+                return result.toExecutionResult().withDiagnosticsFrom(priorDiagnostics)
+            }
             return resumeAfterCommanderZoneChange(
                 state = result.state,
                 completion = remaining,
@@ -388,7 +409,7 @@ class CostPaymentContinuationResumer(
         val chosen = cost.options[response.optionIndex]
         val result = paymentService.pay(state, continuation.payerId, chosen, continuation.sourceId, contextOf(continuation))
         return when (result) {
-            is PaymentResult.Pending -> ExecutionResult.paused(result.state, result.pendingDecision, result.events)
+            is PaymentResult.Pending -> ExecutionResult.propagatePause(result.state, result.events)
             // canAfford was checked when building the option list, so a sub-cost should be payable;
             // treat any unexpected non-pending result as a decline so the punisher branch still runs.
             else -> declined(result.state, continuation, checkForMore)
@@ -417,24 +438,20 @@ class CostPaymentContinuationResumer(
     ): ExecutionResult {
         if (followup == null) return checkForMore(state, priorEvents)
         val result = services.effectExecutorRegistry
-            .execute(state, followup, effectContext(state, continuation))
+            .execute(state, followup, effectContext(state, continuation).authorizeObjectMoves(priorEvents))
             .toExecutionResult()
         val allEvents = priorEvents + result.events
-        return if (result.isPaused) {
-            ExecutionResult.paused(
-                result.state,
-                result.pendingDecision!!,
-                allEvents,
-                diagnostics = result.diagnostics,
-            )
+        return if (result.outcome is Outcome.Paused) {
+            ExecutionResult.propagatePause(result.state, allEvents, diagnostics = result.diagnostics)
         } else {
             checkForMore(result.state, allEvents).withDiagnosticsFrom(result.diagnostics)
         }
     }
 
     private fun effectContext(state: GameState, continuation: CostPaymentContinuation): EffectContext =
-        EffectContext(
+        continuation.effectContext ?: EffectContext(
             sourceId = continuation.sourceId,
+            objectReferences = continuation.objectReferences,
             controllerId = continuation.payerId,
             targets = continuation.targets,
             pipeline = PipelineState(
@@ -445,10 +462,12 @@ class CostPaymentContinuationResumer(
 
     private fun contextOf(continuation: CostPaymentContinuation): CostPaymentContext =
         CostPaymentContext(
+            objectReferences = continuation.objectReferences,
             onPaid = continuation.onPaid,
             onDeclined = continuation.onDeclined,
             targets = continuation.targets,
             namedTargets = continuation.namedTargets,
-            storedCollections = continuation.storedCollections
+            storedCollections = continuation.storedCollections,
+            effectContext = continuation.effectContext,
         )
 }

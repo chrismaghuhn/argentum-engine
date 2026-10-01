@@ -3,16 +3,15 @@ package com.wingedsheep.engine.handlers.effects.stack
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
-import com.wingedsheep.engine.handlers.effects.permanent.counters.resolveCounterType
 import com.wingedsheep.engine.state.GameState
-import com.wingedsheep.engine.state.components.identity.ExileAfterResolveComponent
+import com.wingedsheep.engine.state.components.identity.AfterResolveDestinationComponent
 import com.wingedsheep.sdk.scripting.effects.MarkSpellExileWithCountersEffect
 import kotlin.reflect.KClass
 
 /**
  * Executor for [MarkSpellExileWithCountersEffect].
  *
- * Tags the target spell on the stack with [ExileAfterResolveComponent] carrying
+ * Tags the target spell on the stack with [AfterResolveDestinationComponent] carrying
  * the requested counter list and the `onlyIfResolved` flag. When the spell
  * actually resolves, [com.wingedsheep.engine.mechanics.stack.StackResolver] sees
  * the component, sends the card to exile instead of the graveyard, and adds the
@@ -32,12 +31,12 @@ class MarkSpellExileWithCountersExecutor : EffectExecutor<MarkSpellExileWithCoun
         context: EffectContext
     ): EffectResult {
         val targetId = context.resolveTarget(effect.target) ?: return EffectResult.success(state)
-        val counterType = resolveCounterType(effect.counterType)
+        val counterType = effect.counterType
         val counters = List(effect.count.coerceAtLeast(0)) { counterType }
 
         val sourceId = context.sourceId
         val newState = state.updateEntity(targetId) { container ->
-            val existing = container.get<ExileAfterResolveComponent>()
+            val existing = container.get<AfterResolveDestinationComponent>()
             val merged = if (existing != null) {
                 existing.copy(
                     withCounters = existing.withCounters + counters,
@@ -45,7 +44,7 @@ class MarkSpellExileWithCountersExecutor : EffectExecutor<MarkSpellExileWithCoun
                     linkedSourceId = existing.linkedSourceId ?: sourceId
                 )
             } else {
-                ExileAfterResolveComponent(
+                AfterResolveDestinationComponent(
                     withCounters = counters,
                     onlyIfResolved = true,
                     linkedSourceId = sourceId

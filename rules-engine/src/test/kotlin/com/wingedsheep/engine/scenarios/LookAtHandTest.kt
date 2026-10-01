@@ -3,6 +3,8 @@ package com.wingedsheep.engine.scenarios
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.HandLookedAtEvent
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.SpellCastEvent
+import com.wingedsheep.engine.state.FACE_DOWN_DISPLAY_NAME
 import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -15,6 +17,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.effects.LookAtTargetHandEffect
 import com.wingedsheep.sdk.scripting.EventPattern
@@ -27,6 +30,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Tests for "look at target player's hand" effects.
@@ -47,6 +51,7 @@ class LookAtHandTest : FunSpec({
         creatureStats = com.wingedsheep.sdk.model.CreatureStats(1, 1),
         script = CardScript.creature(
             TriggeredAbility.create(
+                id = AbilityId("LookAtHandTest_1"),
                 trigger = EventPattern.ZoneChangeEvent(to = Zone.BATTLEFIELD),
                 binding = TriggerBinding.SELF,
                 effect = LookAtTargetHandEffect(EffectTarget.ContextTarget(0)),
@@ -102,7 +107,7 @@ class LookAtHandTest : FunSpec({
 
         // Cast Ingenious Thief
         val castResult = driver.castSpell(activePlayer, thief)
-        castResult.isSuccess shouldBe true
+        castResult.outcome shouldBe Outcome.Done
 
         // Let the spell resolve (both players pass priority)
         driver.bothPass()
@@ -331,7 +336,11 @@ class LookAtHandTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
+        val castEvent = result.events.filterIsInstance<SpellCastEvent>().single()
+        castEvent.cardName shouldBe FACE_DOWN_DISPLAY_NAME
+        castEvent.underlyingCardName shouldBe "Test Morph"
+        castEvent.cardPresentation?.nameFor(viewer) shouldBe FACE_DOWN_DISPLAY_NAME
         driver.state.getEntity(castMorph)?.get<RevealedToComponent>() shouldBe null
         driver.state.getEntity(otherMorph)?.get<RevealedToComponent>() shouldBe null
 

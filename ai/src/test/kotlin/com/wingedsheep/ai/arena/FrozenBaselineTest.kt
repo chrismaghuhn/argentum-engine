@@ -93,11 +93,42 @@ class FrozenBaselineTest : FunSpec({
          * exactly, so the stream is identical apart from that insertion. The outcome is untouched:
          * seat 1 still wins on turn 20 at life -8 / 16.
          *
+         * Re-blessed 2026-08-24 for modal double-faced lands adding `PlayLand.asBackFace`.
+         * **`LEGACY_V0` did not move.** Every recorded land play now carries `asBackFace=false` —
+         * the Pathway cycle is the only user of the flag and the frozen deck is 24 Mountains and
+         * four vanilla Portal creatures, so it is false on every action all game. Verified the same
+         * way as the two entries above: with `", asBackFace=false"` stripped from the recorded
+         * action text, this branch reproduces the previous golden `6ff9ded1403d59ac` exactly. The
+         * outcome is untouched: seat 1 still wins on turn 20 at life -8 / 16.
+         *
          * Note for whoever hits this next: hashing `GameAction.toString()` means *any* new field on
          * a cast/action data class moves this hash without the AI having changed. Check the outcome
          * line in the failure clue first — if turns/winner/life match the values above, you are
          * almost certainly in this benign case rather than a real behavioural drift.
+         *
+         * Re-blessed 2026-09-24 for Chorus of the Conclave adding `CastSpell.additionalManaForCounters`.
+         * **`LEGACY_V0` did not move.** Every recorded cast now carries `additionalManaForCounters=0`;
+         * with `", additionalManaForCounters=0"` stripped from the recorded action text, this branch
+         * reproduces the previous golden `47e993c61a57ebbd` exactly. Seat 1 still wins on turn 20 at
+         * life -8 / 16.
+         *
+         * Re-blessed 2026-09-28 for deck IDs minted in a seeded shuffled order. **`LEGACY_V0` did not
+         * move.** Recorded actions name cards by entity ID, and the same seed now hands each deck its
+         * IDs in a different order. With `shuffledDeckIds = false` in the runner's `GameConfig`, this
+         * branch reproduces the previous golden `c0db41664c50719f` exactly. Seat 1 still wins on turn
+         * 20 at life -8 / 16.
+         *
+         * Re-blessed 2026-09-29 for named additional-cost branches adding
+         * `CastSpell.additionalCostChoices`. **`LEGACY_V0` did not move.** With
+         * `", additionalCostChoices={}"` stripped from the recorded action text, this branch
+         * reproduces the previous golden `6193d6504283455a` exactly. Seat 1 still wins on turn
+         * 20 at life -8 / 16.
+         *
+         * Re-blessed 2026-09-30 for replicate adding `CastSpell.declaredCostTimes`. **`LEGACY_V0` did
+         * not move.** With `", declaredCostTimes=1"` stripped from the recorded action text, this
+         * branch reproduces the previous golden `d8f35146e25ee2b1` exactly. Seat 1 still wins on turn
+         * 20 at life -8 / 16.
          */
-        private const val GOLDEN_HASH = "6ff9ded1403d59ac"
+        private const val GOLDEN_HASH = "b1efc4d47dce9a1c"
     }
 }

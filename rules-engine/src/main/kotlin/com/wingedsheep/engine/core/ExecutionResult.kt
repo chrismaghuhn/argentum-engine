@@ -5,12 +5,14 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 
 /**
- * Result of executing a game action or engine step.
+ * Result of executing a game action or engine step: the state it left, the events it emitted, and
+ * its [outcome] — [Outcome.Done], [Outcome.Paused] on a player's question, or [Outcome.Rejected]
+ * with a typed [Rejection].
  *
- * The engine operates as a reentrant state machine. Every operation returns one of:
- * - **Success**: error == null && pendingDecision == null
- * - **PausedForDecision**: pendingDecision != null (needs player input)
- * - **Error**: error != null (action was invalid, state unchanged)
+ * Nested engine steps also use `ExecutionResult` while composing an action and may have built
+ * intermediate immutable states before reporting a rejection. [ActionProcessor] is the public
+ * transaction boundary: a rejected action exposes the exact input state and retains only the
+ * rejection, with no events or pending decision from the attempt.
  *
  * Game-over is signaled via `state.gameOver` + a [GameEndedEvent] in `events`.
  */
@@ -18,23 +20,16 @@ import kotlinx.serialization.Transient
 data class ExecutionResult(
     val state: GameState,
     val events: List<GameEvent> = emptyList(),
-    val error: String? = null,
-    val pendingDecision: PendingDecision? = null,
-    /**
-     * `true` when the producing action handler already ran [TriggerDetector] over
-     * [events] and put any resulting triggers on the stack itself. Callers resuming
-     * a paused action (notably `SubmitDecisionHandler`) must skip detection on
-     * [events] when this is set; otherwise battlefield triggers like Riku of Many
-     * Paths would be duplicated on the stack — once by the handler, once by the
-     * resumer running on the same `SpellCastEvent`.
-     */
-    val triggersAlreadyProcessed: Boolean = false,
+    val outcome: Outcome = Outcome.Done,
     /** Internal rules diagnostics; deliberately excluded from every wire serialization. */
     @Transient
-    val diagnostics: List<DiagnosticSignal> = emptyList()
+    val diagnostics: List<DiagnosticSignal> = emptyList(),
 ) {
-    val isSuccess: Boolean get() = error == null && pendingDecision == null
-    val isPaused: Boolean get() = pendingDecision != null
+    /** The rejection's message, or null when the work was not rejected. */
+    val error: String? get() = (outcome as? Outcome.Rejected)?.reason?.message
+
+    /** The question the work stopped on, or null when it did not pause. */
+    val pendingDecision: PendingDecision? get() = (outcome as? Outcome.Paused)?.decision
 
     /** Alias for state to indicate we're getting the resulting state after execution */
     val newState: GameState get() = state
@@ -51,24 +46,41 @@ data class ExecutionResult(
             ExecutionResult(state, events, diagnostics = diagnostics)
 
         /**
-         * Create an error result.
+         * Reject work that validation accepted but execution could not carry out. See
+         * [Rejection.ExecutionFailed]; [ActionProcessor] reports validation refusals as
+         * [Rejection.IllegalAction] itself.
          */
         fun error(
             state: GameState,
             message: String,
             diagnostics: List<DiagnosticSignal> = emptyList(),
         ): ExecutionResult =
-            ExecutionResult(state, error = message, diagnostics = diagnostics)
+            rejected(state, Rejection.ExecutionFailed(message), diagnostics = diagnostics)
 
-        /**
-         * Create a paused result awaiting player input.
-         */
-        fun paused(
+        fun rejected(
             state: GameState,
-            decision: PendingDecision,
+            reason: Rejection,
             events: List<GameEvent> = emptyList(),
             diagnostics: List<DiagnosticSignal> = emptyList(),
         ): ExecutionResult =
-            ExecutionResult(state, events, pendingDecision = decision, diagnostics = diagnostics)
+            ExecutionResult(state, events, Outcome.Rejected(reason), diagnostics)
+
+        /**
+         * Propagate an existing suspension through an outer execution layer. Never allocates or
+         * installs a question; the state supplies the single authoritative pending decision.
+         */
+        fun propagatePause(
+            state: GameState,
+            events: List<GameEvent> = emptyList(),
+            diagnostics: List<DiagnosticSignal> = emptyList(),
+        ): ExecutionResult =
+            ExecutionResult(
+                state,
+                events,
+                Outcome.Paused(requireNotNull(state.pendingDecision) {
+                    "A paused result must propagate an installed suspension"
+                }),
+                diagnostics,
+            )
     }
 }

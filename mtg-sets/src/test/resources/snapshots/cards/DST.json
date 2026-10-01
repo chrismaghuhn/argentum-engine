@@ -1,3 +1,50 @@
+// Angel's Feather
+{
+    "name": "Angel's Feather",
+    "manaCost": "{2}",
+    "typeLine": "Artifact",
+    "oracleText": "Whenever a player casts a white spell, you may gain 1 life.",
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Angel's Feather:1",
+                "trigger": {
+                    "type": "SpellCastEvent",
+                    "spellFilter": {
+                        "cardPredicates": [
+                            {
+                                "type": "HasColor",
+                                "color": "WHITE"
+                            }
+                        ]
+                    },
+                    "player": "Each"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "GainLife",
+                        "amount": {
+                            "type": "Fixed",
+                            "amount": 1
+                        }
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "92",
+        "rarity": "UNCOMMON",
+        "artist": "Alan Pollack",
+        "flavorText": "If taken, it cuts the hand that clutches it. If given, it heals the hand that holds it.",
+        "imageUri": "https://cards.scryfall.io/normal/front/4/a/4a11d101-2e82-42d5-b4a1-8f0c520441ab.jpg?1783944431"
+    },
+    "colorIdentityOverride": []
+}
+
 // Crazed Goblin
 {
     "name": "Crazed Goblin",
@@ -36,7 +83,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Darksteel Citadel:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -160,7 +207,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Darksteel Ingot:1",
                 "cost": "CostTap",
                 "effect": "AddManaOfChoice",
                 "timing": "ManaAbility",
@@ -188,7 +235,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Darksteel Pendant:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -213,6 +260,100 @@
         "collectorNumber": "113",
         "artist": "Terese Nielsen",
         "imageUri": "https://cards.scryfall.io/normal/front/9/c/9c1bac5f-c41a-49f0-94b0-79653b6fa67a.jpg"
+    },
+    "colorIdentityOverride": []
+}
+
+// Demon's Horn
+{
+    "name": "Demon's Horn",
+    "manaCost": "{2}",
+    "typeLine": "Artifact",
+    "oracleText": "Whenever a player casts a black spell, you may gain 1 life.",
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Demon's Horn:1",
+                "trigger": {
+                    "type": "SpellCastEvent",
+                    "spellFilter": {
+                        "cardPredicates": [
+                            {
+                                "type": "HasColor",
+                                "color": "BLACK"
+                            }
+                        ]
+                    },
+                    "player": "Each"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "GainLife",
+                        "amount": {
+                            "type": "Fixed",
+                            "amount": 1
+                        }
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "116",
+        "rarity": "UNCOMMON",
+        "artist": "Alan Pollack",
+        "flavorText": "Its curve mimics the twists of life and death.",
+        "imageUri": "https://cards.scryfall.io/normal/front/4/1/41d40eb4-643a-4e22-a15f-eda45a48cfd6.jpg?1783944425"
+    },
+    "colorIdentityOverride": []
+}
+
+// Dragon's Claw
+{
+    "name": "Dragon's Claw",
+    "manaCost": "{2}",
+    "typeLine": "Artifact",
+    "oracleText": "Whenever a player casts a red spell, you may gain 1 life.",
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Dragon's Claw:1",
+                "trigger": {
+                    "type": "SpellCastEvent",
+                    "spellFilter": {
+                        "cardPredicates": [
+                            {
+                                "type": "HasColor",
+                                "color": "RED"
+                            }
+                        ]
+                    },
+                    "player": "Each"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "GainLife",
+                        "amount": {
+                            "type": "Fixed",
+                            "amount": 1
+                        }
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "117",
+        "rarity": "UNCOMMON",
+        "artist": "Alan Pollack",
+        "flavorText": "Though no longer attached to the hand, it still holds its adversary in its grasp.",
+        "imageUri": "https://cards.scryfall.io/normal/front/7/a/7a46bbcc-b287-47bb-b252-5dd3217f61a9.jpg?1783944425"
     },
     "colorIdentityOverride": []
 }
@@ -280,7 +421,7 @@
                     "type": "Fixed",
                     "amount": 2
                 },
-                "target": "Self"
+                "target": "IterationEntity"
             }
         },
         "targetRequirements": [
@@ -289,7 +430,7 @@
                 "filter": {
                     "baseFilter": "creature"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -330,7 +471,7 @@
                     "type": "Fixed",
                     "amount": -2
                 },
-                "target": "Self"
+                "target": "IterationEntity"
             }
         },
         "targetRequirements": [
@@ -339,7 +480,7 @@
                 "filter": {
                     "baseFilter": "creature"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -372,7 +513,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 {
@@ -387,7 +528,7 @@
         "targetRequirements": [
             {
                 "type": "AnyTarget",
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -418,7 +559,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Grimclaw Bats:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -505,6 +646,53 @@
     ]
 }
 
+// Kraken's Eye
+{
+    "name": "Kraken's Eye",
+    "manaCost": "{2}",
+    "typeLine": "Artifact",
+    "oracleText": "Whenever a player casts a blue spell, you may gain 1 life.",
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Kraken's Eye:1",
+                "trigger": {
+                    "type": "SpellCastEvent",
+                    "spellFilter": {
+                        "cardPredicates": [
+                            {
+                                "type": "HasColor",
+                                "color": "BLUE"
+                            }
+                        ]
+                    },
+                    "player": "Each"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "GainLife",
+                        "amount": {
+                            "type": "Fixed",
+                            "amount": 1
+                        }
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "126",
+        "rarity": "UNCOMMON",
+        "artist": "Alan Pollack",
+        "flavorText": "Bright as a mirror, dark as the sea.",
+        "imageUri": "https://cards.scryfall.io/normal/front/c/c/cc767637-627a-4ea2-873b-d8a80ccc925b.jpg?1783944423"
+    },
+    "colorIdentityOverride": []
+}
+
 // Krark-Clan Stoker
 {
     "name": "Krark-Clan Stoker",
@@ -518,7 +706,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Krark-Clan Stoker:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -569,7 +757,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Leonin Battlemage:2",
                 "trigger": "SpellCastEvent",
                 "binding": "ANY",
                 "effect": {
@@ -585,7 +773,7 @@
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Leonin Battlemage:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "ModifyStats",
@@ -599,7 +787,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -608,7 +796,7 @@
                         "filter": {
                             "baseFilter": "creature"
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
@@ -676,7 +864,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Loxodon Mystic:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -694,7 +882,7 @@
                     "type": "TapUntap",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -703,7 +891,7 @@
                         "filter": {
                             "baseFilter": "creature"
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
@@ -738,7 +926,7 @@
             "body": {
                 "type": "GrantKeyword",
                 "keyword": "FLYING",
-                "target": "Self"
+                "target": "IterationEntity"
             }
         }
     },
@@ -770,7 +958,7 @@
             },
             "body": {
                 "type": "TapUntap",
-                "target": "Self"
+                "target": "IterationEntity"
             }
         }
     },
@@ -783,6 +971,69 @@
     "colorIdentityOverride": [
         "WHITE"
     ]
+}
+
+// Mirrodin's Core
+{
+    "name": "Mirrodin's Core",
+    "manaCost": "",
+    "typeLine": "Land",
+    "oracleText": "{T}: Add {C}.\n{T}: Put a charge counter on this land.\n{T}, Remove a charge counter from this land: Add one mana of any color.",
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Mirrodin's Core:1",
+                "cost": "CostTap",
+                "effect": {
+                    "type": "AddColorlessMana",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                "timing": "ManaAbility",
+                "isManaAbility": true
+            },
+            {
+                "id": "Mirrodin's Core:2",
+                "cost": "CostTap",
+                "effect": {
+                    "type": "AddCounters",
+                    "counterType": "CHARGE",
+                    "count": 1,
+                    "target": "Self"
+                },
+                "descriptionOverride": "{T}: Put a charge counter on this land."
+            },
+            {
+                "id": "Mirrodin's Core:3",
+                "cost": {
+                    "type": "CostComposite",
+                    "costs": [
+                        "CostTap",
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomRemoveCounters",
+                                "counterType": "CHARGE",
+                                "self": true
+                            }
+                        }
+                    ]
+                },
+                "effect": "AddManaOfChoice",
+                "timing": "ManaAbility",
+                "isManaAbility": true
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "165",
+        "rarity": "UNCOMMON",
+        "artist": "Greg Staples",
+        "imageUri": "https://cards.scryfall.io/normal/front/c/f/cf0e60c9-1548-4981-ada1-6656804a772e.jpg?1783944413"
+    },
+    "colorIdentityOverride": []
 }
 
 // Myr Moonvessel
@@ -798,7 +1049,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Myr Moonvessel:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "from": "Battlefield",
@@ -900,14 +1151,14 @@
                     "type": "CantBeRegenerated",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 {
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "destination": "Graveyard",
                     "byDestruction": true
@@ -920,7 +1171,7 @@
                 "filter": {
                     "baseFilter": "artifact"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -950,14 +1201,14 @@
                     "type": "CantBeRegenerated",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 {
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "destination": "Graveyard",
                     "byDestruction": true
@@ -970,7 +1221,7 @@
                 "filter": {
                     "baseFilter": "creature|artifact"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -1038,9 +1289,15 @@
                     "source": {
                         "type": "FromZone",
                         "zone": "Library",
-                        "filter": "artifact"
+                        "filter": {
+                            "cardPredicates": [
+                                "IsArtifact",
+                                "ManaValueAtMostX"
+                            ]
+                        }
                     },
-                    "storeAs": "searchable"
+                    "storeAs": "searchable",
+                    "search": true
                 },
                 {
                     "type": "SelectFromCollection",
@@ -1099,7 +1356,7 @@
             "type": "MoveToZone",
             "target": {
                 "type": "BoundVariable",
-                "name": "target"
+                "name": "t0"
             },
             "destination": "Hand"
         },
@@ -1110,7 +1367,7 @@
                     "baseFilter": "artifact own:you",
                     "zone": "Graveyard"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -1138,7 +1395,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Roaring Slagwurm:1",
                 "trigger": "AttackEvent",
                 "effect": {
                     "type": "ForEach",
@@ -1150,7 +1407,7 @@
                     },
                     "body": {
                         "type": "TapUntap",
-                        "target": "Self"
+                        "target": "IterationEntity"
                     }
                 }
             }
@@ -1203,7 +1460,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Shield of Kaldra:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -1268,7 +1525,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Slobad, Goblin Tinkerer:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -1281,7 +1538,7 @@
                     "keyword": "INDESTRUCTIBLE",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -1290,7 +1547,7 @@
                         "filter": {
                             "baseFilter": "artifact"
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
@@ -1325,7 +1582,7 @@
             },
             "body": {
                 "type": "MoveToZone",
-                "target": "Self",
+                "target": "IterationEntity",
                 "destination": "Graveyard",
                 "byDestruction": true
             }
@@ -1448,7 +1705,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ur-Golem's Eye:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -1484,7 +1741,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Viridian Acolyte:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -1528,7 +1785,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Viridian Zealot:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -1546,7 +1803,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "destination": "Graveyard",
                     "byDestruction": true
@@ -1557,7 +1814,7 @@
                         "filter": {
                             "baseFilter": "artifact|enchantment"
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
@@ -1588,7 +1845,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Voltaic Construct:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -1600,7 +1857,7 @@
                     "type": "TapUntap",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "tap": false
                 },
@@ -1610,7 +1867,7 @@
                         "filter": {
                             "baseFilter": "artifact creature"
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
@@ -1635,7 +1892,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Vulshok Morningstar:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -1693,7 +1950,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Vulshok War Boar:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -1733,7 +1990,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Wand of the Elements:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -1763,7 +2020,7 @@
                 }
             },
             {
-                "id": "ability_2",
+                "id": "Wand of the Elements:2",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -1807,13 +2064,10 @@
     "manaCost": "{3}",
     "typeLine": "Artifact — Equipment",
     "oracleText": "Equipped creature can't be blocked and has shroud. (It can't be the target of spells or abilities.)\nEquip {2}",
-    "flags": [
-        "CANT_BE_BLOCKED"
-    ],
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Whispersilk Cloak:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -1843,6 +2097,13 @@
         ],
         "staticAbilities": [
             {
+                "type": "CantBeBlocked",
+                "filter": {
+                    "baseFilter": "permanent",
+                    "scope": "AttachedTo"
+                }
+            },
+            {
                 "type": "GrantKeyword",
                 "keyword": "SHROUD"
             }
@@ -1853,6 +2114,53 @@
         "collectorNumber": "160",
         "artist": "Luca Zontini",
         "imageUri": "https://cards.scryfall.io/normal/front/a/c/ac4fdefd-8774-400d-bea6-4064d87383f1.jpg"
+    },
+    "colorIdentityOverride": []
+}
+
+// Wurm's Tooth
+{
+    "name": "Wurm's Tooth",
+    "manaCost": "{2}",
+    "typeLine": "Artifact",
+    "oracleText": "Whenever a player casts a green spell, you may gain 1 life.",
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Wurm's Tooth:1",
+                "trigger": {
+                    "type": "SpellCastEvent",
+                    "spellFilter": {
+                        "cardPredicates": [
+                            {
+                                "type": "HasColor",
+                                "color": "GREEN"
+                            }
+                        ]
+                    },
+                    "player": "Each"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "GainLife",
+                        "amount": {
+                            "type": "Fixed",
+                            "amount": 1
+                        }
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "162",
+        "rarity": "UNCOMMON",
+        "artist": "Alan Pollack",
+        "flavorText": "A wurm knows nothing of deception. If it opens its mouth, it plans to eat you.",
+        "imageUri": "https://cards.scryfall.io/normal/front/4/8/482cdbe0-b865-4e09-bd30-61ab93739b53.jpg?1783944414"
     },
     "colorIdentityOverride": []
 }

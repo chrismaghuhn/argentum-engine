@@ -21,7 +21,7 @@ import com.wingedsheep.sdk.model.CardEntry
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.PrintingRef
-import com.wingedsheep.sdk.serialization.CardExporter
+import com.wingedsheep.sdk.tooling.CardExporter
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.AbilityIdentity
 import com.wingedsheep.sdk.dsl.card

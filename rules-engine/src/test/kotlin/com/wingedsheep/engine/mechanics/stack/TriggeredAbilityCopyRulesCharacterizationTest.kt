@@ -22,6 +22,8 @@ import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetPlayer
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Characterization for CR 700.13 and CR 707.10: a triggered-ability copy is put on the stack and
@@ -44,7 +46,7 @@ class TriggeredAbilityCopyRulesCharacterizationTest : FunSpec({
         val genuineController = driver.player1
         val copyController = driver.player2
         val sourceId = driver.putCreatureOnBattlefield(genuineController, "Grizzly Bears")
-        val resolver = StackResolver(driver.cardRegistry)
+        val resolver = driver.services.stackResolver
         val ability = TriggeredAbilityOnStackComponent(
             sourceId = sourceId,
             sourceName = "No-target triggered ability",
@@ -59,7 +61,7 @@ class TriggeredAbilityCopyRulesCharacterizationTest : FunSpec({
         )
         genuine.error shouldBe null
 
-        val copied = CopyTargetTriggeredAbilityExecutor(driver.cardRegistry).execute(
+        val copied = CopyTargetTriggeredAbilityExecutor(driver.services.targetFinder, driver.services.targetValidator).execute(
             state = genuine.newState,
             effect = CopyTargetTriggeredAbilityEffect(
                 target = EffectTarget.SpecificEntity(genuine.newState.stack.last()),
@@ -78,7 +80,7 @@ class TriggeredAbilityCopyRulesCharacterizationTest : FunSpec({
         val genuineController = driver.player1
         val copyController = driver.player2
         val sourceId = driver.putCreatureOnBattlefield(genuineController, "Grizzly Bears")
-        val resolver = StackResolver(driver.cardRegistry)
+        val resolver = driver.services.stackResolver
         val targetRequirements = listOf(TargetPlayer())
         val ability = TriggeredAbilityOnStackComponent(
             sourceId = sourceId,
@@ -96,7 +98,7 @@ class TriggeredAbilityCopyRulesCharacterizationTest : FunSpec({
         )
         genuine.error shouldBe null
 
-        val copyRequest = CopyTargetTriggeredAbilityExecutor(driver.cardRegistry).execute(
+        val copyRequest = CopyTargetTriggeredAbilityExecutor(driver.services.targetFinder, driver.services.targetValidator).execute(
             state = genuine.newState,
             effect = CopyTargetTriggeredAbilityEffect(
                 target = EffectTarget.SpecificEntity(genuine.newState.stack.last()),
@@ -104,7 +106,7 @@ class TriggeredAbilityCopyRulesCharacterizationTest : FunSpec({
             context = EffectContext(sourceId = sourceId, controllerId = copyController),
         )
         copyRequest.error shouldBe null
-        copyRequest.isPaused shouldBe true
+        copyRequest.outcome.shouldBeInstanceOf<Outcome.Paused>()
         val decision = copyRequest.pendingDecision as ChooseTargetsDecision
         decision.legalTargets[0]?.contains(genuineController) shouldBe true
 
@@ -136,7 +138,7 @@ class TriggeredAbilityCopyRulesCharacterizationTest : FunSpec({
         val genuineController = driver.player1
         val copyController = driver.player2
         val sourceId = driver.putCreatureOnBattlefield(genuineController, "Grizzly Bears")
-        val resolver = StackResolver(driver.cardRegistry)
+        val resolver = driver.services.stackResolver
         val ability = TriggeredAbilityOnStackComponent(
             sourceId = sourceId,
             sourceName = "Targeted triggered ability",
@@ -164,11 +166,11 @@ class TriggeredAbilityCopyRulesCharacterizationTest : FunSpec({
 
         val copied = CopyTargetSpellOrAbilityExecutor.cloneAndPush(
             state = genuine.newState,
-            stackResolver = resolver,
             abilityEntityId = genuine.newState.stack.last(),
             controllerId = copyController,
             targets = listOf(ChosenTarget.Player(genuineController)),
             targetRequirements = targetRequirement,
+            targetValidator = driver.services.targetValidator,
         )
         copied.error shouldBe null
 

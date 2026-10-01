@@ -13,7 +13,11 @@ import com.wingedsheep.sdk.scripting.targets.EffectTarget
  * {2}{B}
  * Creature — Zombie Warrior
  * 3/1
+ *
  * When this creature enters, each player sacrifices a creature of their choice.
+ *
+ * "each player" includes you, and the Marauder itself is a legal choice for its own controller —
+ * `Player.Each` with no `excludeSelf`, matching the printed symmetry.
  */
 val FleshbagMarauder = card("Fleshbag Marauder") {
     manaCost = "{2}{B}"
@@ -24,10 +28,11 @@ val FleshbagMarauder = card("Fleshbag Marauder") {
     toughness = 1
 
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
+        trigger = Triggers.self.enters()
         effect = Effects.Sacrifice(
-            filter = GameObjectFilter.Creature,
-            target = EffectTarget.PlayerRef(Player.Each),
+            GameObjectFilter.Creature,
+            1,
+            EffectTarget.PlayerRef(Player.Each)
         )
     }
 
@@ -35,19 +40,7 @@ val FleshbagMarauder = card("Fleshbag Marauder") {
         rarity = Rarity.UNCOMMON
         collectorNumber = "76"
         artist = "Pete Venters"
-        flavorText = "Grixis is a world where the only things found in abundance are death and decay. " +
-            "Corpses, whole or in part, are the standard currency among necromancers and demons."
-        imageUri = "https://cards.scryfall.io/normal/front/f/7/f71e4391-04a8-4df8-9d52-3a3480bcd5b6.jpg?1783942567"
-        ruling(
-            "2020-11-10",
-            "When its ability resolves, you may sacrifice Fleshbag Marauder itself. If you control no " +
-                "other creatures, you'll have to sacrifice Fleshbag Marauder.",
-        )
-        ruling(
-            "2020-11-10",
-            "As Fleshbag Marauder's ability resolves, first the player whose turn it is chooses a creature " +
-                "to sacrifice, then each other player in turn order does the same knowing the choices made " +
-                "by players who chose before them. Then all those creatures are sacrificed simultaneously.",
-        )
+        flavorText = "Grixis is a world where the only things found in abundance are death and decay. Corpses, whole or in part, are the standard currency among necromancers and demons."
+        imageUri = "https://cards.scryfall.io/normal/front/f/7/f71e4391-04a8-4df8-9d52-3a3480bcd5b6.jpg"
     }
 }

@@ -12,6 +12,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Slayers' Stronghold (AVR #229)
@@ -44,7 +45,7 @@ class SlayersStrongholdScenarioTest : FunSpec({
                 sourceId = stronghold,
                 abilityId = manaAbilityId
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         driver.isTapped(stronghold) shouldBe true
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
@@ -67,7 +68,7 @@ class SlayersStrongholdScenarioTest : FunSpec({
                 abilityId = pumpAbilityId,
                 targets = listOf(com.wingedsheep.engine.state.components.stack.ChosenTarget.Permanent(target))
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         projector.getProjectedPower(driver.state, target) shouldBe 4

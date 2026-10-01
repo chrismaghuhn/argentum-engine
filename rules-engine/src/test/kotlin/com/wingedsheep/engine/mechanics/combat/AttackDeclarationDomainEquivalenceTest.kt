@@ -22,7 +22,8 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
-import com.wingedsheep.sdk.scripting.CantBeAttackedWithout
+import com.wingedsheep.sdk.scripting.CantBeAttackedBy
+import com.wingedsheep.sdk.scripting.GameObjectFilter
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
@@ -624,9 +625,10 @@ private fun fixture(
     )
     val manager = AttackPhaseManager(
         driver.cardRegistry,
-        defaultAttackRestrictionRules(),
-        defaultAttackDefenderRules(),
-        ManaAbilitySideEffectExecutor.noOp(driver.cardRegistry),
+        defaultAttackRestrictionRules(driver.services.predicateEvaluator),
+        defaultAttackDefenderRules(driver.services.predicateEvaluator),
+        ManaAbilitySideEffectExecutor.noOp(driver.zones),
+        predicateEvaluator = driver.services.predicateEvaluator,
     )
     return Fixture(name, driver.state, active, manager, attackerIds, defenderIds)
 }
@@ -667,6 +669,6 @@ private val attackDomainMoat = card("Attack Domain Moat") {
     manaCost = "{2}{W}"
     typeLine = "Enchantment"
     staticAbility {
-        ability = CantBeAttackedWithout(Keyword.FLYING)
+        ability = CantBeAttackedBy(GameObjectFilter.Creature.withoutKeyword(Keyword.FLYING))
     }
 }

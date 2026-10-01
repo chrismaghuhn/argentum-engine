@@ -15,6 +15,8 @@ import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Basilisk Collar (WWK #122) — "Equipped creature has deathtouch and lifelink. Equip {2}."
@@ -40,7 +42,7 @@ class BasiliskCollarScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature))
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -93,7 +95,7 @@ class BasiliskCollarScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(opponentCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(collar)?.get<AttachedToComponent>() shouldBe null
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
@@ -105,7 +107,7 @@ class BasiliskCollarScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(ownCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(collar)?.get<AttachedToComponent>() shouldBe null
     }
 
@@ -132,7 +134,7 @@ class BasiliskCollarScenarioTest : FunSpec({
         driver.giveMana(caster, com.wingedsheep.sdk.core.Color.RED, 1)
         val boltResult = driver.castSpellWithTargets(caster, lightningBolt, listOf(ChosenTarget.Permanent(creature)))
         withClue("Lightning Bolt cast: ${boltResult.error}") {
-            boltResult.isSuccess shouldBe true
+            boltResult.outcome shouldBe Outcome.Done
         }
         driver.bothPass()
 

@@ -204,6 +204,9 @@ export interface ClientCard {
   /** Hexproof from monocolored (CR 105.2) — shows an uncolored hexproof shield chip */
   readonly hexproofFromMonocolored?: boolean
 
+  /** Hexproof from multicolored (CR 105.2b) — shows an uncolored hexproof shield chip */
+  readonly hexproofFromMulticolored?: boolean
+
   /** Counters on the card */
   readonly counters: Partial<Record<CounterType, number>>
 
@@ -228,6 +231,14 @@ export interface ClientCard {
   readonly backFaceOracleText?: string | null
   /** Back face image URI for DFCs. */
   readonly backFaceImageUri?: string | null
+  /**
+   * Back face printed power / toughness and keywords — the siblings of `backFaceName` and
+   * friends, so a view showing the back face doesn't pair its art and text with the front's
+   * stats and keyword chips.
+   */
+  readonly backFacePower?: number | null
+  readonly backFaceToughness?: number | null
+  readonly backFaceKeywords?: readonly Keyword[]
 
   /** Combat state (if in combat) */
   readonly isAttacking: boolean
@@ -297,6 +308,13 @@ export interface ClientCard {
   /** Whether this permanent is suspected (CR 701.60 — has menace and can't block). Battlefield only. */
   readonly isSuspected?: boolean
 
+  /** Whether this Case has the solved designation (CR 719.3b — its "Solved —" abilities are on). Battlefield only. */
+  readonly isSolved?: boolean
+
+  /** Whether this creature has the renowned designation (CR 702.112b — renown can't trigger again
+   * and its renown payoffs are on). Battlefield only. */
+  readonly isRenowned?: boolean
+
   /** Whether this card is plotted in exile (CR 718 — Plot keyword, castable for free on a later turn). Exile only. */
   readonly isPlotted?: boolean
 
@@ -327,6 +345,15 @@ export interface ClientCard {
    * and will be returned to its owner's hand at the next end step (not exiled — unlike warp).
    * Battlefield only. */
   readonly isDashed?: boolean
+
+  /** Saddle N printed on this permanent (CR 702.171a), or absent if it has no saddle ability.
+   * Public — the number is how much power its controller must spend to switch its Mount payoffs
+   * on, which is exactly what the other players need to play around. Battlefield only. */
+  readonly saddleRequirement?: number | null
+
+  /** Whether this permanent currently carries the saddled designation (CR 702.171b), granted by a
+   * resolved saddle ability and lost at end of turn. Battlefield only. */
+  readonly isSaddled?: boolean
 
   /** Morph cost for face-down creatures (only visible to controller) */
   readonly morphCost?: string | null
@@ -570,6 +597,20 @@ export interface ClientCard {
     /** Number of time counters the permanent enters with (e.g. 4). */
     readonly time: number
   } | null
+
+  /**
+   * Evoke alternative cost (CR 702.74), present iff the card definition has evoke — e.g. "{2}{U}"
+   * for Mulldrifter. Same job as `impending`: the action menu offers the evoke cast next to the
+   * normal cast in both directions, graying out whichever the player can't pay for, so a card you
+   * can only afford to evoke never casts itself the moment you drag it out.
+   */
+  readonly evoke?: string | null
+
+  /** Printed bestow price; enabled options come exclusively from server legal actions. */
+  readonly bestow?: {
+    readonly cost: string
+    readonly additionalCostDescription?: string | null
+  } | null
 }
 
 /** One face of a split-layout card (CR 709). */
@@ -590,6 +631,7 @@ export interface ClientPlaneswalkerAbility {
   readonly abilityId: string
   /** Signed loyalty change (+1, -2, -8, etc.). */
   readonly loyaltyChange: number
+  readonly loyaltyX?: boolean
   /** Ability text. */
   readonly description: string
 }
@@ -601,7 +643,7 @@ export interface ClientPlaneswalkerAbility {
 export interface ClientZone {
   readonly zoneId: ZoneId
 
-  /** Card IDs in this zone, in order (may be empty for hidden zones) */
+  /** Card IDs in this zone, in order. A hidden zone lists only the cards the viewer knows. */
   readonly cardIds: readonly EntityId[]
 
   /** Number of cards in the zone (always available, even for hidden zones) */
@@ -609,6 +651,9 @@ export interface ClientZone {
 
   /** Whether the contents are visible to the viewing player */
   readonly isVisible: boolean
+
+  /** Libraries only: the index from the top of each entry of `cardIds` (0 = top card). */
+  readonly positions?: readonly number[] | null
 }
 
 /**
@@ -633,6 +678,8 @@ export interface ClientPlayer {
   readonly landsPlayedThisTurn: number
   readonly hasLost: boolean
   readonly manaPool?: ClientManaPool
+  /** Server-supplied actual colors accepted for each required pip. */
+  readonly manaPaymentColors?: Readonly<Record<string, readonly string[]>>
   readonly activeEffects?: readonly ClientPlayerEffect[]
   /**
    * Per-commander combat damage dealt to this player (CR 903.10a). Empty outside Commander format.
@@ -649,6 +696,23 @@ export interface ClientPlayer {
    * badge is rendered.
    */
   readonly energyCounters?: number
+  /**
+   * Team membership in a team variant (Two-Headed Giant — CR 810; Team vs. Team — CR 808):
+   * players sharing a `teamIndex` are teammates. Absent in every non-team game. Carried on the
+   * state (not just the game-start seat roster) so a client that joins by reconnecting — hotseat,
+   * a scenario, a dropped connection resuming — still knows it's in a team game.
+   */
+  readonly teamIndex?: number | null
+  /** True when the format pools life per team (Two-Headed Giant, CR 810.4). */
+  readonly teamSharedLife?: boolean
+  /**
+   * True when the format gives the team one shared turn and one shared priority (CR 805 / 810.2).
+   * Under it a player may act whenever *any* member of their team holds priority (CR 805.5a), so
+   * this is what `hasPriority` has to consult — `priorityPlayerId === me` is only half the answer.
+   * Team vs. Team players are teammates who take individual turns (CR 808.4), so it stays false
+   * there, which is why it can't be folded into `teamSharedLife` or into "has a `teamIndex`".
+   */
+  readonly teamSharedTurns?: boolean
 }
 
 /**
@@ -688,6 +752,8 @@ export interface ClientPlayerEffect {
    * (e.g. The Ring's four temptations). Rendered as filled/empty pips.
    */
   readonly progress?: ClientEffectProgress
+  /** When the effect ends, e.g. "until end of turn"; absent when no end is stated. */
+  readonly duration?: string | null
 }
 
 /**
@@ -713,6 +779,8 @@ export interface ClientCardEffect {
   readonly description?: string
   /** Optional icon identifier for UI rendering */
   readonly icon?: string
+  /** When the effect ends, e.g. "until end of turn"; absent when no end is stated. */
+  readonly duration?: string | null
 }
 
 /**
@@ -811,6 +879,7 @@ export interface ClientAttacker {
 export type ClientCombatTarget =
   | { readonly type: 'Player'; readonly playerId: EntityId }
   | { readonly type: 'Planeswalker'; readonly permanentId: EntityId }
+  | { readonly type: 'Battle'; readonly permanentId: EntityId }
 
 /**
  * Blocker information for combat display.
@@ -923,8 +992,32 @@ export function isMyTurn(state: ClientGameState): boolean {
 }
 
 /**
- * Check if the viewing player has priority.
+ * Check if the viewing player has priority — i.e. may cast, activate, or pass right now.
+ *
+ * CR 805.5: under shared team turns a *team* holds priority, so the viewer may act whenever any
+ * member of their team holds the baton. Outside such a format (every 1v1, Commander, Free-for-All
+ * and Team vs. Team game) `teamSharedTurns` is false and this is plain equality, unchanged.
+ *
+ * The server is still authoritative — this only decides what the UI offers.
  */
 export function hasPriority(state: ClientGameState): boolean {
-  return state.priorityPlayerId === state.viewingPlayerId
+  if (state.priorityPlayerId === state.viewingPlayerId) return true
+  return sharesPriorityTeam(state, state.priorityPlayerId, state.viewingPlayerId)
+}
+
+/**
+ * True when [a] and [b] act as one side for priority: a shared-team-turns format and the same
+ * `teamIndex`. False for anyone without a team, and for Team vs. Team's individual turns.
+ */
+export function sharesPriorityTeam(
+  state: ClientGameState,
+  a: EntityId | null | undefined,
+  b: EntityId | null | undefined,
+): boolean {
+  if (!a || !b) return false
+  if (a === b) return true
+  const seatA = state.players.find((p) => p.playerId === a)
+  if (!seatA?.teamSharedTurns || seatA.teamIndex == null) return false
+  const seatB = state.players.find((p) => p.playerId === b)
+  return seatB?.teamIndex === seatA.teamIndex
 }

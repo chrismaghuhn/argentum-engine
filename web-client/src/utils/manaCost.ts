@@ -98,7 +98,7 @@ export function getRemainingCostSymbols(originalSymbols: string[], delveCount: n
  * Apply a Harmonize creature-tap to a mana cost. The tap reduces the *generic*
  * mana the player must still pay by the chosen creature's power — printed {N}
  * first, then the generic {X} (the {X} is generic per the TDM release notes,
- * mirrored server-side by `CastSpellHandler.harmonizePaymentXValue`). Colored
+ * mirrored server-side by `CastCostTotaller.paymentXValue`). Colored
  * pips are untouched, and the effect's chosen X (sent as `action.xValue`) is
  * unchanged — only the mana *paid* shrinks.
  *
@@ -113,6 +113,17 @@ export function reduceCostByHarmonizeTap(
 ): string[] {
   const expanded = parseManaCost(manaCost).map((s) => (s === 'X' ? String(xValue) : s))
   return getRemainingCostSymbols(expanded, reduction)
+}
+
+/**
+ * Materialize each {X} as the announced X (CR 601.2f: the total cost includes X as generic mana),
+ * so a payment that pays generic — convoke, delve — visibly pays it down. An X of 0 drops the
+ * symbol rather than leaving a {0} pip. [xValue] null/undefined means X hasn't been chosen (an ability,
+ * or no X at all): the symbols come back unchanged.
+ */
+export function materializeX(symbols: readonly string[], xValue: number | null | undefined): string[] {
+  if (xValue == null) return [...symbols]
+  return symbols.flatMap((s) => (s === 'X' ? (xValue > 0 ? [String(xValue)] : []) : [s]))
 }
 
 /**
@@ -396,4 +407,63 @@ export function computeAutoTapPreview<Id>(
 ): Id[] {
   const fullPreview = availableSources.map((s) => s.entityId)
   return trimAutoTapPreview(fullPreview, availableSources, remainingCostSymbols)
+}
+
+/**
+ * Sum of what the server's mana sources could add, minus any the player is tapping for another
+ * payment (a Llanowar Elves convoked for {G} can't also tap for mana). An upper bound: it ignores
+ * colour, so it over-counts before it under-counts.
+ */
+export function totalManaFromSources(
+  sources: readonly { entityId?: string; manaAmount?: number }[] | undefined | null,
+  excludedIds: ReadonlySet<string> = new Set(),
+): number {
+  if (!sources) return 0
+  let total = 0
+  for (const s of sources) {
+    if (s.entityId && excludedIds.has(s.entityId)) continue
+    total += s.manaAmount ?? 1
+  }
+  return total
+}
+
+/**
+ * How much mana a partial alternative-payment selection *looks* short by, after floating mana
+ * and every remaining source: 0 when the client's estimate says the rest is payable.
+ *
+ * This is a hint for the payment HUDs, never a gate. The engine is the authority on whether a
+ * cast is payable — `CastSpellHandler.validatePayment` runs a colour-aware solve over the real
+ * sources, and `AlternativePaymentHandler.validateForSpell` checks every convoke/delve/tap choice
+ * — so a HUD that greyed its Cast button out on this number would be suppressing casts the
+ * server would accept (a Phyrexian pip payable with life, a source this count can't see) and
+ * letting through ones it wouldn't (two Mountains toward {U}{U}). The button stays live and the
+ * server's answer, accept or a toast naming the problem, is the verdict.
+ */
+export function estimatedShortfall(
+  remainingSymbols: string[],
+  pool: Parameters<typeof applyManaPoolToCost>[1],
+  eligibleRestricted: Parameters<typeof applyManaPoolToCost>[2],
+  sources: readonly { entityId?: string; manaAmount?: number }[] | undefined | null,
+  excludedIds: ReadonlySet<string> = new Set(),
+): number {
+  const needed = totalManaNeeded(applyManaPoolToCost(remainingSymbols, pool, eligibleRestricted))
+  return Math.max(0, needed - totalManaFromSources(sources, excludedIds))
+}
+
+/**
+ * Which of a creature's colours (backend `Color` names) it should pay for convoke given the pips
+ * still open: an exact coloured pip first, then a hybrid pip one of its colours covers
+ * (CR 107.4e), else null — pay generic. Only a *preference*; the server checks the creature
+ * actually is that colour (`AlternativePaymentHandler.validateForSpell`).
+ */
+export function pickConvokeColor(remainingSymbols: readonly string[], creatureColors: readonly string[]): string | null {
+  const pips = creatureColors.map((c) => COLOR_NAME_TO_PIP[c] ?? c)
+  for (let i = 0; i < pips.length; i++) {
+    if (remainingSymbols.includes(pips[i]!)) return creatureColors[i]!
+  }
+  for (let i = 0; i < pips.length; i++) {
+    const pip = pips[i]!
+    if (remainingSymbols.some((s) => s.includes('/') && s.split('/').includes(pip))) return creatureColors[i]!
+  }
+  return null
 }

@@ -1,8 +1,7 @@
 package com.wingedsheep.mtg.sets.definitions.msh.cards
 
-import com.wingedsheep.sdk.core.Counters
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
@@ -10,6 +9,9 @@ import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.effects.SuccessCriterion
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Mister Hyde, Monster Within (MSH #176) — {2}{G} Legendary Creature — Human Villain · 2/2
@@ -18,7 +20,7 @@ import com.wingedsheep.sdk.scripting.targets.EffectTarget
  * • Put a +1/+1 counter on Mister Hyde.
  * • Remove a counter from a creature you control. If you do, draw a card.
  *
- * A modal *triggered* ability (CR 603.3c) on [Triggers.YourUpkeep], built as a
+ * A modal *triggered* ability (CR 603.3c) on `Triggers.you.beginningOf(Step.UPKEEP)`, built as a
  * [ModalEffect.chooseOne] the way White Widow, Free Agent builds its enters trigger. Neither mode
  * targets, so both the mode and the creature are chosen without targeting — the mode as the
  * ability goes on the stack (CR 601.2b), the creature on resolution.
@@ -29,11 +31,10 @@ import com.wingedsheep.sdk.scripting.targets.EffectTarget
  * `Auto` can't infer it and a creature with no counters must not draw. Any kind of counter counts,
  * not just +1/+1.
  *
- * [Effects.RemoveCountersUpTo]`(1, …)` is the removal primitive: the controller picks which kind
- * to take off, capped at one counter total. It also permits taking off zero, which the printed
- * "Remove a counter" doesn't — a harmless liberty, since the mode is already declinable by
- * pointing it at a creature with no counters, and the "if you do" gate keeps the draw honest
- * either way.
+ * [Effects.RemoveCounterOfAnyKind] is the removal primitive: the controller picks which kind to
+ * take off, but not *whether* — exactly one counter comes off. The ceiling-only
+ * [Effects.RemoveCountersUpTo]`(1, …)` would let a player who chose this mandatory mode answer 0
+ * to every prompt on a creature that does have counters and still draw.
  */
 val MisterHydeMonsterWithin = card("Mister Hyde, Monster Within") {
     manaCost = "{2}{G}"
@@ -46,24 +47,23 @@ val MisterHydeMonsterWithin = card("Mister Hyde, Monster Within") {
         "• Remove a counter from a creature you control. If you do, draw a card."
 
     triggeredAbility {
-        trigger = Triggers.YourUpkeep
+        trigger = Triggers.you.beginningOf(Step.UPKEEP)
         effect = ModalEffect.chooseOne(
             Mode.noTarget(
-                Effects.AddCounters(Counters.PLUS_ONE_PLUS_ONE, 1, EffectTarget.Self),
+                Effects.AddCounters(CounterType.PLUS_ONE_PLUS_ONE, 1, EffectTarget.Self),
                 "Put a +1/+1 counter on Mister Hyde",
             ),
             Mode.noTarget(
-                Effects.Composite(
-                    Effects.SelectTarget(Targets.CreatureYouControl, storeAs = "hydeCounterSource"),
-                    Effects.IfYouDo(
-                        action = Effects.RemoveCountersUpTo(
-                            1,
-                            EffectTarget.PipelineTarget("hydeCounterSource", 0),
+                Effects.Pipeline {
+                    val hydeCounterSource = selectTarget(TargetObject(filter = TargetFilter.CreatureYouControl))
+                    run(Effects.IfYouDo(
+                        action = Effects.RemoveCounterOfAnyKind(
+                            hydeCounterSource.asTarget,
                         ),
-                        ifYouDo = Effects.DrawCards(1),
+                        then = Effects.DrawCards(1),
                         successCriterion = SuccessCriterion.CountersRemoved,
-                    ),
-                ),
+                    ))
+                },
                 "Remove a counter from a creature you control. If you do, draw a card",
             ),
         )

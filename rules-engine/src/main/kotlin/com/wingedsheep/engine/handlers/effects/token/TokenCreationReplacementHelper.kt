@@ -1,16 +1,18 @@
 package com.wingedsheep.engine.handlers.effects.token
 
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
-import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.TokenCreationReplacementContinuation
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.ZoneChangeEvent
+import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EntersWithReplacements
 import com.wingedsheep.engine.mechanics.layers.StaticAbilityHandler
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.replacement.ActiveReplacements
 import com.wingedsheep.engine.state.Component
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -33,9 +35,10 @@ import com.wingedsheep.sdk.scripting.MultiplyTokenCreation
 import com.wingedsheep.sdk.scripting.EventPattern as SdkGameEvent
 import com.wingedsheep.sdk.scripting.ModifyTokenCount
 import com.wingedsheep.sdk.scripting.ReplaceTokenCreationWithAttachedCopy
+import com.wingedsheep.sdk.scripting.ReplaceTokenCreationWithToken
+import com.wingedsheep.sdk.scripting.effects.CreateTokenEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
-import com.wingedsheep.sdk.scripting.events.ControllerFilter
-import java.util.UUID
+import com.wingedsheep.sdk.scripting.references.Player
 
 /**
  * Checks for token creation replacement effects (e.g., Mirrormind Crown)
@@ -45,6 +48,24 @@ import java.util.UUID
 object TokenCreationReplacementHelper {
 
     /**
+     * "Whose tokens" test: whether the player the tokens are being created under is the one the
+     * event's [Player] names, relative to the replacement's own controller — `You` matches when
+     * that's the replacement's controller, `EachOpponent` when it's an opponent of theirs, `Any`
+     * always. No token entity exists yet, so this is read off the player alone. Shared by the count
+     * and additional-token read paths so a printed ability and a durational grant are dispatched
+     * identically.
+     */
+    private fun controllerMatches(
+        player: Player,
+        state: GameState,
+        sourceControllerId: EntityId,
+        tokenControllerId: EntityId,
+        predicateEvaluator: PredicateEvaluator
+    ): Boolean = predicateEvaluator.matchesPlayer(
+        state, state.projectedState, player, tokenControllerId, PredicateContext(controllerId = sourceControllerId)
+    )
+
+    /**
      * Apply token-count replacement effects whose [SdkGameEvent.TokenCreationEvent] filter
      * matches the player receiving the tokens:
      * - [MultiplyTokenCreation] (Anointed Procession / Exalted Sunborn — factor 2; Ojer Taq —
@@ -52,9 +73,15 @@ object TokenCreationReplacementHelper {
      *   several apply.
      * - [ModifyTokenCount] shifts the count by a fixed amount per source (clamped at zero).
      *
+     * Both printed abilities on battlefield permanents *and* durational grants in
+     * [com.wingedsheep.engine.state.GameState.grantedReplacementEffects] count — the two are
+     * enumerated together by [ActiveReplacements], so Kaya, Geist Hunter's until-end-of-turn
+     * doubler stacks with a Doubling Season exactly as a second printed doubler would, and
+     * keeps working after Kaya herself has left the battlefield.
+     *
      * Dispatch reads `appliesTo.controller`, mirroring [ReplacementEffectUtils.applyCounterPlacementModifiers]:
-     * `You` matches when the replacement source's controller is the player receiving the
-     * tokens, `Opponent` matches when it isn't, `Any` always matches.
+     * `You` matches when the replacement's controller is the player receiving the tokens,
+     * `Opponent` matches when it isn't, `Any` always matches.
      *
      * CR 616.1 hands the order to the affected player when both kinds apply. We default to
      * modifier-then-doublers, which maximizes the count for positive modifiers (e.g. base 3
@@ -65,39 +92,29 @@ object TokenCreationReplacementHelper {
     fun applyCountReplacements(
         state: GameState,
         tokenControllerId: EntityId,
-        baseCount: Int
+        baseCount: Int,
+        predicateEvaluator: PredicateEvaluator
     ): Int {
         if (baseCount <= 0) return baseCount
 
         val factors = mutableListOf<Int>()
         var modifier = 0
-        for (entityId in state.getBattlefield()) {
-            val container = state.getEntity(entityId) ?: continue
-            val sourceController = state.projectedState.getController(entityId)
-                ?: container.get<ControllerComponent>()?.playerId
-                ?: continue
-            val repl = container.get<ReplacementEffectSourceComponent>() ?: continue
-            for (effect in repl.replacementEffects) {
-                val event = when (effect) {
-                    is MultiplyTokenCreation -> effect.appliesTo
-                    is ModifyTokenCount -> effect.appliesTo
-                    else -> continue
-                }
-                if (event !is SdkGameEvent.TokenCreationEvent) continue
-                // tokenFilter would need a synthetic token-template snapshot to match
-                // against; no card uses it yet, so we conservatively skip filtered events
-                // rather than treating them as match-all.
-                if (event.tokenFilter != null) continue
-                val controllerMatches = when (event.controller) {
-                    is ControllerFilter.You -> sourceController == tokenControllerId
-                    is ControllerFilter.Opponent -> sourceController != tokenControllerId
-                    is ControllerFilter.Any -> true
-                }
-                if (!controllerMatches) continue
-                when (effect) {
-                    is MultiplyTokenCreation -> factors += effect.factor
-                    is ModifyTokenCount -> modifier += effect.modifier
-                }
+        for (active in ActiveReplacements.all(state)) {
+            val effect = active.effect
+            val event = when (effect) {
+                is MultiplyTokenCreation -> effect.appliesTo
+                is ModifyTokenCount -> effect.appliesTo
+                else -> continue
+            }
+            if (event !is SdkGameEvent.TokenCreationEvent) continue
+            // tokenFilter would need a synthetic token-template snapshot to match
+            // against; no card uses it yet, so we conservatively skip filtered events
+            // rather than treating them as match-all.
+            if (event.tokenFilter != null) continue
+            if (!controllerMatches(event.controller, state, active.controllerId, tokenControllerId, predicateEvaluator = predicateEvaluator)) continue
+            when (effect) {
+                is MultiplyTokenCreation -> factors += effect.factor
+                is ModifyTokenCount -> modifier += effect.modifier
             }
         }
 
@@ -117,10 +134,11 @@ object TokenCreationReplacementHelper {
      * instead create those tokens plus an additional Map token."
      *
      * Called by the token-creation executors *after* they place their batch, passing the
-     * IDs of the tokens just created and the player who created them. For each battlefield
-     * permanent with a matching [CreateAdditionalToken] whose `appliesTo` controller filter
-     * matches and whose `tokenFilter` (if any) matches at least one of [createdTokenIds],
-     * the additional predefined tokens are created once.
+     * IDs of the tokens just created and the player who created them. For each active
+     * [CreateAdditionalToken] (printed on a battlefield permanent or granted — see
+     * [ActiveReplacements]) whose `appliesTo` controller filter matches and whose `tokenFilter`
+     * (if any) matches at least one of [createdTokenIds], the additional predefined tokens are
+     * created once.
      *
      * The additional tokens are placed directly (no further replacement check) so the added
      * artifact Map token cannot recursively re-trigger the same effect — only the original
@@ -135,109 +153,176 @@ object TokenCreationReplacementHelper {
         originalTapped: Boolean,
         cardRegistry: CardRegistry?,
         staticAbilityHandler: StaticAbilityHandler?,
-        predicateEvaluator: PredicateEvaluator = PredicateEvaluator()
+        predicateEvaluator: PredicateEvaluator
     ): Pair<GameState, List<com.wingedsheep.engine.core.GameEvent>> {
         if (createdTokenIds.isEmpty() || cardRegistry == null) return state to emptyList()
+        val conditionEvaluator = predicateEvaluator.conditions
 
         var newState = state
         val events = mutableListOf<com.wingedsheep.engine.core.GameEvent>()
 
-        for (entityId in state.getBattlefield()) {
-            val container = state.getEntity(entityId) ?: continue
-            val sourceController = state.projectedState.getController(entityId)
-                ?: container.get<ControllerComponent>()?.playerId
-                ?: continue
-            val repl = container.get<ReplacementEffectSourceComponent>() ?: continue
-            for (effect in repl.replacementEffects) {
-                if (effect !is CreateAdditionalToken) continue
-                val event = effect.appliesTo
-                if (event !is SdkGameEvent.TokenCreationEvent) continue
+        for (active in ActiveReplacements.all(state)) {
+            val entityId = active.sourceId
+            val effect = active.effect
+            if (effect !is CreateAdditionalToken) continue
+            val event = effect.appliesTo
+            if (event !is SdkGameEvent.TokenCreationEvent) continue
 
-                val controllerMatches = when (event.controller) {
-                    is ControllerFilter.You -> sourceController == tokenControllerId
-                    is ControllerFilter.Opponent -> sourceController != tokenControllerId
-                    is ControllerFilter.Any -> true
-                }
-                if (!controllerMatches) continue
+            if (!controllerMatches(event.controller, state, active.controllerId, tokenControllerId, predicateEvaluator = predicateEvaluator)) continue
 
-                // The replacement applies only if at least one of the just-created tokens
-                // matches the event's token filter (e.g. "artifact tokens"). A null filter
-                // means "any token". Match against base+projected state of the created tokens.
-                val filter = event.tokenFilter
-                val anyMatch = if (filter == null) {
-                    true
-                } else {
-                    createdTokenIds.any { tokenId ->
-                        predicateEvaluator.matches(
-                            state, state.projectedState, tokenId, filter,
-                            PredicateContext(controllerId = tokenControllerId)
-                        )
-                    }
-                }
-                if (!anyMatch) continue
-
-                val cardDef = cardRegistry.getCard(effect.additionalTokenType) ?: continue
-                val tapped = effect.inheritTapped && originalTapped
-
-                repeat(
-                    com.wingedsheep.engine.core.GameLimits.cappedTokenCount(
-                        effect.additionalTokenCount, "additional tokens"
+            // The replacement applies only if at least one of the just-created tokens
+            // matches the event's token filter (e.g. "artifact tokens"). A null filter
+            // means "any token". Match against base+projected state of the created tokens.
+            val filter = event.tokenFilter
+            val anyMatch = if (filter == null) {
+                true
+            } else {
+                createdTokenIds.any { tokenId ->
+                    predicateEvaluator.matches(
+                        state, state.projectedState, tokenId, filter,
+                        PredicateContext(controllerId = tokenControllerId)
                     )
-                ) {
-                    val (tokenId, stateWithId) = newState.newEntity()
-                    newState = stateWithId
+                }
+            }
+            if (!anyMatch) continue
 
-                    val tokenComponent = CardComponent(
-                        cardDefinitionId = effect.additionalTokenType,
-                        name = effect.additionalTokenType,
-                        manaCost = ManaCost.ZERO,
-                        typeLine = cardDef.typeLine,
-                        baseStats = cardDef.creatureStats,
-                        baseKeywords = cardDef.keywords,
-                        // Tokens have no mana cost, so a colored token's printed color lives in
-                        // its color indicator (CR 204), stored as colorIdentityOverride. Fall
-                        // back to mana-cost-derived colors for tokens without an override.
-                        colors = cardDef.colorIdentityOverride ?: cardDef.colors,
+            // Extra gates on the rider (CR 614). Evaluated with the *creating* player as the
+            // controller — the player the event happens to, matching
+            // `ReplacementEffect.restrictions` — and with the rider's own permanent as the
+            // source, so a source-relative gate resolves. That is what puts Case of the
+            // Pilfered Proof's Clue rider behind its solved designation (CR 702.169b).
+            if (effect.restrictions.isNotEmpty()) {
+                val restrictionContext = EffectContext(
+                    sourceId = entityId,
+                    controllerId = tokenControllerId
+                )
+                val allHold = effect.restrictions.all { restriction ->
+                    conditionEvaluator.evaluate(state, restriction, restrictionContext)
+                }
+                if (!allHold) continue
+            }
+
+            val cardDef = cardRegistry.getCard(effect.additionalTokenType) ?: continue
+            val tapped = effect.inheritTapped && originalTapped
+
+            repeat(
+                com.wingedsheep.engine.core.GameLimits.cappedTokenCount(
+                    effect.additionalTokenCount, "additional tokens"
+                )
+            ) {
+                val (tokenId, stateWithId) = newState.newEntity()
+                newState = stateWithId
+
+                val tokenComponent = CardComponent(
+                    cardDefinitionId = effect.additionalTokenType,
+                    name = effect.additionalTokenType,
+                    manaCost = ManaCost.ZERO,
+                    typeLine = cardDef.typeLine,
+                    baseStats = cardDef.creatureStats,
+                    baseKeywords = cardDef.keywords,
+                    // Tokens have no mana cost, so a colored token's printed color lives in
+                    // its color indicator (CR 204), stored as colorIdentityOverride. Fall
+                    // back to mana-cost-derived colors for tokens without an override.
+                    colors = cardDef.colorIdentityOverride ?: cardDef.colors,
+                    ownerId = tokenControllerId,
+                    imageUri = cardDef.metadata.imageUri
+                )
+
+                var tokenContainer = ComponentContainer.of(
+                    tokenComponent,
+                    TokenComponent,
+                    ControllerComponent(tokenControllerId),
+                    SummoningSicknessComponent,
+                    EnteredThisTurnComponent
+                )
+                if (tapped) tokenContainer = tokenContainer.with(TappedComponent)
+                if (staticAbilityHandler != null) {
+                    tokenContainer = staticAbilityHandler.addContinuousEffectComponent(tokenContainer, cardDef)
+                    tokenContainer = staticAbilityHandler.addReplacementEffectComponent(tokenContainer, cardDef)
+                }
+
+                newState = newState.withEntity(tokenId, tokenContainer)
+                newState = com.wingedsheep.engine.handlers.effects.BattlefieldEntry
+                    .place(newState, tokenControllerId, tokenId)
+                // Honor global "[filter] enter tapped" replacements on the added token too.
+                newState = com.wingedsheep.engine.handlers.effects.EnterTappedReplacements
+                    .applyCreatedTokenEntryTap(
+                        newState, tokenId, tokenControllerId, definedTapped = tapped,
+                        predicateEvaluator = predicateEvaluator
+                    )
+
+                events.add(
+                    ZoneChangeEvent(
+                        entityId = tokenId,
+                        entityName = effect.additionalTokenType,
+                        fromZone = null,
+                        toZone = Zone.BATTLEFIELD,
                         ownerId = tokenControllerId,
-                        imageUri = cardDef.metadata.imageUri
+                        oldObject = null,
+                        newObject = newState.objectRef(tokenId)
                     )
-
-                    var tokenContainer = ComponentContainer.of(
-                        tokenComponent,
-                        TokenComponent,
-                        ControllerComponent(tokenControllerId),
-                        SummoningSicknessComponent,
-                        EnteredThisTurnComponent
-                    )
-                    if (tapped) tokenContainer = tokenContainer.with(TappedComponent)
-                    if (staticAbilityHandler != null) {
-                        tokenContainer = staticAbilityHandler.addContinuousEffectComponent(tokenContainer, cardDef)
-                        tokenContainer = staticAbilityHandler.addReplacementEffectComponent(tokenContainer, cardDef)
-                    }
-
-                    newState = newState.withEntity(tokenId, tokenContainer)
-                    newState = com.wingedsheep.engine.handlers.effects.BattlefieldEntry
-                        .place(newState, tokenControllerId, tokenId)
-                    // Honor global "[filter] enter tapped" replacements on the added token too.
-                    newState = com.wingedsheep.engine.handlers.effects.EnterTappedReplacements
-                        .applyCreatedTokenEntryTap(
-                            newState, tokenId, tokenControllerId, definedTapped = tapped,
-                        )
-
-                    events.add(
-                        ZoneChangeEvent(
-                            entityId = tokenId,
-                            entityName = effect.additionalTokenType,
-                            fromZone = null,
-                            toZone = Zone.BATTLEFIELD,
-                            ownerId = tokenControllerId
-                        )
-                    )
-                }
+                )
             }
         }
 
         return newState to events
+    }
+
+    /**
+     * Find a [ReplaceTokenCreationWithToken] ("if one or more artifact tokens would be created under
+     * your control, that many 5/5 red Dragon creature tokens with flying are created instead" —
+     * Draconic Visitor) that applies to tokens with [prospectiveCard]'s characteristics being
+     * created under [tokenControllerId], and return the substitute token spec.
+     *
+     * The tokens don't exist yet, so the event's `tokenFilter` is evaluated against a scratch
+     * entity carrying the would-be token's [CardComponent] (plus [TokenComponent] and its
+     * controller) in a throwaway copy of [state]. The probe isn't on the battlefield, so the
+     * predicate evaluator reads its base characteristics — exactly the characteristics the token
+     * would be created with.
+     *
+     * Printed and granted replacements are both consulted ([ActiveReplacements]). The first match
+     * wins; the substitute is created without re-entering this check, so a second Visitor has no
+     * further work (the Dragons it would see aren't artifacts anyway).
+     *
+     * @return the substitute `CreateTokenEffect`, or null when nothing applies.
+     */
+    fun findTokenSubstitution(
+        state: GameState,
+        tokenControllerId: EntityId,
+        prospectiveCard: CardComponent,
+        predicateEvaluator: PredicateEvaluator,
+        conditionEvaluator: ConditionEvaluator = predicateEvaluator.conditions
+    ): CreateTokenEffect? {
+        val candidates = ActiveReplacements.all(state).filter { it.effect is ReplaceTokenCreationWithToken }
+        if (candidates.isEmpty()) return null
+
+        val (probeId, withProbe) = state.newEntity()
+        val probeState = withProbe.withEntity(
+            probeId,
+            ComponentContainer.of(
+                prospectiveCard.copy(ownerId = tokenControllerId),
+                TokenComponent,
+                ControllerComponent(tokenControllerId)
+            )
+        )
+
+        for (active in candidates) {
+            val effect = active.effect as ReplaceTokenCreationWithToken
+            val event = effect.appliesTo as? SdkGameEvent.TokenCreationEvent ?: continue
+            if (!controllerMatches(event.controller, state, active.controllerId, tokenControllerId, predicateEvaluator = predicateEvaluator)) continue
+            val filter = event.tokenFilter
+            if (filter != null && !predicateEvaluator.matches(
+                    probeState, state.projectedState, probeId, filter,
+                    PredicateContext(controllerId = tokenControllerId, sourceId = active.sourceId)
+                )
+            ) continue
+            if (effect.restrictions.isNotEmpty()) {
+                val restrictionContext = EffectContext(sourceId = active.sourceId, controllerId = tokenControllerId)
+                if (!effect.restrictions.all { conditionEvaluator.evaluate(state, it, restrictionContext) }) continue
+            }
+            return effect.token as? CreateTokenEffect ?: continue
+        }
+        return null
     }
 
     /**
@@ -254,7 +339,8 @@ object TokenCreationReplacementHelper {
         tokenCount: Int,
         tokenControllerId: EntityId,
         cardRegistry: CardRegistry? = null,
-        staticAbilityHandler: StaticAbilityHandler? = null
+        staticAbilityHandler: StaticAbilityHandler? = null,
+        predicateEvaluator: PredicateEvaluator
     ): EffectResult? {
         if (tokenCount <= 0) return null
 
@@ -286,10 +372,9 @@ object TokenCreationReplacementHelper {
                 var newState = state.withEntity(entityId, container.with(TokenReplacementOfferedThisTurnComponent))
 
                 if (re.optional) {
-                    val decisionId = UUID.randomUUID().toString()
                     val prompt = "Use $cardName? Create ${if (tokenCount == 1) "a token that's a copy" else "$tokenCount tokens that are copies"} of ${attachedCard.name} instead?"
 
-                    val decision = YesNoDecision(
+                    val decision = { decisionId: String -> YesNoDecision(
                         id = decisionId,
                         playerId = controllerId,
                         prompt = prompt,
@@ -298,10 +383,9 @@ object TokenCreationReplacementHelper {
                             sourceName = cardName,
                             phase = DecisionPhase.RESOLUTION
                         )
-                    )
+                    ) }
 
                     val continuation = TokenCreationReplacementContinuation(
-                        decisionId = decisionId,
                         sourceId = entityId,
                         attachedPermanentId = attachedTo.targetId,
                         originalEffect = effect,
@@ -309,26 +393,13 @@ object TokenCreationReplacementHelper {
                         effectContext = context
                     )
 
-                    newState = newState.withPendingDecision(decision)
-                    newState = newState.pushContinuation(continuation)
-
-                    return EffectResult.paused(
-                        newState,
-                        decision,
-                        listOf(
-                            DecisionRequestedEvent(
-                                decisionId = decisionId,
-                                playerId = controllerId,
-                                decisionType = "YES_NO",
-                                prompt = prompt
-                            )
-                        )
-                    )
+                    return EffectResult.from(newState.suspendForDecision(decision, continuation, emptyList()))
                 } else {
                     // Mandatory replacement — create copies directly
                     return createAttachedPermanentCopies(
                         newState, attachedTo.targetId, controllerId, tokenCount,
-                        cardRegistry, staticAbilityHandler
+                        cardRegistry, staticAbilityHandler,
+                        predicateEvaluator = predicateEvaluator
                     )
                 }
             }
@@ -353,7 +424,8 @@ object TokenCreationReplacementHelper {
         controllerId: EntityId,
         count: Int,
         cardRegistry: CardRegistry? = null,
-        staticAbilityHandler: StaticAbilityHandler? = null
+        staticAbilityHandler: StaticAbilityHandler? = null,
+        predicateEvaluator: PredicateEvaluator
     ): EffectResult {
         val attachedContainer = state.getEntity(attachedPermanentId)
             ?: return EffectResult.success(state)
@@ -395,13 +467,14 @@ object TokenCreationReplacementHelper {
                 .place(newState, controllerId, tokenId)
             // Honor global "[filter] enter tapped" replacements on the copy too.
             newState = com.wingedsheep.engine.handlers.effects.EnterTappedReplacements
-                .applyCreatedTokenEntryTap(newState, tokenId, controllerId)
+                .applyCreatedTokenEntryTap(newState, tokenId, controllerId, predicateEvaluator = predicateEvaluator)
 
             // Apply the attached permanent's printed enters-with-counters replacement
             // effects (and any global ones from other permanents).
             if (cardRegistry != null) {
                 val (afterCounters, counterEvents) = EntersWithReplacements.applyOnEntry(
-                    newState, tokenId, controllerId, cardRegistry
+                    newState, tokenId, controllerId, cardRegistry,
+                    predicateEvaluator = predicateEvaluator
                 )
                 newState = afterCounters
                 events.addAll(counterEvents)
@@ -411,7 +484,8 @@ object TokenCreationReplacementHelper {
                 // value, CR 707.2) or state-based actions (CR 704.5i) bin it on arrival.
                 val (afterLoyalty, loyaltyEvents) = com.wingedsheep.engine.handlers.effects
                     .ZoneMovementUtils.applyIntrinsicEntryCountersIfNeeded(
-                        newState, tokenId, controllerId, cardRegistry
+                        newState, tokenId, controllerId, cardRegistry,
+                        predicateEvaluator = predicateEvaluator
                     )
                 newState = afterLoyalty
                 events.addAll(loyaltyEvents)
@@ -423,7 +497,9 @@ object TokenCreationReplacementHelper {
                     entityName = tokenCard.name,
                     fromZone = null,
                     toZone = Zone.BATTLEFIELD,
-                    ownerId = controllerId
+                    ownerId = controllerId,
+                    oldObject = null,
+                    newObject = newState.objectRef(tokenId)
                 )
             )
         }

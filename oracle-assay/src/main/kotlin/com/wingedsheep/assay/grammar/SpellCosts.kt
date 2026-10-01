@@ -1,6 +1,8 @@
 package com.wingedsheep.assay.grammar
 
+import com.wingedsheep.assay.normalize.Normalizer
 import com.wingedsheep.assay.syntax.Phrase
+import com.wingedsheep.assay.syntax.alternate
 import com.wingedsheep.assay.syntax.bind
 import com.wingedsheep.assay.syntax.constant
 import com.wingedsheep.assay.syntax.oneOf
@@ -211,15 +213,44 @@ object SpellCosts {
         countedRule("{filter} on the battlefield", "permanents on the battlefield") { filter ->
             CostReductionSource.PermanentsOnBattlefieldMatching(filter)
         },
-        countedRule("{filter} card in your graveyard", "cards in your graveyard") { filter ->
+        // "This spell costs {1} less to cast for each attacking creature." — Stone Idol Trap. The
+        // same source with the clause left off, which is [Amounts.Scope]'s empty row: English omits
+        // "on the battlefield" and means it, so this spelling parses and the row above prints. It is
+        // kept apart from the "you control" row above by the noun phrase alone — that one requires a
+        // controller predicate and `countedRule`'s `scopeFree` here refuses one — so one text still
+        // has one reading.
+        alternate(
+            countedRule("{filter}", "permanents on the battlefield (unqualified)") { filter ->
+                CostReductionSource.PermanentsOnBattlefieldMatching(filter)
+            }
+        ),
+        countedRule(
+            "{filter} in your graveyard",
+            "cards in your graveyard",
+            noun = Filters.cardNoun,
+        ) { filter ->
             CostReductionSource.CardsInGraveyardMatchingFilter(filter, 1)
         },
         countedRule(
-            "{filter} card in your graveyard and in exile",
+            "{filter} in your graveyard and in exile",
             "cards in your graveyard and in exile",
+            noun = Filters.cardNoun,
         ) { filter ->
             CostReductionSource.CardsInGraveyardAndExileMatchingFilter(filter, 1)
         },
+        // "Spells you cast cost {1} less to cast for each card type **they share with cards exiled
+        // with this creature**." — Cemetery Prowler. The only counted noun in this list that is not
+        // a set of objects: it counts the *intersection* of two type sets, one of which is the
+        // spell being priced. So there is nothing to slot — neither side of the intersection varies
+        // in the printed text, and the pronoun "they" is the subject the sentence already named.
+        //
+        // It is a counting source like the rest, which is what keeps it in this vocabulary rather
+        // than in [namedVariableSource]: `amountPerType` is the same per-unit field the graveyard
+        // rows carry, so [perUnit]'s one-number-two-slots reconstruction covers it unchanged.
+        constant<CostReductionSource>(
+            "card type they share with cards exiled with ${Normalizer.SELF}",
+            CostReductionSource.SharedCardTypesWithLinkedExile(1),
+        ),
     )
 
     /**
@@ -231,6 +262,7 @@ object SpellCosts {
         is CostReductionSource.PermanentsOnBattlefieldMatching -> 1
         is CostReductionSource.CardsInGraveyardMatchingFilter -> source.amountPerCard
         is CostReductionSource.CardsInGraveyardAndExileMatchingFilter -> source.amountPerCard
+        is CostReductionSource.SharedCardTypesWithLinkedExile -> source.amountPerType
         else -> null
     }
 
@@ -245,6 +277,8 @@ object SpellCosts {
             is CostReductionSource.CardsInGraveyardAndExileMatchingFilter ->
                 source.copy(amountPerCard = amount)
 
+            is CostReductionSource.SharedCardTypesWithLinkedExile -> source.copy(amountPerType = amount)
+
             else -> source.takeIf { amount == 1 && perUnitAmount(it) != null }
         }
 
@@ -253,9 +287,12 @@ object SpellCosts {
         template: String,
         name: String,
         controlled: Boolean = false,
+        // The noun the row counts: permanents for the battlefield rows, *cards* for the graveyard
+        // ones, which is a different noun phrase and not the same one with a word after it.
+        noun: Phrase<GameObjectFilter> = Filters.filter,
         source: (GameObjectFilter) -> CostReductionSource?,
     ): Phrase<CostReductionSource> = phrase(template, name = name) {
-        slot("filter", Filters.filter)
+        slot("filter", noun)
         build { bindings ->
             val printed = bindings.value<GameObjectFilter>("filter")
             val filter = if (controlled) controlledScope(printed) else printed.takeIf { scopeFree(it) }

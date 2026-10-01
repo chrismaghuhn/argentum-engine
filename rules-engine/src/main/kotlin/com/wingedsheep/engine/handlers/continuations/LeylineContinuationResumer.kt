@@ -1,6 +1,5 @@
 package com.wingedsheep.engine.handlers.continuations
 
-import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
@@ -35,8 +34,8 @@ import com.wingedsheep.sdk.scripting.EntersWithChoice
  *     "As this enchantment enters, choose a creature type").
  *  3. Looks for the next leyline decision via [com.wingedsheep.engine.handlers.MulliganHandler.getNextLeylineChoice].
  *     If one exists, pauses with the next [com.wingedsheep.engine.core.YesNoDecision]; otherwise
- *     returns success, leaving the state at `step = UNTAP` with no pending decision so that
- *     `SubmitDecisionHandler` advances into the first turn via `turnManager.advanceStep`.
+ *     advances from UNTAP into the first turn via `turnManager.advanceStep`, the same call the
+ *     mulligan handlers make when no one has a leyline.
  *
  * Step 3 also runs from the auto-resumed [LeylinePhaseContinuation], which step 2 parks beneath
  * the as-enters choice so the walk survives that pause.
@@ -84,7 +83,7 @@ class LeylineContinuationResumer(
             // Route the card to the battlefield through the standard zone-change pipeline.
             // Owner == controller for leyline starts; the card must already exist with its
             // CardComponent + OwnerComponent set (it does — it was instantiated at init).
-            val transition = ZoneTransitionService.moveToZone(
+            val transition = services.zones.moveToZone(
                 state = newState,
                 entityId = continuation.leylineCardId,
                 destinationZone = Zone.BATTLEFIELD,
@@ -111,8 +110,8 @@ class LeylineContinuationResumer(
      * fires the entry's ETB triggers off a synthesized [ZoneChangeEvent].
      *
      * Because that resumer owns the entry triggers, [transitionEvents] is forwarded *without* the
-     * entry [ZoneChangeEvent] — `SubmitDecisionHandler` runs trigger detection over a paused
-     * resume's events, so carrying it would fire every enters-the-battlefield trigger twice.
+     * entry [ZoneChangeEvent]. The settle boundary runs trigger detection over a paused resume's
+     * events, so carrying it would fire every enters-the-battlefield trigger twice.
      *
      * A [LeylinePhaseContinuation] is parked beneath the choice so the walk over the remaining
      * leylines resumes once the choice (and any chained choice) resolves.
@@ -134,7 +133,7 @@ class LeylineContinuationResumer(
             .firstOrNull() ?: return null
 
         val parkedState = state.pushContinuation(
-            LeylinePhaseContinuation(decisionId = "leyline-phase-${leylineCardId.value}")
+            LeylinePhaseContinuation
         )
         return PermanentEntryReplacements.pauseForEntersWithChoice(
             state = parkedState,
@@ -143,6 +142,8 @@ class LeylineContinuationResumer(
             cardComponent = cardComponent,
             choice = firstChoice,
             fromZone = Zone.HAND,
+            entryOldObject = transitionEvents.filterIsInstance<ZoneChangeEvent>().firstOrNull { it.entityId == leylineCardId }?.oldObject,
+            entryNewObject = transitionEvents.filterIsInstance<ZoneChangeEvent>().firstOrNull { it.entityId == leylineCardId }?.newObject,
             carryEvents = transitionEvents.filterNot {
                 it is ZoneChangeEvent && it.entityId == leylineCardId
             },
@@ -165,25 +166,13 @@ class LeylineContinuationResumer(
         val nextLeyline = services.mulliganHandler.getNextLeylineChoice(state)
         if (nextLeyline != null) {
             val (nextPlayerId, nextCardId) = nextLeyline
-            val nextDecision = services.mulliganHandler.createLeylineDecision(state, nextPlayerId, nextCardId)
-            if (nextDecision != null) {
-                val (decision, nextContinuation) = nextDecision
-                val pausedState = state.pushContinuation(nextContinuation).withPendingDecision(decision)
-                return ExecutionResult.paused(
-                    pausedState,
-                    decision,
-                    events + DecisionRequestedEvent(
-                        decisionId = decision.id,
-                        playerId = nextPlayerId,
-                        decisionType = "YES_NO",
-                        prompt = decision.prompt
-                    )
-                )
+            val result = services.mulliganHandler.createLeylineDecision(state, nextPlayerId, nextCardId)
+            if (result != null) {
+                return ExecutionResult.propagatePause(result.state, events + result.events)
             }
         }
 
-        // No more leyline prompts. Let SubmitDecisionHandler's "step == UNTAP, no pending"
-        // branch fire turnManager.advanceStep to start turn 1.
-        return checkForMore(state, events)
+        // No more leyline prompts: the game begins, exactly as it does when no one has a leyline.
+        return mergeAndContinue(services.turnManager.advanceStep(state), events, checkForMore)
     }
 }

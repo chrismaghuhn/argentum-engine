@@ -6,7 +6,6 @@ import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetPermanent
 
 /**
  * Acidic Slime
@@ -27,8 +26,8 @@ val AcidicSlime = card("Acidic Slime") {
     keywords(Keyword.DEATHTOUCH)
 
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
-        val target = target("target", TargetPermanent(filter = TargetFilter.ArtifactEnchantmentOrLand))
+        trigger = Triggers.self.enters()
+        val target = target(TargetFilter.ArtifactEnchantmentOrLand)
         effect = Effects.Destroy(target)
     }
 

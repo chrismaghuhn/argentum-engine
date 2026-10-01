@@ -14,6 +14,7 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Rampant Growth (MIR #235)
@@ -43,13 +44,13 @@ class RampantGrowthScenarioTest : FunSpec({
             it is LibraryShuffledEvent && it.playerId == player
         }
 
-        driver.castSpell(player, spell).isSuccess shouldBe true
+        driver.castSpell(player, spell).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val decision = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
         decision.options shouldContain matching
         decision.options shouldNotContain invalid
-        driver.submitCardSelection(player, listOf(matching)).isSuccess shouldBe true
+        driver.submitCardSelection(player, listOf(matching)).outcome shouldBe Outcome.Done
 
         val swamp = driver.findPermanent(player, "Swamp")
         swamp shouldNotBe null
@@ -72,7 +73,7 @@ class RampantGrowthScenarioTest : FunSpec({
             it is LibraryShuffledEvent && it.playerId == player
         }
 
-        driver.castSpell(player, spell).isSuccess shouldBe true
+        driver.castSpell(player, spell).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.pendingDecision shouldBe null

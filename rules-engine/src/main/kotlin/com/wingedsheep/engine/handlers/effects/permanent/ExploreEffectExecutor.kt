@@ -2,22 +2,18 @@ package com.wingedsheep.engine.handlers.effects.permanent
 
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
-import com.wingedsheep.engine.handlers.PredicateContext
-import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.handlers.effects.KeywordActionReplacements
+import com.wingedsheep.engine.handlers.effects.ReplaceableKeywordAction
 import com.wingedsheep.engine.handlers.effects.ReplacementEffectUtils
-import com.wingedsheep.engine.handlers.effects.permanent.counters.counterTypeToString
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
-import com.wingedsheep.engine.state.components.battlefield.ReplacementEffectSourceComponent
-import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
-import com.wingedsheep.sdk.scripting.EventPattern
-import com.wingedsheep.sdk.scripting.ModifyExplore
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.EmitExploredEventEffect
@@ -25,7 +21,6 @@ import com.wingedsheep.sdk.scripting.effects.ExploreEffect
 import com.wingedsheep.sdk.scripting.effects.MoveToZoneEffect
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -37,23 +32,23 @@ import kotlin.reflect.KClass
  *
  * The exploring player is the effect controller. The exploring creature is [ExploreEffect.target].
  *
- * Before the explore proper, applicable [ModifyExplore] replacements (CR 614) on the battlefield
- * are consulted — like [com.wingedsheep.sdk.scripting.ReplaceDrawWithEffect], explore isn't a
- * generic replaceable event, so it's checked here directly. A match re-issues the explore as
+ * Before the explore proper, applicable [com.wingedsheep.sdk.scripting.ModifyKeywordAction]
+ * replacements (CR 614) on the battlefield are consulted via [KeywordActionReplacements] — like
+ * [com.wingedsheep.sdk.scripting.ReplaceDrawWith], explore isn't a generic replaceable
+ * event, so it's checked here directly. A match re-issues the explore as
  * `Composite(prefixEffect, ExploreEffect(sameCreature, replacementsApplied = true))` through the
  * registry [recurse] runner, reusing the composite executor's pause-sequencing (a Scry prefix
  * finishes its top/bottom decision before the explore runs).
  *
- * @param recurse registry entry point for delegating the Composite (nullable-free; wired via
- *   `PermanentExecutors.initializeRecursion`).
+ * @param recurse registry entry point for delegating the Composite (handed to [PermanentExecutors]
+ *   by the registry at construction).
  */
 class ExploreEffectExecutor(
+    private val zones: ZoneTransitionService,
     private val recurse: (GameState, Effect, EffectContext) -> EffectResult
 ) : EffectExecutor<ExploreEffect> {
 
     override val effectType: KClass<ExploreEffect> = ExploreEffect::class
-
-    private val predicateEvaluator = PredicateEvaluator()
 
     override fun execute(
         state: GameState,
@@ -66,12 +61,13 @@ class ExploreEffectExecutor(
         val explorerId = context.controllerId
 
         // CR 614: apply explore-modifying replacements before the explore proper, unless this is
-        // the post-replacement re-issue (replacementsApplied). Collect the prefix effects from
-        // every ModifyExplore on the battlefield whose filter matches this exploring creature
-        // (evaluated with the replacement source's controller as "you"), then run them as a
+        // the post-replacement re-issue (replacementsApplied). The collected prefixes run as a
         // Composite ahead of the guarded explore so a pausing prefix (Scry) sequences correctly.
         if (!effect.replacementsApplied) {
-            val prefixEffects = collectExploreReplacementPrefixes(state, exploringCreatureId)
+            val prefixEffects = KeywordActionReplacements.collectPrefixes(
+                state, exploringCreatureId, ReplaceableKeywordAction.EXPLORE,
+                predicateEvaluator = zones.predicateEvaluator
+            )
             if (prefixEffects.isNotEmpty()) {
                 val composite = CompositeEffect(
                     prefixEffects + ExploreEffect(
@@ -145,8 +141,7 @@ class ExploreEffectExecutor(
 
             val (stateAfterCounter, counterEvents) = addPlusOneCounter(stateWithRevealed, exploringCreatureId, context)
 
-            val decisionId = UUID.randomUUID().toString()
-            val decision = YesNoDecision(
+            val decision = { decisionId: String -> YesNoDecision(
                 id = decisionId,
                 playerId = explorerId,
                 prompt = "Put $topCardName back on top of your library? (No = graveyard)",
@@ -157,7 +152,7 @@ class ExploreEffectExecutor(
                 ),
                 yesText = "Library (top)",
                 noText = "Graveyard"
-            )
+            ) }
 
             // Defer the explored event to after the top/graveyard move resolves (CR 701.44b): a
             // game event emitted in the paused batch below does not reliably fire watcher triggers,
@@ -167,7 +162,6 @@ class ExploreEffectExecutor(
                 revealedCardWasLand = false
             )
             val continuation = MayAbilityContinuation(
-                decisionId = decisionId,
                 playerId = explorerId,
                 sourceName = sourceName,
                 effectIfYes = CompositeEffect(listOf(
@@ -188,60 +182,8 @@ class ExploreEffectExecutor(
                 effectContext = context
             )
 
-            val stateWithContinuation = stateAfterCounter
-                .withPendingDecision(decision)
-                .pushContinuation(continuation)
-
-            EffectResult.paused(
-                stateWithContinuation,
-                decision,
-                listOf(revealEvent) + counterEvents + listOf(
-                    DecisionRequestedEvent(
-                        decisionId = decisionId,
-                        playerId = explorerId,
-                        decisionType = "YES_NO",
-                        prompt = decision.prompt
-                    )
-                )
-            )
+            EffectResult.from(stateAfterCounter.suspendForDecision(decision, continuation, listOf(revealEvent) + counterEvents))
         }
-    }
-
-    /**
-     * The ordered prefix effects of every [ModifyExplore] on the battlefield that applies to
-     * [exploringCreatureId] exploring: the replacement's `appliesTo` filter is matched against the
-     * creature using the replacement source's controller as "you" (so "a creature you control
-     * would explore" only fires for that player's creatures). Battlefield order is used for the
-     * multi-source case — a faithful APNAP ordering (CR 616) would let the exploring player order
-     * simultaneous applicable replacements, but no printed card stacks explore modifiers today.
-     */
-    private fun collectExploreReplacementPrefixes(
-        state: GameState,
-        exploringCreatureId: EntityId
-    ): List<Effect> {
-        val prefixes = mutableListOf<Effect>()
-        for (permanentId in state.getBattlefield()) {
-            val container = state.getEntity(permanentId) ?: continue
-            val replacementComponent = container.get<ReplacementEffectSourceComponent>() ?: continue
-            val sourceControllerId = container.get<ControllerComponent>()?.playerId ?: continue
-            for (replacement in replacementComponent.replacementEffects) {
-                if (replacement !is ModifyExplore) continue
-                val pattern = replacement.appliesTo as? EventPattern.ExploredEvent ?: continue
-                val filter = pattern.filter
-                if (filter != null) {
-                    val matches = predicateEvaluator.matches(
-                        state,
-                        state.projectedState,
-                        exploringCreatureId,
-                        filter,
-                        PredicateContext(controllerId = sourceControllerId, sourceId = permanentId)
-                    )
-                    if (!matches) continue
-                }
-                prefixes.add(replacement.prefixEffect)
-            }
-        }
-        return prefixes
     }
 
     private fun addPlusOneCounter(
@@ -254,7 +196,8 @@ class ExploreEffectExecutor(
         }
         val current = state.getEntity(creatureId)?.get<CountersComponent>() ?: CountersComponent()
         val count = ReplacementEffectUtils.applyCounterPlacementModifiers(
-            state, creatureId, CounterType.PLUS_ONE_PLUS_ONE, 1, placerId = context.controllerId
+            state, creatureId, CounterType.PLUS_ONE_PLUS_ONE, 1, placerId = context.controllerId,
+            predicateEvaluator = zones.predicateEvaluator
         )
         val updated = state.updateEntity(creatureId) {
             it.with(current.withAdded(CounterType.PLUS_ONE_PLUS_ONE, count))
@@ -262,21 +205,21 @@ class ExploreEffectExecutor(
         // Record the kind and the placer, not just a bare marker: the exploring player is the one
         // putting the counter on, so "each creature you control that you've put one or more +1/+1
         // counters on this turn" (Kid Loki) covers a creature you made explore.
-        val (newState, firstThisTurn) =
+        val (newState, firstThisTurn, firstOfTypeThisTurn) =
             com.wingedsheep.engine.handlers.effects.DamageUtils.recordCounterPlacement(
                 updated,
                 creatureId,
-                counterTypeToString(CounterType.PLUS_ONE_PLUS_ONE),
+                CounterType.PLUS_ONE_PLUS_ONE,
                 placerId = context.controllerId,
             )
         val name = state.getEntity(creatureId)?.get<CardComponent>()?.name ?: ""
         return newState to listOf(
             CountersAddedEvent(
                 creatureId,
-                counterTypeToString(CounterType.PLUS_ONE_PLUS_ONE),
+                CounterType.PLUS_ONE_PLUS_ONE,
                 count,
                 name,
-                firstThisTurn,
+                firstThisTurn, firstOfTypeThisTurn = firstOfTypeThisTurn,
                 placedBy = context.controllerId,
             )
         )

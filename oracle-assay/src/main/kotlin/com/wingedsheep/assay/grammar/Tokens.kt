@@ -16,13 +16,14 @@ import com.wingedsheep.sdk.scripting.effects.CreatePredefinedTokenEffect
 import com.wingedsheep.sdk.scripting.effects.CreateTokenEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.references.Player
+import com.wingedsheep.sdk.scripting.values.ContextPropertyKey
 import com.wingedsheep.sdk.scripting.values.TurnTracker
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
 /**
  * "Create a 1/1 green Insect creature token." — the token clauses.
  *
- * One shape with four slots (the count, the stats, the colours, the creature type) plus an optional
+ * One shape with four slots (the count, the stats, the colours, the creature types) plus an optional
  * granted run, and a *row* per printed variation, because English changes several words at once: the
  * article and the noun's number move with the count, and the keyword rider is a suffix the kernel's
  * fixed templates cannot make optional. Six rows out of two axes is what the axes cost; nothing
@@ -49,6 +50,17 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
  * field from both sides before comparing, alongside `descriptionOverride`, `message` and `prompt`:
  * a parser can never produce a URL, so a card that inlines one would otherwise diverge for ever over
  * its picture while agreeing about its token.
+ *
+ * ### "tapped" is an axis of the shape, not a rider
+ *
+ * "Create a **tapped** 2/2 black Zombie creature token." is one adjective in front of the stats and
+ * `CreateTokenEffect.tapped` is one boolean, so it passes both halves of `AGENTS.md`'s
+ * omissible-modifier test: Oracle prints the sentence without the word far more often than with it
+ * (70 lines carry it), and the SDK has a distinct value for the version that does. It is therefore an
+ * axis of [createToken] instantiated in both states rather than template text or a suffix — which is
+ * also what keeps it multiplicative, since it crosses the count and the keyword run without being
+ * told and "create **two** tapped 1/1 black Bat creature tokens **with flying**" is a cell of the
+ * same product rather than a fourth rule.
  */
 object Tokens {
 
@@ -132,6 +144,48 @@ object Tokens {
     // ---------------------------------------------------------------------------------------
 
     /**
+     * A token's creature types — "Elf **Warrior**", "Kithkin **Soldier**", "Merfolk **Wizard**".
+     *
+     * A run rather than a slot, for the same reason [colours] is one: `CreateTokenEffect` holds a
+     * `Set<String>`, and 476 cards print two words where 1,928 print one. A single-type slot could
+     * only ever read the smaller half, and the two halves are not two constructs — the noun phrase
+     * is one list whose length the card chooses, so it is [separated] with `min = 1` and the
+     * one-word case stays the same parse it always was rather than becoming a second rule.
+     *
+     * ### Where the printed order comes from
+     *
+     * Colours are printed in WUBRG and [ordered] derives that from [Color]'s own declaration order,
+     * so a `Set<Color>` prints deterministically without the model recording a sequence. **Creature
+     * types have no such total order**: "Elf Warrior" is race-then-class, a convention of Magic's
+     * style guide that the SDK publishes no data for, and inventing a race/class table here would be
+     * exactly the "recovering information versus inventing it" line [Primitives.subtype] draws.
+     *
+     * So the order is taken from the set's own iteration, which is the one place the information
+     * actually survives: `setOf("Elf", "Warrior")` is a `LinkedHashSet`, kotlinx decodes a JSON
+     * array into one too, and this rule's own `build` inserts in printed order. Every path that
+     * reaches [printedTypes] therefore carries the sequence the card was written with.
+     *
+     * What that costs is stated rather than hidden: two `CreateTokenEffect`s that are `==` — sets
+     * have no order to disagree about — can print differently. Neither gate minds, and the
+     * distinction is which one they ask. The touchstone starts from *text*, so it round-trips this
+     * rule's own insertion order and is exact. The differential compares *models*, so a golden that
+     * happens to spell `setOf("Warrior", "Elf")` still agrees. The one thing that would break is a
+     * renderer printing a type line from a model nobody parsed, and that is Phase 4's problem to
+     * solve with an ordered field, not this rule's to pre-empt with a guessed table.
+     */
+    private val typeRun: Phrase<List<Subtype>> =
+        separated("creature types", Primitives.subtype, separator = " ", min = 1)
+
+    /**
+     * [typeRun]'s inverse: the types a token holds, in the order it holds them.
+     *
+     * Null on the empty set, which is a token with no creature type at all — a shape this sentence
+     * cannot spell, since the template has no empty cell for the noun.
+     */
+    private fun printedTypes(types: Set<String>): List<Subtype>? =
+        types.takeIf { it.isNotEmpty() }?.map { Subtype(it) }
+
+    /**
      * How many tokens a clause makes, as the two things that vary with it: the printed count and
      * the amount the model holds.
      *
@@ -179,24 +233,40 @@ object Tokens {
      * `CreateTokenEffect.keywords` — one vocabulary for "gains flying and trample", "has flying and
      * trample" and "token with flying and trample", which is the whole reason that run is a shared
      * phrase rather than a rule inside one family.
+     *
+     * **Finding: `CreateTokenEffect.keywords` does not realize Decayed.** "Create a 2/2 black Zombie
+     * creature token with decayed" reads into `keywords = [DECAYED]`, which is what CR 702.147 says
+     * the token has — but the engine grants Decayed's "can't block" and its attack-sacrifice trigger
+     * only off `CounterType.DECAYED` (`StateProjector`, `TriggerDetector`), so the keyword alone is
+     * inert. Ghoulish Procession therefore writes `initialCounters = {decayed: 1}` and stands as the
+     * differential's one divergence here. The card is the reading that *works* and the grammar is
+     * the reading the text states; neither is wrong to change unilaterally, so the rule keeps saying
+     * what the card says and the gap is reported. Fixing it is engine work: realize the keyword on a
+     * created token the way the counter is realized.
      */
     private fun createToken(
         count: Count,
         keywords: Boolean,
+        tapped: Boolean = false,
         suffix: String = "",
         suffixName: String = "",
+        tally: Amounts.Scope? = null,
     ): Phrase<CardScript> {
         val noun = if (count.plural) "creature tokens" else "creature token"
         val rider = if (keywords) " with {kws}" else ""
+        val entry = if (tapped) "tapped " else ""
+        val counted = if (tally == null) "" else " for each {filter}${tally.surface}"
         val name = "create " + (if (count.plural) "tokens" else "a token") +
-            (if (keywords) " with keywords" else "") + suffixName
+            (if (tapped) " tapped" else "") +
+            (if (keywords) " with keywords" else "") + suffixName +
+            (if (tally == null) "" else " per ${tally.where}")
 
         fun scriptFor(
             amount: DynamicAmount,
             power: Int,
             toughness: Int,
             colours: Set<Color>,
-            type: Subtype,
+            types: List<Subtype>,
             granted: Set<Keyword>,
         ) = CardScript(
             spellEffect = Effects.CreateToken(
@@ -204,40 +274,67 @@ object Tokens {
                 power = power,
                 toughness = toughness,
                 colors = colours,
-                creatureTypes = setOf(type.value),
+                creatureTypes = types.map { it.value }.toSet(),
                 keywords = granted,
+                tapped = tapped,
             )
         )
 
-        return phrase("create ${count.surface} {p}/{t} {color} {type} $noun$rider$suffix", name = name) {
+        return phrase("create ${count.surface} $entry{p}/{t} {color} {types} $noun$rider$counted$suffix", name = name) {
             if (count.words != null) slot("n", count.words)
             slot("p", Primitives.cardinal)
             slot("t", Primitives.cardinal)
             slot("color", colours)
-            slot("type", Primitives.subtype)
+            slot("types", typeRun)
             if (keywords) slot("kws", Keywords.keywordRun)
+            if (tally != null) slot("filter", Filters.filter)
             build { bindings ->
                 val granted = if (keywords) bindings.value<List<Keyword>>("kws").toSet() else emptySet()
+                val amount = if (tally == null) {
+                    count.amountFor(bindings)
+                } else {
+                    DynamicAmount.AggregateBattlefield(
+                        tally.player,
+                        tally.narrowing(bindings.value("filter")) ?: return@build null,
+                    )
+                }
                 scriptFor(
-                    count.amountFor(bindings),
+                    amount,
                     bindings.int("p"),
                     bindings.int("t"),
                     bindings.value("color"),
-                    bindings.value("type"),
+                    bindings.value("types"),
                     granted,
                 )
             }
             match { script ->
                 val token = script.spellEffect as? CreateTokenEffect ?: return@match null
-                if (!count.spells(token.count)) return@match null
                 if (keywords == token.keywords.isEmpty()) return@match null
-                val type = token.creatureTypes.singleOrNull() ?: return@match null
+                if (token.tapped != tapped) return@match null
+                val types = printedTypes(token.creatureTypes) ?: return@match null
+                // The counted rows rebuild the amount from the two things the clause spells — the
+                // player and the noun phrase — so an aggregate carrying anything else (a sum rather
+                // than a count, an excluded self, a counter type) fails the compare below instead of
+                // being printed as a plain "for each".
+                val counting = if (tally == null) {
+                    if (!count.spells(token.count)) return@match null
+                    null
+                } else {
+                    val aggregate = token.count as? DynamicAmount.AggregateBattlefield ?: return@match null
+                    if (aggregate.player != tally.player) return@match null
+                    tally.narrowing(aggregate.filter) ?: return@match null
+                }
+                val amount = if (counting == null) {
+                    token.count
+                } else {
+                    DynamicAmount.AggregateBattlefield(tally!!.player, counting)
+                }
                 if (script != scriptFor(
-                        token.count,
+                        amount,
                         token.power,
                         token.toughness,
                         token.colors,
-                        Subtype(type),
+                        types,
                         token.keywords,
                     )
                 ) {
@@ -248,8 +345,9 @@ object Tokens {
                     "p" to token.power,
                     "t" to token.toughness,
                     "color" to token.colors,
-                    "type" to Subtype(type),
+                    "types" to types,
                     "kws" to token.keywords.sortedBy { it.ordinal },
+                    "filter" to counting,
                 )
             }
         }
@@ -281,32 +379,51 @@ object Tokens {
      * forms and nothing would decide which the printer emits. When the keyword-action family is
      * written, "investigate" belongs in it as an `alternate`.
      */
-    private val PREDEFINED: List<Pair<String, (Int) -> Effect>> = listOf(
-        "Treasure" to { n: Int -> Effects.CreateTreasure(count = n) },
-        "Food" to { n: Int -> Effects.CreateFood(count = n) },
-        "Clue" to { n: Int -> Effects.CreateClue(count = n) },
-        "Blood" to { n: Int -> Effects.CreateBlood(count = n) },
-        "Map" to { n: Int -> Effects.CreateMapToken(count = n) },
-        "Lander" to { n: Int -> Effects.CreateLander(count = n) },
-        "Shard" to { n: Int -> Effects.CreateShard(count = n) },
+    /**
+     * One predefined token noun, and the two facades the SDK gives it.
+     *
+     * [fixed] and [dynamic] are two overloads of one name that write two *different fields* —
+     * `count: Int` and `dynamicCount: DynamicAmount` — so which one a rule calls is decided by the
+     * shape of the count the sentence printed, not by preference. [dynamic] is null for the two
+     * nouns the SDK publishes no dynamic overload for; a row that invented one would be building a
+     * call this grammar made up, which is the thing "build goes through the facades" forbids.
+     */
+    private class Predefined(
+        val tokenType: String,
+        val fixed: (Int) -> Effect,
+        val dynamic: ((DynamicAmount) -> Effect)? = null,
     )
 
-    private fun createPredefined(count: Count, tokenType: String, effect: (Int) -> Effect): Phrase<CardScript> {
+    private val PREDEFINED: List<Predefined> = listOf(
+        Predefined("Treasure", { Effects.CreateTreasure(count = it) }, { Effects.CreateTreasure(count = it) }),
+        Predefined("Food", { Effects.CreateFood(count = it) }, { Effects.CreateFood(count = it) }),
+        Predefined("Clue", { Effects.CreateClue(count = it) }, { Effects.CreateClue(count = it) }),
+        Predefined("Blood", { Effects.CreateBlood(count = it) }, { Effects.CreateBlood(count = it) }),
+        Predefined("Map", { Effects.CreateMapToken(count = it) }, { Effects.CreateMapToken(count = it) }),
+        Predefined("Lander", { Effects.CreateLander(count = it) }),
+        Predefined("Shard", { Effects.CreateShard(count = it) }),
+    )
+
+    private fun createPredefined(count: Count, token: Predefined): Phrase<CardScript> {
         val noun = if (count.plural) "tokens" else "token"
         fun scriptFor(amount: DynamicAmount): CardScript? {
-            val fixed = (amount as? DynamicAmount.Fixed)?.amount ?: return null
-            return CardScript(spellEffect = effect(fixed))
+            val effect = when (amount) {
+                is DynamicAmount.Fixed -> token.fixed(amount.amount)
+                else -> token.dynamic?.invoke(amount) ?: return null
+            }
+            return CardScript(spellEffect = effect)
         }
         return phrase(
-            "create ${count.surface} $tokenType $noun",
-            name = "create ${if (count.plural) "$tokenType tokens" else "a $tokenType token"}",
+            "create ${count.surface} ${token.tokenType} $noun",
+            name = "create " +
+                if (count.plural) "${token.tokenType} tokens" else "a ${token.tokenType} token",
         ) {
             if (count.words != null) slot("n", count.words)
             build { bindings -> scriptFor(count.amountFor(bindings)) }
             match { script ->
-                val token = script.spellEffect as? CreatePredefinedTokenEffect ?: return@match null
-                if (token.tokenType != tokenType) return@match null
-                val amount = DynamicAmount.Fixed(token.count)
+                val effect = script.spellEffect as? CreatePredefinedTokenEffect ?: return@match null
+                if (effect.tokenType != token.tokenType) return@match null
+                val amount = effect.dynamicCount ?: DynamicAmount.Fixed(effect.count)
                 if (!count.spells(amount)) return@match null
                 if (script != scriptFor(amount)) return@match null
                 bind("n" to count.wordFor(amount))
@@ -318,7 +435,14 @@ object Tokens {
     val clause: Phrase<CardScript> get() = oneOf("a token clause", clauses)
 
     val clauses: List<Phrase<CardScript>> =
-        counts.flatMap { count -> listOf(createToken(count, keywords = false), createToken(count, keywords = true)) } +
+        counts.flatMap { count ->
+            listOf(false, true).flatMap { tapped ->
+                listOf(
+                    createToken(count, keywords = false, tapped = tapped),
+                    createToken(count, keywords = true, tapped = tapped),
+                )
+            }
+        } +
             // Caller of the Claw. The tally is a *turn* tracker rather than a battlefield count, which
             // is why it is a row here and not one in [Amounts.count]: nothing about the phrase is a
             // noun the filter vocabulary could spell, and the whole clause names one tracked quantity.
@@ -333,9 +457,61 @@ object Tokens {
                 suffix = " for each nontoken creature put into your graveyard from the battlefield this turn",
                 suffixName = " per creature that died this turn",
             ) +
+            // "Create a 1/1 green Elf Warrior creature token **for each Elf you control**." —
+            // Elvish Promenade, Beacon of Creation, Elvish Promenade's whole family. The count is
+            // the noun phrase rather than a number word, so it goes through [Amounts.scopes] like
+            // every other battlefield tally in the grammar and reaches all three of its rows with
+            // one instantiation. The article stays singular: English counts the *kind* of token
+            // once and lets the clause say how many, which is why this crosses the "a" row and no
+            // other. `tapped` crosses it because a counted clause can still enter tapped, and the
+            // keyword rider because "for each" sits between the noun and the rider in print.
+            Amounts.perScope { scope ->
+                createToken(counts.first(), keywords = false, tally = scope)
+            } +
+            Amounts.perScope { scope ->
+                createToken(counts.first(), keywords = true, tally = scope)
+            } +
             // "X Food tokens" is not printed — the predefined nouns take the article and the number
             // word only, so the X row is left out rather than written against nothing.
-            PREDEFINED.flatMap { (type, effect) ->
-                counts.dropLast(1).map { createPredefined(it, type, effect) }
+            PREDEFINED.flatMap { token ->
+                counts.dropLast(1).map { createPredefined(it, token) }
             }
+
+    /**
+     * "Create that many Blood tokens." — Olivia's Attendants; "…create that many 1/1 green Elf
+     * Warrior creature tokens." — Lathril, Tana, Living Hive, Rapacious One, and twenty more.
+     *
+     * ### Why this is a separate list and not a fourth row of [counts]
+     *
+     * "That many" is an **anaphor**: it names the quantity the sentence before it reported, and the
+     * corpus prints it after at least six different antecedents — damage dealt, cards discarded,
+     * creatures attacking, counters removed, cards milled, permanents sacrificed. The SDK spells
+     * each as a different `ContextPropertyKey`, so a row inside [counts] would have to pick one and
+     * would then read the other five into a value that evaluates to zero. That is the
+     * reversible-but-wrong class in one phrase: it round-trips byte-for-byte and means a different
+     * card.
+     *
+     * So the clause is scoped to the position where the antecedent is known, the way
+     * [SelfSteps.triggering]'s anaphor is: [Steps.damageStep] is the cascade a damage trigger hands
+     * its payoff, and this list is what that cascade adds. Every other antecedent is a further
+     * instantiation the day its trigger family wants one, which is one line of `Steps` each.
+     *
+     * The general token rows come along because they are the same [createToken] shape with the same
+     * count — the whole reason [Count] exists is that the amount and the printed word travel
+     * together.
+     */
+    val damageClauses: List<Phrase<CardScript>> = run {
+        val thatMany = Count(
+            "that many",
+            plural = true,
+            words = null,
+            fixed = DynamicAmount.ContextProperty(ContextPropertyKey.TRIGGER_DAMAGE_AMOUNT),
+        )
+        listOf(false, true).flatMap { tapped ->
+            listOf(
+                createToken(thatMany, keywords = false, tapped = tapped),
+                createToken(thatMany, keywords = true, tapped = tapped),
+            )
+        } + PREDEFINED.filter { it.dynamic != null }.map { createPredefined(thatMany, it) }
+    }
 }

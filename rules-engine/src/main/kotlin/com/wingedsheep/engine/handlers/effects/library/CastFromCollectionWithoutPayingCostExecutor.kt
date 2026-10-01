@@ -1,11 +1,11 @@
 package com.wingedsheep.engine.handlers.effects.library
 
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.CastFromCollectionTargetsContinuation
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
-import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.TargetRequirementInfoResult
@@ -15,6 +15,8 @@ import com.wingedsheep.engine.core.orReturnUnsupported
 import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
+import com.wingedsheep.engine.handlers.TargetingSourceType
+import com.wingedsheep.engine.handlers.effects.ChooserResolution
 import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
@@ -22,14 +24,15 @@ import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.AfterResolveDestinationComponent
 import com.wingedsheep.engine.state.components.identity.PlayWithoutPayingCostComponent
 import com.wingedsheep.engine.state.permissions.MayPlayPermission
 import com.wingedsheep.engine.state.permissions.addMayPlayPermission
 import com.wingedsheep.engine.state.permissions.removeMayPlayPermission
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.effects.AfterResolveDestination
 import com.wingedsheep.sdk.scripting.effects.CastFromCollectionWithoutPayingCostEffect
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -62,7 +65,14 @@ import kotlin.reflect.KClass
 class CastFromCollectionWithoutPayingCostExecutor(
     private val castSpellHandlerProvider: () -> CastSpellHandler,
     private val cardRegistry: CardRegistry,
-    private val targetFinder: TargetFinder = TargetFinder(),
+    private val targetFinder: TargetFinder,
+    /**
+     * Builds the authoritative pending target metadata for the synthesized cast's target prompt.
+     * [LibraryExecutors] passes one sharing the engine's evaluator; the default (same registry)
+     * keeps standalone constructions such as [PlayFromCollectionWithoutPayingCostExecutor] working.
+     */
+    private val targetValidator: TargetValidator =
+        TargetValidator(com.wingedsheep.engine.handlers.PredicateEvaluator(cardRegistry)),
 ) : EffectExecutor<CastFromCollectionWithoutPayingCostEffect> {
     override val effectType: KClass<CastFromCollectionWithoutPayingCostEffect> =
         CastFromCollectionWithoutPayingCostEffect::class
@@ -75,21 +85,36 @@ class CastFromCollectionWithoutPayingCostExecutor(
         val cards: List<EntityId> = context.pipeline.storedCollections[effect.from].orEmpty()
         if (cards.isEmpty()) return EffectResult.success(state)
         val cardId = cards.first()
-        val controllerId = context.controllerId
+        val chosenFace = context.pipeline.storedNumbers[
+            com.wingedsheep.engine.handlers.PipelineState.spellFaceKey(effect.from)
+        ]
+        val faceIndex = chosenFace?.takeIf { it >= 0 }
+        val castTransformed = effect.castTransformed || chosenFace == -2
+        // `Chooser.Controller` (the default) is `context.controllerId`; the only other value a
+        // printed card needs is `SourceController`, which survives the per-iteration controller
+        // swap `ForEachPlayerEffect` performs (Jetsam casts from each opponent's graveyard, but
+        // *you* are the caster). Anything that can't be resolved — no opponent, several opponents
+        // to pick between — falls back to the iterating controller rather than pausing: this
+        // executor casts inside another effect's resolution and has no window to ask.
+        val controllerId = (
+            ChooserResolution.resolve(state, effect.caster, context, cards)
+                as? ChooserResolution.Outcome.Resolved
+            )?.playerId ?: context.controllerId
 
         // "Cast it transformed" needs a face to turn over to. A card with no back face — a token,
         // or a single-faced card that became a copy of a transforming one — simply isn't cast, and
-        // per the CR 310.11b ruling it stays where it is (in exile, for the Siege defeat trigger)
+        // per the CR 310.12b ruling it stays where it is (in exile, for the Siege defeat trigger)
         // rather than being cast front face up.
-        if (effect.castTransformed && !hasBackFace(state, cardId)) {
+        if (castTransformed && !hasBackFace(state, cardId)) {
             return EffectResult.success(state)
         }
 
         // Check targeting *before* granting: a grant made ahead of a cast that never happens
         // would follow the card out of exile and stay live until end-of-turn cleanup.
         val prep = prepareTargetSelection(
-            state, cardId, controllerId, cardRegistry, targetFinder, effect.storeCastTo,
-            castTransformed = effect.castTransformed,
+            state, cardId, controllerId, cardRegistry, targetFinder, targetValidator, effect.storeCastTo,
+            castTransformed = castTransformed,
+            faceIndex = faceIndex,
         )
         if (prep is TargetPrep.NoLegalTargets) {
             // CR 601.2c — if no legal targets exist for a required slot, the cast can't
@@ -109,19 +134,20 @@ class CastFromCollectionWithoutPayingCostExecutor(
             controllerId = controllerId,
             sourceId = context.sourceId,
             withoutPayingCost = !effect.payManaCost,
-            castTransformed = effect.castTransformed,
+            castTransformed = castTransformed,
+            insteadOfGraveyard = effect.insteadOfGraveyard,
+            faceIndex = faceIndex,
         )
 
         if (prep is TargetPrep.NeedsTargets) {
-            val pausedState = newState
-                .pushContinuation(prep.continuation.copy(grantedPermissionId = permId))
-                .withPendingDecision(prep.decision)
-                .withPriority(controllerId)
-            return EffectResult.paused(pausedState, prep.decision, listOf(prep.event))
+            return EffectResult.from(newState.withPriority(controllerId).suspendForDecision(
+                prep.question,
+                prep.continuation.copy(grantedPermissionId = permId)
+            ))
         }
 
         // No targets needed (or modal — CastSpellHandler will handle per-mode targets).
-        return invokeCast(newState, controllerId, cardId, permId, emptyList(), effect.storeCastTo)
+        return invokeCast(newState, controllerId, cardId, permId, emptyList(), effect.storeCastTo, faceIndex)
     }
 
     /** True when [cardId]'s definition has a back face to be cast transformed as. */
@@ -137,11 +163,12 @@ class CastFromCollectionWithoutPayingCostExecutor(
         grantedPermissionId: EntityId,
         targets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget>,
         storeCastTo: String?,
+        faceIndex: Int?,
     ): EffectResult {
         val stateForCast = state.copy(priorityPlayerId = casterId)
         val castResult = castSpellHandlerProvider().execute(
             stateForCast,
-            CastSpell(casterId, cardId, targets),
+            CastSpell(casterId, cardId, targets, faceIndex = faceIndex),
         )
 
         if (castResult.error != null) {
@@ -149,27 +176,24 @@ class CastFromCollectionWithoutPayingCostExecutor(
         }
 
         // The cast initiated (synchronously or pausing for X / further input). Publish the cast
-        // card so an enclosing IfYouDoEffect can gate a follow-up on "if you do" (Kaervek).
+        // card so an enclosing Effects.IfYouDo can gate a follow-up on "if you do" (Kaervek).
         val castCollections = storeCastTo?.let { mapOf(it to listOf(cardId)) } ?: emptyMap()
 
         if (castResult.pendingDecision != null) {
-            return EffectResult.paused(
+            return EffectResult.propagatePause(
                 castResult.state,
-                castResult.pendingDecision,
                 castResult.events,
             ).copy(
                 updatedCollections = castCollections,
-                triggersAlreadyProcessed = castResult.triggersAlreadyProcessed,
             )
         }
 
         // CastSpellHandler already detected + stacked this cast's triggers; propagate the flag so a
-        // resuming caller (e.g. the gated MayEffect resumer -> SubmitDecisionHandler) doesn't re-scan
+        // resuming caller (e.g. the gated Effects.May resumer -> SubmitDecisionHandler) doesn't re-scan
         // the SpellCastEvent and double-fire "whenever you cast a spell" triggers.
         return EffectResult.success(castResult.state, castResult.events)
             .copy(
                 updatedCollections = castCollections,
-                triggersAlreadyProcessed = castResult.triggersAlreadyProcessed,
             )
     }
 
@@ -186,11 +210,10 @@ class CastFromCollectionWithoutPayingCostExecutor(
             val reason: TargetRequirementUnsupportedReason,
         ) : TargetPrep
 
-        /** Pause with [decision] and push [continuation]; the resumer performs the cast with the picks. */
+        /** Describe a question and its answer operation; the caller grants permission before suspending. */
         data class NeedsTargets(
-            val decision: ChooseTargetsDecision,
+            val question: (String) -> ChooseTargetsDecision,
             val continuation: CastFromCollectionTargetsContinuation,
-            val event: DecisionRequestedEvent,
         ) : TargetPrep
     }
 
@@ -214,9 +237,20 @@ class CastFromCollectionWithoutPayingCostExecutor(
             sourceId: EntityId?,
             withoutPayingCost: Boolean = true,
             castTransformed: Boolean = false,
+            insteadOfGraveyard: AfterResolveDestination? = null,
+            faceIndex: Int? = null,
         ): Pair<EntityId, GameState> {
-            val stamped = if (!withoutPayingCost) state else state.updateEntity(cardId) { container ->
+            var stamped = if (!withoutPayingCost) state else state.updateEntity(cardId) { container ->
                 container.with(PlayWithoutPayingCostComponent(controllerId = controllerId))
+            }
+            // The cast-this-way rider rides the card, not the permission, so it survives the move
+            // onto the stack and is still there when StackResolver picks the spell's destination.
+            // Stamped here rather than by the caller so every entry point that grants a
+            // synthesized cast — inline, post-target-pause, the any-number loop — carries it.
+            if (insteadOfGraveyard != null) {
+                stamped = stamped.updateEntity(cardId) { container ->
+                    container.with(AfterResolveDestinationComponent(destination = insteadOfGraveyard))
+                }
             }
             val (permId, stateWithPerm) = stamped.newEntity()
             val granted = stateWithPerm.addMayPlayPermission(
@@ -226,6 +260,7 @@ class CastFromCollectionWithoutPayingCostExecutor(
                     controllerId = controllerId,
                     sourceId = sourceId,
                     castTransformed = castTransformed,
+                    castFaceIndex = faceIndex,
                     timestamp = stateWithPerm.timestamp,
                 )
             )
@@ -237,6 +272,10 @@ class CastFromCollectionWithoutPayingCostExecutor(
             val withoutPermission = permissionId?.let { state.removeMayPlayPermission(it) } ?: state
             return withoutPermission.updateEntity(cardId) { container ->
                 container.without<PlayWithoutPayingCostComponent>()
+                    // A cast that never initiated must not leave its destination rider behind on
+                    // a card still sitting in exile or a graveyard: the next time that card was
+                    // cast by any means it would silently skip the graveyard.
+                    .without<AfterResolveDestinationComponent>()
             }
         }
 
@@ -266,22 +305,25 @@ class CastFromCollectionWithoutPayingCostExecutor(
             casterId: EntityId,
             cardRegistry: CardRegistry,
             targetFinder: TargetFinder,
+            targetValidator: TargetValidator,
             storeCastTo: String? = null,
             castTransformed: Boolean = false,
+            faceIndex: Int? = null,
         ): TargetPrep {
             val cardComponent = state.getEntity(cardId)?.get<CardComponent>()
             val printedDef = cardComponent?.let { cardRegistry.getCard(it.cardDefinitionId) }
             val cardDef = if (castTransformed) printedDef?.backFace ?: printedDef else printedDef
-            val isModalSpell = cardDef?.script?.spellEffect is ModalEffect
+            val selectedFace = faceIndex?.let { printedDef?.cardFaces?.getOrNull(it) }
+            val script = selectedFace?.script ?: cardDef?.script
+            val isModalSpell = script?.spellEffect is ModalEffect
             val targetRequirements = buildList {
-                addAll(cardDef?.script?.targetRequirements.orEmpty())
-                cardDef?.script?.auraTarget?.let { add(it) }
+                addAll(script?.targetRequirements.orEmpty())
+                script?.castAuraTarget?.let { add(it) }
             }
             if (isModalSpell || targetRequirements.isEmpty()) {
                 return TargetPrep.NotNeeded
             }
 
-            val targetValidator = TargetValidator()
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
             targetRequirements.forEachIndexed { index, requirement ->
                 val legal = targetFinder.findLegalTargets(
@@ -289,6 +331,7 @@ class CastFromCollectionWithoutPayingCostExecutor(
                     requirement = requirement,
                     controllerId = casterId,
                     sourceId = cardId,
+                    targetingSourceType = TargetingSourceType.SPELL,
                     requireAuthoritativeContext = true,
                 )
                 legalTargetsMap[index] = legal
@@ -328,9 +371,8 @@ class CastFromCollectionWithoutPayingCostExecutor(
 
             // Name the face being cast — a transformed cast prompts for "Deluge of the Dead",
             // not for the front face the player exiled.
-            val cardName = (if (castTransformed) cardDef?.name else null) ?: cardComponent?.name ?: "spell"
-            val decisionId = UUID.randomUUID().toString()
-            val decision = ChooseTargetsDecision(
+            val cardName = selectedFace?.name ?: (if (castTransformed) cardDef?.name else null) ?: cardComponent?.name ?: "spell"
+            val question = { decisionId: String -> ChooseTargetsDecision(
                 id = decisionId,
                 playerId = casterId,
                 prompt = "Choose targets for $cardName",
@@ -342,20 +384,14 @@ class CastFromCollectionWithoutPayingCostExecutor(
                 targetRequirements = selectableRequirementInfos,
                 legalTargets = selectableIndices.associateWith { legalTargetsMap[it].orEmpty() },
                 canCancel = false,
-            )
+            ) }
             val continuation = CastFromCollectionTargetsContinuation(
-                decisionId = decisionId,
                 cardId = cardId,
                 casterId = casterId,
                 storeCastTo = storeCastTo,
+                faceIndex = faceIndex,
             )
-            val event = DecisionRequestedEvent(
-                decisionId = decisionId,
-                playerId = casterId,
-                decisionType = "CHOOSE_TARGETS",
-                prompt = decision.prompt,
-            )
-            return TargetPrep.NeedsTargets(decision, continuation, event)
+            return TargetPrep.NeedsTargets(question, continuation)
         }
 
         /**

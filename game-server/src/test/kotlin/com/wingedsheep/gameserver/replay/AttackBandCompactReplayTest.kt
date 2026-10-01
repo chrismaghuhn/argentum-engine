@@ -188,7 +188,10 @@ class AttackBandCompactReplayTest : ScenarioTestBase() {
                 ?.get<AttackingComponent>()?.bandId shouldBe "combat-band-0"
 
             val seats = decoded.setup.players.map { SpectatorSeat(EntityId(it.playerId), it.name) }
-            val builder = SpectatorStateBuilder(cardRegistry, ClientStateTransformer(cardRegistry))
+            val builder = SpectatorStateBuilder(
+                cardRegistry,
+                ClientStateTransformer(cardRegistry, predicateEvaluator = services.predicateEvaluator),
+            )
             val reconstructedFrames = (0..decoded.actions.size).map { frame ->
                 val frameState = reconstructor.reconstructStateAt(decoded, frame).shouldNotBeNull()
                 builder.buildState(frameState, seats, decoded.setup.seatRoster, decoded.gameId)

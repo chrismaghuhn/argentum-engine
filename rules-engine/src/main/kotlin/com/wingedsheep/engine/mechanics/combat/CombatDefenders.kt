@@ -74,6 +74,8 @@ object CombatDefenders {
         val attacking = state.getEntity(attackerId)?.get<AttackingComponent>() ?: return false
         if (attacking.defenderId != targetId) return false
         if (attacking.defenderRelationshipInvalidated) return false
+        // Upstream's CR 506.4 marker: the attacked planeswalker/battle left combat.
+        if (attacking.attackTargetRemoved) return false
 
         // Legacy/synthetic player-only components can still be inferred safely. An object target
         // without declaration metadata cannot prove the original relationship, so fail closed

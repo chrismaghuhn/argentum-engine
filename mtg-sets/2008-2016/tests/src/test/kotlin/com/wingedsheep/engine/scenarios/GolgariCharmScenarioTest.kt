@@ -15,6 +15,8 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Golgari Charm (RTR #164).
@@ -53,7 +55,7 @@ class GolgariCharmScenarioTest : FunSpec({
                 chosenModes = listOf(mode),
                 modeTargetsOrdered = listOf(chosenTargets)
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         bothPass()
     }
 
@@ -140,6 +142,6 @@ class GolgariCharmScenarioTest : FunSpec({
                 modeTargetsOrdered = listOf(listOf(ChosenTarget.Permanent(creature)))
             )
         )
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
     }
 })

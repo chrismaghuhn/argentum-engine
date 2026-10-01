@@ -10,6 +10,7 @@ import com.wingedsheep.engine.core.PutOntoBattlefieldAttachedToChosenContinuatio
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectFromCollectionContinuation
 import com.wingedsheep.engine.core.SubmitDecision
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.support.ScenarioTestBase
@@ -71,7 +72,7 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         colorIdentity = "G"
         typeLine = "Enchantment — Aura"
         oracleText = "Enchant creature"
-        auraTarget = Targets.Creature
+        auraTarget = TargetObject(filter = TargetFilter.Creature)
     }
 
     private val playerAura = card("Test Aura for Players") {
@@ -149,7 +150,7 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         typeLine = "Sorcery"
         oracleText = "Destroy target creature."
         spell {
-            val target = target("target creature", Targets.Creature)
+            val target = target(TargetFilter.Creature)
             effect = Effects.Destroy(target)
         }
     }
@@ -160,7 +161,6 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         oracleText = "Return target Aura card from your graveyard to the battlefield attached to a creature you control."
         spell {
             val aura = target(
-                "target Aura card",
                 TargetObject(
                     filter = TargetFilter(
                         baseFilter = GameObjectFilter.Enchantment.withSubtype("Aura"),
@@ -181,7 +181,6 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         oracleText = "Return target Aura card from your graveyard to the battlefield."
         spell {
             val aura = target(
-                "target Aura card",
                 TargetObject(
                     filter = TargetFilter(
                         baseFilter = GameObjectFilter.Enchantment.withSubtype("Aura"),
@@ -199,7 +198,6 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         oracleText = "Create two token copies of target Aura, except they are black."
         spell {
             val aura = target(
-                "target Aura permanent",
                 TargetObject(
                     filter = TargetFilter(
                         baseFilter = GameObjectFilter.Enchantment.withSubtype("Aura")
@@ -220,7 +218,6 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         oracleText = "Create a token copy of target Aura, except it's a creature in addition to its other types."
         spell {
             val aura = target(
-                "target Aura permanent",
                 TargetObject(
                     filter = TargetFilter(
                         baseFilter = GameObjectFilter.Enchantment.withSubtype("Aura")
@@ -238,7 +235,7 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         manaCost = "{1}{W}"
         typeLine = "Enchantment — Aura"
         oracleText = "Enchant planeswalker"
-        auraTarget = Targets.Planeswalker
+        auraTarget = TargetObject(filter = TargetFilter.Planeswalker)
     }
 
     private val malformedAura = card("Test Aura Without Host Requirement") {
@@ -818,23 +815,30 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
             val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
             hostDecision.legalTargets.getValue(0) shouldContain hostId
 
-            val originalContinuation = game.state.continuationStack
-                .filterIsInstance<MoveCollectionAuraTargetContinuation>()
-                .single()
+            // The host question and the answer continuation that consumes it are one Suspension
+            // frame on the continuation stack; that frame is what rides a serialized GameState.
+            val originalSuspension = game.state.continuationStack
+                .filterIsInstance<Suspension>()
+                .single { it.answer is MoveCollectionAuraTargetContinuation }
+            val originalContinuation = originalSuspension.answer
+                .shouldBeInstanceOf<MoveCollectionAuraTargetContinuation>()
             val json = Json {
                 serializersModule = engineSerializersModule
                 encodeDefaults = true
             }
             val encodedContinuation = json.encodeToString(
                 ContinuationFrame.serializer(),
-                originalContinuation
+                originalSuspension
             )
-            val decodedContinuation = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+            val decodedSuspension = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+                .shouldBeInstanceOf<Suspension>()
+            val decodedContinuation = decodedSuspension.answer
                 .shouldBeInstanceOf<MoveCollectionAuraTargetContinuation>()
             decodedContinuation shouldBe originalContinuation
+            decodedSuspension shouldBe originalSuspension
             game.state = game.state.copy(
                 continuationStack = game.state.continuationStack.map { frame ->
-                    if (frame is MoveCollectionAuraTargetContinuation) decodedContinuation else frame
+                    if (frame is Suspension && frame.answer is MoveCollectionAuraTargetContinuation) decodedSuspension else frame
                 }
             )
 
@@ -883,23 +887,32 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
             ).error shouldBe null
             game.resolveStack()
             val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
-            val originalContinuation = game.state.continuationStack
-                .filterIsInstance<PutOntoBattlefieldAttachedToChosenContinuation>()
-                .single()
+            val originalSuspension = game.state.continuationStack
+                .filterIsInstance<Suspension>()
+                .single { it.answer is PutOntoBattlefieldAttachedToChosenContinuation }
+            val originalContinuation = originalSuspension.answer
+                .shouldBeInstanceOf<PutOntoBattlefieldAttachedToChosenContinuation>()
             val json = Json {
                 serializersModule = engineSerializersModule
                 encodeDefaults = true
             }
             val encodedContinuation = json.encodeToString(
                 ContinuationFrame.serializer(),
-                originalContinuation,
+                originalSuspension,
             )
-            val decodedContinuation = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+            val decodedSuspension = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+                .shouldBeInstanceOf<Suspension>()
+            val decodedContinuation = decodedSuspension.answer
                 .shouldBeInstanceOf<PutOntoBattlefieldAttachedToChosenContinuation>()
             decodedContinuation shouldBe originalContinuation
+            decodedSuspension shouldBe originalSuspension
             game.state = game.state.copy(
                 continuationStack = game.state.continuationStack.map { frame ->
-                    if (frame is PutOntoBattlefieldAttachedToChosenContinuation) decodedContinuation else frame
+                    if (frame is Suspension && frame.answer is PutOntoBattlefieldAttachedToChosenContinuation) {
+                        decodedSuspension
+                    } else {
+                        frame
+                    }
                 }
             )
 
@@ -1017,9 +1030,11 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
             game.castSpell(1, "Aura Copy Characteristics Probe", auraId).error shouldBe null
             game.resolveStack()
             val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
-            val continuation = game.state.continuationStack
-                .filterIsInstance<CreateTokenCopyAuraHostContinuation>()
-                .single()
+            val suspension = game.state.continuationStack
+                .filterIsInstance<Suspension>()
+                .single { it.answer is CreateTokenCopyAuraHostContinuation }
+            val continuation = suspension.answer
+                .shouldBeInstanceOf<CreateTokenCopyAuraHostContinuation>()
             continuation.remaining shouldBe 2
             val json = Json {
                 serializersModule = engineSerializersModule
@@ -1027,14 +1042,17 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
             }
             val encodedContinuation = json.encodeToString(
                 ContinuationFrame.serializer(),
-                continuation,
+                suspension,
             )
-            val decodedContinuation = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+            val decodedSuspension = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+                .shouldBeInstanceOf<Suspension>()
+            val decodedContinuation = decodedSuspension.answer
                 .shouldBeInstanceOf<CreateTokenCopyAuraHostContinuation>()
             decodedContinuation shouldBe continuation
+            decodedSuspension shouldBe suspension
             game.state = game.state.copy(
                 continuationStack = game.state.continuationStack.map { frame ->
-                    if (frame is CreateTokenCopyAuraHostContinuation) decodedContinuation else frame
+                    if (frame is Suspension && frame.answer is CreateTokenCopyAuraHostContinuation) decodedSuspension else frame
                 }
             )
 
@@ -1051,7 +1069,7 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
 
             result.error shouldNotBe null
             game.state.pendingDecision shouldBe hostDecision
-            game.state.continuationStack shouldContain continuation
+            game.state.continuationStack.filterIsInstance<Suspension>().map { it.answer } shouldContain continuation
             game.state.getBattlefield(game.player1Id) shouldNotContain hostId
         }
 
@@ -1137,9 +1155,10 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
             game.castSpell(1, "Battlefield Aura Selection Probe")
             game.resolveStack()
             val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
-            val originalContinuation = game.state.continuationStack
-                .filterIsInstance<SelectFromCollectionContinuation>()
-                .single()
+            val originalSuspension = game.state.continuationStack
+                .filterIsInstance<Suspension>()
+                .single { it.answer is SelectFromCollectionContinuation }
+            val originalContinuation = originalSuspension.answer
                 .shouldBeInstanceOf<SelectFromCollectionContinuation>()
             val json = Json {
                 serializersModule = engineSerializersModule
@@ -1148,20 +1167,23 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
 
             val encodedContinuation = json.encodeToString(
                 ContinuationFrame.serializer(),
-                originalContinuation
+                originalSuspension
             )
-            val decodedContinuation = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+            val decodedSuspension = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+                .shouldBeInstanceOf<Suspension>()
+            val decodedContinuation = decodedSuspension.answer
                 .shouldBeInstanceOf<SelectFromCollectionContinuation>()
             decodedContinuation shouldBe originalContinuation
+            decodedSuspension shouldBe originalSuspension
             encodedContinuation.contains("AuraMustHaveLegalHost") shouldBe true
             encodedContinuation shouldBe json.encodeToString(
                 ContinuationFrame.serializer(),
-                decodedContinuation
+                decodedSuspension
             )
 
             val forkedState = game.state.copy(
                 continuationStack = game.state.continuationStack.map { frame ->
-                    if (frame is SelectFromCollectionContinuation) decodedContinuation else frame
+                    if (frame is Suspension && frame.answer is SelectFromCollectionContinuation) decodedSuspension else frame
                 }
             )
             game.state = forkedState

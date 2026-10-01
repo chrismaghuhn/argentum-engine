@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.effects
 
+import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.state.GameState
@@ -27,12 +28,11 @@ import com.wingedsheep.sdk.scripting.PermanentsEnterTapped
  */
 object EnterTappedReplacements {
 
-    private val predicateEvaluator = PredicateEvaluator()
-
     /**
      * True if any battlefield permanent grants a [PermanentsEnterTapped] replacement whose
-     * `appliesTo` filter matches [enteringEntityId] (controlled by [enteringControllerId]). The
-     * entering entity must already carry its [ControllerComponent] /
+     * `appliesTo` filter matches [enteringEntityId] (controlled by [enteringControllerId]) and
+     * whose optional `condition` gate holds. The entering entity must already carry its
+     * [ControllerComponent] /
      * [com.wingedsheep.engine.state.components.identity.CardComponent] so the filter
      * (type/subtype/"you control") resolves correctly.
      */
@@ -40,6 +40,7 @@ object EnterTappedReplacements {
         state: GameState,
         enteringEntityId: EntityId,
         enteringControllerId: EntityId,
+        predicateEvaluator: PredicateEvaluator
     ): Boolean {
         for (sourceId in state.getBattlefield()) {
             if (sourceId == enteringEntityId) continue
@@ -48,9 +49,16 @@ object EnterTappedReplacements {
             val sourceControllerId = container.get<ControllerComponent>()?.playerId ?: continue
             for (effect in replacementComponent.replacementEffects) {
                 if (effect !is PermanentsEnterTapped) continue
-                if (matchesEnterFilter(effect.appliesTo, enteringEntityId, sourceControllerId, state)) {
-                    return true
+                if (!matchesEnterFilter(effect.appliesTo, enteringEntityId, sourceId, sourceControllerId, state, predicateEvaluator = predicateEvaluator)) continue
+                // Optional gate evaluated against the replacement *source*, mirroring
+                // RedirectDamage.condition — e.g. Ashling's Prerogative's tap clause applies only
+                // while the mode it chose as it entered is the one this effect was written for.
+                val gate = effect.condition
+                if (gate != null) {
+                    val gateContext = EffectContext(sourceId = sourceId, controllerId = sourceControllerId)
+                    if (!predicateEvaluator.conditions.evaluate(state, gate, gateContext)) continue
                 }
+                return true
             }
         }
         return false
@@ -79,28 +87,38 @@ object EnterTappedReplacements {
         controllerId: EntityId,
         definedTapped: Boolean = false,
         attacking: Boolean = false,
+        predicateEvaluator: PredicateEvaluator
     ): GameState {
-        val entersUntapped = EnterUntappedReplacements.entersUntapped(state, tokenId, controllerId)
+        val entersUntapped = EnterUntappedReplacements.entersUntapped(state, tokenId, controllerId, predicateEvaluator = predicateEvaluator)
         return when {
             definedTapped && !attacking && entersUntapped ->
                 state.updateEntity(tokenId) { it.without<TappedComponent>() }
             !definedTapped && !entersUntapped &&
-                entersTapped(state, tokenId, controllerId) ->
+                entersTapped(state, tokenId, controllerId, predicateEvaluator = predicateEvaluator) ->
                 state.updateEntity(tokenId) { it.with(TappedComponent) }
             else -> state
         }
     }
 
+    /**
+     * [replacementSourceId] is the permanent that *grants* the replacement, not the one entering —
+     * the entering permanent is what the filter is evaluated against and is passed separately. The
+     * distinction only shows up for a source-relative predicate: "creatures enchanted player
+     * controls" has to read the granting Aura's own attachment, and would otherwise be asked about
+     * the entering creature's.
+     */
     private fun matchesEnterFilter(
         event: EventPattern,
         enteringEntityId: EntityId,
+        replacementSourceId: EntityId,
         sourceControllerId: EntityId,
         state: GameState,
+        predicateEvaluator: PredicateEvaluator
     ): Boolean {
         if (event !is EventPattern.ZoneChangeEvent) return false
         if (event.to != Zone.BATTLEFIELD) return false
         val predicateContext = PredicateContext(
-            sourceId = enteringEntityId,
+            sourceId = replacementSourceId,
             controllerId = sourceControllerId,
         )
         return predicateEvaluator.matches(

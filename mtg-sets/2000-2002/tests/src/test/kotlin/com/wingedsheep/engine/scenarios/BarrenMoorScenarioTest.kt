@@ -13,6 +13,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Barren Moor (ONS #312) — enters tapped; {T}: Add {B}; Cycling {B}.
@@ -34,7 +35,7 @@ class BarrenMoorScenarioTest : FunSpec({
         val player = driver.activePlayer!!
         val landCard = driver.putCardInHand(player, "Barren Moor")
 
-        driver.playLand(player, landCard).isSuccess shouldBe true
+        driver.playLand(player, landCard).outcome shouldBe Outcome.Done
         val land = driver.findPermanent(player, "Barren Moor")
         land shouldNotBe null
         driver.isTapped(land!!) shouldBe true
@@ -42,7 +43,7 @@ class BarrenMoorScenarioTest : FunSpec({
         driver.untapPermanent(land)
         driver.submit(
             ActivateAbility(playerId = player, sourceId = land, abilityId = manaAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.isTapped(land) shouldBe true
         driver.state.getEntity(player)?.get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()!!.black shouldBe 1
     }
@@ -57,7 +58,7 @@ class BarrenMoorScenarioTest : FunSpec({
         val result = driver.submit(CycleCard(playerId = player, cardId = moor))
 
         withClue("Cycling should resolve without a pending decision: ${result.error}") {
-            result.isSuccess shouldBe true
+            result.outcome shouldBe Outcome.Done
         }
         driver.getGraveyardCardNames(player) shouldContain "Barren Moor"
         driver.findCardInHand(player, "Forest") shouldNotBe null
@@ -70,7 +71,7 @@ class BarrenMoorScenarioTest : FunSpec({
 
         val result = driver.submit(CycleCard(playerId = player, cardId = moor))
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.findCardInHand(player, "Barren Moor") shouldBe moor
     }
 })

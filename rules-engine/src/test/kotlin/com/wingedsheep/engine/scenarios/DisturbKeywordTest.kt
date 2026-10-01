@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.AlternativeCostType
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.PaymentStrategy
@@ -9,6 +10,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.DoubleFacedComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.view.CastProvenance
+import com.wingedsheep.engine.view.ClientStateTransformer
 import com.wingedsheep.engine.view.ClientEvent
 import com.wingedsheep.engine.view.ClientEventTransformer
 import com.wingedsheep.engine.support.GameTestDriver
@@ -17,7 +19,6 @@ import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.dsl.disturb
 import com.wingedsheep.sdk.model.CardDefinition
@@ -31,8 +32,12 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.booleans.shouldBeTrue
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
+import io.kotest.inspectors.forAll
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Tests for the Disturb [cost] keyword (CR 702.146, Innistrad: Midnight Hunt / Crimson Vow).
@@ -85,7 +90,7 @@ class DisturbKeywordTest : FunSpec({
         manaCost = ""
         colorIndicator = "U"
         typeLine = "Enchantment — Aura"
-        auraTarget = Targets.Creature
+        auraTarget = TargetObject(filter = TargetFilter.Creature)
         staticAbility { ability = GrantKeyword(Keyword.FLYING) }
         replacementEffect(
             RedirectZoneChange(
@@ -126,6 +131,48 @@ class DisturbKeywordTest : FunSpec({
             .mapNotNull { it.action as? CastSpell }
             .filter { it.alternativeCostType == AlternativeCostType.DISTURB }
 
+    // The client renders a disturb card's graveyard offer in the player's hand as a "ghost" card.
+    // A card in the graveyard is printed FRONT face up, so without these two facts the ghost shows
+    // the wrong spell entirely — Test Geist's 1/1 Human instead of the 2/2 flying Spirit that would
+    // actually go on the stack (CR 712.8c).
+    test("the disturb offer is flagged as casting transformed, so the client can render the back face") {
+        val driver = createDriver()
+        driver.initMirrorMatch(deck = Deck.of("Plains" to 40), startingLife = 20)
+        val player = driver.activePlayer!!
+
+        driver.putCardInGraveyard(player, "Test Geist")
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        driver.giveMana(player, Color.WHITE, 2)
+
+        val actions = LegalActionEnumerator.create(driver.cardRegistry).enumerate(driver.state, player)
+        val offer = actions.firstOrNull {
+            (it.action as? CastSpell)?.alternativeCostType == AlternativeCostType.DISTURB
+        }
+        offer.shouldNotBeNull()
+        offer.castsTransformed.shouldBeTrue()
+
+        // Every other cast the same player is offered is its own printed face.
+        actions.filter { it !== offer }.forAll { it.castsTransformed shouldBe false }
+    }
+
+    test("a disturb card in the graveyard carries its back face's stats and keywords to the client") {
+        val driver = createDriver()
+        driver.initMirrorMatch(deck = Deck.of("Plains" to 40), startingLife = 20)
+        val player = driver.activePlayer!!
+
+        val geist = driver.putCardInGraveyard(player, "Test Geist")
+        val view = ClientStateTransformer(driver.cardRegistry, predicateEvaluator = PredicateEvaluator(cardRegistry = null)).transform(driver.state, player).cards.getValue(geist)
+
+        // The card itself is still the front face — it is lying in the graveyard face up.
+        view.name shouldBe "Test Geist"
+        view.power shouldBe 1
+        // ...and everything the client needs to draw the offer's face rides alongside it.
+        view.backFaceName shouldBe "Test Geist Spirit"
+        view.backFacePower shouldBe 2
+        view.backFaceToughness shouldBe 2
+        view.backFaceKeywords shouldContain Keyword.FLYING
+    }
+
     test("disturb is offered only from the graveyard, never from hand (CR 702.146a)") {
         val driver = createDriver()
         driver.initMirrorMatch(deck = Deck.of("Plains" to 40), startingLife = 20)
@@ -160,7 +207,7 @@ class DisturbKeywordTest : FunSpec({
             )
         )
         io.kotest.assertions.withClue("error=${result.error} pending=${result.pendingDecision}") {
-            result.isSuccess shouldBe true
+            result.outcome shouldBe Outcome.Done
         }
 
         // On the stack it is already the back face — its name, types and P/T all come from there.
@@ -205,7 +252,7 @@ class DisturbKeywordTest : FunSpec({
                 useAlternativeCost = true, alternativeCostType = AlternativeCostType.DISTURB,
                 paymentStrategy = PaymentStrategy.FromPool
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         val record = driver.state.spellsCastThisTurnByPlayer[player]?.last()
         record.shouldNotBeNull()
@@ -256,7 +303,7 @@ class DisturbKeywordTest : FunSpec({
             )
         )
         io.kotest.assertions.withClue("error=${result.error} pending=${result.pendingDecision}") {
-            result.isSuccess shouldBe true
+            result.outcome shouldBe Outcome.Done
         }
         while (driver.state.stack.isNotEmpty()) driver.bothPass()
 
@@ -286,7 +333,7 @@ class DisturbKeywordTest : FunSpec({
                 useAlternativeCost = true, alternativeCostType = AlternativeCostType.DISTURB,
                 paymentStrategy = PaymentStrategy.FromPool
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         driver.passPriority(player)
         val countered = driver.submit(
@@ -296,7 +343,7 @@ class DisturbKeywordTest : FunSpec({
                 paymentStrategy = PaymentStrategy.FromPool
             )
         )
-        io.kotest.assertions.withClue("error=${countered.error}") { countered.isSuccess shouldBe true }
+        io.kotest.assertions.withClue("error=${countered.error}") { countered.outcome shouldBe Outcome.Done }
         while (driver.state.stack.isNotEmpty()) driver.bothPass()
 
         // The back face's "would be put into a graveyard from anywhere, exile it instead" clause
@@ -327,7 +374,7 @@ class DisturbKeywordTest : FunSpec({
                 paymentStrategy = PaymentStrategy.FromPool
             )
         )
-        io.kotest.assertions.withClue("error=${result.error}") { result.isSuccess shouldBe true }
+        io.kotest.assertions.withClue("error=${result.error}") { result.outcome shouldBe Outcome.Done }
 
         val castEvent = result.events.filterIsInstance<SpellCastEvent>().single()
         castEvent.castFromZone shouldBe Zone.GRAVEYARD
@@ -364,7 +411,7 @@ class DisturbKeywordTest : FunSpec({
         val result = driver.submit(
             CastSpell(playerId = player, cardId = geist, paymentStrategy = PaymentStrategy.FromPool)
         )
-        io.kotest.assertions.withClue("error=${result.error}") { result.isSuccess shouldBe true }
+        io.kotest.assertions.withClue("error=${result.error}") { result.outcome shouldBe Outcome.Done }
 
         result.events.filterIsInstance<SpellCastEvent>().single().alternativeCost shouldBe null
         ClientEventTransformer.transform(result.events, opponent)
@@ -388,7 +435,7 @@ class DisturbKeywordTest : FunSpec({
                 useAlternativeCost = true, alternativeCostType = AlternativeCostType.DISTURB,
                 paymentStrategy = PaymentStrategy.FromPool
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         while (driver.state.stack.isNotEmpty()) driver.bothPass()
 
         // Kill it for real, so the battlefield → graveyard move runs through the replacement pipeline.
@@ -398,7 +445,7 @@ class DisturbKeywordTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(geist)),
                 paymentStrategy = PaymentStrategy.FromPool
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         while (driver.state.stack.isNotEmpty()) driver.bothPass()
 
         driver.state.getExile(player).shouldContain(geist)

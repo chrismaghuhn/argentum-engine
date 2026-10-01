@@ -1,6 +1,9 @@
 package com.wingedsheep.engine.event
 
+import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ContinuationFrame
+import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.core.TriggeredAbilityContinuation
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.state.ComponentContainer
@@ -35,22 +38,37 @@ class TriggerContextSerializationTest : FunSpec({
             serializersModule = engineSerializersModule
             encodeDefaults = true
         }
+        // The answer frame is persisted inside the Suspension that associates it with its question.
         val continuation = TriggeredAbilityContinuation(
-            decisionId = "decision-1",
             sourceId = EntityId("source-1"),
             sourceName = "Guardian Project",
             controllerId = EntityId("player-1"),
             effect = Effects.DrawCards(1),
             description = "Draw a card",
-            triggeringEntityId = EntityId("creature-1"),
-            triggeringEntityEntryTimestamp = 42L,
-            triggeringEntityName = "Grizzly Bears",
-            triggeringEntityNameKnown = true,
+            triggerContext = TriggerContext(
+                triggeringEntityId = EntityId("creature-1"),
+                triggeringEntityEntryTimestamp = 42L,
+                triggeringEntityName = "Grizzly Bears",
+                triggeringEntityNameKnown = true,
+            ),
+        )
+        val suspension = Suspension(
+            question = ChooseTargetsDecision(
+                id = "decision-1",
+                playerId = EntityId("player-1"),
+                prompt = "Choose targets",
+                context = DecisionContext(sourceId = EntityId("source-1")),
+                targetRequirements = emptyList(),
+                legalTargets = emptyMap(),
+            ),
+            answer = continuation,
         )
 
-        val encoded = json.encodeToString(ContinuationFrame.serializer(), continuation)
+        val encoded = json.encodeToString(ContinuationFrame.serializer(), suspension)
 
-        json.decodeFromString(ContinuationFrame.serializer(), encoded) shouldBe continuation
+        val decoded = json.decodeFromString(ContinuationFrame.serializer(), encoded)
+        decoded shouldBe suspension
+        (decoded as Suspension).answer shouldBe continuation
     }
 
     test("triggered ability stack component preserves the frozen occurrence name") {
@@ -64,10 +82,12 @@ class TriggerContextSerializationTest : FunSpec({
             controllerId = EntityId("player-1"),
             effect = Effects.DrawCards(1),
             description = "Draw a card",
-            triggeringEntityId = EntityId("creature-1"),
-            triggeringEntityEntryTimestamp = 42L,
-            triggeringEntityName = null,
-            triggeringEntityNameKnown = true,
+            triggerContext = TriggerContext(
+                triggeringEntityId = EntityId("creature-1"),
+                triggeringEntityEntryTimestamp = 42L,
+                triggeringEntityName = null,
+                triggeringEntityNameKnown = true,
+            ),
         )
         val original = ComponentContainer().with(component)
 

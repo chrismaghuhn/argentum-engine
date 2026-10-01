@@ -18,6 +18,9 @@ import {
   visibleStackDepth,
   groupCards,
 } from './cardGrouping'
+import { teamLabel } from './teamLabel'
+import { castOfferFace } from '@/utils/castFace'
+import { isBattle, tableSideOf } from '@/utils/combatTargets'
 
 /**
  * Select the game state (works for both normal play and spectating).
@@ -87,7 +90,10 @@ export const selectConnectionStatus = (state: GameStore) => state.connectionStat
 export const selectIsMyTurn = (state: GameStore): boolean => {
   const { gameState, playerId } = state
   if (!gameState || !playerId) return false
-  return gameState.activePlayerId === playerId
+  if (gameState.activePlayerId === playerId) return true
+  // CR 805.4 — a team takes one turn together, so your ally's turn is your turn: you untap, draw,
+  // play a land and act at sorcery speed on it. False in every format that doesn't share turns.
+  return selectSharesTeamTurn(state, gameState.activePlayerId, playerId)
 }
 
 /**
@@ -96,7 +102,30 @@ export const selectIsMyTurn = (state: GameStore): boolean => {
 export const selectHasPriority = (state: GameStore): boolean => {
   const { gameState, playerId } = state
   if (!gameState || !playerId) return false
-  return gameState.priorityPlayerId === playerId
+  if (gameState.priorityPlayerId === playerId) return true
+  // CR 805.5 — under shared team turns the whole team holds priority, so a teammate's baton is
+  // ours too. `selectSharesTeamTurn` is false in every format that doesn't share turns.
+  return selectSharesTeamTurn(state, gameState.priorityPlayerId, playerId)
+}
+
+/**
+ * True when two seats act as one side for the turn *and* for priority: a shared-team-turns game
+ * (CR 805) and the same team. One helper for both because CR 805 makes them one axis — a team that
+ * takes its turn together holds priority together (805.4 / 805.5). Reads the store's own seat →
+ * team map rather than the state's per-seat `teamIndex` so it matches every other team read in the
+ * client.
+ */
+export const selectSharesTeamTurn = (
+  state: GameStore,
+  a: EntityId | null | undefined,
+  b: EntityId | null | undefined,
+): boolean => {
+  if (!a || !b) return false
+  if (a === b) return true
+  if (!state.teamSharedTurns) return false
+  const map = state.teamByPlayerId ?? EMPTY_TEAM_MAP
+  const teamA = map[a]
+  return teamA != null && map[b] === teamA
 }
 
 /**
@@ -142,6 +171,19 @@ export function useCard(cardId: EntityId | null): ClientCard | null {
     if (!gameState || !cardId) return null
     return gameState.cards[cardId] ?? null
   }, [gameState, cardId])
+}
+
+/**
+ * A library top to bottom: the card at each position the viewer knows, `null` for a card back.
+ * The server names only the cards the viewer may identify and says where each one sits.
+ */
+export function librarySlots(zone: ClientZone | null | undefined): readonly (EntityId | null)[] {
+  if (!zone) return []
+  const slots: (EntityId | null)[] = new Array<EntityId | null>(zone.size).fill(null)
+  zone.cardIds.forEach((id, index) => {
+    slots[zone.positions?.[index] ?? index] = id
+  })
+  return slots
 }
 
 /**
@@ -341,6 +383,62 @@ export function useIsSharedLifeTeamGame(): boolean {
   return useGameStore((state) => selectIsTeamGame(state) && state.teamSharedLife)
 }
 
+/**
+ * Multiplayer: how far off the viewer's next turn is, counted in living seats around the turn
+ * order (`players` is the server's turn order) — "You're next" / "You in 2". Undefined on the
+ * viewer's own turn and when either seat is unknown or out. Callers skip it for shared-turn team
+ * games (CR 805.4), where a per-seat count would mislead.
+ */
+export function turnQueueHintFor(
+  players: readonly ClientPlayer[],
+  activePlayerId: EntityId | null | undefined,
+  viewerId: EntityId | null | undefined,
+): string | undefined {
+  if (!activePlayerId || !viewerId) return undefined
+  const living = players.filter((p) => !p.hasLost)
+  const from = living.findIndex((p) => p.playerId === activePlayerId)
+  const to = living.findIndex((p) => p.playerId === viewerId)
+  if (from < 0 || to < 0) return undefined
+  const distance = (to - from + living.length) % living.length
+  if (distance === 0) return undefined
+  return distance === 1 ? "You're next" : `You in ${distance}`
+}
+
+/**
+ * True only for a team game whose teams take one shared turn and hold priority together
+ * (Two-Headed Giant — CR 805 / 810.2). This is the flag that decides whether a teammate may act in
+ * your priority window; Team vs. Team is a team game that takes individual turns (CR 808.4), so it
+ * is false there.
+ */
+export function useIsSharedTurnTeamGame(): boolean {
+  return useGameStore((state) => selectIsTeamGame(state) && state.teamSharedTurns)
+}
+
+/**
+ * True when the active player is the viewer's teammate — i.e. it is the viewer's team's turn but
+ * not their own seat's (CR 805.4). False in every format that doesn't share team turns.
+ */
+export function useIsMyTeamTurn(): boolean {
+  return useGameStore((state) => {
+    const active = state.gameState?.activePlayerId
+    if (!active || active === state.playerId) return false
+    return selectSharesTeamTurn(state, active, state.playerId)
+  })
+}
+
+/**
+ * True when [playerId] is on the team that currently holds priority, but is not the baton holder
+ * themselves (CR 805.5) — the *widening* that team priority buys, which is what the UI wants to
+ * talk about. False in every non-team game and false when you simply hold priority yourself.
+ */
+export function useTeamHasPriority(playerId: EntityId | null): boolean {
+  return useGameStore((state) => {
+    const holder = state.gameState?.priorityPlayerId
+    if (!holder || holder === playerId) return false
+    return selectSharesTeamTurn(state, holder, playerId)
+  })
+}
+
 /** Team index of a player, or null in a non-team game / unknown player. */
 export function useTeamIndex(playerId: EntityId | null): number | null {
   return useGameStore((state) => (playerId ? state.teamByPlayerId?.[playerId] ?? null : null))
@@ -376,6 +474,34 @@ export function useIdentityColor(playerId: EntityId | null): SeatColor {
   const seatIndex = useSeatIndex(playerId)
   const teamMap = useGameStore(selectTeamMap)
   return useMemo(() => identitySeatColor(teamMap, playerId, seatIndex), [teamMap, playerId, seatIndex])
+}
+
+export { teamLabel } from './teamLabel'
+
+/** Hook form of [teamLabel] for a player's team. */
+export function useTeamLabelFor(playerId: EntityId | null): string {
+  const teamMap = useGameStore(selectTeamMap)
+  const viewerTeam = useViewerTeamIndex()
+  const t = playerId != null ? teamMap[playerId] ?? null : null
+  return teamLabel(t, viewerTeam)
+}
+
+/**
+ * The living members of `playerId`'s team, in turn order — the tooltip behind a team-labelled
+ * orb ("Opponents" → "Bob & Carol") and the source of the team's single shared life total.
+ */
+export function useTeammateNames(playerId: EntityId | null): string {
+  const gameState = useGameStore(selectGameState)
+  const teamMap = useGameStore(selectTeamMap)
+  return useMemo(() => {
+    if (!gameState || playerId == null) return ''
+    const t = teamMap[playerId]
+    if (t == null) return gameState.players.find((p) => p.playerId === playerId)?.name ?? ''
+    return gameState.players
+      .filter((p) => teamMap[p.playerId] === t && !p.hasLost)
+      .map((p) => p.name)
+      .join(' & ')
+  }, [gameState, teamMap, playerId])
 }
 
 /**
@@ -418,7 +544,20 @@ export function cardIdForAction(info: LegalActionInfo): EntityId | undefined {
 }
 
 export function isHighlightable(a: LegalActionInfo): boolean {
-  return (!a.isManaAbility || a.additionalCostInfo != null || a.manaCostString != null) && a.isAffordable !== false
+  // A mana ability is normally not highlightable: tapping a land for mana is driven by the mana
+  // payment flow, not by clicking the card. The exceptions are the ones that need something from
+  // the player first — an extra cost, a mana cost of their own, or an X to choose. That last one
+  // covers the storage lands ("{T}, Remove any number of storage counters: Add {B} for each"):
+  // without it the card is unclickable, the X picker never opens, and the ability resolves for
+  // X = 0 — counters spent, no mana produced.
+  // The X exception needs its own guard: a storage land with no counters still enumerates the
+  // ability (X = 0 is legal), so without this the land glows, the picker opens with maxX 0, and
+  // confirming taps it for nothing.
+  const needsPlayerInput =
+    a.additionalCostInfo != null ||
+    a.manaCostString != null ||
+    (a.hasXCost === true && (a.maxAffordableX ?? 0) > 0)
+  return (!a.isManaAbility || needsPlayerInput) && a.isAffordable !== false
 }
 
 /**
@@ -654,14 +793,18 @@ export function useBattlefieldCards(
     // dropping it (it is only ever rendered nested under a host card otherwise).
     const cardIdSet = new Set(cards.map((c) => c.id))
     const isNotAttached = (c: ClientCard) => !c.attachedTo || !cardIdSet.has(c.attachedTo)
-    const playerCards = cards.filter((c) => c.controllerId === playerId)
+    // Sides go by `tableSideOf`, not raw controller: a battle sits in front of its protector, so
+    // a Siege you cast lands across the table where your attacks go and your opponent blocks.
+    const playerCards = cards.filter((c) => tableSideOf(c) === playerId)
     const opponentCards = opponentId
-      ? cards.filter((c) => c.controllerId === opponentId)
-      : cards.filter((c) => c.controllerId !== playerId)
+      ? cards.filter((c) => tableSideOf(c) === opponentId)
+      : cards.filter((c) => tableSideOf(c) !== playerId)
 
     const isLand = (c: ClientCard) => c.cardTypes.includes('LAND')
     const isCreature = (c: ClientCard) => c.cardTypes.includes('CREATURE')
-    const isPlaneswalker = (c: ClientCard) => c.cardTypes.includes('PLANESWALKER')
+    // Planeswalkers and battles share the front-row slot beside the creatures: both are the
+    // permanents creatures attack, so they read as one group during combat.
+    const isPlaneswalker = (c: ClientCard) => c.cardTypes.includes('PLANESWALKER') || isBattle(c)
 
     // Animated lands (both creature + land) should appear in the creatures row
     const isNonCreatureLand = (c: ClientCard) => isLand(c) && !isCreature(c)
@@ -706,18 +849,28 @@ export function useBattlefieldCards(
   }, [gameState, playerId, opponentId])
 }
 
+const EMPTY_CARDS: readonly ClientCard[] = Object.freeze([]) as readonly ClientCard[]
+
 /**
  * Hook to get stack items in order.
  */
 export function useStackCards(): readonly ClientCard[] {
   const gameState = useGameStore(selectGameState)
+  const previousRef = useRef<readonly ClientCard[]>(EMPTY_CARDS)
   return useMemo(() => {
-    if (!gameState) return []
-    const stack = gameState.zones.find((z) => z.zoneId.zoneType === ZoneType.STACK)
-    if (!stack || !stack.cardIds) return []
-    return stack.cardIds
-      .map((id) => gameState.cards[id])
-      .filter((card): card is ClientCard => card !== null && card !== undefined)
+    const stack = gameState?.zones.find((z) => z.zoneId.zoneType === ZoneType.STACK)
+    const next = !gameState || !stack?.cardIds
+      ? EMPTY_CARDS
+      : stack.cardIds
+          .map((id) => gameState.cards[id])
+          .filter((card): card is ClientCard => card !== null && card !== undefined)
+    // Card objects survive a delta untouched, so an element-wise identity check is enough to keep
+    // the array stable while the stack itself didn't change — downstream (split-out target ids,
+    // every battlefield grouping) is keyed on this array's identity.
+    const prev = previousRef.current
+    if (prev.length === next.length && prev.every((card, i) => card === next[i])) return prev
+    previousRef.current = next
+    return next
   }, [gameState])
 }
 
@@ -811,6 +964,10 @@ export function useGroupedZoneCards(zoneId: ZoneId): readonly GroupedCard[] {
  * Future Sight-like effects, and exile cards playable via Mind's Desire-like effects.
  * These are shown as translucent cards appended to the player's hand for discoverability.
  * Excludes simple mana abilities and unaffordable actions (same filtering as useHasLegalActions).
+ *
+ * A ghost is an *offer*, not the card as its zone holds it: a disturb card (CR 702.146a) is cast
+ * back face up (CR 712.8c), so it joins the hand as the spirit it becomes rather than the creature
+ * lying in the graveyard. {@link castOfferFace} does that swap wherever the server flags it.
  */
 export function useGhostCards(playerId: EntityId | null): readonly ClientCard[] {
   const gameState = useGameStore(selectGameState)
@@ -844,15 +1001,29 @@ export function useGhostCards(playerId: EntityId | null): readonly ClientCard[] 
       }
     }
 
+    // 1b. Spells castable out of *another* player's graveyard (The Great Work's "cast instant and
+    // sorcery spells from any graveyard", Jetsam) — the server only offers these when a permission
+    // reaches that graveyard, so any such CastSpell action marks a ghost card.
+    for (const zone of gameState.zones) {
+      if (zone.zoneId.zoneType !== ZoneType.GRAVEYARD || zoneIdEquals(zone.zoneId, gyZoneId)) continue
+      if (!zone.cardIds || zone.cardIds.length === 0) continue
+      const otherGyCardIds = new Set(zone.cardIds)
+      for (const actionInfo of legalActions) {
+        const action = actionInfo.action
+        if (action.type !== 'CastSpell' || actionInfo.sourceZone !== 'GRAVEYARD') continue
+        if (!otherGyCardIds.has(action.cardId)) continue
+        if (actionInfo.isAffordable === false) continue
+        ghostCardIds.add(action.cardId)
+      }
+    }
+
     // 2. Top-of-library card revealed via Future Sight-like effects
     // Always show the revealed top card as a ghost card, even when it's not playable
     const libZoneId = library(playerId)
     const libZone = gameState.zones.find((z) => zoneIdEquals(z.zoneId, libZoneId))
-    if (libZone && libZone.cardIds && libZone.cardIds.length > 0) {
-      const topCardId = libZone.cardIds[0]!
-      if (gameState.cards[topCardId]) {
-        ghostCardIds.add(topCardId)
-      }
+    const topCardId = librarySlots(libZone)[0]
+    if (topCardId && gameState.cards[topCardId]) {
+      ghostCardIds.add(topCardId)
     }
 
     // 3. Exile cards playable via Mind's Desire-like effects
@@ -868,10 +1039,12 @@ export function useGhostCards(playerId: EntityId | null): readonly ClientCard[] 
       }
     }
 
-    // Return deduplicated ClientCard objects
+    // Return deduplicated ClientCard objects, each shown as the face it would be cast as
+    const actionsByCard = getLegalActionsIndex(legalActions).byCard
     return Array.from(ghostCardIds)
       .map((id) => gameState.cards[id])
       .filter((card): card is ClientCard => card != null)
+      .map((card) => castOfferFace(card, actionsByCard.get(card.id) ?? EMPTY_ACTIONS))
   }, [gameState, legalActions, playerId])
 }
 
@@ -888,10 +1061,7 @@ export function useRevealedLibraryTopCard(playerId: EntityId | null): ClientCard
 
     const libZoneId = library(playerId)
     const libZone = gameState.zones.find((z) => zoneIdEquals(z.zoneId, libZoneId))
-    if (!libZone || !libZone.cardIds || libZone.cardIds.length === 0) return null
-
-    // The first visible card in the library zone is the revealed top card
-    const topCardId = libZone.cardIds[0]!
-    return gameState.cards[topCardId] ?? null
+    const topCardId = librarySlots(libZone)[0]
+    return topCardId ? (gameState.cards[topCardId] ?? null) : null
   }, [gameState, playerId])
 }

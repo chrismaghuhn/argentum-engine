@@ -2,8 +2,6 @@ package com.wingedsheep.engine.handlers.effects.permanent.attachments
 
 import com.wingedsheep.engine.core.PermanentAttachedEvent
 import com.wingedsheep.engine.core.PermanentUnattachedEvent
-import com.wingedsheep.engine.event.TriggerDetector
-import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
@@ -23,7 +21,7 @@ class AttachmentBatchTriggerSemanticsTest : ScenarioTestBase() {
         oracleText = "Equip {0}; Whenever this becomes attached, draw a card."
         equipAbility("{0}")
         triggeredAbility {
-            trigger = Triggers.becomesAttached()
+            trigger = Triggers.self.becomesAttached()
             effect = Effects.DrawCards(1)
         }
     }
@@ -34,7 +32,7 @@ class AttachmentBatchTriggerSemanticsTest : ScenarioTestBase() {
         oracleText = "Equip {0}; Whenever this becomes attached, draw a card."
         equipAbility("{0}")
         triggeredAbility {
-            trigger = Triggers.becomesAttached()
+            trigger = Triggers.self.becomesAttached()
             effect = Effects.DrawCards(1)
         }
     }
@@ -64,7 +62,7 @@ class AttachmentBatchTriggerSemanticsTest : ScenarioTestBase() {
             val secondB = secondGame.findPermanent(triggeredEquipmentB.name)!!
 
             val mutation = AttachmentBatchMutation(
-                AttachmentLegality(cardRegistry, TargetFinder())
+                AttachmentLegality(cardRegistry, services.targetFinder)
             )
             val first = mutation.apply(
                 state = firstGame.state,
@@ -106,7 +104,7 @@ class AttachmentBatchTriggerSemanticsTest : ScenarioTestBase() {
             secondAttached shouldBe setOf(secondA to secondDestination, secondB to secondDestination)
 
             fun triggerSignatures(state: com.wingedsheep.engine.state.GameState, events: List<com.wingedsheep.engine.core.GameEvent>) =
-                TriggerDetector(cardRegistry).detectTriggers(state, events)
+                services.triggerDetector.detectTriggers(state, events)
                     .map { trigger ->
                         Triple(
                             trigger.sourceName,

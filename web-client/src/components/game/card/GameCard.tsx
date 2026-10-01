@@ -2,9 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useGameStore } from '@/store/gameStore.ts'
 import { useHasLegalActions } from '@/store/selectors.ts'
 import type { ClientCard, EntityId, LegalActionInfo } from '@/types'
-import { Color, ColorSymbols, Keyword } from '@/types/enums'
+import { Color, ColorSymbols, CounterType, Keyword } from '@/types/enums'
+import { isBattle } from '@/utils/combatTargets'
 import { getCardImageUrl, getScryfallFallbackUrl, faceDownImageUrl } from '@/utils/cardImages.ts'
 import { useInteraction } from '@/hooks/useInteraction.ts'
+import { useOpenCardMenuOnTap } from '@/hooks/useOpenCardMenuOnTap.ts'
+import { isGhostMouseEvent, noteTouchInteraction } from '@/utils/ghostMouse.ts'
 import { ManaCost, ManaSymbol } from '@/components/ui/ManaSymbols.tsx'
 import { HoverCardPreview } from '@/components/ui/HoverCardPreview.tsx'
 import {
@@ -52,6 +55,7 @@ import {
   getCounterCount,
   PASSIVE_COUNTER_TYPES,
 } from '../board/shared'
+import { CARD_COUNTER_ROTATE_TRANSITION, CARD_REDUCED_MOTION_TRANSITION, CARD_RESIZE_TRANSITION, prefersReducedMotion } from '../board/battlefieldLayout'
 import { styles, bandColorFor, passiveCounterBadgeStyle, UNTAP_FROST_RIM, UNTAP_FROST_FILL } from '../board/styles'
 import {
   TARGET_COLOR, TARGET_COLOR_BRIGHT, TARGET_GLOW, TARGET_GLOW_BRIGHT, TARGET_GLOW_OUTER, TARGET_SHADOW,
@@ -62,8 +66,9 @@ import { untapRestrictionOf } from './untapRestriction'
 import { counterManaClass, counterSvgIcon } from '@/assets/icons/keywords'
 import { SvgGlyph } from '@/assets/icons/SvgGlyph'
 import { RenderProfiler } from '@/utils/renderProfiler'
+import { useCardInteractionState } from './useCardInteractionState'
 import { buildActionOptions, playCostRange } from '@/utils/actionOptions.ts'
-import { parseManaCost, totalManaNeeded } from '@/utils/manaCost.ts'
+import { getRemainingCostAfterConvoke, parseManaCost, pickConvokeColor, totalManaNeeded } from '@/utils/manaCost.ts'
 
 /** Shared empty list for cards that can never be played from where they are — see GameCardImpl. */
 const NO_LEGAL_ACTIONS: readonly LegalActionInfo[] = Object.freeze([])
@@ -220,23 +225,40 @@ function GameCardImpl({
   const voidActive = useGameStore(
     (state) => (state.spectatingState?.gameState ?? state.gameState)?.voidActive ?? false
   )
-  const selectCard = useGameStore((state) => state.selectCard)
+  // Store *actions* are never subscribed to here: they never change, yet each subscription still
+  // runs on every store write (hover writes included, at up to 60 Hz). Handlers call them through
+  // `useGameStore.getState()` instead.
+  //
   // Subscribe to the per-card boolean, not the global selectedCardId, so that
   // selecting a card only re-renders the two cards whose selection state flips
   // (Zustand bails out on Object.is-equal selector results) instead of every
   // card on the battlefield.
   const isSelected = useGameStore((state) => state.selectedCardId === card.id)
-  const hoverCard = useGameStore((state) => state.hoverCard)
-  const targetingState = useGameStore((state) => state.targetingState)
-  const addTarget = useGameStore((state) => state.addTarget)
-  const removeTarget = useGameStore((state) => state.removeTarget)
-  const combatState = useGameStore((state) => state.combatState)
-  // Single-client hotseat: the board perspective is fixed to the connection, so the seat we
-  // currently control may render on the opponent row. For combat we then key validity off the
-  // server's combatState membership (authoritative for the acting seat) instead of the row.
-  const hotseat = useGameStore(
-    (state) => ((state.spectatingState?.gameState ?? state.gameState)?.hotseat ?? false),
-  )
+  // The interaction in progress (targeting, combat, decisions, payment selections), reduced to what
+  // it means for this card — see useCardInteractionState. Hotseat's "which row is ours" is folded in.
+  const cardHasBanding = card.keywords.includes(Keyword.BANDING)
+  const {
+    isInTargetingMode, isValidTarget, isSelectedTarget, isBeingCast, costIfSacrificed,
+    hasPendingDecision, isChooseTargetsDecision, isValidDecisionTarget, isManaPaymentWindow,
+    isTriggerYesNo, isDecisionSubject,
+    hasDecisionSelection, isValidDecisionSelection, isSelectedDecisionOption,
+    isDistributeTarget, distributeAllocated, distributeRemaining, distributeMinPerTarget, distributeMaxForCard,
+    counterCreature, counterDistInner,
+    isInManaSelectionMode, isManaValidSource, isManaSelected,
+    isInTapForPowerMode, isValidTapForPowerCreature, isSelectedTapForPowerCreature,
+    isInConvokeMode, isValidConvokeCreature, isSelectedConvokeCreature,
+    isInTapForGenericMode, isValidTapForGenericPermanent, isSelectedTapForGenericPermanent,
+    isInHarmonizeMode, isValidHarmonizeCreature, isSelectedHarmonizeCreature,
+    isInAttackerMode, isInBlockerMode, isValidAttacker, isSelectedAsAttacker, bandIndex, isBandDropTarget,
+    isValidBlocker, isSelectedAsBlocker, isAttackingInBlockerMode, isMustBeBlocked, isBystanderAttacker,
+    isValidAttackTargetCard, isAttackTargetWithAttackers, isTargetedByAttacker,
+    isBlockerDragActive, isDraggingThisBlocker, isDraggingThisAttacker,
+  } = useCardInteractionState({
+    cardId: card.id,
+    isCreature: card.cardTypes.includes('CREATURE'),
+    isOpponentCard,
+    hasBanding: cardHasBanding,
+  })
   // `legalActions` is a fresh array on every server update, so subscribing to it re-renders this
   // card whenever *anything* happens anywhere — and on a full board that is most of the cost of
   // a click. It is only ever used to find the ways to play *this* card, which can only exist for
@@ -247,68 +269,45 @@ function GameCardImpl({
   const legalActions = useGameStore((state) =>
     canBePlayedFromHere ? state.legalActions : NO_LEGAL_ACTIONS
   )
-  const toggleAttacker = useGameStore((state) => state.toggleAttacker)
-  const assignBlocker = useGameStore((state) => state.assignBlocker)
-  const removeBlockerAssignment = useGameStore((state) => state.removeBlockerAssignment)
-  const startDraggingBlocker = useGameStore((state) => state.startDraggingBlocker)
-  const stopDraggingBlocker = useGameStore((state) => state.stopDraggingBlocker)
-  const draggingBlockerId = useGameStore((state) => state.draggingBlockerId)
-  const startDraggingAttacker = useGameStore((state) => state.startDraggingAttacker)
-  const stopDraggingAttacker = useGameStore((state) => state.stopDraggingAttacker)
-  const draggingAttackerId = useGameStore((state) => state.draggingAttackerId)
-  const draggingAttackerHasBanding = useGameStore((state) => state.draggingAttackerHasBanding)
-  const linkBand = useGameStore((state) => state.linkBand)
-  // Server-side combat attackers (carry bandId) so band grouping stays visible after
-  // attacks are declared — during the defender's blocks and combat, not just declare-attackers.
-  const serverCombatAttackers = useGameStore(
-    (state) => (state.spectatingState?.gameState ?? state.gameState)?.combat?.attackers ?? null
-  )
-  const setAttackTarget = useGameStore((state) => state.setAttackTarget)
-  const startDraggingCard = useGameStore((state) => state.startDraggingCard)
-  const stopDraggingCard = useGameStore((state) => state.stopDraggingCard)
   // Per-card boolean rather than the raw id: a plain click on any card writes draggingCardId
   // twice (pointer down, then up), and subscribing to the id itself made every one of those
   // writes re-render every card on the board. Only "is it this card?" is ever asked.
   const isDraggingThisCard = useGameStore((state) => state.draggingCardId === card.id)
-  const pendingDecision = useGameStore((state) => state.pendingDecision)
-  const submitTargetsDecision = useGameStore((state) => state.submitTargetsDecision)
-  const decisionSelectionState = useGameStore((state) => state.decisionSelectionState)
-  const toggleDecisionSelection = useGameStore((state) => state.toggleDecisionSelection)
-  const distributeState = useGameStore((state) => state.distributeState)
-  const incrementDistribute = useGameStore((state) => state.incrementDistribute)
-  const decrementDistribute = useGameStore((state) => state.decrementDistribute)
-  const counterDistributionState = useGameStore((state) => state.counterDistributionState)
-  const incrementCounterRemoval = useGameStore((state) => state.incrementCounterRemoval)
-  const decrementCounterRemoval = useGameStore((state) => state.decrementCounterRemoval)
-  const manaSelectionState = useGameStore((state) => state.manaSelectionState)
-  const toggleManaSource = useGameStore((state) => state.toggleManaSource)
-  const toggleTapForPowerCreature = useGameStore((state) => state.toggleTapForPowerCreature)
-  const toggleConvokeCreature = useGameStore((state) => state.toggleConvokeCreature)
-  const toggleTapForGenericPermanent = useGameStore((state) => state.toggleTapForGenericPermanent)
-  const toggleHarmonizeCreature = useGameStore((state) => state.toggleHarmonizeCreature)
-  const submitYesNoDecision = useGameStore((state) => state.submitYesNoDecision)
   const isBeheldPulsing = useGameStore((state) => state.beholdPulses.some((p) => p.cardId === card.id))
   const responsive = useResponsiveContext()
+  const openCardMenuOnTap = useOpenCardMenuOnTap()
   const { handleCardClick, handleDoubleClick, executeAction } = useInteraction()
   const dragStartPos = useRef<{ x: number; y: number } | null>(null)
   const handledByDrag = useRef(false)
   /** Whether the attacker was already selected when drag started (to know if short press = select or deselect) */
   const attackerWasSelected = useRef(false)
 
-  // Hover handlers for card preview — track position via onMouseMove like the deckbuilder
-  const updateHoverPosition = useGameStore((s) => s.updateHoverPosition)
+  // Hover handlers for card preview — track position via the move handler like the deckbuilder.
+  //
+  // Pointer events, not mouse events, and only for a device that can actually hover: a tap fires a
+  // synthesized mouseenter/mousemove pair before its click, so on a phone the preview opened on top
+  // of the action menu that same tap had just opened — and since no mouseleave follows a tap, it
+  // stayed there. Touch reaches the preview through the long-press below instead.
+  // While an action menu is open the pointer is still over the card that opened it, and the
+  // preview would land on top of the menu's buttons — the menu already shows the card full-size.
+  const menuOpen = useGameStore((s) => s.selectedCardId !== null)
 
-  const handleMouseEnter = useCallback((e: React.MouseEvent) => {
-    hoverCard(card.id, { x: e.clientX, y: e.clientY })
-  }, [card.id, hoverCard])
+  const handleHoverEnter = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === 'touch' || menuOpen) return
+    useGameStore.getState().hoverCard(card.id, { x: e.clientX, y: e.clientY })
+  }, [card.id, menuOpen])
 
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    updateHoverPosition({ x: e.clientX, y: e.clientY })
-  }, [updateHoverPosition])
+  const handleHoverMove = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') return
+    useGameStore.getState().updateHoverPosition({ x: e.clientX, y: e.clientY })
+  }, [])
 
-  const handleMouseLeave = useCallback(() => {
-    hoverCard(null)
-  }, [hoverCard])
+  // Guarded on touch too: without it a finger straying off the card during a long-press would clear
+  // the preview that long-press just opened.
+  const handleHoverLeave = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') return
+    useGameStore.getState().hoverCard(null)
+  }, [])
 
   // Long-press handler for mobile card preview
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -321,13 +320,18 @@ function GameCardImpl({
   const handleTouchStartPreview = useCallback((_e: React.TouchEvent) => {
     longPressTimer.current = setTimeout(() => {
       setLongPressActive(true)
-      hoverCard(card.id)
+      const store = useGameStore.getState()
+      store.hoverCard(card.id)
       // Cancel any in-progress drag
-      stopDraggingCard()
-      stopDraggingBlocker()
+      store.stopDraggingCard()
+      store.stopDraggingBlocker()
     }, 400)
-  }, [card.id, hoverCard, stopDraggingCard, stopDraggingBlocker])
+  }, [card.id])
 
+  // Also wired to touchcancel, not just touchend: a long press is exactly the gesture that makes a
+  // mobile browser take the touch away from us (native text selection / callout), and it delivers
+  // touchcancel instead of touchend when it does. Only listening for touchend left the preview
+  // stuck on screen with no way to dismiss it.
   const handleTouchEndPreview = useCallback(() => {
     if (longPressTimer.current) {
       clearTimeout(longPressTimer.current)
@@ -335,11 +339,11 @@ function GameCardImpl({
     }
     if (longPressActive) {
       setLongPressActive(false)
-      hoverCard(null)
+      useGameStore.getState().hoverCard(null)
       // Mark as handled by drag to suppress click
       handledByDrag.current = true
     }
-  }, [longPressActive, hoverCard])
+  }, [longPressActive])
 
   const handleTouchMovePreview = useCallback(() => {
     // Cancel long-press if finger moves (user is scrolling/dragging)
@@ -374,27 +378,25 @@ function GameCardImpl({
   // portrait back face stops being rotated.
   const isLandscapePrint = !faceDown && !!battlefield && card.isLandscapeFace === true
   const totalRotateDeg = (isLandscapePrint ? 90 : 0) + (isTapped ? 90 : 0)
+  // Applied wherever a chip counter-rotates by `-totalRotateDeg`: it has to ease alongside the
+  // card's own turn instead of snapping to its final angle the instant the permanent taps.
+  const counterRotateTransition = battlefield && !prefersReducedMotion() ? CARD_COUNTER_ROTATE_TRANSITION : undefined
+  // A battle drawn across the table is still controlled by whoever cast it; the tooltip says who
+  // protects it and who controls it, since only one of the two is implied by where it sits.
+  const battleTooltip = useGameStore((state) => {
+    if (!battlefield || !isBattle(card)) return undefined
+    const players = (state.spectatingState?.gameState ?? state.gameState)?.players ?? []
+    const nameOf = (id: EntityId | null | undefined) =>
+      players.find((p) => p.playerId === id)?.name ?? 'unknown'
+    const defense = `Defense ${card.counters[CounterType.DEFENSE] ?? 0}`
+    if (!card.protectorId) return defense
+    return `${defense} — protected by ${nameOf(card.protectorId)}, controlled by ${nameOf(card.controllerId)}`
+  })
   const needsLandscapeContainer = Math.abs(totalRotateDeg) % 180 === 90
-  const isInTargetingMode = targetingState !== null
-  const isValidTarget = targetingState?.validTargets.includes(card.id) ?? false
-  const isSelectedTarget = targetingState?.selectedTargets.includes(card.id) ?? false
-  const isBeingCast = isInTargetingMode && targetingState?.action != null &&
-    'cardId' in targetingState.action && targetingState.action.cardId === card.id
   // Emerge (CR 702.119a): while the sacrifice is being picked, the server has priced *every*
   // candidate — the reduction is that creature's mana value off the generic part of the emerge cost.
-  // Showing each candidate's resulting cost on the card itself makes the choice comparable before
-  // the click; the overlay banner only ever shows the one already selected.
-  const costIfSacrificed = targetingState?.costAfterSacrifice?.[card.id]
-
-  // Check if this card is a valid target in a pending ChooseTargetsDecision (single-requirement only)
-  const isChooseTargetsDecision = pendingDecision?.type === 'ChooseTargetsDecision'
-  const isSingleRequirementDecision = isChooseTargetsDecision && pendingDecision.targetRequirements.length === 1
-  const decisionLegalTargets = isSingleRequirementDecision ? (pendingDecision.legalTargets[0] ?? []) : []
-  const isValidDecisionTarget = decisionLegalTargets.includes(card.id)
-
-  // Check if this card is a valid option in decision selection mode (SelectCardsDecision with useTargetingUI)
-  const isValidDecisionSelection = decisionSelectionState?.validOptions.includes(card.id) ?? false
-  const isSelectedDecisionOption = decisionSelectionState?.selectedOptions.includes(card.id) ?? false
+  // Showing each candidate's resulting cost on the card itself (`costIfSacrificed`) makes the choice
+  // comparable before the click; the overlay banner only ever shows the one already selected.
 
   // Inline counter distribution checks (for RemoveXPlusOnePlusOneCounters cost
   // and Dawnhand Dissident's `RemoveCountersFromYourCreatures` cost). The slice
@@ -402,11 +404,7 @@ function GameCardImpl({
   // type, so build the row list here from `availableCountersByType`. Single-type
   // creatures get one row; multi-type creatures (e.g. +1/+1 + stun) get one row
   // per type with independent caps.
-  const counterCreature = counterDistributionState?.creatures.find((c) => c.entityId === card.id)
   const isCounterDistTarget = counterCreature != null
-  const counterDistInner: Record<string, number> | undefined = isCounterDistTarget
-    ? counterDistributionState?.distribution[card.id]
-    : undefined
   const counterRows: ReadonlyArray<{ counterType: string; available: number; allocated: number }> =
     isCounterDistTarget && counterCreature
       ? (() => {
@@ -424,124 +422,33 @@ function GameCardImpl({
       : []
 
   // Inline damage distribution checks
-  const isDistributeTarget = distributeState?.targets.includes(card.id) ?? false
-  const distributeAllocated = isDistributeTarget ? (distributeState?.distribution[card.id] ?? 0) : 0
-  const distributeTotalAllocated = distributeState
-    ? Object.values(distributeState.distribution).reduce((sum, v) => sum + v, 0)
-    : 0
-  const distributeRemaining = distributeState ? distributeState.totalAmount - distributeTotalAllocated : 0
-  const distributeMaxForCard = distributeState?.maxPerTarget?.[card.id]
   const distributeAtMax = distributeMaxForCard !== undefined && distributeAllocated >= distributeMaxForCard
 
-  // Mana selection checks
-  const isManaValidSource = manaSelectionState?.validSources.includes(card.id) ?? false
-  const isManaSelected = manaSelectionState?.selectedSources.includes(card.id) ?? false
-  const isInManaSelectionMode = manaSelectionState !== null
+  // The permanent the pending prompt is currently *about* (`isDecisionSubject`) — Killing Wave asks
+  // "pay X life or sacrifice it" once per creature, and the prompts are otherwise identical. Ringing
+  // the subject keeps "which creature is this?" answerable after minimizing the modal.
 
-  // Tap-for-power (Crew / Saddle) selection checks
-  const tapForPowerSelectionState = useGameStore((state) => state.tapForPowerSelectionState)
-  const isInTapForPowerMode = tapForPowerSelectionState !== null
-  const isValidTapForPowerCreature = tapForPowerSelectionState?.validCreatures.some((c) => c.entityId === card.id) ?? false
-  const isSelectedTapForPowerCreature = tapForPowerSelectionState?.selectedCreatures.includes(card.id) ?? false
-
-  // Convoke selection checks
-  const convokeSelectionState = useGameStore((state) => state.convokeSelectionState)
-  const isInConvokeMode = convokeSelectionState !== null
-  const isValidConvokeCreature = convokeSelectionState?.validCreatures.some((c) => c.entityId === card.id) ?? false
-  const isSelectedConvokeCreature = convokeSelectionState?.selectedCreatures.some((c) => c.entityId === card.id) ?? false
-
-  // Tap-for-generic selection checks (improvise / waterbend; generic-only)
-  const tapForGenericSelectionState = useGameStore((state) => state.tapForGenericSelectionState)
-  const isInTapForGenericMode = tapForGenericSelectionState !== null
-  const isValidTapForGenericPermanent = tapForGenericSelectionState?.validPermanents.some((p) => p.entityId === card.id) ?? false
-  const isSelectedTapForGenericPermanent = tapForGenericSelectionState?.selectedPermanents.includes(card.id) ?? false
-
-  // Harmonize creature-tap selection checks (single creature, optional)
-  const harmonizeSelectionState = useGameStore((state) => state.harmonizeSelectionState)
-  const isInHarmonizeMode = harmonizeSelectionState !== null
-  const isValidHarmonizeCreature = harmonizeSelectionState?.validCreatures.some((c) => c.entityId === card.id) ?? false
-  const isSelectedHarmonizeCreature = harmonizeSelectionState?.selectedCreature === card.id
-
-  // Trigger YesNo check (inline buttons on triggering entity card, only when inlineOnTrigger is set)
-  const isTriggerYesNo = pendingDecision?.type === 'YesNoDecision'
-    && pendingDecision.context.inlineOnTrigger
-    && pendingDecision.context.triggeringEntityId === card.id
-
-  // The permanent the pending prompt is currently *about* — Killing Wave asks "pay X life or
-  // sacrifice it" once per creature, and the prompts are otherwise identical. Ringing the subject
-  // keeps "which creature is this?" answerable after minimizing the modal to view the battlefield.
-  const isDecisionSubject = pendingDecision?.context.subjectEntityId === card.id
-
-  // Combat mode checks
-  const isInAttackerMode = combatState?.mode === 'declareAttackers'
-  const isInBlockerMode = combatState?.mode === 'declareBlockers'
   const isInCombatMode = isInAttackerMode || isInBlockerMode
-
-  // For attacker mode: check if this is a valid attacker (own creature, untapped, no summoning sickness)
-  const isOwnCreature = !isOpponentCard && card.cardTypes.includes('CREATURE')
-  // In hotseat the controlled seat can render on either row, so treat any creature as
-  // "ours" / "theirs" for combat and let combatState membership disambiguate.
-  const ownForCombat = isOwnCreature || (hotseat && card.cardTypes.includes('CREATURE'))
-  const opponentForCombat = isOpponentCard || hotseat
-  const isValidAttacker = isInAttackerMode && ownForCombat && !card.isTapped && combatState.validCreatures.includes(card.id)
-  const isSelectedAsAttacker = isInAttackerMode && combatState.selectedAttackers.includes(card.id)
 
   // Banding (CR 702.22): which declared band (if any) this creature belongs to. Drives the
   // colored ring + corner badge so the player can see which creatures attack — and are blocked —
   // as a group. During the viewing player's own declare-attackers this comes from the client-side
   // bands being assembled; afterwards (the defender's blocks, combat) it comes from the server's
   // per-attacker bandId so the grouping persists.
-  const cardHasBanding = card.keywords.includes(Keyword.BANDING)
-  const bandIndex = (() => {
-    if (isInAttackerMode && combatState) {
-      const localIdx = combatState.bands.findIndex((band) => band.includes(card.id))
-      if (localIdx !== -1) return localIdx
-    }
-    const serverBandId = serverCombatAttackers?.find((a) => a.creatureId === card.id)?.bandId
-    if (!serverBandId) return -1
-    // Order bands by first appearance of each unique bandId in attacker order, so the color
-    // assignment is stable and matches what the attacker submitted.
-    const seen: string[] = []
-    for (const att of serverCombatAttackers ?? []) {
-      if (att.bandId && !seen.includes(att.bandId)) seen.push(att.bandId)
-    }
-    return seen.indexOf(serverBandId)
-  })()
   const isBanded = bandIndex >= 0
   const bandColor = isBanded ? bandColorFor(bandIndex) : null
 
-  // Banding drag-and-drop: while one of your attackers is being dragged, this card is a
-  // legal band drop target iff it's a valid attacker (other than the dragged one) and at
-  // least one of (drag source, this card) has BANDING. Used to highlight the drop target.
-  const isBandDropTarget =
-    isInAttackerMode &&
-    !!draggingAttackerId &&
-    draggingAttackerId !== card.id &&
-    combatState.validCreatures.includes(card.id) &&
-    (cardHasBanding || draggingAttackerHasBanding === true)
-
-  // For blocker mode: check if this is a valid blocker or an attacking creature to block
-  const isValidBlocker = isInBlockerMode && ownForCombat && !card.isTapped && combatState.validCreatures.includes(card.id)
-  const isSelectedAsBlocker = isInBlockerMode && !!(combatState?.blockerAssignments[card.id]?.length)
-  const isAttackingInBlockerMode = isInBlockerMode && opponentForCombat && combatState.attackingCreatures.includes(card.id)
-  const isMustBeBlocked = isInBlockerMode && opponentForCombat && combatState.mustBeBlockedAttackers.includes(card.id)
-  // Multiplayer: an attacker in this combat that is attacking a *different*
-  // defender — you can't block it (CR 509.1b), so render it dimmed while you
-  // declare blocks. `attackingCreatures` is already scoped to attacks on the
-  // acting defender, so in a 2-player game this is never true.
-  const isBystanderAttacker = useGameStore((state) => {
-    if (!isInBlockerMode || !opponentForCombat) return false
-    if (combatState?.attackingCreatures.includes(card.id)) return false
-    const combat = (state.spectatingState?.gameState ?? state.gameState)?.combat
-    return combat?.attackers.some((a) => a.creatureId === card.id) ?? false
-  })
-
-  // For attacker mode: check if this permanent can be attacked — an opponent's planeswalker, or a
+  // `isBandDropTarget`: while one of your attackers is being dragged, this card is a legal band
+  // drop target iff it's a valid attacker (other than the dragged one) and at least one of (drag
+  // source, this card) has BANDING. Used to highlight the drop target.
+  //
+  // `isBystanderAttacker` (multiplayer): an attacker in this combat that is attacking a *different*
+  // defender — you can't block it (CR 509.1b), so render it dimmed while you declare blocks.
+  //
+  // `isValidAttackTargetCard`: this permanent can be attacked — an opponent's planeswalker, or a
   // battle (CR 310.5). Deliberately *not* scoped to opponent cards: a Siege's protector is an
-  // opponent of its controller (CR 310.11a), so its own controller may attack it (CR 310.8b) and
-  // it sits on their side of the board. The server's `validAttackTargets` is the only authority on
-  // which permanents are legal, so trust it rather than re-deriving whose card this is.
-  const isValidAttackTargetCard = isInAttackerMode && combatState.validAttackTargets.includes(card.id)
+  // opponent of its controller (CR 310.12a), so its own controller may attack it (CR 310.9b) and
+  // it sits on their side of the board. The server's `validAttackTargets` is the only authority.
 
   // Show playable highlight for cards that aren't purely combat-role cards.
   // Valid blockers with legal actions (e.g., activated abilities) are still playable since blocking uses drag.
@@ -551,8 +458,7 @@ function GameCardImpl({
   // paying player activate mana abilities, and the server sends exactly those as legal actions
   // while the window is up. Sources already offered in the decision's own menu are excluded —
   // those get the selection highlight and a click toggles them rather than opening a menu.
-  const isManaPaymentWindow = pendingDecision?.type === 'SelectManaSourcesDecision'
-  const hasActiveDecision = pendingDecision !== null && !(isManaPaymentWindow && !isValidDecisionSelection)
+  const hasActiveDecision = hasPendingDecision && !(isManaPaymentWindow && !isValidDecisionSelection)
   const isPlayable = interactive && hasLegalActions && (!isInCombatMode || !isCombatRoleCard) && !hasActiveDecision
 
   const cardImageUrl = faceDown
@@ -589,10 +495,11 @@ function GameCardImpl({
   }), [legalActions, card.id])
   const playableAction = playableActions[0]
   // Open the action menu when the card has more than one way to be played — including cards
-  // whose only affordable option is an alternative cast (cycling/typecycling/plot), so the
-  // player still sees the grayed-out "Cast"/"Play land" and can choose deliberately or cancel
-  // instead of silently auto-firing the lone affordable action.
-  const shouldShowCastModal = computeShouldShowCastModal(playableActions)
+  // whose only affordable option is an alternative cast (cycling/typecycling/plot) or whose
+  // second price is a keyword alternative cost the server couldn't afford to enumerate
+  // (impending, evoke), so the player still sees the grayed-out sibling and can choose
+  // deliberately or cancel instead of silently auto-firing the lone affordable action.
+  const shouldShowCastModal = computeShouldShowCastModal(playableActions, card)
   const canDragToPlay = (inHand || enableDragToCast) && playableAction && !isInCombatMode && !isInTargetingMode
 
   // What it costs to play this card from a face-up zone (hand or, for Commander, the command zone).
@@ -632,39 +539,44 @@ function GameCardImpl({
 
     // Start dragging attacker to assign attack target (planeswalker or player)
     // Works for both already-selected and unselected valid attackers
-    if (isInAttackerMode && (isSelectedAsAttacker || isValidAttacker) && combatState) {
+    // (`isInAttackerMode` already implies a combatState.)
+    if (isInAttackerMode && (isSelectedAsAttacker || isValidAttacker)) {
       e.preventDefault()
       dragStartPos.current = { x: clientX, y: clientY }
       attackerWasSelected.current = isSelectedAsAttacker
+      const store = useGameStore.getState()
       if (!isSelectedAsAttacker) {
-        toggleAttacker(card.id) // Select it immediately so the arrow shows
+        store.toggleAttacker(card.id) // Select it immediately so the arrow shows
       }
-      startDraggingAttacker(card.id, card.keywords.includes(Keyword.BANDING))
+      store.startDraggingAttacker(card.id, cardHasBanding)
       return
     }
 
     if (isInBlockerMode && isValidBlocker) {
       e.preventDefault()
-      startDraggingBlocker(card.id)
+      useGameStore.getState().startDraggingBlocker(card.id)
       return
     }
     // Start dragging card from hand
     if (canDragToPlay) {
       e.preventDefault()
       dragStartPos.current = { x: clientX, y: clientY }
-      startDraggingCard(card.id)
+      useGameStore.getState().startDraggingCard(card.id)
     }
-  }, [isInAttackerMode, isSelectedAsAttacker, isValidAttacker, combatState, startDraggingAttacker, toggleAttacker, isInBlockerMode, isValidBlocker, startDraggingBlocker, canDragToPlay, startDraggingCard, card.id])
+  }, [isInAttackerMode, isSelectedAsAttacker, isValidAttacker, cardHasBanding, isInBlockerMode, isValidBlocker, canDragToPlay, card.id])
 
   // Handle mouse/touch up - drop blocker on attacker
   const handlePointerUp = useCallback(() => {
-    if (isInBlockerMode && draggingBlockerId && isAttackingInBlockerMode) {
+    if (!isInBlockerMode || !isAttackingInBlockerMode) return
+    const store = useGameStore.getState()
+    const draggingBlockerId = store.draggingBlockerId
+    if (draggingBlockerId) {
       // Dropping on an attacker - assign the blocker
-      assignBlocker(draggingBlockerId, card.id)
-      stopDraggingBlocker()
+      store.assignBlocker(draggingBlockerId, card.id)
+      store.stopDraggingBlocker()
     }
     // Attacker drag drop is handled in the global handler via resolveDropTarget
-  }, [isInBlockerMode, draggingBlockerId, isAttackingInBlockerMode, assignBlocker, stopDraggingBlocker, card.id])
+  }, [isInBlockerMode, isAttackingInBlockerMode, card.id])
 
   // Global mouse/touch up handler for card dragging (to detect drop outside hand)
   useEffect(() => {
@@ -691,21 +603,22 @@ function GameCardImpl({
 
       // Mark that drag handled this interaction to prevent duplicate click
       handledByDrag.current = true
+      const store = useGameStore.getState()
 
       if (!draggedFarEnough) {
         // Short drag = click
-        stopDraggingCard()
+        store.stopDraggingCard()
 
         // During combat mode, toggle attacker/blocker selection instead of opening action menu
         if (isInAttackerMode) {
           if (isValidAttacker) {
-            toggleAttacker(card.id)
+            store.toggleAttacker(card.id)
           }
           return
         }
         if (isInBlockerMode) {
           if (isValidBlocker && isSelectedAsBlocker) {
-            removeBlockerAssignment(card.id)
+            store.removeBlockerAssignment(card.id)
           }
           return
         }
@@ -718,8 +631,8 @@ function GameCardImpl({
       if (!isOverHand && playableAction) {
         // If multiple casting methods available, open the modal to let player choose
         if (shouldShowCastModal) {
-          selectCard(card.id)
-          stopDraggingCard()
+          store.selectCard(card.id)
+          store.stopDraggingCard()
           return
         }
 
@@ -727,10 +640,15 @@ function GameCardImpl({
         // additional costs, targeting, damage distribution, and direct submission)
         executeAction(playableAction)
       }
-      stopDraggingCard()
+      useGameStore.getState().stopDraggingCard()
     }
 
-    const handleMouseUp = (e: MouseEvent) => handleGlobalPointerUp(e.clientX, e.clientY)
+    // The mouseup half must ignore a tap's compatibility sequence, or the touchend above and the
+    // ghost mouseup behind it both resolve the same drag.
+    const handleMouseUp = (e: MouseEvent) => {
+      if (isGhostMouseEvent()) return
+      handleGlobalPointerUp(e.clientX, e.clientY)
+    }
     const handleTouchEnd = (e: TouchEvent) => {
       const touch = e.changedTouches[0]
       if (touch) handleGlobalPointerUp(touch.clientX, touch.clientY)
@@ -742,19 +660,24 @@ function GameCardImpl({
       window.removeEventListener('mouseup', handleMouseUp)
       window.removeEventListener('touchend', handleTouchEnd)
     }
-  }, [isDraggingThisCard, card.id, playableAction, shouldShowCastModal, executeAction, stopDraggingCard, handleCardClick, selectCard, isInAttackerMode, isValidAttacker, toggleAttacker, isInBlockerMode, isValidBlocker, isSelectedAsBlocker, removeBlockerAssignment])
+  }, [isDraggingThisCard, card.id, playableAction, shouldShowCastModal, executeAction, handleCardClick, isInAttackerMode, isValidAttacker, isInBlockerMode, isValidBlocker, isSelectedAsBlocker])
 
   // Global mouse/touch up handler to cancel blocker drag
   // For touch, we also detect drop target since touchend fires on the originating element
   useEffect(() => {
+    if (!isBlockerDragActive) return
+    // The dragged blocker, as of the drag starting — what a closure over the subscribed id held.
+    const draggingBlockerId = useGameStore.getState().draggingBlockerId
     if (!draggingBlockerId) return
 
     const handleGlobalMouseUp = () => {
-      stopDraggingBlocker()
+      if (isGhostMouseEvent()) return
+      useGameStore.getState().stopDraggingBlocker()
     }
 
     const handleGlobalTouchEnd = (e: TouchEvent) => {
       const touch = e.changedTouches[0]
+      const store = useGameStore.getState()
       if (touch && isInBlockerMode) {
         // Find the element under the touch point
         const elementAtPoint = document.elementFromPoint(touch.clientX, touch.clientY)
@@ -763,13 +686,13 @@ function GameCardImpl({
           const cardEl = elementAtPoint.closest('[data-card-id]')
           if (cardEl) {
             const targetCardId = cardEl.getAttribute('data-card-id')
-            if (targetCardId && combatState?.attackingCreatures.includes(targetCardId as any)) {
-              assignBlocker(draggingBlockerId, targetCardId as any)
+            if (targetCardId && store.combatState?.attackingCreatures.includes(targetCardId as any)) {
+              store.assignBlocker(draggingBlockerId, targetCardId as any)
             }
           }
         }
       }
-      stopDraggingBlocker()
+      store.stopDraggingBlocker()
     }
 
     window.addEventListener('mouseup', handleGlobalMouseUp)
@@ -778,23 +701,26 @@ function GameCardImpl({
       window.removeEventListener('mouseup', handleGlobalMouseUp)
       window.removeEventListener('touchend', handleGlobalTouchEnd)
     }
-  }, [draggingBlockerId, stopDraggingBlocker, isInBlockerMode, combatState, assignBlocker])
+  }, [isBlockerDragActive, isInBlockerMode])
 
   // Global mouse/touch up handler for attacker drag (planeswalker targeting)
   // Uses drag distance to distinguish click (toggle attacker off) from drag (assign target)
   useEffect(() => {
-    if (draggingAttackerId !== card.id) return
+    if (!isDraggingThisAttacker) return
+    const draggingAttackerId = card.id
 
     const resolveDropTarget = (clientX: number, clientY: number) => {
       const elementAtPoint = document.elementFromPoint(clientX, clientY)
       if (!elementAtPoint) return
+      const store = useGameStore.getState()
+      const combatState = store.combatState
 
       // Check if dropped on an attackable permanent (planeswalker, battle)
       const cardEl = elementAtPoint.closest('[data-card-id]')
       if (cardEl) {
         const targetCardId = cardEl.getAttribute('data-card-id') as EntityId | null
         if (targetCardId && combatState?.validAttackTargets.includes(targetCardId)) {
-          setAttackTarget(draggingAttackerId, targetCardId)
+          store.setAttackTarget(draggingAttackerId, targetCardId)
           return
         }
         // CR 702.22: drop on another of your valid attackers → form/extend a band.
@@ -806,36 +732,11 @@ function GameCardImpl({
           combatState?.mode === 'declareAttackers' &&
           combatState.validCreatures.includes(targetCardId)
         ) {
-          const sourceHasBanding = card.keywords.includes(Keyword.BANDING)
-          const targetHasBanding = cardEl.getAttribute('data-banding') === 'true'
-          if (sourceHasBanding || targetHasBanding) {
-            // CR 702.22c: a band may contain at most one creature without banding.
-            // Reject the link client-side when the resulting band would exceed that;
-            // banding status of existing members is read off each card's data-banding
-            // attribute (missing attribute = no banding). Server re-checks regardless.
-            const hasBandingFor = (memberId: EntityId): boolean => {
-              if (memberId === draggingAttackerId) return sourceHasBanding
-              if (memberId === targetCardId) return targetHasBanding
-              const el = document.querySelector(`[data-card-id="${memberId}"]`)
-              return el?.getAttribute('data-banding') === 'true'
-            }
-            const bands = combatState.bands
-            const sourceBand = bands.find((b) => b.includes(draggingAttackerId)) ?? []
-            const targetBand = bands.find((b) => b.includes(targetCardId)) ?? []
-            const merged = new Set<EntityId>([
-              draggingAttackerId,
-              targetCardId,
-              ...sourceBand,
-              ...targetBand,
-            ])
-            const nonBandingCount = Array.from(merged).filter((id) => !hasBandingFor(id)).length
-            if (nonBandingCount > 1) {
-              // Illegal band — silently no-op.
-              return
-            }
-            linkBand(draggingAttackerId, targetCardId, sourceHasBanding, targetHasBanding)
-            return
-          }
+          // Whether the band may form (CR 702.22c) is decided in the reducer from the store's
+          // projected keywords — never from the DOM, where an off-screen member has no element
+          // to read and used to count as "no banding". A drop the rule refuses is a no-op.
+          store.linkBand(draggingAttackerId, targetCardId)
+          return
         }
       }
 
@@ -844,7 +745,7 @@ function GameCardImpl({
       if (lifeEl) {
         const playerId = lifeEl.getAttribute('data-life-id')
         if (playerId) {
-          setAttackTarget(draggingAttackerId, playerId as EntityId)
+          store.setAttackTarget(draggingAttackerId, playerId as EntityId)
           return
         }
       }
@@ -857,7 +758,7 @@ function GameCardImpl({
         const playerId = (defenderEl.getAttribute('data-opponent-board')
           ?? defenderEl.getAttribute('data-rail-chip')) as EntityId | null
         if (playerId && combatState?.validAttackTargets.includes(playerId)) {
-          setAttackTarget(draggingAttackerId, playerId)
+          store.setAttackTarget(draggingAttackerId, playerId)
         }
       }
     }
@@ -872,10 +773,10 @@ function GameCardImpl({
 
       if (!draggedFarEnough) {
         // Short press = click
-        stopDraggingAttacker()
+        useGameStore.getState().stopDraggingAttacker()
         if (attackerWasSelected.current) {
           // Was already selected → toggle off (deselect)
-          toggleAttacker(card.id)
+          useGameStore.getState().toggleAttacker(card.id)
         }
         // If wasn't selected, we already selected it in handlePointerDown → stays selected
         return
@@ -883,10 +784,13 @@ function GameCardImpl({
 
       // Long drag - resolve where we dropped
       resolveDropTarget(clientX, clientY)
-      stopDraggingAttacker()
+      useGameStore.getState().stopDraggingAttacker()
     }
 
-    const handleMouseUp = (e: MouseEvent) => handleGlobalPointerUp(e.clientX, e.clientY)
+    const handleMouseUp = (e: MouseEvent) => {
+      if (isGhostMouseEvent()) return
+      handleGlobalPointerUp(e.clientX, e.clientY)
+    }
     const handleTouchEnd = (e: TouchEvent) => {
       const touch = e.changedTouches[0]
       if (touch) {
@@ -900,10 +804,10 @@ function GameCardImpl({
         if (draggedFarEnough) {
           resolveDropTarget(touch.clientX, touch.clientY)
         } else if (attackerWasSelected.current) {
-          toggleAttacker(card.id)
+          useGameStore.getState().toggleAttacker(card.id)
         }
       }
-      stopDraggingAttacker()
+      useGameStore.getState().stopDraggingAttacker()
     }
 
     window.addEventListener('mouseup', handleMouseUp)
@@ -912,7 +816,7 @@ function GameCardImpl({
       window.removeEventListener('mouseup', handleMouseUp)
       window.removeEventListener('touchend', handleTouchEnd)
     }
-  }, [draggingAttackerId, card.id, card.keywords, stopDraggingAttacker, toggleAttacker, combatState, setAttackTarget, linkBand])
+  }, [isDraggingThisAttacker, card.id])
 
   const handleClick = () => {
     // If the drag handler already processed this interaction, skip
@@ -920,10 +824,11 @@ function GameCardImpl({
       handledByDrag.current = false
       return
     }
+    const store = useGameStore.getState()
 
     // Handle mana selection mode - click to toggle source
     if (isInManaSelectionMode && isManaValidSource) {
-      toggleManaSource(card.id)
+      store.toggleManaSource(card.id)
       return
     }
 
@@ -932,7 +837,7 @@ function GameCardImpl({
 
     // Handle crew selection mode - click to toggle creature
     if (isInTapForPowerMode && isValidTapForPowerCreature) {
-      toggleTapForPowerCreature(card.id)
+      store.toggleTapForPowerCreature(card.id)
       return
     }
 
@@ -940,69 +845,33 @@ function GameCardImpl({
     if (isInConvokeMode && isValidConvokeCreature) {
       // If already selected, deselect (payingColor doesn't matter for deselect)
       if (isSelectedConvokeCreature) {
-        toggleConvokeCreature(card.id, card.name, null)
+        store.toggleConvokeCreature(card.id, card.name, null)
       } else {
-        // Determine best color payment based on creature colors and remaining cost.
-        // The backend sends creature colors as Color enum names ("WHITE", "BLUE"...)
-        // but mana costs parse as pip letters ("W", "U"...), so we normalise to pip
-        // letters for comparison. payingColor submitted back to the server stays as
-        // the Color enum name so kotlinx serialization can deserialize it.
-        const creatureInfo = convokeSelectionState.validCreatures.find((c) => c.entityId === card.id)
-        const colorNames = creatureInfo?.colors ?? []
-        const colorPips = colorNames.map(c => ColorSymbols[c as Color] ?? c)
-        // Parse remaining cost to find colored symbols still needed
-        const manaCost = convokeSelectionState.manaCost
-        const symbols: string[] = []
-        const regex = /\{([^}]+)\}/g
-        let m
-        while ((m = regex.exec(manaCost)) !== null) symbols.push(m[1]!)
-        // Remove symbols already covered by existing selections. Hybrid pips (CR 107.4e)
-        // are colored symbols of both halves, so a previous W selection can consume a
-        // {W/U} pip. Prefer exact colored matches before hybrids to avoid wasting pips.
-        const hybridCovers = (sym: string, pip: string): boolean =>
-          sym.includes('/') && sym.split('/').includes(pip)
-        const remaining = [...symbols]
-        for (const sel of convokeSelectionState.selectedCreatures) {
-          if (sel.payingColor) {
-            const pip = ColorSymbols[sel.payingColor as Color] ?? sel.payingColor
-            const idx = remaining.indexOf(pip)
-            if (idx >= 0) { remaining.splice(idx, 1); continue }
-            const hIdx = remaining.findIndex(s => hybridCovers(s, pip))
-            if (hIdx >= 0) remaining.splice(hIdx, 1)
-          } else {
-            const gIdx = remaining.findIndex(s => /^\d+$/.test(s))
-            if (gIdx >= 0) {
-              const val = parseInt(remaining[gIdx]!, 10)
-              if (val > 1) remaining[gIdx] = String(val - 1)
-              else remaining.splice(gIdx, 1)
-            }
-          }
+        // Which colour this creature pays is a preference the shared cost estimate picks
+        // (`pickConvokeColor`); the server checks the creature actually is that colour. Colours
+        // arrive as backend enum names ("WHITE") and go back the same way so kotlinx can read them.
+        const convokeSelectionState = store.convokeSelectionState
+        if (convokeSelectionState) {
+          const creatureInfo = convokeSelectionState.validCreatures.find((c) => c.entityId === card.id)
+          const convoked: Record<string, { color: string | null }> = {}
+          for (const sel of convokeSelectionState.selectedCreatures) convoked[sel.entityId] = { color: sel.payingColor }
+          const remaining = getRemainingCostAfterConvoke(parseManaCost(convokeSelectionState.manaCost), convoked)
+          const payingColor = pickConvokeColor(remaining, creatureInfo?.colors ?? [])
+          store.toggleConvokeCreature(card.id, card.name, payingColor)
         }
-        // Pick a color this creature can pay that's still needed. Exact colored pips
-        // first, then hybrid pips where one half matches.
-        let payingColor: string | null = null
-        for (let i = 0; i < colorPips.length; i++) {
-          if (remaining.includes(colorPips[i]!)) { payingColor = colorNames[i]!; break }
-        }
-        if (!payingColor) {
-          for (let i = 0; i < colorPips.length; i++) {
-            if (remaining.some(s => hybridCovers(s, colorPips[i]!))) { payingColor = colorNames[i]!; break }
-          }
-        }
-        toggleConvokeCreature(card.id, card.name, payingColor)
       }
       return
     }
 
     // Handle tap-for-generic selection mode - click to toggle an eligible permanent
     if (isInTapForGenericMode && isValidTapForGenericPermanent) {
-      toggleTapForGenericPermanent(card.id)
+      store.toggleTapForGenericPermanent(card.id)
       return
     }
 
     // Handle harmonize creature-tap mode - click to select/deselect the single creature
     if (isInHarmonizeMode && isValidHarmonizeCreature) {
-      toggleHarmonizeCreature(card.id)
+      store.toggleHarmonizeCreature(card.id)
       return
     }
 
@@ -1011,44 +880,45 @@ function GameCardImpl({
 
     // Handle inline distribute mode - click to add damage
     if (isDistributeTarget && distributeRemaining > 0 && !distributeAtMax) {
-      incrementDistribute(card.id)
+      store.incrementDistribute(card.id)
       return
     }
 
     // Handle targeting mode clicks - click to select, click again to unselect
     if (isInTargetingMode) {
       if (isSelectedTarget) {
-        removeTarget(card.id)
+        store.removeTarget(card.id)
         return
       }
       if (isValidTarget) {
-        addTarget(card.id)
+        store.addTarget(card.id)
         return
       }
     }
 
     // Handle pending ChooseTargetsDecision clicks
-    if (isChooseTargetsDecision && isValidDecisionTarget && !decisionSelectionState) {
-      submitTargetsDecision({ 0: [card.id] })
+    if (isChooseTargetsDecision && isValidDecisionTarget && !hasDecisionSelection) {
+      store.submitTargetsDecision(store.pendingDecision!.id, { 0: [card.id] })
       return
     }
 
     // Handle decision selection mode clicks (SelectCardsDecision with useTargetingUI)
     if (isValidDecisionSelection) {
-      toggleDecisionSelection(card.id)
+      store.toggleDecisionSelection(card.id)
       return
     }
 
     // Handle attacker mode clicks
     if (isInAttackerMode) {
       if (isValidAttacker) {
-        toggleAttacker(card.id)
+        store.toggleAttacker(card.id)
         return
       }
       // Clicking an opponent's planeswalker assigns the last selected attacker to it
-      if (isValidAttackTargetCard && combatState && combatState.selectedAttackers.length > 0) {
-        const lastAttacker = combatState.selectedAttackers[combatState.selectedAttackers.length - 1]!
-        setAttackTarget(lastAttacker, card.id)
+      const selectedAttackers = store.combatState?.selectedAttackers ?? []
+      if (isValidAttackTargetCard && selectedAttackers.length > 0) {
+        const lastAttacker = selectedAttackers[selectedAttackers.length - 1]!
+        store.setAttackTarget(lastAttacker, card.id)
         return
       }
       // Non-attacker cards fall through to normal selection
@@ -1057,7 +927,7 @@ function GameCardImpl({
     // Handle blocker mode clicks - clicking an assigned blocker removes it
     if (isInBlockerMode) {
       if (isValidBlocker && isSelectedAsBlocker) {
-        removeBlockerAssignment(card.id)
+        store.removeBlockerAssignment(card.id)
         return
       }
       if (isAttackingInBlockerMode) {
@@ -1073,11 +943,26 @@ function GameCardImpl({
     // Use handleCardClick which handles X cost spells, targeting, and single-action auto-execute
     if (interactive && !isInTargetingMode) {
       if (isSelected) {
-        selectCard(null)
+        store.selectCard(null)
       } else {
         handleCardClick(card.id)
       }
+      return
     }
+
+    // Without hover there is no other way to read a card, so on touch every card the player can
+    // actually see opens the menu — an opponent's permanent is `interactive={false}` and would
+    // otherwise swallow the tap, leaving its rules text unreachable. The menu it gets holds only
+    // "View card"; a face-down card is skipped because there is nothing to reveal.
+    if (openCardMenuOnTap && !faceDown && !isInTargetingMode && !isInCombatMode) {
+      openCardMenuOnTap(card.id)
+    }
+  }
+
+  // Inline Yes/No buttons on a trigger's source: answer the decision pending at click time.
+  const submitInlineYesNo = (choice: boolean) => {
+    const { pendingDecision, submitYesNoDecision } = useGameStore.getState()
+    if (pendingDecision) submitYesNoDecision(pendingDecision.id, choice)
   }
 
   // Double-click handler - auto-cast if possible
@@ -1114,7 +999,7 @@ function GameCardImpl({
     // Red pulsing glow for must-be-blocked attackers (Alluring Scent)
     borderStyle = '3px solid #ff3333'
     boxShadow = '0 0 16px rgba(255, 51, 51, 0.8), 0 0 32px rgba(255, 51, 51, 0.5), 0 0 48px rgba(255, 51, 51, 0.3)'
-  } else if (isValidAttackTargetCard && combatState && Object.values(combatState.attackerTargets).includes(card.id)) {
+  } else if (isTargetedByAttacker) {
     // Red highlight for planeswalkers currently targeted by an attacker
     borderStyle = '3px solid #ff4444'
     boxShadow = '0 0 16px rgba(255, 68, 68, 0.7), 0 0 32px rgba(255, 68, 68, 0.4)'
@@ -1226,11 +1111,11 @@ function GameCardImpl({
     // Light-blue highlight for valid attackers/blockers
     borderStyle = `2px solid ${TARGET_COLOR}`
     boxShadow = `0 0 12px ${TARGET_GLOW}, 0 0 24px ${TARGET_SHADOW}`
-  } else if (isValidAttackTargetCard && combatState && combatState.selectedAttackers.length > 0 && isHovered) {
+  } else if (isAttackTargetWithAttackers && isHovered) {
     // Bright orange highlight when hovering over a valid planeswalker attack target
     borderStyle = '3px solid #ff8800'
     boxShadow = '0 0 16px rgba(255, 136, 0, 0.7), 0 0 32px rgba(255, 136, 0, 0.4)'
-  } else if (isValidAttackTargetCard && combatState && combatState.selectedAttackers.length > 0) {
+  } else if (isAttackTargetWithAttackers) {
     // Orange highlight for valid planeswalker attack targets
     borderStyle = '2px solid #ff8800'
     boxShadow = '0 0 12px rgba(255, 136, 0, 0.5), 0 0 24px rgba(255, 136, 0, 0.3)'
@@ -1299,7 +1184,7 @@ function GameCardImpl({
   const cursor = isValidBlocker || isValidAttacker || isSelectedAsAttacker || canDragToPlay ? 'grab' : baseCursor
 
   // Check if currently being dragged (attacker, blocker, or hand card)
-  const isBeingDragged = draggingBlockerId === card.id || draggingAttackerId === card.id || isDraggingThisCard
+  const isBeingDragged = isDraggingThisBlocker || isDraggingThisAttacker || isDraggingThisCard
 
   // Container dimensions - expand width when the card sits sideways (tapped permanents
   // and Rooms always-landscape) to prevent overlap with neighbours.
@@ -1320,22 +1205,30 @@ function GameCardImpl({
   const cardElement = (
     <div
       data-card-id={card.id}
-      {...(cardHasBanding ? { 'data-banding': 'true' } : {})}
       {...(isGhost ? { 'data-ghost': 'true' } : {})}
+      {...(isTapped ? { 'data-tapped': 'true' } : {})}
       onClick={handleClick}
       onDoubleClick={handleDoubleClickEvent}
-      onMouseDown={handlePointerDown}
-      onMouseUp={handlePointerUp}
-      onTouchStart={(e) => { handleTouchStartPreview(e); handlePointerDown(e) }}
-      onTouchEnd={() => { handleTouchEndPreview(); handlePointerUp() }}
-      onTouchMove={handleTouchMovePreview}
-      onMouseEnter={handleMouseEnter}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
+      /* Mouse and touch both drive the drag handlers, so every mouse one has to ignore the
+         compatibility sequence a tap fires after touchend — see utils/ghostMouse. */
+      onMouseDown={(e) => { if (!isGhostMouseEvent()) handlePointerDown(e) }}
+      onMouseUp={() => { if (!isGhostMouseEvent()) handlePointerUp() }}
+      onTouchStart={(e) => { noteTouchInteraction(); handleTouchStartPreview(e); handlePointerDown(e) }}
+      onTouchEnd={() => { noteTouchInteraction(); handleTouchEndPreview(); handlePointerUp() }}
+      onTouchCancel={() => { noteTouchInteraction(); handleTouchEndPreview(); handlePointerUp() }}
+      onTouchMove={() => { noteTouchInteraction(); handleTouchMovePreview() }}
+      onPointerEnter={handleHoverEnter}
+      onPointerMove={handleHoverMove}
+      onPointerLeave={handleHoverLeave}
       style={{
         ...styles.card,
         width,
         height,
+        // Battlefield cards resize as the board fills up or empties out (see
+        // battlefieldLayout.ts); ease the size change so a card entering play
+        // reads as the board settling rather than everything jumping. The same
+        // `transform` leg animates the 90deg turn when the permanent taps or untaps.
+        ...(battlefield ? { transition: prefersReducedMotion() ? CARD_REDUCED_MOTION_TRANSITION : CARD_RESIZE_TRANSITION } : {}),
         borderRadius: responsive.isMobile ? 4 : 8,
         cursor,
         border: isBeheldPulsing ? '3px solid #eab308' : borderStyle,
@@ -1458,6 +1351,39 @@ function GameCardImpl({
         </>
       )}
 
+      {/* A token that copies a real card (Dance of Many, Clone-style tokens) carries that card's
+          full image, so nothing about it reads as a token — the generated frame above only kicks in
+          for the art-crop tokens. This chip is the marker for that case: it matters at a glance,
+          because a token that leaves the battlefield ceases to exist. Counter-rotated so it stays
+          upright on a tapped permanent, like the untap lock. */}
+      {!faceDown && card.isToken && !card.imageUri?.includes('/art_crop/') && (
+        <div
+          aria-label="Token"
+          title="Token — it ceases to exist if it leaves the battlefield"
+          style={{
+            position: 'absolute',
+            top: 3,
+            left: 3,
+            padding: '0 4px',
+            borderRadius: 3,
+            transform: totalRotateDeg ? `rotate(${-totalRotateDeg}deg)` : undefined,
+            transition: counterRotateTransition,
+            transformOrigin: 'top left',
+            background: 'rgba(0, 0, 0, 0.78)',
+            border: '1px solid rgba(255, 255, 255, 0.55)',
+            color: '#f0f0f0',
+            fontSize: Math.max(responsive.badges.smallLabelFontSize - 1, 6),
+            fontWeight: 700,
+            letterSpacing: 0.5,
+            lineHeight: 1.5,
+            zIndex: 7,
+            pointerEvents: 'none',
+          }}
+        >
+          TOKEN
+        </div>
+      )}
+
       {/* Tapped indicator */}
       {isTapped && (
         <div style={styles.tappedOverlay} />
@@ -1489,6 +1415,7 @@ function GameCardImpl({
             justifyContent: 'center',
             borderRadius: '50%',
             transform: totalRotateDeg ? `rotate(${-totalRotateDeg}deg)` : undefined,
+            transition: counterRotateTransition,
             background: 'radial-gradient(circle at 35% 30%, #123246 0%, #06121c 80%)',
             // A permanent lock gets the full frost ring; the one-shot exert marker is muted so the
             // two are distinguishable at a glance without reading the tooltip.
@@ -1654,6 +1581,37 @@ function GameCardImpl({
         </div>
       )}
 
+      {/* Defense badge for battles — the live defense (CR 310.4c: its defense counters), the number
+          attackers are whittling down. It sits over the printed defense shield: for a landscape
+          print the element is turned +90°, so the printed bottom-right corner is the element's
+          top-right. Counter-rotated so the number stays upright. */}
+      {battlefield && !faceDown && isBattle(card) && (
+        <div
+          title={battleTooltip}
+          style={{
+            ...styles.ptOverlay,
+            // Element-space offsets for the turned card: `top` becomes the gap to the printed
+            // right edge and `right` the gap to the printed bottom, putting the badge on the shield.
+            ...(isLandscapePrint ? { bottom: undefined, top: 3, right: -5 } : {}),
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2,
+            backgroundColor: 'rgba(50, 14, 14, 0.92)',
+            border: '1px solid rgba(240, 120, 110, 0.7)',
+            boxShadow: '0 0 6px rgba(0, 0, 0, 0.6)',
+            color: '#ffd0c8',
+            zIndex: 6,
+            transform: totalRotateDeg ? `rotate(${-totalRotateDeg}deg)` : undefined,
+            transition: counterRotateTransition,
+          }}
+        >
+          <i className="ms ms-defense" style={{ fontSize: responsive.badges.counterIconFontSize, color: '#f08878' }} />
+          <span style={{ fontWeight: 700, fontSize: responsive.badges.ptFontSize }}>
+            {card.counters[CounterType.DEFENSE] ?? 0}
+          </span>
+        </div>
+      )}
+
       {/* Threshold progress badge (graveyard-gated static abilities) */}
       {card.thresholdInfo && (
         <div
@@ -1710,6 +1668,7 @@ function GameCardImpl({
             // Badges rotate with the card, so a tapped candidate's chip needs the same
             // counter-rotation the other in-card labels use to stay upright and readable.
             transform: `translateX(-50%)${totalRotateDeg ? ` rotate(${-totalRotateDeg}deg)` : ''}`,
+            transition: counterRotateTransition,
             display: 'flex',
             alignItems: 'center',
             gap: 2,
@@ -1765,6 +1724,28 @@ function GameCardImpl({
             Warped
           </div>
         </>
+      )}
+
+      {/* Saddle (CR 702.171): a Mount reads as saddled or not, and that is the whole difference
+          between its payoffs being on and off. The designation is granted by a resolved saddle
+          ability and lost at end of turn without any visible event, so the board itself has to
+          carry it. Two states, one slot: lit "Saddled" once it's on, muted "Saddle N" while it
+          isn't — the second doubles as "this permanent is a Mount, and here's the price".
+          Shown on every player's Mounts; saddled status is public and changes how you block.
+          Bottom-left, not the crowded top-left provenance lane: unlike a dashed or warped marker
+          this one is on every Mount for that permanent's whole life, so it must not sit on the
+          card name — and combat-relevant state is what the eye already goes to the bottom for. */}
+      {battlefield && !faceDown && card.saddleRequirement != null && (
+        <div
+          style={card.isSaddled ? styles.saddledBadge : styles.saddleAvailableBadge}
+          title={
+            card.isSaddled
+              ? `Saddled (CR 702.171b) until end of turn — its "while saddled" abilities are active`
+              : `Saddle ${card.saddleRequirement} (CR 702.171a) — tap other untapped creatures you control with total power ${card.saddleRequirement} or more, as a sorcery, to saddle it`
+          }
+        >
+          {card.isSaddled ? 'Saddled' : `Saddle ${card.saddleRequirement}`}
+        </div>
       )}
 
       {/* Dash (CR 702.109, Khans of Tarkir): a permanent cast for its dash cost — hasty, returned to
@@ -2341,8 +2322,8 @@ function GameCardImpl({
       })()}
 
       {/* Keyword ability icons (shown for face-up cards, and for face-down cards with granted keywords) */}
-      {battlefield && !hideKeywordIcons && (card.keywords.length > 0 || (card.abilityFlags && card.abilityFlags.length > 0) || (card.protections && card.protections.length > 0) || (card.hexproofFromColors && card.hexproofFromColors.length > 0) || card.isSuspected) && (
-        <KeywordIcons keywords={card.keywords} abilityFlags={card.abilityFlags ?? []} protections={card.protections ?? []} hexproofFromColors={card.hexproofFromColors ?? []} hexproofFromMonocolored={card.hexproofFromMonocolored ?? false} isSuspected={card.isSuspected ?? false} {...(() => {
+      {battlefield && !hideKeywordIcons && (card.keywords.length > 0 || (card.abilityFlags && card.abilityFlags.length > 0) || (card.protections && card.protections.length > 0) || (card.hexproofFromColors && card.hexproofFromColors.length > 0) || card.isSuspected || card.isSolved || card.isRenowned) && (
+        <KeywordIcons keywords={card.keywords} abilityFlags={card.abilityFlags ?? []} protections={card.protections ?? []} hexproofFromColors={card.hexproofFromColors ?? []} hexproofFromMonocolored={card.hexproofFromMonocolored ?? false} hexproofFromMulticolored={card.hexproofFromMulticolored ?? false} isSuspected={card.isSuspected ?? false} isSolved={card.isSolved ?? false} isRenowned={card.isRenowned ?? false} {...(() => {
           // The ring-bearer marker and the "Prepared" badge both pin to the top-left corner; push the
           // keyword icons down past whichever is showing so they aren't hidden beneath the badge.
           const topOffset = (card.isRingBearer && !faceDown ? 3 + responsive.badges.ptFontSize * 1.7 + 3 : 0) + (card.isPrepared ? 22 : 0)
@@ -2417,6 +2398,7 @@ function GameCardImpl({
               }}>
                 <div style={{
                   transform: totalRotateDeg ? `rotate(${-totalRotateDeg}deg)` : undefined,
+                  transition: counterRotateTransition,
                   backgroundColor: 'rgba(40, 20, 20, 0.92)',
                   color: '#e89b9b',
                   fontSize: responsive.badges.manaCostFontSize,
@@ -2433,8 +2415,10 @@ function GameCardImpl({
         </>
       )}
 
-      {/* DFC (double-faced card) indicator badge */}
-      {!faceDown && battlefield && card.isDoubleFaced && (
+      {/* DFC (double-faced card) indicator badge. Not on a landscape print (a battle's Siege
+          front): its frame already prints the transform marker beside the name, and the turned
+          card has no bottom-edge strip clear of the rules text for a badge to sit on. */}
+      {!faceDown && battlefield && card.isDoubleFaced && !isLandscapePrint && (
         <div style={{
           position: 'absolute',
           bottom: 4,
@@ -2461,7 +2445,7 @@ function GameCardImpl({
         <div
           onMouseEnter={(e) => {
             e.stopPropagation()
-            hoverCard(null)
+            useGameStore.getState().hoverCard(null)
             setCopyBadgeHoverPos({ x: e.clientX, y: e.clientY })
           }}
           onMouseMove={(e) => {
@@ -2472,7 +2456,7 @@ function GameCardImpl({
             e.stopPropagation()
             setCopyBadgeHoverPos(null)
             // Restore the regular card preview as the cursor moves back onto the card body.
-            hoverCard(card.id, { x: e.clientX, y: e.clientY })
+            useGameStore.getState().hoverCard(card.id, { x: e.clientX, y: e.clientY })
           }}
           style={{
             position: 'absolute',
@@ -2622,7 +2606,7 @@ function GameCardImpl({
       )}
 
       {/* Inline Yes/No buttons for trigger (bottom) */}
-      {isTriggerYesNo && pendingDecision?.type === 'YesNoDecision' && (
+      {isTriggerYesNo && (
         <div
           onClick={(e) => e.stopPropagation()}
           style={{
@@ -2641,7 +2625,7 @@ function GameCardImpl({
           }}
         >
           <button
-            onClick={(e) => { e.stopPropagation(); submitYesNoDecision(true) }}
+            onClick={(e) => { e.stopPropagation(); submitInlineYesNo(true) }}
             style={{
               flex: 1,
               height: responsive.isMobile ? 22 : 26,
@@ -2658,7 +2642,7 @@ function GameCardImpl({
             Yes
           </button>
           <button
-            onClick={(e) => { e.stopPropagation(); submitYesNoDecision(false) }}
+            onClick={(e) => { e.stopPropagation(); submitInlineYesNo(false) }}
             style={{
               flex: 1,
               height: responsive.isMobile ? 22 : 26,
@@ -2697,18 +2681,18 @@ function GameCardImpl({
           }}
         >
           <button
-            onClick={(e) => { e.stopPropagation(); decrementDistribute(card.id) }}
-            disabled={distributeAllocated <= (distributeState?.minPerTarget ?? 0)}
+            onClick={(e) => { e.stopPropagation(); useGameStore.getState().decrementDistribute(card.id) }}
+            disabled={distributeAllocated <= distributeMinPerTarget}
             style={{
               width: responsive.badges.distributeBadgeSize,
               height: responsive.badges.distributeBadgeSize,
               borderRadius: 4,
               border: 'none',
-              backgroundColor: distributeAllocated <= (distributeState?.minPerTarget ?? 0) ? '#333' : '#dc2626',
-              color: distributeAllocated <= (distributeState?.minPerTarget ?? 0) ? '#666' : 'white',
+              backgroundColor: distributeAllocated <= distributeMinPerTarget ? '#333' : '#dc2626',
+              color: distributeAllocated <= distributeMinPerTarget ? '#666' : 'white',
               fontSize: responsive.isMobile ? 14 : 16,
               fontWeight: 'bold',
-              cursor: distributeAllocated <= (distributeState?.minPerTarget ?? 0) ? 'not-allowed' : 'pointer',
+              cursor: distributeAllocated <= distributeMinPerTarget ? 'not-allowed' : 'pointer',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -2727,7 +2711,7 @@ function GameCardImpl({
             {distributeAllocated}
           </span>
           <button
-            onClick={(e) => { e.stopPropagation(); incrementDistribute(card.id) }}
+            onClick={(e) => { e.stopPropagation(); useGameStore.getState().incrementDistribute(card.id) }}
             disabled={distributeRemaining <= 0 || distributeAtMax}
             style={{
               width: responsive.badges.distributeBadgeSize,
@@ -2834,7 +2818,7 @@ function GameCardImpl({
                   </span>
                 )}
                 <button
-                  onClick={(e) => { e.stopPropagation(); decrementCounterRemoval(card.id, row.counterType) }}
+                  onClick={(e) => { e.stopPropagation(); useGameStore.getState().decrementCounterRemoval(card.id, row.counterType) }}
                   disabled={row.allocated <= 0}
                   style={{
                     width: responsive.badges.distributeBadgeSize,
@@ -2864,7 +2848,7 @@ function GameCardImpl({
                   {row.allocated}
                 </span>
                 <button
-                  onClick={(e) => { e.stopPropagation(); incrementCounterRemoval(card.id, row.counterType) }}
+                  onClick={(e) => { e.stopPropagation(); useGameStore.getState().incrementCounterRemoval(card.id, row.counterType) }}
                   disabled={atMax}
                   style={{
                     width: responsive.badges.distributeBadgeSize,
@@ -2999,9 +2983,15 @@ function GameCardImpl({
     />
   ) : null
 
-  // Wrap in container for sideways battlefield cards (tapped permanents and Rooms) to
-  // prevent overlap with neighbours.
-  if (needsLandscapeContainer && battlefield) {
+  // Every battlefield card gets this container, not just the sideways ones (tapped permanents
+  // and Rooms), which are the only ones that need its extra width to avoid overlapping their
+  // neighbours. Wrapping unconditionally is what makes tapping *animate*: if the wrapper
+  // appeared only once a card turned sideways, React would reconcile the untapped card's own
+  // <div> into the new wrapper and mount a fresh node for the card underneath it — a fresh node
+  // paints already rotated, so the `transform` transition below has nothing to animate from and
+  // the card snaps. With the wrapper always present the card's DOM node survives the tap and
+  // eases through the 90deg turn; the wrapper's own width transition slides the neighbours over.
+  if (battlefield) {
     return (
       <RenderProfiler id={profilerId}>
       <div style={{
@@ -3010,7 +3000,7 @@ function GameCardImpl({
         display: 'flex',
         alignItems: 'flex-end',
         justifyContent: 'center',
-        transition: 'width 0.15s, height 0.15s',
+        ...(prefersReducedMotion() ? {} : { transition: 'width 0.18s ease, height 0.18s ease' }),
         pointerEvents: 'none',
         position: 'relative',
       }}>

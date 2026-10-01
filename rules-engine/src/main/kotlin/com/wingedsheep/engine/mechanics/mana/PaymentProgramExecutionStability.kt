@@ -251,26 +251,28 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
     private fun ReplacementEffect.targetsDamageOrLifeLoss(): Boolean =
         appliesTo is EventPattern.DamageEvent || appliesTo is EventPattern.LifeLossEvent
 
+    // Every branch is a type test: a bare @Serializable data-class name resolves to its generated
+    // serializer companion, which `when` would compare by equality and never match.
     private fun SerializableModification.isDamageOrProtectionInterference(): Boolean = when (this) {
-        SerializableModification.PreventDamageFromAttackingCreatures,
-        SerializableModification.PreventAllCombatDamage,
-        SerializableModification.ReflectCombatDamage,
-        SerializableModification.GrantProtectionFromColor,
-        SerializableModification.GrantProtectionFromCardType,
-        SerializableModification.PreventNextDamage,
-        SerializableModification.PreventAllDamageTo,
-        SerializableModification.PreventAllDamageDealtBy,
-        SerializableModification.RedirectNextDamage,
-        SerializableModification.PreventNextDamageFromCreatureType,
-        SerializableModification.PreventCombatDamageFromGroup,
-        SerializableModification.PreventAllDamageToGroup,
-        SerializableModification.PreventCombatDamageToAndBy,
-        SerializableModification.RedirectCombatDamageToController,
-        SerializableModification.PreventNextDamageFromChosenSourceShield,
-        SerializableModification.PreventAllDamageFromSource,
-        SerializableModification.PreventNextDamageInstanceFromSource,
-        SerializableModification.AmplifyNoncombatDamage,
-        SerializableModification.DoubleDamageToPlayer,
+        is SerializableModification.PreventNextDamageFromMatching,
+        is SerializableModification.PreventAllCombatDamage,
+        is SerializableModification.ReflectCombatDamage,
+        is SerializableModification.GrantProtectionFromColor,
+        is SerializableModification.GrantProtectionFromCardType,
+        is SerializableModification.PreventNextDamage,
+        is SerializableModification.PreventAllDamageTo,
+        is SerializableModification.PreventAllDamageDealtBy,
+        is SerializableModification.RedirectNextDamage,
+        is SerializableModification.PreventCombatDamageFromGroup,
+        is SerializableModification.PreventAllDamageFromGroup,
+        is SerializableModification.PreventAllDamageToGroup,
+        is SerializableModification.PreventCombatDamageToAndBy,
+        is SerializableModification.RedirectCombatDamageToController,
+        is SerializableModification.PreventNextDamageFromSourceShield,
+        is SerializableModification.PreventAllDamageFromSource,
+        is SerializableModification.PreventNextDamageInstanceFromSource,
+        is SerializableModification.AmplifyDamage,
+        is SerializableModification.DoubleDamageToPlayer,
         -> true
         else -> false
     }

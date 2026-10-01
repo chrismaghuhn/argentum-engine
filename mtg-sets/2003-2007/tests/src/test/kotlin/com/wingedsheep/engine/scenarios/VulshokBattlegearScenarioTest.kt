@@ -12,6 +12,8 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Vulshok Battlegear (MRD #272) — "Equipped creature gets +3/+3. Equip {3}."
@@ -38,7 +40,7 @@ class VulshokBattlegearScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -79,7 +81,7 @@ class VulshokBattlegearScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(opponentCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(battlegear)?.get<AttachedToComponent>()?.targetId shouldBe second
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
@@ -91,7 +93,7 @@ class VulshokBattlegearScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(first)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(battlegear)?.get<AttachedToComponent>()?.targetId shouldBe second
     }
 
@@ -109,7 +111,7 @@ class VulshokBattlegearScenarioTest : FunSpec({
             caster,
             swords,
             listOf(ChosenTarget.Permanent(creature)),
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.findPermanent(player, "Vulshok Battlegear") shouldBe battlegear

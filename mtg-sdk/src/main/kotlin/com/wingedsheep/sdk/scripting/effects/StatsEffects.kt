@@ -49,10 +49,16 @@ data class ModifyStatsEffect(
         if (duration.description.isNotEmpty()) append(" ${duration.description}")
     }
 
-    override fun runtimeDescription(resolver: (DynamicAmount) -> Int): String = buildString {
+    override fun runtimeDescription(resolver: (DynamicAmount) -> Int?): String = buildString {
         append("${target.description} gets ")
-        fun fmt(v: Int) = if (v >= 0) "+$v" else "$v"
-        append("${fmt(resolver(powerModifier))}/${fmt(resolver(toughnessModifier))}")
+        // An amount the context can't determine yet — "double its power", read off a target that
+        // hasn't been chosen — falls back to its own wording, exactly as [description] does for a
+        // non-Fixed amount. Formatting the absent value as "+0" would read as a real +0/+0 pump.
+        fun fmt(amount: DynamicAmount): String {
+            val v = resolver(amount) ?: return amount.description
+            return if (v >= 0) "+$v" else "$v"
+        }
+        append("${fmt(powerModifier)}/${fmt(toughnessModifier)}")
         if (duration.description.isNotEmpty()) append(" ${duration.description}")
     }
 
@@ -96,15 +102,15 @@ data class ModifyStatsEffect(
  *  - **Only projection-scoped `DynamicAmount`s are supported.** The projector re-evaluates the
  *    amount with just the source, its controller and the affected entity in scope, so anything
  *    reading the resolution context — `XValue`/`CastX`, `ContextProperty`, the pipeline's stored
- *    collections, or an `EntityReference`/`Player` naming a target, the triggering object or
+ *    collections, or an `EffectTarget.SingleEntity`/`Player` naming a target, the triggering object or
  *    something sacrificed or tapped as a cost — has nothing to resolve against. This class's `init`
  *    rejects those via
  *    [com.wingedsheep.sdk.scripting.values.contextScopedReferenceIn] instead of letting them read as
- *    0 forever, so `SetBasePower(t, EntityProperty(Triggering, Power), reevaluateContinuously =
+ *    0 forever, so `SetBasePower(t, EntityProperty(TriggeringEntity, Power), reevaluateContinuously =
  *    true)` fails as the card is **loaded**, not silently at resolution. For X specifically,
  *    re-evaluation is also a rules error: CR 611.2d fixes a continuous effect's X on resolution.
  *    Counts, battlefield/zone aggregates, life totals, hand size and
- *    `EntityReference.Source`/`AffectedEntity` properties are all fine.
+ *    `EffectTarget.Self`/`AffectedEntity` properties are all fine.
  *  - **"Your" means the *source's* controller**, not the affected creature's — the projector
  *    rebuilds the context from `sourceId`. That is right for a self-granted clause (Ms. Marvel:
  *    source and affected permanent are the same object, so it follows her controller even after a
@@ -190,4 +196,15 @@ data class SetBaseStatsEffect(
         return if (newPower !== power || newToughness !== toughness)
             copy(power = newPower, toughness = newToughness) else this
     }
+}
+
+/** Switch power and toughness after all other stat changes, for the chosen duration. */
+@SerialName("SwitchPowerToughness")
+@Serializable
+data class SwitchPowerToughnessEffect(
+    val target: EffectTarget,
+    val duration: Duration = Duration.EndOfTurn
+) : Effect {
+    override val description: String = "Switch ${target.description}'s power and toughness" +
+        if (duration.description.isNotEmpty()) " ${duration.description}" else ""
 }

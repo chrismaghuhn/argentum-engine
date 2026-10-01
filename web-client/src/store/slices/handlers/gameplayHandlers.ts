@@ -2,12 +2,14 @@
  * Handlers for gameplay messages: state updates, mulligan, game lifecycle, and errors.
  */
 import type { MessageHandlers } from '@/network/messageHandlers.ts'
-import { ZoneType } from '@/types'
+import { ErrorCode, ZoneType } from '@/types'
 import type { EntityId } from '@/types'
 import type { ClientGameState, ClientEvent, LegalActionInfo, PendingDecision, OpponentDecisionStatus, PriorityModeValue, Step } from '@/types'
 import { trackEvent, setInGame } from '@/utils/analytics.ts'
 import { applyStateDelta } from '@/network/deltaApplicator.ts'
 import { getWebSocket, clearLobbyId, requestReauth } from '../shared'
+import { keepAttackerPreview, keepBlockerPreview } from './combatPreview'
+import { CLEARED_PIPELINE_SELECTIONS, isActionStillOffered } from '../ui/pipelineSlice'
 import type { SetState, GetState } from './types'
 import type {
   LogEntry,
@@ -16,6 +18,7 @@ import type {
   RevealAnimation,
   CoinFlipAnimation,
   TargetReselectedAnimation,
+  GameStore,
 } from '../types'
 
 /**
@@ -167,9 +170,31 @@ function mergeCardsRevealedEvents(
 }
 
 /**
+ * Battlefield permanents that were already public before this update: on the battlefield both
+ * before it and after it. A revealed card in this set is pulsed in place instead of shown in the
+ * reveal overlay.
+ *
+ * Testing only the new state is wrong for a card the same resolution revealed *and* put onto the
+ * battlefield ("reveal cards until you reveal a creature card, put it onto the battlefield"): it
+ * was hidden in the library when it was revealed, and the overlay then showed every revealed card
+ * except the one that stopped the reveal. With no previous state (the first update after a
+ * connect) the new state alone is the best available answer.
+ */
+export function battlefieldIdsAlreadyPublic(
+  previous: ClientGameState | null,
+  current: ClientGameState
+): ReadonlySet<EntityId> {
+  const battlefieldIdsOf = (s: ClientGameState): EntityId[] =>
+    s.zones.filter((z) => z.zoneId.zoneType === 'Battlefield').flatMap((z) => z.cardIds)
+  const before = new Set<EntityId>(battlefieldIdsOf(previous ?? current))
+  return new Set(battlefieldIdsOf(current).filter((id) => before.has(id)))
+}
+
+/**
  * Common state update fields shared by both full and delta update messages.
  */
 interface StateUpdateEnvelope {
+  readonly interactionEpoch?: string | null
   readonly events: readonly ClientEvent[]
   readonly legalActions: readonly LegalActionInfo[]
   readonly pendingDecision?: PendingDecision
@@ -180,17 +205,120 @@ interface StateUpdateEnvelope {
   readonly priorityMode?: PriorityModeValue | null
 }
 
+/** A replaced timeline invalidates every partially built action in the same store update. */
+const CLEARED_ACTION_SELECTIONS = {
+  selectedCardId: null,
+  pipelineState: null,
+  targetingState: null,
+  modalModeSelectionState: null,
+  xSelectionState: null,
+  blightVariableSelectionState: null,
+  payXLifeSelectionState: null,
+  convokeSelectionState: null,
+  tapForGenericSelectionState: null,
+  harmonizeSelectionState: null,
+  tapForPowerSelectionState: null,
+  delveSelectionState: null,
+  manaSelectionState: null,
+  manaColorSelectionState: null,
+  decisionSelectionState: null,
+  damageDistributionState: null,
+  lastDamageDistribution: null,
+  distributeState: null,
+  counterDistributionState: null,
+  combatState: null,
+  draggingBlockerId: null,
+  draggingAttackerId: null,
+  draggingAttackerHasBanding: null,
+  draggingCardId: null,
+  opponentAttackerTargets: null,
+  opponentBlockerAssignments: null,
+} as const
+
+/**
+ * A cast or activation the player is still building client-side that the game has moved past.
+ *
+ * The interaction epoch only changes when undo replaces the timeline, so a same-epoch update keeps
+ * a half-built action — which is right while the server is still offering it (a delta that doesn't
+ * touch it). But the game can move on underneath a pipeline: a card clicked from the previous
+ * update's actions just after passing priority, or a response that resolves while the player is
+ * still picking. Once the server stops offering the action, its targeting banner and phase
+ * pickers are answering nothing, and they would otherwise stay on screen until a reload.
+ */
+function isPipelineOutpaced(
+  state: { pipelineState: GameStore['pipelineState']; targetingState: GameStore['targetingState'] },
+  legalActions: readonly LegalActionInfo[],
+): boolean {
+  if (state.pipelineState == null) return state.targetingState != null
+  return !isActionStillOffered(state.pipelineState.actionInfo.action, legalActions)
+}
+
+/**
+ * The transient animation queues, emptied together. Every one of these layers sits far above the
+ * result overlay in the stacking order (they're meant to clear modals), so once the game is over
+ * they keep floating numbers and reveals on top of the Victory/Defeat card — narrating an exchange
+ * whose outcome the player has already been told. Cleared rather than merely hidden: a layer that
+ * stops rendering never runs its own completion callback, so the entries would outlive the game.
+ */
+const CLEARED_ANIMATIONS = {
+  drawAnimations: [],
+  damageAnimations: [],
+  revealAnimations: [],
+  coinFlipAnimations: [],
+  targetReselectedAnimations: [],
+} as const
+
 /**
  * Process a state update — shared between full StateUpdate and StateDeltaUpdate.
  * Takes the resolved (full) ClientGameState and the envelope fields.
  */
+/**
+ * Stamp the seat → team map from the state's own team fields, unless it already matches. In the
+ * overwhelmingly common non-team game no seat carries a `teamIndex`, so this settles into
+ * comparing two empty maps and returning without ever writing to the store.
+ *
+ * Exported for its own tests: this is the whole of the reconnect fix, and the bug it replaced
+ * (team state riding only on the one-shot game-start roster) is an easy one to reintroduce.
+ */
+export function syncSeatTeams(state: ClientGameState, get: GetState): void {
+  const next: Record<EntityId, number> = {}
+  for (const p of state.players) {
+    if (p.teamIndex != null) next[p.playerId] = p.teamIndex
+  }
+  const sharedLife = state.players.some((p) => p.teamSharedLife === true)
+  const sharedTurns = state.players.some((p) => p.teamSharedTurns === true)
+  const store = get()
+  const current = store.teamByPlayerId
+  const keys = Object.keys(next)
+  if (
+    keys.length === Object.keys(current).length &&
+    keys.every((k) => current[k as EntityId] === next[k as EntityId]) &&
+    store.teamSharedLife === sharedLife &&
+    store.teamSharedTurns === sharedTurns
+  ) {
+    return
+  }
+  store.setSeatTeams(next, sharedLife, sharedTurns)
+}
+
 function processStateUpdate(
   resolvedState: ClientGameState,
   msg: StateUpdateEnvelope,
   set: SetState,
   get: GetState
 ): void {
-  const { playerId, addBeholdPulse, reconcileBeholdPulses } = get()
+  const { playerId, addBeholdPulse, reconcileBeholdPulses, gameOverState } = get()
+  // A final state update can land after the GameOver message. Queueing its animations would put
+  // them straight back on top of the overlay CLEARED_ANIMATIONS just emptied. An eliminated player
+  // who chooses to keep watching clears gameOverState, and their animations resume with it.
+  const suppressAnimations = gameOverState !== null
+
+  // Two-Headed Giant (CR 810) / Team vs. Team (CR 808): re-derive the seat → team map from the
+  // state itself. The game-start roster also carries it, but that message is a one-shot — a
+  // client that joined by *reconnecting* (hotseat, a scenario, a dropped connection resuming)
+  // never receives it and would render a team game as a free-for-all. Doing it here covers every
+  // entry path with one write, and it's a no-op (reference-stable) once the map already matches.
+  syncSeatTeams(resolvedState, get)
 
   // Animations spawned by this update are collected here and committed with the state itself,
   // in one store write. Each separate write re-runs every subscriber's selector across the
@@ -249,15 +377,16 @@ function processStateUpdate(
       .filter((z) => z.zoneId.zoneType === 'Battlefield')
       .flatMap((z) => z.cardIds)
   )
+  const alreadyPublicIds = battlefieldIdsAlreadyPublic(get().gameState, resolvedState)
   const isZoneTransitionReveal = !!(cardsRevealedEvent?.fromZone && cardsRevealedEvent?.toZone)
   const beheldBattlefieldIds = cardsRevealedEvent && !isZoneTransitionReveal
-    ? cardsRevealedEvent.cardIds.filter((id) => battlefieldCardIds.has(id))
+    ? cardsRevealedEvent.cardIds.filter((id) => alreadyPublicIds.has(id))
     : []
   const revealOverlayIndices = cardsRevealedEvent
     ? isZoneTransitionReveal
       ? cardsRevealedEvent.cardIds.map((_, i) => i)
       : cardsRevealedEvent.cardIds
-          .map((id, i) => (battlefieldCardIds.has(id) ? -1 : i))
+          .map((id, i) => (alreadyPublicIds.has(id) ? -1 : i))
           .filter((i) => i >= 0)
     : []
   const filteredReveal = cardsRevealedEvent && revealOverlayIndices.length > 0
@@ -268,6 +397,9 @@ function processStateUpdate(
         imageUris: revealOverlayIndices.map((i) => cardsRevealedEvent.imageUris[i]!),
         ...(cardsRevealedEvent.cardOwnerIsYours
           ? { cardOwnerIsYours: revealOverlayIndices.map((i) => cardsRevealedEvent.cardOwnerIsYours![i]!) }
+          : {}),
+        ...(cardsRevealedEvent.cardOwnerIds && cardsRevealedEvent.cardOwnerIds.length > 0
+          ? { cardOwnerIds: revealOverlayIndices.map((i) => cardsRevealedEvent.cardOwnerIds![i]!) }
           : {}),
       }
     : null
@@ -301,18 +433,19 @@ function processStateUpdate(
   const cardDrawnEvents = msg.events.filter((e) => e.type === 'cardDrawn') as {
     type: 'cardDrawn'
     playerId: EntityId
-    cardId: EntityId
+    cardId: EntityId | null
     cardName: string | null
   }[]
 
   cardDrawnEvents.forEach((event, index) => {
     const isOpponent = event.playerId !== playerId
-    const card = resolvedState.cards[event.cardId]
+    const card = event.cardId ? resolvedState.cards[event.cardId] : undefined
     newDrawAnimations.push({
-      id: `draw-${event.cardId}-${Date.now()}-${index}`,
+      id: `draw-${event.cardId ?? event.playerId}-${Date.now()}-${index}`,
       cardId: event.cardId,
       cardName: event.cardName,
       imageUri: card?.imageUri ?? null,
+      playerId: event.playerId,
       isOpponent,
       startTime: Date.now() + index * 100,
     })
@@ -364,6 +497,48 @@ function processStateUpdate(
     }
   })
 
+  // Damage dealt to a permanent — creature, planeswalker, battle. The player half of `damageDealt`
+  // is deliberately skipped: `lifeChanged` above already covers it, and it covers it more
+  // truthfully, since damage can be prevented or redirected on its way to becoming life loss.
+  // Without this a blocked creature's only feedback is its toughness quietly recolouring, so a
+  // trade in a crowded combat is easy to miss entirely.
+  const permanentDamageEvents = msg.events.filter(
+    (e) => e.type === 'damageDealt' &&
+      !(e as { targetIsPlayer: boolean }).targetIsPlayer &&
+      (e as { amount: number }).amount > 0
+  ) as {
+    type: 'damageDealt'
+    targetId: EntityId
+    amount: number
+  }[]
+
+  // One permanent can be dealt damage several times in a single update — an attacker blocked by
+  // two creatures takes one event per blocker. Sum them into a single number: "-5" reads as the
+  // trade it is, where three floaters stacked on one card just read as noise.
+  const permanentDamage = new Map<EntityId, number>()
+  permanentDamageEvents.forEach((event) => {
+    permanentDamage.set(event.targetId, (permanentDamage.get(event.targetId) ?? 0) + event.amount)
+  })
+
+  permanentDamage.forEach((amount, targetId) => {
+    // Only permanents that survived the damage get a number, and it's not a compromise for the
+    // sake of anchoring it: a creature that died already announced itself by leaving the board,
+    // which is a far louder signal than any floater. The number is for the case with no other
+    // feedback — damage marked on something that's still standing. Skipping the dead ones also
+    // means no floater can outlive the card it belongs to and end up labelling a stranger.
+    if (!battlefieldCardIds.has(targetId)) return
+    newDamageAnimations.push({
+      id: `damage-${targetId}-${Date.now()}`,
+      targetId,
+      targetIsPlayer: false,
+      amount,
+      isLifeGain: false,
+      // Combat damage is dealt simultaneously (CR 510.2), so these don't stagger the way the
+      // per-player life floaters do — the whole exchange lands on one beat.
+      startTime: Date.now(),
+    })
+  })
+
   // Process morph face-up events for reveal animations
   const turnedFaceUpEvents = msg.events.filter((e) => e.type === 'turnedFaceUp') as {
     type: 'turnedFaceUp'
@@ -391,8 +566,12 @@ function processStateUpdate(
     won: boolean
     sourceId: EntityId
     sourceName: string
+    ignored?: boolean
   }[]
 
+  // Coins that were flipped together are shown together, fanned out across the screen rather than
+  // stacked on the centre — a Krark's Thumb flip is always at least two coins, and the point of
+  // showing the ignored ones is that the player can see what was really flipped.
   coinFlipEvents.forEach((event, index) => {
     const isOpponent = event.playerId !== playerId
     newCoinFlipAnimations.push({
@@ -401,6 +580,9 @@ function processStateUpdate(
       won: isOpponent ? !event.won : event.won,
       isOpponent,
       startTime: Date.now() + index * 200,
+      ignored: event.ignored ?? false,
+      laneIndex: index,
+      laneCount: coinFlipEvents.length,
     })
   })
 
@@ -435,9 +617,22 @@ function processStateUpdate(
   // Sync priority mode from server echo
   const serverPriorityMode = msg.priorityMode ?? undefined
 
+  // Every gate in the live-submission mechanism fails closed on a null epoch: no action can be
+  // submitted, no pipeline or combat declaration can even start. A board that renders but accepts
+  // nothing is the worst possible failure mode, so say so instead of going quietly inert.
+  if (msg.interactionEpoch == null) {
+    console.error('State update carried no interactionEpoch — this client cannot submit actions.')
+    get().setError({
+      code: ErrorCode.INTERNAL_ERROR,
+      message: 'Lost sync with the server. Reload to keep playing.',
+      timestamp: Date.now(),
+    })
+  }
+
   set((state) => ({
     gameState: resolvedState,
-    legalActions: msg.legalActions,
+    interactionEpoch: msg.interactionEpoch ?? null,
+    legalActions: msg.legalActions.map((action) => ({ ...action, interactionEpoch: msg.interactionEpoch ?? null })),
     pendingDecision: msg.pendingDecision ?? null,
     opponentDecisionStatus: msg.opponentDecisionStatus ?? null,
     nextStopPoint: msg.nextStopPoint ?? null,
@@ -449,11 +644,11 @@ function processStateUpdate(
     // long game paid steadily more per click. Map only the new tail and keep the prefix's
     // existing entries, which also keeps their identity stable for the log list.
     eventLog: appendGameLogTail(state.eventLog, resolvedState.gameLog),
-    ...(newDrawAnimations.length > 0 ? { drawAnimations: [...state.drawAnimations, ...newDrawAnimations] } : {}),
-    ...(newDamageAnimations.length > 0 ? { damageAnimations: [...state.damageAnimations, ...newDamageAnimations] } : {}),
-    ...(newRevealAnimations.length > 0 ? { revealAnimations: [...state.revealAnimations, ...newRevealAnimations] } : {}),
-    ...(newCoinFlipAnimations.length > 0 ? { coinFlipAnimations: [...state.coinFlipAnimations, ...newCoinFlipAnimations] } : {}),
-    ...(newTargetReselectedAnimations.length > 0
+    ...(newDrawAnimations.length > 0 && !suppressAnimations ? { drawAnimations: [...state.drawAnimations, ...newDrawAnimations] } : {}),
+    ...(newDamageAnimations.length > 0 && !suppressAnimations ? { damageAnimations: [...state.damageAnimations, ...newDamageAnimations] } : {}),
+    ...(newRevealAnimations.length > 0 && !suppressAnimations ? { revealAnimations: [...state.revealAnimations, ...newRevealAnimations] } : {}),
+    ...(newCoinFlipAnimations.length > 0 && !suppressAnimations ? { coinFlipAnimations: [...state.coinFlipAnimations, ...newCoinFlipAnimations] } : {}),
+    ...(newTargetReselectedAnimations.length > 0 && !suppressAnimations
       ? { targetReselectedAnimations: [...state.targetReselectedAnimations, ...newTargetReselectedAnimations] }
       : {}),
     waitingForOpponentMulligan: false,
@@ -496,10 +691,22 @@ function processStateUpdate(
            msg.pendingDecision.nonSelectableOptions ?? []
          )
           ? null
-          : { cardIds: filteredReveal.cardIds, cardNames: filteredReveal.cardNames, imageUris: filteredReveal.imageUris, source: filteredReveal.source, isYourReveal: filteredReveal.revealingPlayerId === playerId, fromZone: filteredReveal.fromZone ?? null, toZone: filteredReveal.toZone ?? null, ...(filteredReveal.cardOwnerIsYours ? { cardOwnerIsYours: filteredReveal.cardOwnerIsYours } : {}) })
+          : { cardIds: filteredReveal.cardIds, cardNames: filteredReveal.cardNames, imageUris: filteredReveal.imageUris, source: filteredReveal.source, isYourReveal: filteredReveal.revealingPlayerId === playerId, revealingPlayerId: filteredReveal.revealingPlayerId, fromZone: filteredReveal.fromZone ?? null, toZone: filteredReveal.toZone ?? null, ...(filteredReveal.cardOwnerIsYours ? { cardOwnerIsYours: filteredReveal.cardOwnerIsYours } : {}), ...(filteredReveal.cardOwnerIds ? { cardOwnerIds: filteredReveal.cardOwnerIds } : {}) })
       : cardsRevealedEvent ? null : state.revealedCardsInfo,
-    opponentAttackerTargets: resolvedState.combat ? null : state.opponentAttackerTargets,
-    opponentBlockerAssignments: (resolvedState.combat?.blockers?.length || !resolvedState.combat) ? null : state.opponentBlockerAssignments,
+    // The opponent's streamed declaration previews expire with their own declaration step.
+    opponentAttackerTargets: keepAttackerPreview(resolvedState.currentStep, resolvedState.combat != null)
+      ? state.opponentAttackerTargets
+      : null,
+    opponentBlockerAssignments: keepBlockerPreview(
+      resolvedState.currentStep,
+      resolvedState.combat != null,
+      (resolvedState.combat?.blockers?.length ?? 0) > 0,
+    )
+      ? state.opponentBlockerAssignments
+      : null,
+    ...(state.interactionEpoch !== (msg.interactionEpoch ?? null)
+      ? CLEARED_ACTION_SELECTIONS
+      : isPipelineOutpaced(state, msg.legalActions) ? CLEARED_PIPELINE_SELECTIONS : {}),
   }))
 
   // Auto-initialize inline distribute state for DistributeDecision
@@ -558,7 +765,10 @@ export function createGameplayHandlers(set: SetState, get: GetState): Pick<Messa
       }
       // Shared life is a game-level fact (same on every seat); 2HG shares, Team vs. Team doesn't.
       const sharedLife = msg.players.some((p) => p.teamSharedLife)
-      get().setSeatTeams(seatTeams, sharedLife)
+      // Shared turns is the separate CR 805 axis: 2HG shares its turn *and* its priority, Team
+      // vs. Team shares neither. `syncSeatTeams` re-derives both from every state update.
+      const sharedTurns = msg.players.some((p) => p.teamSharedTurns)
+      get().setSeatTeams(seatTeams, sharedLife, sharedTurns)
 
       // Load persisted stop overrides and send to server
       try {
@@ -599,6 +809,7 @@ export function createGameplayHandlers(set: SetState, get: GetState): Pick<Messa
         matchIntro: {
           playerName,
           opponentName,
+          opponentNames: msg.players.filter((p) => !p.isYou).map((p) => p.name),
           ...(round != null ? { round } : {}),
           ...(playerRecord != null ? { playerRecord } : {}),
           ...(opponentRecord != null ? { opponentRecord } : {}),
@@ -622,6 +833,7 @@ export function createGameplayHandlers(set: SetState, get: GetState): Pick<Messa
         sessionId: null,
         opponentName: null,
         gameState: null,
+        interactionEpoch: null,
         legalActions: [],
         mulliganState: null,
         deckBuildingState: null,
@@ -696,8 +908,14 @@ export function createGameplayHandlers(set: SetState, get: GetState): Pick<Messa
       // Ignore a game-over for a game we already left — e.g. an eliminated FFA player who
       // returned to the lobby still holds a seat server-side and receives the final GameOver.
       if (msg.gameId && sessionId !== msg.gameId) return
-      const result: 'win' | 'lose' | 'draw' =
-        msg.winnerId === null ? 'draw' : msg.winnerId === playerId ? 'win' : 'lose'
+      // "Did I win?" is a team question in Two-Headed Giant (CR 810.8a): the server names every
+      // winning seat in winnerIds; winnerId is one representative and would tell the other head
+      // of the winning team they lost. Older servers send winnerId alone, so fall back to it.
+      const won =
+        msg.winnerIds && msg.winnerIds.length > 0
+          ? playerId !== null && msg.winnerIds.includes(playerId)
+          : msg.winnerId === playerId
+      const result: 'win' | 'lose' | 'draw' = msg.winnerId === null ? 'draw' : won ? 'win' : 'lose'
       trackEvent('game_over', { result, reason: msg.reason })
       setInGame(false)
       set({
@@ -708,6 +926,7 @@ export function createGameplayHandlers(set: SetState, get: GetState): Pick<Messa
           message: msg.message,
           gameId: msg.gameId,
         },
+        ...CLEARED_ANIMATIONS,
       })
     },
 
@@ -726,6 +945,7 @@ export function createGameplayHandlers(set: SetState, get: GetState): Pick<Messa
           gameId: msg.gameId,
           eliminated: true,
         },
+        ...CLEARED_ANIMATIONS,
       })
     },
 

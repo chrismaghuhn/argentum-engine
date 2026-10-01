@@ -3,7 +3,6 @@ package com.wingedsheep.engine.event
 import com.wingedsheep.engine.core.AbilityTriggeredEvent
 import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.core.ZoneChangeEvent
-import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
@@ -18,11 +17,13 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 private val simultaneousDeathSource = CardDefinition.creature(
     name = "Simultaneous Death Source",
@@ -39,6 +40,7 @@ private val simultaneousDeathSource = CardDefinition.creature(
             ),
             binding = TriggerBinding.OTHER,
             effect = Effects.GainLife(1),
+            id = AbilityId("SimultaneousDeathTriggerSourceAuthorityCharacterizationTest-ability-1"),
         ),
     ),
 )
@@ -98,7 +100,7 @@ class SimultaneousDeathTriggerSourceAuthorityCharacterizationTest : FunSpec({
             deathEvent(beforeDeaths, otherB, "Grizzly Bears", driver.player1),
         )
 
-        val pending = TriggerDetector(driver.cardRegistry)
+        val pending = driver.services.triggerDetector
             .detectTriggers(afterDeaths, events)
             .single { it.sourceId == sourceA }
         pending.triggerContext.triggeringEntityId shouldBe otherB
@@ -106,11 +108,8 @@ class SimultaneousDeathTriggerSourceAuthorityCharacterizationTest : FunSpec({
         pending.effectiveSourceEndpointAuthority shouldBe
             AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
 
-        val result = TriggerProcessor(
-            cardRegistry = driver.cardRegistry,
-            stackResolver = StackResolver(driver.cardRegistry),
-        ).processTriggers(afterDeaths, listOf(pending))
-        result.isSuccess shouldBe true
+        val result = driver.services.triggerProcessor.processTriggers(afterDeaths, listOf(pending))
+        result.outcome shouldBe Outcome.Done
         val emitted = result.events.filterIsInstance<AbilityTriggeredEvent>().single()
         emitted.sourceEndpointAuthority shouldBe
             AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT

@@ -11,6 +11,7 @@ import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Temple of Malady (JOU #165)
@@ -36,7 +37,7 @@ class TempleOfMaladyScenarioTest : FunSpec({
         val temple = driver.putCardInHand(player, "Temple of Malady")
         val topCard = driver.putCardOnTopOfLibrary(player, "Forest")
 
-        driver.playLand(player, temple).isSuccess shouldBe true
+        driver.playLand(player, temple).outcome shouldBe Outcome.Done
         driver.isTapped(temple) shouldBe true
         driver.bothPass()
 
@@ -52,10 +53,10 @@ class TempleOfMaladyScenarioTest : FunSpec({
         val temple = driver.putCardInHand(player, "Temple of Malady")
         val topCard = driver.putCardOnTopOfLibrary(player, "Forest")
 
-        driver.playLand(player, temple).isSuccess shouldBe true
+        driver.playLand(player, temple).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
-        driver.submitCardSelection(player, listOf(topCard)).isSuccess shouldBe true
+        driver.submitCardSelection(player, listOf(topCard)).outcome shouldBe Outcome.Done
 
         driver.state.getLibrary(player).last() shouldBe topCard
     }
@@ -65,12 +66,12 @@ class TempleOfMaladyScenarioTest : FunSpec({
         val player = driver.activePlayer!!
         val temple = driver.putPermanentOnBattlefield(player, "Temple of Malady")
 
-        driver.submit(ActivateAbility(player, temple, blackAbilityId)).isSuccess shouldBe true
+        driver.submit(ActivateAbility(player, temple, blackAbilityId)).outcome shouldBe Outcome.Done
         val afterBlack = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         afterBlack.black shouldBe 1
 
         driver.untapPermanent(temple)
-        driver.submit(ActivateAbility(player, temple, greenAbilityId)).isSuccess shouldBe true
+        driver.submit(ActivateAbility(player, temple, greenAbilityId)).outcome shouldBe Outcome.Done
         val afterGreen = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         afterGreen.green shouldBe 1
     }

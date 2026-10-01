@@ -180,27 +180,31 @@ internal object TriggerOrderingKey {
         // stable semantic part; the stack payload and effect shape carry the behavior itself.
         fields(identity.cardDefinitionId)
 
-    private fun contextKey(state: GameState, context: TriggerContext): String = fields(
-        semanticEntityKey(state, context.triggeringEntityId),
-        semanticEntityKey(state, context.triggeringPlayerId),
+    private fun contextKey(
+        state: GameState,
+        context: TriggerContext,
+        visited: Set<EntityId> = emptySet(),
+    ): String = fields(
+        semanticEntityKey(state, context.triggeringEntityId, visited),
+        semanticEntityKey(state, context.triggeringPlayerId, visited),
         context.damageAmount,
         context.step?.name,
         context.xValue,
         context.counterCount,
         context.totalCounterCount,
         context.minusOneMinusOneCounterCount,
-        semanticEntityKey(state, context.targetingSourceEntityId),
+        semanticEntityKey(state, context.targetingSourceEntityId, visited),
         context.lastKnownPower,
         context.lastKnownToughness,
         context.diedBatchTotalPower,
         context.lastKnownSubtypes?.sorted(),
         context.lastKnownCardTypes?.sorted(),
         context.lastKnownCounters?.entries
-            ?.sortedBy { it.key }
-            ?.map { listOf(it.key, it.value) },
-        context.lastKnownDamageDealtByPlayers?.let { sortedEntityIntMap(state, it) },
+            ?.sortedBy { it.key.name }
+            ?.map { listOf(it.key.name, it.value) },
+        context.lastKnownDamageDealtByPlayers?.let { sortedEntityIntMap(state, it, visited) },
         context.lastKnownBlockingOrBlockedByIds
-            ?.map { semanticEntityKey(state, it) }
+            ?.map { semanticEntityKey(state, it, visited) }
             ?.sorted(),
         context.modesChosenCount,
         context.manaSpentOnTriggeringSpell,
@@ -213,9 +217,9 @@ internal object TriggerOrderingKey {
         context.discoverValue,
         context.excessDamageAmount,
         context.recipientToughnessAtDamage,
-        context.capturedEntityIds?.map { semanticEntityKey(state, it) },
-        semanticEntityKey(state, context.attachedToEntityId),
-        semanticEntityKey(state, context.unattachedFromEntityId),
+        context.capturedEntityIds?.map { semanticEntityKey(state, it, visited) },
+        semanticEntityKey(state, context.attachedToEntityId, visited),
+        semanticEntityKey(state, context.unattachedFromEntityId, visited),
     )
 
     private fun pipelineKey(
@@ -237,7 +241,6 @@ internal object TriggerOrderingKey {
             it.storedSubtypeGroups.entries.sortedBy { entry -> entry.key }.map { entry ->
                 listOf(entry.key, entry.value.map { group -> group.sorted() })
             },
-            semanticEntityKey(state, it.iterationTarget, visited),
         )
     } ?: "<none>"
 
@@ -385,7 +388,7 @@ internal object TriggerOrderingKey {
         snapshot.subtypes.map { it }.sorted(),
         snapshot.supertypes.map { it }.sorted(),
         semanticEntityKey(state, snapshot.controllerId, visited),
-        snapshot.counters.entries.sortedBy { it.key }.map { listOf(it.key, it.value) },
+        snapshot.counters.entries.sortedBy { it.key.name }.map { listOf(it.key.name, it.value) },
         snapshot.keywords.toList().sorted(),
         snapshot.lostAllAbilities,
         snapshot.typeLine?.let { typeLine ->
@@ -521,45 +524,17 @@ internal object TriggerOrderingKey {
                 semanticEntityKey(state, triggered.controllerId, visited),
                 effectKey(state, triggered.effect, visited),
                 triggered.abilityIdentity?.let(::abilityIdentityKey),
-                triggered.triggerDamageAmount,
-                semanticEntityKey(state, triggered.triggeringEntityId, visited),
-                semanticEntityKey(state, triggered.triggeringPlayerId, visited),
+                // Every trigger fact (damage amount, triggering entity/player, counters, last-known
+                // characteristics, scry/discard/discover counts, mana spent, captured batch, …) is
+                // carried by the stack object's one TriggerContext record.
+                triggered.triggerContext?.let { contextKey(state, it, visited) },
                 triggered.xValue,
-                triggered.triggerCounterCount,
-                triggered.triggerTotalCounterCount,
-                triggered.triggerLastKnownCounters?.entries
-                    ?.sortedBy { it.key }
-                    ?.map { listOf(it.key, it.value) },
-                triggered.triggerLastKnownDamageDealtByPlayers?.let {
-                    sortedEntityIntMap(state, it, visited)
-                },
-                triggered.triggerLastKnownBlockingOrBlockedByIds
-                    ?.map { semanticEntityKey(state, it, visited) }
-                    ?.sorted(),
-                triggered.triggerLastKnownSubtypes?.sorted(),
-                triggered.triggerLastKnownCardTypes?.sorted(),
-                triggered.lastKnownPower,
-                triggered.lastKnownToughness,
-                triggered.diedBatchTotalPower,
-                triggered.triggerModesChosenCount,
-                triggered.enchantedCreatureLastKnownPower,
-                semanticEntityKey(state, triggered.targetingSourceEntityId, visited),
-                semanticEntityKey(state, triggered.triggerUnattachedFromEntityId, visited),
                 semanticEntityKey(state, triggered.granterId, visited),
                 triggered.damageDistribution?.let {
                     damageDistributionKey(state, it, entity.get<TargetsComponent>()?.targets.orEmpty(), visited)
                 },
                 triggered.copyIndex,
                 triggered.copyTotal,
-                triggered.triggerScryCount,
-                triggered.triggerDiscardCount,
-                triggered.triggerDiscoverValue,
-                triggered.triggerExcessDamageAmount,
-                triggered.triggerRecipientToughness,
-                triggered.triggerManaSpentOnTriggeringSpell,
-                triggered.triggerColorsSpentOnTriggeringSpell,
-                triggered.triggerManaValueOfTriggeringSpell,
-                triggered.triggerXValueOfTriggeringSpell,
                 triggered.chosenModes,
                 triggered.modeTargetsOrdered.map { targets ->
                     targets.map { target -> chosenTargetKey(state, target, visited) }
@@ -584,7 +559,6 @@ internal object TriggerOrderingKey {
                             )
                         )
                     },
-                triggered.capturedEntityIds.map { semanticEntityKey(state, it, visited) },
                 triggered.sagaChapterInfo?.let {
                     fields(it.chapterNumber, it.finalChapterNumber)
                 },
@@ -607,8 +581,8 @@ internal object TriggerOrderingKey {
                 activated.tappedPermanents.map { semanticEntityKey(state, it, visited) },
                 activated.tappedEntitySnapshots.map { snapshotKey(state, it, visited) },
                 activated.lastKnownSourceCounters.entries
-                    .sortedBy { it.key }
-                    .map { listOf(it.key, it.value) },
+                    .sortedBy { it.key.name }
+                    .map { listOf(it.key.name, it.value) },
                 activated.lastKnownSourceSnapshot?.let { snapshotKey(state, it, visited) },
                 activated.lastKnownSourceAttachments
                     .map { semanticEntityKey(state, it, visited) }

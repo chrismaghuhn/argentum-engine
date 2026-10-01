@@ -15,6 +15,8 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Bonesplitter (MRD #146) — "Equipped creature gets +2/+0. Equip {1}."
@@ -44,7 +46,7 @@ class BonesplitterScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature))
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -103,7 +105,7 @@ class BonesplitterScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(opponentCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe ownCreature
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
@@ -115,7 +117,7 @@ class BonesplitterScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(ownCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe ownCreature
 
         val caster = driver.priorityPlayer!!
@@ -125,7 +127,7 @@ class BonesplitterScenarioTest : FunSpec({
             caster,
             lightningBolt,
             listOf(ChosenTarget.Permanent(ownCreature)),
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.state.getEntity(equipment)?.get<AttachedToComponent>() shouldBe null

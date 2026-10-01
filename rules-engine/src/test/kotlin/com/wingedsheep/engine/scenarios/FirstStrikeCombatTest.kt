@@ -12,6 +12,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Tests for first strike combat damage mechanics.
@@ -58,11 +59,11 @@ class FirstStrikeCombatTest : FunSpec({
 
         // Advance to declare attackers
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(activePlayer, listOf(knight), opponent).isSuccess shouldBe true
+        driver.declareAttackers(activePlayer, listOf(knight), opponent).outcome shouldBe Outcome.Done
 
         // Advance to declare blockers
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
-        driver.declareBlockers(opponent, mapOf(blocker to listOf(knight))).isSuccess shouldBe true
+        driver.declareBlockers(opponent, mapOf(blocker to listOf(knight))).outcome shouldBe Outcome.Done
 
         // Let combat damage happen through to postcombat main
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
@@ -96,10 +97,10 @@ class FirstStrikeCombatTest : FunSpec({
         driver.removeSummoningSickness(attacker)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(activePlayer, listOf(attacker), opponent).isSuccess shouldBe true
+        driver.declareAttackers(activePlayer, listOf(attacker), opponent).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
-        driver.declareBlockers(opponent, mapOf(blocker to listOf(attacker))).isSuccess shouldBe true
+        driver.declareBlockers(opponent, mapOf(blocker to listOf(attacker))).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
 
@@ -132,10 +133,10 @@ class FirstStrikeCombatTest : FunSpec({
         driver.removeSummoningSickness(attacker)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(activePlayer, listOf(attacker), opponent).isSuccess shouldBe true
+        driver.declareAttackers(activePlayer, listOf(attacker), opponent).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
-        driver.declareBlockers(opponent, mapOf(blocker to listOf(attacker))).isSuccess shouldBe true
+        driver.declareBlockers(opponent, mapOf(blocker to listOf(attacker))).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
 
@@ -167,10 +168,10 @@ class FirstStrikeCombatTest : FunSpec({
         driver.removeSummoningSickness(attacker)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(activePlayer, listOf(attacker), opponent).isSuccess shouldBe true
+        driver.declareAttackers(activePlayer, listOf(attacker), opponent).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
-        driver.declareBlockers(opponent, mapOf(blocker to listOf(attacker))).isSuccess shouldBe true
+        driver.declareBlockers(opponent, mapOf(blocker to listOf(attacker))).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
 
@@ -199,7 +200,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.removeSummoningSickness(attacker)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(activePlayer, listOf(attacker), opponent).isSuccess shouldBe true
+        driver.declareAttackers(activePlayer, listOf(attacker), opponent).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
         driver.declareNoBlockers(opponent)
@@ -235,7 +236,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.removeSummoningSickness(attacker)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(activePlayer, listOf(attacker), opponent).isSuccess shouldBe true
+        driver.declareAttackers(activePlayer, listOf(attacker), opponent).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
         driver.declareBlockers(opponent, mapOf(
@@ -268,7 +269,7 @@ class FirstStrikeCombatTest : FunSpec({
         val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "First Strike Knight")
         driver.removeSummoningSickness(attacker)
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(attackerPlayer, listOf(attacker), defenderPlayer).isSuccess shouldBe true
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defenderPlayer).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
         driver.declareNoBlockers(defenderPlayer)
 
@@ -300,7 +301,7 @@ class FirstStrikeCombatTest : FunSpec({
             attackerPlayer,
             listOf(firstStrikeAttacker, ordinaryAttacker),
             defenderPlayer,
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
         driver.declareNoBlockers(defenderPlayer)
 
@@ -328,7 +329,7 @@ class FirstStrikeCombatTest : FunSpec({
         setBaseKeywords(driver, attacker, currentKeywords + Keyword.DOUBLE_STRIKE)
         driver.removeSummoningSickness(attacker)
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(attackerPlayer, listOf(attacker), defenderPlayer).isSuccess shouldBe true
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defenderPlayer).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
         driver.declareNoBlockers(defenderPlayer)
 
@@ -362,10 +363,10 @@ class FirstStrikeCombatTest : FunSpec({
         driver.removeSummoningSickness(attacker)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(activePlayer, listOf(attacker), opponent).isSuccess shouldBe true
+        driver.declareAttackers(activePlayer, listOf(attacker), opponent).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
-        driver.declareBlockers(opponent, mapOf(blocker to listOf(attacker))).isSuccess shouldBe true
+        driver.declareBlockers(opponent, mapOf(blocker to listOf(attacker))).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
 

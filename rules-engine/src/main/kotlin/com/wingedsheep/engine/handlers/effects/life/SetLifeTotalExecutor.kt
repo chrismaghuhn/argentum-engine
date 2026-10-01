@@ -21,7 +21,7 @@ import kotlin.reflect.KClass
  * the necessary amount of life. This executor emits the appropriate LifeChangedEvent.
  */
 class SetLifeTotalExecutor(
-    private val amountEvaluator: DynamicAmountEvaluator = DynamicAmountEvaluator()
+    private val amountEvaluator: DynamicAmountEvaluator
 ) : EffectExecutor<SetLifeTotalEffect> {
 
     override val effectType: KClass<SetLifeTotalEffect> = SetLifeTotalEffect::class
@@ -50,6 +50,10 @@ class SetLifeTotalExecutor(
             // higher than their current life total while life gain is prevented, their
             // life total doesn't change.
             if (newLife > currentLife && DamageUtils.isLifeGainPrevented(newState, playerId)) {
+                continue
+            }
+            // CR 119.8 — likewise a player who can't lose life can't be set lower.
+            if (newLife < currentLife && newState.isLifeLossLocked(playerId)) {
                 continue
             }
 

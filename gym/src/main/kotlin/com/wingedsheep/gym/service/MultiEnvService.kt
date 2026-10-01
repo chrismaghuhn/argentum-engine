@@ -32,10 +32,10 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * ## Threading
  *
- * Each env is single-threaded — two calls naming the same [EnvId] must not
- * overlap or they race on mutable env fields. The intended use is: a trainer
- * owns an env and calls it sequentially, possibly interleaved with N other
- * envs which run in parallel via [stepBatch].
+ * Each env is single-threaded. [MultiEnvService] serializes operations that name the
+ * same [EnvId], including singular calls racing a batch item, while different envs run
+ * independently in parallel via [stepBatch]. This keeps mutable per-env state and action
+ * registries race-free without imposing a global lock.
  *
  * ## Registry regeneration
  *
@@ -101,24 +101,30 @@ class MultiEnvService(
             basics = sealed.basics,
             targetSize = config.targetSize
         )
+        val observation = env.observe()
         val envId = EnvId.generate()
         envs[envId] = env
-        return CreatedEnv(envId, env.observe())
+        return CreatedEnv(envId, observation)
     }
 
     /** Reset an existing game env while keeping the same [EnvId]. */
     fun reset(envId: EnvId, config: EnvConfig): ObservationResult =
-        requireGameEnv(envId).reset(
-            config.toGameConfig(),
-            perspectivePlayerIndex = config.perspectivePlayerIndex,
-            maxSteps = config.maxSteps,
-            semanticEpisodeId = config.semanticEpisodeId,
-        )
+        withGameEnv(envId) {
+            it.reset(
+                config.toGameConfig(),
+                perspectivePlayerIndex = config.perspectivePlayerIndex,
+                maxSteps = config.maxSteps,
+                semanticEpisodeId = config.semanticEpisodeId,
+            )
+        }
 
-    /** Drop envs from the registry. Idempotent. */
+    /** Drop envs from the registry. Idempotent and ordered after in-flight operations. */
     fun dispose(envIds: Collection<EnvId>) {
         envIds.forEach { envId ->
-            (envs.remove(envId) as? GameGymEnv)?.closeDiagnostics()
+            val env = envs[envId] ?: return@forEach
+            synchronized(env) {
+                if (envs.remove(envId, env)) (env as? GameGymEnv)?.closeDiagnostics()
+            }
         }
     }
 
@@ -139,21 +145,38 @@ class MultiEnvService(
     // =========================================================================
 
     /** Get the current observation without advancing state. */
-    fun observe(envId: EnvId): ObservationResult =
-        requireEnv(envId).observe()
+    fun observe(
+        envId: EnvId,
+        perspectivePlayerId: EntityId? = null
+    ): ObservationResult = withEnv(envId) { env ->
+        if (perspectivePlayerId == null) {
+            env.observe()
+        } else {
+            (env as? GameGymEnv
+                ?: throw IllegalStateException(
+                    "Env $envId is not a game env; player perspective is not supported"
+                )).observeForPlayer(perspectivePlayerId)
+        }
+    }
 
     /**
      * Advance a single env by the given [StepRequest.actionId]. The ID must
      * come from the most-recent observation for that env.
      */
     fun step(request: StepRequest): ObservationResult =
-        if (request.action == null) {
-            requireEnv(request.envId).step(request.actionId)
-        } else {
-            requireGameEnv(request.envId).step(request.actionId, request.action)
+        withEnv(request.envId) { env ->
+            val action = request.action
+            if (action == null) {
+                env.step(request.actionId, request.params)
+            } else {
+                (env as? GameGymEnv
+                    ?: throw IllegalStateException(
+                        "Env ${request.envId} is not a game env; structured actions are not supported"
+                    )).step(request.actionId, action)
+            }
         }
 
-    /** Advance N envs in parallel. Each env is single-threaded inside its own task. */
+    /** Advance N envs in parallel; calls naming the same env are serialized. */
     fun stepBatch(requests: List<StepRequest>): List<Pair<EnvId, ObservationResult>> {
         if (requests.isEmpty()) return emptyList()
         val tasks = requests.map { req -> Callable { req.envId to step(req) } }
@@ -169,7 +192,7 @@ class MultiEnvService(
         response: DecisionResponse,
         actorId: EntityId? = null
     ): ObservationResult =
-        requireGameEnv(envId).submitDecision(response, actorId)
+        withGameEnv(envId) { it.submitDecision(response, actorId) }
 
     // =========================================================================
     // Fork / snapshot / restore
@@ -178,20 +201,26 @@ class MultiEnvService(
     /** Fork an env N times. Children diverge independently from the next step on. */
     fun fork(srcEnvId: EnvId, count: Int = 1): List<EnvId> {
         require(count > 0) { "fork count must be positive" }
-        val src = requireEnv(srcEnvId)
-        return List(count) {
-            val newId = EnvId.generate()
-            envs[newId] = src.fork()
-            newId
+        return withEnv(srcEnvId) { src ->
+            List(count) {
+                val newId = EnvId.generate()
+                envs[newId] = src.fork()
+                newId
+            }
         }
     }
 
     fun snapshot(envId: EnvId): SnapshotHandle =
-        requireGameEnv(envId).snapshot(snapshotCodec)
+        withGameEnv(envId) { it.snapshot(snapshotCodec) }
 
     /** Restore a game env to a previously-snapshotted state. */
     fun restore(envId: EnvId, handle: SnapshotHandle): ObservationResult =
-        requireGameEnv(envId).restore(snapshotCodec, handle)
+        withGameEnv(envId) { it.restore(snapshotCodec, handle) }
+
+    /** Release a snapshot slot so long-lived trainers do not retain old game states indefinitely. */
+    fun disposeSnapshot(handle: SnapshotHandle) {
+        snapshotCodec.dispose(handle)
+    }
 
     // =========================================================================
     // Internals
@@ -214,6 +243,28 @@ class MultiEnvService(
         format = format,
         seed = seed
     )
+
+    /**
+     * Run one operation under the environment's own monitor. Re-check the registry after taking the
+     * monitor so a request that fetched an env just before [dispose] cannot operate on it afterward.
+     */
+    private inline fun <T> withEnv(envId: EnvId, block: (GymEnv) -> T): T {
+        val env = requireEnv(envId)
+        return synchronized(env) {
+            if (envs[envId] !== env) {
+                throw NoSuchElementException("Unknown envId: $envId")
+            }
+            block(env)
+        }
+    }
+
+    private inline fun <T> withGameEnv(envId: EnvId, block: (GameGymEnv) -> T): T =
+        withEnv(envId) { env ->
+            block(
+                env as? GameGymEnv
+                    ?: throw IllegalStateException("Env $envId is not a game env; operation not supported")
+            )
+        }
 
     private fun requireEnv(envId: EnvId): GymEnv =
         envs[envId] ?: throw NoSuchElementException("Unknown envId: $envId")

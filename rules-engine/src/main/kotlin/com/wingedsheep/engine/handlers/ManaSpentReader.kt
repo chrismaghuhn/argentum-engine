@@ -16,14 +16,14 @@ import com.wingedsheep.sdk.model.EntityId
  * onto the battlefield without being cast, or is a copy created on the stack — no mana was
  * spent in either case), which is CR-faithful for "the mana spent to cast it" payoffs.
  *
- * Shared by [PredicateEvaluator] (mana-value-vs-mana-spent predicates) and
- * [DynamicAmountEvaluator] (Converge / total-mana-spent amounts) so the read path can never
- * drift between the two.
+ * Shared by [PredicateEvaluator] (mana-value-vs-mana-spent predicates),
+ * [DynamicAmountEvaluator] (Converge / total-mana-spent amounts) and [ConditionEvaluator]
+ * (`ManaSpentToCastIncludes`) so the read path can never drift between them.
  */
 object ManaSpentReader {
 
     /** The five colored buckets (W, U, B, R, G) spent to cast [entityId]; colorless excluded. */
-    private fun coloredBuckets(state: GameState, entityId: EntityId): IntArray {
+    fun coloredBuckets(state: GameState, entityId: EntityId): IntArray {
         val container = state.getEntity(entityId) ?: return IntArray(5)
         container.get<SpellOnStackComponent>()?.let {
             return intArrayOf(it.manaSpentWhite, it.manaSpentBlue, it.manaSpentBlack, it.manaSpentRed, it.manaSpentGreen)
@@ -32,6 +32,28 @@ object ManaSpentReader {
             return intArrayOf(it.whiteSpent, it.blueSpent, it.blackSpent, it.redSpent, it.greenSpent)
         }
         return IntArray(5)
+    }
+
+    /** Colorless mana actually spent, including payment of generic costs. */
+    fun colorlessSpent(state: GameState, entityId: EntityId): Int {
+        val container = state.getEntity(entityId) ?: return 0
+        return container.get<SpellOnStackComponent>()?.manaSpentColorless
+            ?: container.get<CastRecordComponent>()?.colorlessSpent ?: 0
+    }
+
+    /** Freeze a cast's payment for abilities that outlive the spell object. */
+    fun snapshot(state: GameState, entityId: EntityId): CastRecordComponent {
+        val container = state.getEntity(entityId) ?: return CastRecordComponent()
+        container.get<SpellOnStackComponent>()?.let {
+            return CastRecordComponent(
+                whiteSpent = it.manaSpentWhite, blueSpent = it.manaSpentBlue,
+                blackSpent = it.manaSpentBlack, redSpent = it.manaSpentRed,
+                greenSpent = it.manaSpentGreen, colorlessSpent = it.manaSpentColorless,
+                manaSpentBySubtype = it.manaSpentBySubtype,
+                manaSpentByCardType = it.manaSpentByCardType
+            )
+        }
+        return container.get<CastRecordComponent>() ?: CastRecordComponent()
     }
 
     /** Total mana (all colors plus colorless) spent to cast [entityId]; 0 if it wasn't cast. */
@@ -66,6 +88,18 @@ object ManaSpentReader {
         val container = state.getEntity(entityId) ?: return 0
         container.get<SpellOnStackComponent>()?.let { return it.manaSpentBySubtype[subtype] ?: 0 }
         container.get<CastRecordComponent>()?.let { return it.manaSpentBySubtype[subtype] ?: 0 }
+        return 0
+    }
+
+    /**
+     * How many mana units produced by a source of [cardType] were spent to cast [entityId] — same
+     * stack-then-cast-record read as [subtypeSpent]. Backs
+     * `SpellCastPredicate.PaidWithManaFromCardType` (Inga and Esika's "mana from creatures").
+     */
+    fun cardTypeSpent(state: GameState, entityId: EntityId, cardType: com.wingedsheep.sdk.core.CardType): Int {
+        val container = state.getEntity(entityId) ?: return 0
+        container.get<SpellOnStackComponent>()?.let { return it.manaSpentByCardType[cardType] ?: 0 }
+        container.get<CastRecordComponent>()?.let { return it.manaSpentByCardType[cardType] ?: 0 }
         return 0
     }
 }

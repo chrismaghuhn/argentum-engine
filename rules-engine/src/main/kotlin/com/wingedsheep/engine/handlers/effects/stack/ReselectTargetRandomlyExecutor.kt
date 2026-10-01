@@ -3,9 +3,13 @@ package com.wingedsheep.engine.handlers.effects.stack
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.TargetFinder
+import com.wingedsheep.engine.handlers.TargetingSourceType
+import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -25,11 +29,12 @@ import kotlin.reflect.KClass
  * If it has exactly one target, finds all legal targets and randomly picks one.
  * If it has zero or multiple targets, does nothing.
  */
-class ReselectTargetRandomlyExecutor : EffectExecutor<ReselectTargetRandomlyEffect> {
+class ReselectTargetRandomlyExecutor(
+    private val predicateEvaluator: PredicateEvaluator,
+    private val targetFinder: TargetFinder
+) : EffectExecutor<ReselectTargetRandomlyEffect> {
 
     override val effectType: KClass<ReselectTargetRandomlyEffect> = ReselectTargetRandomlyEffect::class
-
-    private val targetFinder = TargetFinder()
 
     override fun execute(
         state: GameState,
@@ -56,13 +61,19 @@ class ReselectTargetRandomlyExecutor : EffectExecutor<ReselectTargetRandomlyEffe
         val targetRequirements = targetsComponent.targetRequirements
 
         // 3. Find all legal targets
+        // The new target has to be legal for the spell or ability being retargeted, so it is found
+        // as that object's controller would find it — not as the reselecting effect's controller.
+        val stackController = TargetResolutionUtils.stackObjectController(state, triggeringEntityId)
+            ?: stackEntity.get<ControllerComponent>()?.playerId
+            ?: context.controllerId
         val legalTargets = findLegalTargets(
             state = state,
             currentTarget = currentTarget,
             targetRequirements = targetRequirements,
-            controllerId = context.controllerId,
+            controllerId = stackController,
             sourceId = triggeringEntityId,
             predicateContext = predicateContextForRetarget(state, triggeringEntityId, context),
+            targetingSourceType = targetingSourceTypeOf(state, triggeringEntityId),
         )
 
         if (legalTargets.isEmpty()) {
@@ -123,6 +134,7 @@ class ReselectTargetRandomlyExecutor : EffectExecutor<ReselectTargetRandomlyEffe
         controllerId: EntityId,
         sourceId: EntityId,
         predicateContext: PredicateContext,
+        targetingSourceType: TargetingSourceType,
     ): List<EntityId> {
         val requirement = targetRequirements.firstOrNull()
         return if (requirement != null) {
@@ -131,6 +143,7 @@ class ReselectTargetRandomlyExecutor : EffectExecutor<ReselectTargetRandomlyEffe
                 requirement = requirement,
                 controllerId = controllerId,
                 sourceId = sourceId,
+                targetingSourceType = targetingSourceType,
                 pipelineContext = predicateContext,
                 requireAuthoritativeContext = true,
             )
@@ -161,10 +174,20 @@ class ReselectTargetRandomlyExecutor : EffectExecutor<ReselectTargetRandomlyEffe
             )
         }
         container?.get<TriggeredAbilityOnStackComponent>()?.let { ability ->
+            val trigger = ability.triggerContext
             return base.copy(
                 sourceId = stackObjectId,
-                triggeringEntityId = ability.triggeringEntityId,
-                triggeringPlayerId = ability.triggeringPlayerId,
+                triggeringEntityId = trigger?.triggeringEntityId,
+                triggeringPlayerId = trigger?.triggeringPlayerId,
+                defendingPlayerId = trigger?.defendingPlayerId,
+                damageSourceId = trigger?.damageSourceEntityId,
+                damageRecipientId = trigger?.damageRecipientEntityId,
+                damageRecipientKind = trigger?.damageRecipientKind
+                    ?: com.wingedsheep.engine.core.DamageRecipientKind.UNKNOWN,
+                damageRecipientKinds = trigger?.effectiveDamageRecipientKinds
+                    ?: com.wingedsheep.engine.core.DamageRecipientKindSet.UNKNOWN,
+                damageSourceLastKnownSnapshot = trigger?.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger?.damageRecipientLastKnownSnapshot,
                 xValue = ability.xValue,
                 chosenValues = ability.carriedPipeline?.chosenValues ?: emptyMap(),
                 storedStringLists = ability.carriedPipeline?.storedStringLists ?: emptyMap(),
@@ -173,6 +196,17 @@ class ReselectTargetRandomlyExecutor : EffectExecutor<ReselectTargetRandomlyEffe
             )
         }
         return base.copy(sourceId = stackObjectId, xValue = null)
+    }
+
+    /** What kind of object is being retargeted (CR 115.6) — spells-only restrictions apply to spells. */
+    private fun targetingSourceTypeOf(state: GameState, stackObjectId: EntityId): TargetingSourceType {
+        val container = state.getEntity(stackObjectId) ?: return TargetingSourceType.ANY
+        return when {
+            container.has<SpellOnStackComponent>() -> TargetingSourceType.SPELL
+            container.has<ActivatedAbilityOnStackComponent>() -> TargetingSourceType.ACTIVATED_ABILITY
+            container.has<TriggeredAbilityOnStackComponent>() -> TargetingSourceType.TRIGGERED_ABILITY
+            else -> TargetingSourceType.ANY
+        }
     }
 
     private fun findTargetsByCurrentType(

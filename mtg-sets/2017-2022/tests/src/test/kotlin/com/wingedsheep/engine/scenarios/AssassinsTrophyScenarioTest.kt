@@ -14,6 +14,8 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Assassin's Trophy (GRN #152).
@@ -95,7 +97,7 @@ class AssassinsTrophyScenarioTest : FunSpec({
 
         val result = driver.castSpell(caster, trophy, listOf(ownPermanent))
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.findPermanent(caster, "Mind Stone") shouldBe ownPermanent
         driver.pendingDecision shouldBe null
     }

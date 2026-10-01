@@ -44,15 +44,31 @@ sealed interface Effect : TextReplaceable<Effect> {
     /**
      * Returns a description with dynamic amounts evaluated to concrete values.
      * Override in effects that use [DynamicAmount] to show runtime values on the stack.
+     *
+     * [resolver] returns `null` when the current context cannot determine the amount yet. The case
+     * that matters is a [DynamicAmount] reading a property off a target the player has not chosen
+     * yet — the targeting banner renders its hint in exactly that state, before any target exists.
+     * An override MUST fall back to the amount's own [DynamicAmount.description] there: rendering
+     * an absent value as `0` claims a concrete number ("+0/+0") for something merely unknown, and
+     * is indistinguishable from an amount that genuinely resolved to zero.
      */
-    fun runtimeDescription(resolver: (DynamicAmount) -> Int): String = description
+    fun runtimeDescription(resolver: (DynamicAmount) -> Int?): String = description
 
     /**
-     * Operator to chain effects.
-     * Allows syntax like: EffectA then EffectB
+     * Sequence two effects: `Effects.DrawCards(2) then Effects.CreateToken(...)`. This is the one
+     * way a card writes "do A, then B"; a chain `a then b then c` builds a single flat sequence.
+     *
+     * Across lines the operator ends the line:
+     * ```kotlin
+     * effect = Effects.Move(creature, Zone.EXILE) then
+     *     Effects.CreateDelayedTrigger(step = Step.END, effect = Effects.Move(creature, Zone.BATTLEFIELD))
+     * ```
+     *
+     * Only a *plain* sequence on the left is extended in place; one carrying its own
+     * `descriptionOverride` or `stopOnError` is kept whole, so chaining never drops them.
      */
     infix fun then(next: Effect): CompositeEffect {
-        return if (this is CompositeEffect) {
+        return if (this is CompositeEffect && isPlainSequence()) {
             CompositeEffect(this.effects + next)
         } else {
             CompositeEffect(listOf(this, next))

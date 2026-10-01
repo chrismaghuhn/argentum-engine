@@ -23,10 +23,9 @@ object StepActionHelper {
         priorEvents: MutableList<GameEvent>
     ): ExecutionResult {
         val sbaResult = sbaChecker.checkAndApply(state)
-        if (sbaResult.isPaused) {
-            return ExecutionResult.paused(
+        if (sbaResult.outcome is Outcome.Paused) {
+            return ExecutionResult.propagatePause(
                 sbaResult.state,
-                sbaResult.pendingDecision!!,
                 priorEvents + sbaResult.events,
                 diagnostics = sbaResult.diagnostics,
             )

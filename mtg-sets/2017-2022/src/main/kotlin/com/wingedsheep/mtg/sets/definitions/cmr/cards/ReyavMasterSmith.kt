@@ -7,7 +7,6 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.Duration
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
 /**
@@ -25,10 +24,7 @@ val ReyavMasterSmith = card("Reyav, Master Smith") {
     oracleText = "Whenever a creature you control that's enchanted or equipped attacks, that creature gains double strike until end of turn."
 
     triggeredAbility {
-        trigger = Triggers.attacks(
-            filter = GameObjectFilter.Creature.youControl().equipped(),
-            binding = TriggerBinding.ANY,
-        )
+        trigger = Triggers.a(GameObjectFilter.Creature.youControl().equipped()).attacks()
         effect = Effects.GrantKeyword(
             Keyword.DOUBLE_STRIKE,
             EffectTarget.TriggeringEntity,

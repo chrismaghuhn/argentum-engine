@@ -13,6 +13,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Wayfarer's Bauble (5DN #165) — {2}, {T}, Sacrifice this artifact: search for a basic land,
@@ -43,7 +44,7 @@ class WayfarersBaubleScenarioTest : FunSpec({
         val activation = driver.submit(
             ActivateAbility(playerId = player, sourceId = bauble, abilityId = abilityId)
         )
-        activation.isSuccess shouldBe true
+        activation.outcome shouldBe Outcome.Done
         driver.findPermanent(player, "Wayfarer's Bauble") shouldBe null
         driver.getGraveyardCardNames(player) shouldContain "Wayfarer's Bauble"
 
@@ -52,7 +53,7 @@ class WayfarersBaubleScenarioTest : FunSpec({
         decision.options shouldContain mountain
         decision.minSelections shouldBe 0
         decision.maxSelections shouldBe 1
-        driver.submitCardSelection(player, listOf(mountain)).isSuccess shouldBe true
+        driver.submitCardSelection(player, listOf(mountain)).outcome shouldBe Outcome.Done
 
         driver.findPermanent(player, "Mountain") shouldNotBe null
         val foundMountain = driver.findPermanent(player, "Mountain")!!
@@ -72,7 +73,7 @@ class WayfarersBaubleScenarioTest : FunSpec({
             ActivateAbility(playerId = player, sourceId = bauble, abilityId = abilityId)
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.findPermanent(player, "Wayfarer's Bauble") shouldNotBe null
     }
 })

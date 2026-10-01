@@ -29,7 +29,8 @@ import com.wingedsheep.sdk.dsl.Conditions
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.targets.TargetPermanent
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -64,7 +65,7 @@ class CompactReplayV5PaymentTest : ScenarioTestBase() {
         typeLine = "Artifact Land"
         activatedAbility {
             cost = Costs.Mana("{1}")
-            target = TargetPermanent()
+            target = TargetObject(filter = TargetFilter.Permanent)
             genericCostReduction = DynamicAmount.Conditional(
                 condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
                 ifTrue = DynamicAmount.Fixed(1),
@@ -232,8 +233,11 @@ class CompactReplayV5PaymentTest : ScenarioTestBase() {
             actions.filterIsInstance<CastSpell>().single { it.cardId == spellId }
                 .paymentStrategy shouldBe explicit.paymentStrategy
             val setup = session.getReplaySetup().shouldNotBeNull()
+            // A live session sets the game up the v7 way (shuffled deck ids), so its record must carry
+            // v7; a v5 label would reconstruct with unshuffled ids. v7 keeps the v5 ExplicitV3 carrier.
+            val version = CompactReplay.CURRENT_VERSION
             val replay = CompactReplay(
-                version = 5,
+                version = version,
                 gameId = session.sessionId,
                 players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
                 startedAt = "2026-08-29T00:00:00Z",
@@ -244,7 +248,7 @@ class CompactReplayV5PaymentTest : ScenarioTestBase() {
                 checkpoints = listOf(
                     ReplayCheckpoint(
                         afterActionCount = actions.size,
-                        fingerprint = ReplayFingerprint.of(liveFinal, 5),
+                        fingerprint = ReplayFingerprint.of(liveFinal, version),
                     ),
                 ),
             )
@@ -256,7 +260,7 @@ class CompactReplayV5PaymentTest : ScenarioTestBase() {
             val reconstructedFinal = ReplayReconstructor(cardRegistry, null)
                 .reconstructStateAt(decoded, decoded.actions.size)
                 .shouldNotBeNull()
-            ReplayFingerprint.of(reconstructedFinal, 5) shouldBe ReplayFingerprint.of(liveFinal, 5)
+            ReplayFingerprint.of(reconstructedFinal, version) shouldBe ReplayFingerprint.of(liveFinal, version)
         }
 
         test("PAY106-13: target-bound ExplicitV3 action preserves target and replay fingerprint") {
@@ -314,8 +318,10 @@ class CompactReplayV5PaymentTest : ScenarioTestBase() {
 
             val setup = session.getReplaySetup().shouldNotBeNull()
             val actions = session.getRecordedActions()
+            // Live session ⇒ v7 setup (shuffled deck ids); v7 keeps the v5 ExplicitV3 carrier.
+            val version = CompactReplay.CURRENT_VERSION
             val replay = CompactReplay(
-                version = 5,
+                version = version,
                 gameId = session.sessionId,
                 players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
                 startedAt = "2026-08-29T00:00:00Z",
@@ -326,7 +332,7 @@ class CompactReplayV5PaymentTest : ScenarioTestBase() {
                 checkpoints = listOf(
                     ReplayCheckpoint(
                         afterActionCount = actions.size,
-                        fingerprint = ReplayFingerprint.of(liveFinal, 5),
+                        fingerprint = ReplayFingerprint.of(liveFinal, version),
                     ),
                 ),
             )
@@ -350,7 +356,7 @@ class CompactReplayV5PaymentTest : ScenarioTestBase() {
             val reconstructedFinal = ReplayReconstructor(cardRegistry, null)
                 .reconstructStateAt(decoded, decoded.actions.size)
                 .shouldNotBeNull()
-            ReplayFingerprint.of(reconstructedFinal, 5) shouldBe ReplayFingerprint.of(liveFinal, 5)
+            ReplayFingerprint.of(reconstructedFinal, version) shouldBe ReplayFingerprint.of(liveFinal, version)
         }
 
         test("PAY106-14: ExplicitV3 remains rejected under CompactReplay-v4") {

@@ -213,7 +213,18 @@ class ReplayService(
                 body = presentation.compose(reconstructed),
                 frameCount = reconstructed.frameCount,
                 fidelity = reconstructed.fidelity,
-                degradedReason = reconstructed.divergenceReason,
+                // A truncated record re-simulates perfectly — it is simply not the whole game, and
+                // the one thing it must not do is look like it is. Note this says nothing about
+                // fidelity: these frames are exact, there are just fewer of them than were played.
+                // An unverified reconstruction keeps its own reason ahead of that caveat.
+                degradedReason = listOfNotNull(
+                    reconstructed.divergenceReason,
+                    if (stored.replay.truncated) {
+                        "Only the first ${stored.replay.frameCount} frames of this game were recorded — " +
+                            "it ran long enough that recording had to stop, and it continued past the end " +
+                            "of what you can watch here."
+                    } else null,
+                ).joinToString(" ").ifEmpty { null },
                 // v1/v2 retain their historical unverified-but-reconstructable behavior. A v3
                 // record is DATA_TRUSTED only after its mandatory tail proof matches.
                 stateReproducible = stored.replay.version < 3 || reconstructed.fidelity == ReplayFidelity.EXACT,

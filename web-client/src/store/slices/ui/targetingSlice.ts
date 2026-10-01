@@ -19,8 +19,8 @@ export interface TargetingSliceActions {
   startTargeting: (state: TargetingState) => void
   addTarget: (targetId: EntityId) => void
   removeTarget: (targetId: EntityId) => void
-  cancelTargeting: () => void
-  confirmTargeting: () => void
+  cancelTargeting: (interactionEpoch: string | null) => void
+  confirmTargeting: (interactionEpoch: string | null) => void
   goBackTargeting: () => void
 }
 
@@ -81,7 +81,8 @@ export const createTargetingSlice: SliceCreator<TargetingSlice> = (set, get) => 
     })
   },
 
-  cancelTargeting: () => {
+  cancelTargeting: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ targetingState: null })
@@ -99,7 +100,8 @@ export const createTargetingSlice: SliceCreator<TargetingSlice> = (set, get) => 
     })
   },
 
-  confirmTargeting: () => {
+  confirmTargeting: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { targetingState, pipelineState, gameState, startTargeting } = get()
     if (!targetingState || !gameState || !pipelineState) return
 
@@ -134,11 +136,13 @@ export const createTargetingSlice: SliceCreator<TargetingSlice> = (set, get) => 
 
         const nextReq = targetingState.targetRequirements[nextIndex]
         if (nextReq) {
-          // More requirements — stay within targeting phase
+          // More requirements — stay within targeting phase. Each "target" word is its own
+          // instance, so an earlier pick stays legal here (Seeds of Strength) unless the
+          // requirement says "another target".
           const alreadySelected = allSelected.flat()
-          const filteredValidTargets = nextReq.validTargets.filter(
-            (t) => !alreadySelected.includes(t),
-          )
+          const filteredValidTargets = nextReq.mustDifferFromEarlier
+            ? nextReq.validTargets.filter((t) => !alreadySelected.includes(t))
+            : [...nextReq.validTargets]
           startTargeting({
             action: pipelineState.accumulatedAction,
             validTargets: filteredValidTargets,

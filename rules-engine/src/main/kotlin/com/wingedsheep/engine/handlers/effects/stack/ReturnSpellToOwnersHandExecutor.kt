@@ -1,7 +1,6 @@
 package com.wingedsheep.engine.handlers.effects.stack
 
 import com.wingedsheep.engine.core.EffectResult
-import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
@@ -11,7 +10,6 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
-import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.effects.ReturnSpellToOwnersHandEffect
 import kotlin.reflect.KClass
@@ -21,8 +19,14 @@ import kotlin.reflect.KClass
  *
  * Removes the targeted spell from the stack and puts it into its owner's hand.
  * This is not a counter — "can't be countered" protections do not block it.
+ *
+ * The move goes through [ZoneTransitionService.moveToZoneWithReplacements] on the engine's
+ * [zones] service, so zone-change replacements (a commander's owner may put it into the command
+ * zone instead, CR 903.9b) apply to a spell leaving the stack too.
  */
-class ReturnSpellToOwnersHandExecutor : EffectExecutor<ReturnSpellToOwnersHandEffect> {
+class ReturnSpellToOwnersHandExecutor(
+    private val zones: ZoneTransitionService
+) : EffectExecutor<ReturnSpellToOwnersHandEffect> {
 
     override val effectType: KClass<ReturnSpellToOwnersHandEffect> = ReturnSpellToOwnersHandEffect::class
 
@@ -51,8 +55,10 @@ class ReturnSpellToOwnersHandExecutor : EffectExecutor<ReturnSpellToOwnersHandEf
 
         // A spell on the stack is still a commander candidate under 903.9b:
         // the rule applies from anywhere. Route the stack-to-hand move through
-        // the same pending event pipeline as permanent bounces.
-        return ZoneTransitionService.moveToZoneWithReplacements(
+        // the same pending event pipeline as permanent bounces. The transition strips the
+        // stack-only components and the spell's text changes, and reports the move from the
+        // stack with the old and new object identities.
+        return zones.moveToZoneWithReplacements(
             state = state,
             entityId = spellId,
             destinationZone = Zone.HAND,

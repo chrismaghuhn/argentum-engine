@@ -12,6 +12,7 @@ import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Leonin Shikari — Darksteel #6.
@@ -44,7 +45,7 @@ class LeoninShikariScenarioTest : FunSpec({
 
         driver.submit(
             ActivateAbility(you, equipment, equipId, targets = listOf(ChosenTarget.Permanent(creature)))
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe creature
@@ -59,7 +60,7 @@ class LeoninShikariScenarioTest : FunSpec({
         driver.giveColorlessMana(you, 1)
         driver.submit(
             ActivateAbility(you, equipment, equipId, targets = listOf(ChosenTarget.Permanent(creature)))
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe creature

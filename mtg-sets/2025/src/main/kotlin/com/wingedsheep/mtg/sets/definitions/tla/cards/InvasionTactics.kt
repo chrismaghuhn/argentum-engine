@@ -8,7 +8,6 @@ import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.EventPattern.OneOrMoreDealCombatDamageToPlayerEvent
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
-import com.wingedsheep.sdk.scripting.TriggerSpec
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 
 /**
@@ -33,18 +32,13 @@ val InvasionTactics = card("Invasion Tactics") {
 
     // When this enchantment enters, creatures you control get +2/+2 until end of turn.
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
+        trigger = Triggers.self.enters()
         effect = Patterns.Group.modifyStatsForAll(2, 2, GroupFilter.AllCreaturesYouControl)
     }
 
     // Whenever one or more Allies you control deal combat damage to a player, draw a card.
     triggeredAbility {
-        trigger = TriggerSpec(
-            OneOrMoreDealCombatDamageToPlayerEvent(
-                sourceFilter = GameObjectFilter.Creature.withSubtype("Ally"),
-            ),
-            TriggerBinding.ANY,
-        )
+        trigger = Triggers.oneOrMore(GameObjectFilter.Permanent.withSubtype("Ally")).dealCombatDamageToAPlayer()
         effect = Effects.DrawCards(1)
     }
 

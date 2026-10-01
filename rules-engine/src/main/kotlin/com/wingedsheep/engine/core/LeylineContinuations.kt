@@ -22,9 +22,8 @@ import kotlinx.serialization.Serializable
  *    pause for the card's own "as this enters, choose …" replacement if it has one (a Leyline
  *    of Transformation started from the opening hand still chooses its creature type).
  *  - **no**: leave the card in hand; just drop it from the pending list.
- * After applying the outcome it either pauses with the next leyline prompt or hands the
- * state back to `SubmitDecisionHandler`, which advances the game from UNTAP into the first
- * turn via `turnManager.advanceStep`.
+ * After applying the outcome it either pauses with the next leyline prompt or advances the
+ * game from UNTAP into the first turn via `turnManager.advanceStep`.
  *
  * @property playerId Player making this decision (the leyline card's owner)
  * @property leylineCardId The leyline card entity in [playerId]'s hand
@@ -32,11 +31,10 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class LeylineDecisionContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val leylineCardId: EntityId,
     val cardName: String
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume the opening-hand leyline walk after something *else* paused in the middle of it.
@@ -46,11 +44,8 @@ data class LeylineDecisionContinuation(
  * [EntersWithChoiceOnBattlefieldContinuation] of its own, so the walk over the remaining leylines
  * has to be parked underneath it. This frame is that park: it carries no decision of its own and
  * is auto-resumed (see `LeylineContinuationResumer`) once the choice above it finishes, asking the
- * next player's yes/no or handing the state back for the advance into turn 1.
+ * next player's yes/no or advancing into turn 1.
  *
- * @property decisionId Synthetic — this frame is never matched against a player response.
  */
 @Serializable
-data class LeylinePhaseContinuation(
-    override val decisionId: String
-) : ContinuationFrame
+data object LeylinePhaseContinuation : AutomaticContinuation

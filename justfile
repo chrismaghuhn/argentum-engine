@@ -252,6 +252,18 @@ kill-daemons MIN_AGE="60" *ARGS:
 check:
     ./gradlew check
 
+# Waits out subscription usage limits; stop with `touch .claude/loop-runs/<code>.stop`.
+# Implement a set: set-loop ecl sonnet|opus|astra|codex:<model-id>|pick; no args shows help
+[group: 'ai']
+set-loop CODE="" MODEL="":
+    scripts/set-loop "{{CODE}}" "{{MODEL}}"
+
+# Waits out subscription usage limits; stop with `touch .claude/loop-runs/assay.stop`.
+# Widen Assay's grammar, one band per PR, over text the engine already expresses: assay-loop [model] [focus]
+[group: 'ai']
+assay-loop MODEL="" FOCUS="":
+    scripts/assay-loop "{{MODEL}}" "{{FOCUS}}"
+
 # Report implemented vs missing cards for a set (e.g., just card-status --set BLB --list)
 [group: 'build']
 card-status *ARGS:
@@ -368,7 +380,7 @@ coverage-verify-all: _coverage-tool
     done
 
 # Build the Argentum Assay CLI once so the recipes below can call it (fast no-op when up to date).
-# Assay is the first-party Oracle-text parser (docs/oracle-assay.md); it depends on :mtg-sdk only.
+# Assay is the first-party Oracle-text parser (docs/oracle-assay.md); it depends on :mtg-sdk (and :mtg-sdk-tooling) only.
 _assay-tool:
     @scripts/gradle-locked -q --console=plain :oracle-assay:installDist
 
@@ -460,6 +472,20 @@ fix-backlog-implementations:
 [group: 'build']
 check-card-printing CARD:
     scripts/check-card-printing.py "{{CARD}}"
+
+# THE ASSAY-READY WORKLIST — the cards Argentum Assay reads whole that this set has not authored,
+# split by where the work lands: author here / author in the earlier set + a row here / row only /
+# basic land. The split is the point: `assayReady` counts a card as done when it appears in the
+# set's cards + basicLands + printings, so a missing reprint row badges a card exactly like a
+# missing canonical does, and a sweep that only authors canonicals leaves half the badge behind.
+# Needs a baked ledger (`just assay-bake`). The `assay-ready-sweep` skill drives the whole job.
+#   just assay-ready MH2                 the split, as a table
+#   just assay-ready MH2 --names         ... and every card name under its bucket
+#   just assay-ready MH2 --tail          ... and the Printing rows owed in OTHER sets
+#   just assay-ready MH2 --json          machine-readable, for generating agent briefs
+[group: 'build']
+assay-ready SET *ARGS:
+    scripts/assay-ready.py --set {{SET}} {{ARGS}}
 
 # Start the game server (loads .env if present)
 [group: 'dev']

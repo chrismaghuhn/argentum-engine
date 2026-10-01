@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computePhases } from './pipelinePhases'
+import { computePhases, enterPhase, mergeResult } from './pipelinePhases'
 import type { LegalActionInfo } from '@/types/messages'
 
 /**
@@ -47,6 +47,23 @@ describe('computePhases — choose-N modal', () => {
       },
     })
     expect(computePhases(info)).toEqual([{ type: 'modalModes' }, { type: 'costPayment' }])
+  })
+
+  it('a choose-N modal with an {X} cost (Profane Command) still announces X', () => {
+    // CR 601.2b announces the modes first and the value of X second. Dropping the xSelection
+    // phase cast the spell at X = 0 — every chosen mode read that 0 and did nothing.
+    const info = castAction({
+      manaCostString: '{X}{B}{B}',
+      hasXCost: true,
+      maxAffordableX: 4,
+      modalEnumeration: {
+        chooseCount: 2,
+        minChooseCount: 2,
+        allowRepeat: false,
+        modes: [],
+      },
+    })
+    expect(computePhases(info)).toEqual([{ type: 'modalModes' }, { type: 'xSelection' }])
   })
 })
 
@@ -137,5 +154,291 @@ describe('computePhases — tap-for-generic (improvise / waterbend)', () => {
     expect(computePhases(waterbendAction, { autoTapEnabled: true })).toEqual([
       { type: 'tapForGeneric' },
     ])
+  })
+})
+
+describe('computePhases — Phyrexian mana', () => {
+  it('opens manual payment even when auto-tap is enabled so life is selectable', () => {
+    const info = castAction({
+      manaCostString: '{1}{B/P}{B/P}',
+      availableManaSources: [{ entityId: 'swamp', producesColors: ['B'] }],
+    })
+
+    expect(computePhases(info, { autoTapEnabled: true })).toEqual([{ type: 'manaSource' }])
+  })
+
+  it('opens manual payment for a Phyrexian-only cost with no mana sources', () => {
+    const info = castAction({
+      manaCostString: '{B/P}',
+      availableManaSources: [],
+    })
+
+    expect(computePhases(info, { autoTapEnabled: true })).toEqual([{ type: 'manaSource' }])
+  })
+})
+
+describe('Force of Vigor hand-exile payment', () => {
+  const info = castAction({
+    actionType: 'CastWithAlternativeCost',
+    description: 'Cast Force of Vigor ({0})',
+    action: {
+      type: 'CastSpell',
+      playerId: 'p1',
+      cardId: 'force',
+      useAlternativeCost: true,
+      alternativeCostType: 'SELF_ALTERNATIVE',
+    },
+    additionalCostInfo: {
+      costType: 'ExileFromHand',
+      description: 'Exile a green card from your hand',
+      validExileTargets: ['green-card'],
+      exileMinCount: 1,
+      exileMaxCount: 1,
+    },
+  })
+
+  it('opens a hand selection phase and exposes the eligible green card', () => {
+    expect(computePhases(info, { autoTapEnabled: true })).toEqual([{ type: 'costPayment' }])
+
+    let captured: Record<string, unknown> | null = null
+    const store = {
+      startTargeting: (arg: Record<string, unknown>) => { captured = arg },
+    } as unknown as Parameters<typeof enterPhase>[3]
+    enterPhase({ type: 'costPayment' }, info, info.action, store)
+
+    expect(captured).toMatchObject({
+      validTargets: ['green-card'],
+      minTargets: 1,
+      maxTargets: 1,
+      targetZone: 'Hand',
+    })
+  })
+
+  it('submits the chosen card through additionalCostPayment.exiledCards', () => {
+    const action = mergeResult(
+      info.action,
+      info,
+      { type: 'costPayment', costType: 'ExileFromHand', selectedTargets: ['green-card' as never] },
+      {} as never,
+    )
+    expect(action).toMatchObject({
+      additionalCostPayment: { exiledCards: ['green-card'] },
+    })
+  })
+})
+
+describe('enterPhase — sum-gated graveyard exile costs', () => {
+  /**
+   * Collect evidence N (CR 701.59a) and Baron Helmut Zemo's pip total are the same picker: any
+   * number of graveyard cards, gated on a summed measure the *server* computes. Both are pinned
+   * here because the two used to be separate client branches — one summing card mana values it
+   * looked up itself, one summing a server weight table — and the shared branch is only correct
+   * as long as the server ships weights for both.
+   */
+  function exileCostAction(costType: string, costInfo: Record<string, unknown>): LegalActionInfo {
+    return castAction({
+      actionType: 'ActivateAbility',
+      description: 'Activate Baron Helmut Zemo',
+      additionalCostInfo: { costType, description: 'Exile cards', ...costInfo },
+    })
+  }
+
+  function captureTargeting(info: LegalActionInfo): Record<string, unknown> | null {
+    let captured: Record<string, unknown> | null = null
+    const store = {
+      startTargeting: (arg: Record<string, unknown>) => {
+        captured = arg
+      },
+    } as unknown as Parameters<typeof enterPhase>[3]
+    enterPhase({ type: 'costPayment' }, info, info.action, store)
+    return captured
+  }
+
+  it('collect evidence gates Confirm on the server weight table, not on client-side mana values', () => {
+    const captured = captureTargeting(
+      exileCostAction('CollectEvidence', {
+        validExileTargets: ['a', 'b'],
+        exileMinCount: 1,
+        exileMaxCount: 2,
+        exileMinTotalWeight: 6,
+        exileCardWeights: { a: 4, b: 2 },
+        exileWeightUnit: 'mana value',
+      }),
+    )
+    expect(captured).toMatchObject({
+      validTargets: ['a', 'b'],
+      minTargets: 1,
+      maxTargets: 2,
+      minTotalWeight: 6,
+      cardWeights: { a: 4, b: 2 },
+      weightUnit: 'mana value',
+      targetZone: 'Graveyard',
+    })
+  })
+
+  it('an ExileForTotal cost takes the identical path with its own unit', () => {
+    const captured = captureTargeting(
+      exileCostAction('ExileForTotal', {
+        validExileTargets: ['x', 'y'],
+        exileMinCount: 1,
+        exileMaxCount: 2,
+        exileMinTotalWeight: 15,
+        exileCardWeights: { x: 9, y: 6 },
+        exileWeightUnit: 'black mana symbols',
+      }),
+    )
+    expect(captured).toMatchObject({
+      minTotalWeight: 15,
+      cardWeights: { x: 9, y: 6 },
+      weightUnit: 'black mana symbols',
+    })
+  })
+  it('a union-measured ExileForTotal (card types among them) carries each card\'s types', () => {
+    const captured = captureTargeting(
+      exileCostAction('ExileForTotal', {
+        validExileTargets: ['golem', 'bolt'],
+        exileMinCount: 1,
+        exileMaxCount: 2,
+        exileMinTotalWeight: 4,
+        exileCardWeights: { golem: 2, bolt: 1 },
+        exileWeightUnit: 'card types',
+        exileCardTypes: { golem: ['ARTIFACT', 'CREATURE'], bolt: ['INSTANT'] },
+      }),
+    )
+    expect(captured).toMatchObject({
+      minTotalWeight: 4,
+      weightUnit: 'card types',
+      cardTypes: { golem: ['ARTIFACT', 'CREATURE'], bolt: ['INSTANT'] },
+    })
+  })
+
+  it('a summed ExileForTotal carries no card types', () => {
+    const captured = captureTargeting(
+      exileCostAction('ExileForTotal', {
+        validExileTargets: ['x'],
+        exileMinTotalWeight: 1,
+        exileCardWeights: { x: 1 },
+        exileCardTypes: {},
+      }),
+    )
+    expect((captured as { cardTypes?: unknown }).cardTypes).toBeUndefined()
+  })
+})
+
+describe('computePhases — per-target mana tax (Officious Interrogation)', () => {
+  /**
+   * `manaCostString` on a per-target-taxed spell is only the one-target minimum, so picking mana
+   * sources before targeting would always under-tap and the server would reject the cast. The
+   * targeting phase therefore has to come first, exactly as an X cost puts `xSelection` first.
+   */
+  function interrogation(over: Record<string, unknown> = {}): LegalActionInfo {
+    return castAction({
+      actionType: 'CastSpell',
+      manaCostString: '{W}{U}',
+      requiresTargets: true,
+      validTargets: ['p1', 'p2'],
+      availableManaSources: [{ entityId: 'plains1' }, { entityId: 'island1' }],
+      ...over,
+    })
+  }
+
+  it('defers the manaSource phase past targeting when the cost scales with targets', () => {
+    const phases = computePhases(interrogation({ manaCostPerExtraTarget: '{W}{U}' }), {
+      autoTapEnabled: false,
+    })
+    expect(phases).toEqual([{ type: 'targeting' }, { type: 'manaSource' }])
+  })
+
+  it('keeps manaSource before targeting for an ordinary spell', () => {
+    const phases = computePhases(interrogation(), { autoTapEnabled: false })
+    expect(phases).toEqual([{ type: 'manaSource' }, { type: 'targeting' }])
+  })
+
+  it('runs no manaSource phase at all under auto-tap — the server prices the targets', () => {
+    const phases = computePhases(interrogation({ manaCostPerExtraTarget: '{W}{U}' }), {
+      autoTapEnabled: true,
+    })
+    expect(phases).toEqual([{ type: 'targeting' }])
+  })
+})
+
+describe('computePhases — target-priced collect evidence (Urgent Necropsy)', () => {
+  /**
+   * "Collect evidence X, where X is the total mana value of the permanents this spell targets."
+   * The threshold is determined at CR 601.2f, after the targets are announced at 601.2c — so the
+   * evidence picker cannot run before the targeting step, and once it does run it has to be priced
+   * on what was actually chosen. `exileWeightPerTarget` carries both facts: the per-target prices,
+   * and (by being present at all) the instruction to defer.
+   */
+  function necropsy(costInfo: Record<string, unknown> = {}): LegalActionInfo {
+    return castAction({
+      actionType: 'CastSpell',
+      description: 'Cast Urgent Necropsy',
+      manaCostString: '{2}{B}{G}',
+      requiresTargets: true,
+      validTargets: ['artifact1', 'creature1'],
+      additionalCostInfo: {
+        costType: 'CollectEvidence',
+        description: 'Collect evidence X',
+        validExileTargets: ['gy1', 'gy2'],
+        exileMinTotalWeight: 0,
+        exileCardWeights: { gy1: 5, gy2: 2 },
+        exileWeightUnit: 'mana value',
+        exileWeightPerTarget: { artifact1: 1, creature1: 2 },
+        ...costInfo,
+      },
+    })
+  }
+
+  function captureEvidencePicker(
+    info: LegalActionInfo,
+    targets: unknown[],
+  ): Record<string, unknown> | null {
+    let captured: Record<string, unknown> | null = null
+    const store = {
+      startTargeting: (arg: Record<string, unknown>) => {
+        captured = arg
+      },
+    } as unknown as Parameters<typeof enterPhase>[3]
+    enterPhase({ type: 'costPayment' }, info, { ...info.action, targets } as never, store)
+    return captured
+  }
+
+  it('runs the evidence picker after targeting, never before', () => {
+    expect(computePhases(necropsy(), { autoTapEnabled: true })).toEqual([
+      { type: 'targeting' },
+      { type: 'costPayment' },
+    ])
+  })
+
+  it('keeps costPayment before targeting when the threshold is printed, not derived', () => {
+    const phases = computePhases(necropsy({ exileWeightPerTarget: {}, exileMinTotalWeight: 6 }), {
+      autoTapEnabled: true,
+    })
+    expect(phases).toEqual([{ type: 'costPayment' }, { type: 'targeting' }])
+  })
+
+  it('prices the picker on the targets the caster chose', () => {
+    const captured = captureEvidencePicker(necropsy(), [
+      { type: 'Permanent', entityId: 'artifact1' },
+      { type: 'Permanent', entityId: 'creature1' },
+    ])
+    expect(captured).toMatchObject({
+      minTotalWeight: 3, // 1 + 2
+      minTargets: 1,
+      cardWeights: { gy1: 5, gy2: 2 },
+    })
+  })
+
+  it('counts only the chosen targets, not every legal one', () => {
+    const captured = captureEvidencePicker(necropsy(), [
+      { type: 'Permanent', entityId: 'creature1' },
+    ])
+    expect(captured).toMatchObject({ minTotalWeight: 2, minTargets: 1 })
+  })
+
+  it('a cast with no targets asks for evidence 0 and lets the player confirm with none', () => {
+    const captured = captureEvidencePicker(necropsy(), [])
+    expect(captured).toMatchObject({ minTotalWeight: 0, minTargets: 0 })
   })
 })

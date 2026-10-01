@@ -25,14 +25,48 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class AttackTaxManaSelectionContinuation(
-    override val decisionId: String,
     val attackingPlayer: EntityId,
     val attackers: Map<EntityId, EntityId>,
     val manaCost: ManaCost,
     val availableSources: List<ManaSourceOption>,
     val autoPaySuggestion: List<EntityId>,
     val bands: List<Set<EntityId>> = emptyList(),
-) : ContinuationFrame
+) : AnswerContinuation
+
+/**
+ * Resume after the attacking player chooses which permanents to sacrifice to declare an attacker
+ * carrying [com.wingedsheep.sdk.scripting.CantAttackUnlessSacrifice] (Leviathan). One frame per
+ * paying attacker: [remaining] holds the attackers still owing a sacrifice, so a board with two
+ * such creatures asks twice and each choice is made knowing the previous one.
+ *
+ * Declining is not offered. Affordability was checked before the declaration was accepted, and a
+ * player who no longer wants to pay should not have declared the attack — the same contract the
+ * generic-mana attack tax has, except that tax *can* be declined because its own pause happens
+ * before anything is committed.
+ *
+ * @property attackingPlayer Player who declared the attack and pays the cost.
+ * @property attackers The full declared [attacker → defender] map, replayed on commit.
+ * @property payingAttacker The attacker whose cost this decision pays.
+ * @property count How many permanents must be sacrificed for [payingAttacker].
+ * @property remaining Attackers after this one that still owe a sacrifice, with their counts.
+ * @property bands Validated band groupings, carried through to the commit.
+ */
+@Serializable
+data class AttackSacrificeSelectionContinuation(
+    val attackingPlayer: EntityId,
+    val attackers: Map<EntityId, EntityId>,
+    val payingAttacker: EntityId,
+    val count: Int,
+    val remaining: List<PendingAttackSacrifice> = emptyList(),
+    val bands: List<Set<EntityId>> = emptyList(),
+) : AnswerContinuation
+
+/** One still-unpaid sacrifice cost in an [AttackSacrificeSelectionContinuation]'s queue. */
+@Serializable
+data class PendingAttackSacrifice(
+    val attackerId: EntityId,
+    val count: Int,
+)
 
 /**
  * Block-tax mirror of [AttackTaxManaSelectionContinuation]. Used for per-creature-type
@@ -43,10 +77,9 @@ data class AttackTaxManaSelectionContinuation(
  */
 @Serializable
 data class BlockTaxManaSelectionContinuation(
-    override val decisionId: String,
     val blockingPlayer: EntityId,
     val blockers: Map<EntityId, List<EntityId>>,
     val manaCost: ManaCost,
     val availableSources: List<ManaSourceOption>,
     val autoPaySuggestion: List<EntityId>,
-) : ContinuationFrame
+) : AnswerContinuation

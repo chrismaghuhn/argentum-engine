@@ -15,6 +15,7 @@ import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /** Commander's Sphere (C14 #54): commander-identity mana and sacrifice-to-draw. */
 class CommandersSphereScenarioTest : FunSpec({
@@ -40,11 +41,11 @@ class CommandersSphereScenarioTest : FunSpec({
         val sphere = driver.putPermanentOnBattlefield(player, "Commander's Sphere")
 
         val activation = driver.submit(ActivateAbility(player, sphere, manaAbilityId))
-        activation.isPaused shouldBe true
+        activation.outcome.shouldBeInstanceOf<Outcome.Paused>()
 
         val decision = driver.pendingDecision.shouldBeInstanceOf<ChooseColorDecision>()
         decision.availableColors shouldBe setOf(Color.BLACK, Color.GREEN)
-        driver.submitDecision(player, ColorChosenResponse(decision.id, Color.BLACK)).isSuccess shouldBe true
+        driver.submitDecision(player, ColorChosenResponse(decision.id, Color.BLACK)).outcome shouldBe Outcome.Done
 
         driver.isTapped(sphere) shouldBe true
         driver.state.getEntity(player)?.get<ManaPoolComponent>()?.black shouldBe 1
@@ -58,7 +59,7 @@ class CommandersSphereScenarioTest : FunSpec({
         val graveyardBefore = driver.getGraveyard(player).size
 
         val activation = driver.submit(ActivateAbility(player, sphere, sacrificeAbilityId))
-        activation.isSuccess shouldBe true
+        activation.outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.findPermanent(player, "Commander's Sphere") shouldBe null

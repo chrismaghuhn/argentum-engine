@@ -185,7 +185,7 @@ class LockedSliceActionTargetDomainTest : FunSpec({
         val sozinProbe = prepareRepositoryProbeGame(cardName = "The Rise of Sozin", firstHand = true)
         val player = sozinProbe.environment.playerIds.first()
         val opponent = sozinProbe.environment.playerIds.last()
-        val projection = TargetEnumerationUtils(PredicateEvaluator())
+        val projection = TargetEnumerationUtils(PredicateEvaluator(registry))
         val chapterTwo = sozin.sagaChapters.single { it.chapter == 2 }
         val chapterProjection = projection.buildTargetInfos(
             state = sozinProbe.environment.state,
@@ -392,7 +392,7 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             ),
         )
         val player = environment.playerIds.first()
-        val projection = TargetEnumerationUtils(PredicateEvaluator())
+        val projection = TargetEnumerationUtils(PredicateEvaluator(registry))
 
         // Real repository probe: Arm the Cathars must come from GameEnvironment.legalActions(),
         // and the public observation must reject its ambiguous flat target partition. The

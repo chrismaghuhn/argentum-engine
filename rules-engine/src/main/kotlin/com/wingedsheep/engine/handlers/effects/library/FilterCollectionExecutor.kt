@@ -1,7 +1,6 @@
 package com.wingedsheep.engine.handlers.effects.library
 
 import com.wingedsheep.engine.core.EffectResult
-import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
@@ -10,8 +9,8 @@ import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.permanent.attachments.AttachmentLegality
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
-import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.CollectionFilter
 import com.wingedsheep.sdk.scripting.effects.FilterCollectionEffect
 import kotlin.reflect.KClass
@@ -19,17 +18,18 @@ import kotlin.reflect.KClass
 /**
  * Executor for FilterCollectionEffect.
  *
- * Splits a named collection into matching and non-matching subsets based on
- * a [CollectionFilter]. This is a purely automatic filter with no player choice.
+ * Splits a named collection into matching and non-matching subsets: the cards matching the
+ * effect's [GameObjectFilter], narrowed by its collection-relative [CollectionFilter] when it has
+ * one. A purely automatic filter with no player choice.
  */
 class FilterCollectionExecutor(
+    private val predicateEvaluator: PredicateEvaluator,
+    /** Legality seam for [CollectionFilter.AttachableTo]; null makes that filter fail closed. */
     private val attachmentLegality: AttachmentLegality? = null,
 ) : EffectExecutor<FilterCollectionEffect> {
+    private val amountEvaluator = predicateEvaluator.amounts
 
     override val effectType: KClass<FilterCollectionEffect> = FilterCollectionEffect::class
-
-    private val predicateEvaluator = PredicateEvaluator()
-    private val amountEvaluator = DynamicAmountEvaluator()
 
     override fun execute(
         state: GameState,
@@ -39,130 +39,16 @@ class FilterCollectionExecutor(
         val cards = context.pipeline.storedCollections[effect.from]
             ?: return EffectResult.error(state, "No collection named '${effect.from}' in storedCollections")
 
-        val filter = effect.filter
-        val projected = state.projectedState
-        val (matching, nonMatching) = when (filter) {
-            is CollectionFilter.ExcludeSubtypesFromStored -> {
-                val excludedSubtypes = context.pipeline.storedStringLists[filter.storedKey]
-                    ?.map { Subtype(it) }?.toSet() ?: emptySet()
-
-                cards.partition { cardId ->
-                    val cardComponent = state.getEntity(cardId)?.get<CardComponent>()
-                    val subtypes = cardComponent?.typeLine?.subtypes ?: emptyList()
-                    // "Matching" = does NOT have any excluded subtype (passes through the filter)
-                    subtypes.none { it in excludedSubtypes }
-                }
-            }
-
-            is CollectionFilter.SharesSubtypeWithSacrificed -> {
-                val sacrificed = context.sacrificedPermanents.firstOrNull()
-                if (sacrificed == null) {
-                    emptyList<EntityId>() to cards
-                } else {
-                    val sacrificedSubtypes = sacrificed.subtypes.takeIf { it.isNotEmpty() }
-                        ?: state.getEntity(sacrificed.entityId)?.get<CardComponent>()
-                            ?.typeLine?.subtypes?.map { it.value }?.toSet()
-                        ?: emptySet()
-
-                    cards.partition { cardId ->
-                        val creatureSubtypes = projected.getSubtypes(cardId)
-                        creatureSubtypes.intersect(sacrificedSubtypes).isNotEmpty()
-                    }
-                }
-            }
-
-            is CollectionFilter.MatchesFilter -> {
-                val predicateContext = PredicateContext.fromEffectContext(context)
-                cards.partition { cardId ->
-                    predicateEvaluator.matches(state, projected, cardId, filter.filter, predicateContext)
-                }
-            }
-
-            is CollectionFilter.AttachableTo -> {
-                val legality = attachmentLegality
-                    ?: return EffectResult.error(state, "Attachment legality seam is not configured")
-                val targetId = TargetResolutionUtils.resolveTarget(filter.target, context, state)
-                if (targetId == null) {
-                    emptyList<EntityId>() to cards
-                } else {
-                    cards.partition { attachmentId ->
-                        legality.isLegal(
-                            state = state,
-                            attachmentId = attachmentId,
-                            targetId = targetId,
-                            controllerId = context.controllerId,
-                            context = context,
-                        )
-                    }
-                }
-            }
-
-            is CollectionFilter.GreatestPower -> {
-                val maxPower = cards.maxOfOrNull { projected.getPower(it) ?: Int.MIN_VALUE }
-                if (maxPower == null || maxPower == Int.MIN_VALUE) {
-                    emptyList<EntityId>() to cards
-                } else {
-                    cards.partition { (projected.getPower(it) ?: Int.MIN_VALUE) == maxPower }
-                }
-            }
-
-            is CollectionFilter.LeastToughness -> {
-                val minToughness = cards.minOfOrNull { projected.getToughness(it) ?: Int.MAX_VALUE }
-                if (minToughness == null || minToughness == Int.MAX_VALUE) {
-                    emptyList<EntityId>() to cards
-                } else {
-                    cards.partition { (projected.getToughness(it) ?: Int.MAX_VALUE) == minToughness }
-                }
-            }
-
-            is CollectionFilter.GreatestManaValue -> {
-                fun manaValueOf(cardId: EntityId): Int =
-                    state.getEntity(cardId)?.get<CardComponent>()?.manaValue ?: Int.MIN_VALUE
-                val maxManaValue = cards.maxOfOrNull { manaValueOf(it) }
-                if (maxManaValue == null || maxManaValue == Int.MIN_VALUE) {
-                    emptyList<EntityId>() to cards
-                } else {
-                    cards.partition { manaValueOf(it) == maxManaValue }
-                }
-            }
-
-            is CollectionFilter.ManaValueAtMost -> {
-                val maxManaValue = amountEvaluator.evaluate(state, filter.max, context)
-                cards.partition { cardId ->
-                    val cardComponent = state.getEntity(cardId)?.get<CardComponent>()
-                    val manaValue = cardComponent?.manaValue ?: 0
-                    manaValue <= maxManaValue
-                }
-            }
-
-            is CollectionFilter.ManaValueEquals -> {
-                val exactManaValue = amountEvaluator.evaluate(state, filter.value, context)
-                cards.partition { cardId ->
-                    val cardComponent = state.getEntity(cardId)?.get<CardComponent>()
-                    val manaValue = cardComponent?.manaValue ?: 0
-                    manaValue == exactManaValue
-                }
-            }
-
-            is CollectionFilter.ExcludeEntity -> {
-                val excludedId = TargetResolutionUtils.resolveEntityReference(filter.entity, context, state)
-                cards.partition { it != excludedId }
-            }
-
-            is CollectionFilter.ExcludeOtherCollection -> {
-                val excluded = context.pipeline.storedCollections[filter.otherCollectionName]
-                    ?.toSet() ?: emptySet()
-                cards.partition { it !in excluded }
-            }
-
-            is CollectionFilter.InZone -> {
-                cards.partition { cardId ->
-                    state.zones.entries.any { (key, entities) ->
-                        key.zoneType == filter.zone && cardId in entities
-                    }
-                }
-            }
+        if (effect.collectionFilter is CollectionFilter.AttachableTo && attachmentLegality == null) {
+            return EffectResult.error(state, "Attachment legality seam is not configured")
         }
+
+        val projected = state.projectedState
+        val predicateContext = PredicateContext.fromEffectContext(context)
+        val passing = if (effect.filter == GameObjectFilter.Any) cards
+        else cards.filter { predicateEvaluator.matches(state, projected, it, effect.filter, predicateContext) }
+        val kept = (effect.collectionFilter?.let { keep(state, it, passing, context) } ?: passing).toSet()
+        val (matching, nonMatching) = cards.partition { it in kept }
 
         val updatedCollections = mutableMapOf(effect.storeMatching to matching)
         val storeNonMatching = effect.storeNonMatching
@@ -171,5 +57,75 @@ class FilterCollectionExecutor(
         }
 
         return EffectResult.success(state).copy(updatedCollections = updatedCollections)
+    }
+
+    /** The members of [cards] a collection-relative [filter] keeps, in their original order. */
+    private fun keep(
+        state: GameState,
+        filter: CollectionFilter,
+        cards: List<EntityId>,
+        context: EffectContext
+    ): List<EntityId> {
+        val projected = state.projectedState
+        return when (filter) {
+            is CollectionFilter.SharesSubtypeWithSacrificed -> {
+                val sacrificed = context.sacrificedPermanents.firstOrNull() ?: return emptyList()
+                val sacrificedSubtypes = sacrificed.subtypes.takeIf { it.isNotEmpty() }
+                    ?: state.getEntity(sacrificed.entityId)?.get<CardComponent>()
+                        ?.typeLine?.subtypes?.map { it.value }?.toSet()
+                    ?: emptySet()
+                cards.filter { projected.getSubtypes(it).intersect(sacrificedSubtypes).isNotEmpty() }
+            }
+
+            is CollectionFilter.AttachableTo -> {
+                val legality = attachmentLegality ?: return emptyList()
+                val targetId = TargetResolutionUtils.resolveTarget(filter.target, context, state)
+                    ?: return emptyList()
+                cards.filter { attachmentId ->
+                    legality.isLegal(
+                        state = state,
+                        attachmentId = attachmentId,
+                        targetId = targetId,
+                        controllerId = context.controllerId,
+                        context = context,
+                    )
+                }
+            }
+
+            is CollectionFilter.GreatestPower -> {
+                val maxPower = cards.maxOfOrNull { projected.getPower(it) ?: Int.MIN_VALUE }
+                if (maxPower == null || maxPower == Int.MIN_VALUE) emptyList()
+                else cards.filter { (projected.getPower(it) ?: Int.MIN_VALUE) == maxPower }
+            }
+
+            is CollectionFilter.LeastToughness -> {
+                val minToughness = cards.minOfOrNull { projected.getToughness(it) ?: Int.MAX_VALUE }
+                if (minToughness == null || minToughness == Int.MAX_VALUE) emptyList()
+                else cards.filter { (projected.getToughness(it) ?: Int.MAX_VALUE) == minToughness }
+            }
+
+            is CollectionFilter.GreatestManaValue -> {
+                // A face-down permanent has no mana cost (CR 708.2a), so its mana value is 0
+                // (CR 202.3a): a gathered battlefield collection (Break Under Pressure) never
+                // ranks a morph by its hidden cost.
+                fun manaValueOf(cardId: EntityId): Int =
+                    if (projected.getProjectedValues(cardId)?.isFaceDown == true) 0
+                    else state.getEntity(cardId)?.get<CardComponent>()?.manaValue ?: Int.MIN_VALUE
+                val maxManaValue = cards.maxOfOrNull { manaValueOf(it) }
+                if (maxManaValue == null || maxManaValue == Int.MIN_VALUE) emptyList()
+                else cards.filter { manaValueOf(it) == maxManaValue }
+            }
+
+            is CollectionFilter.ExcludeEntity -> {
+                val excludedId = TargetResolutionUtils.resolveEntity(filter.entity, context, state)
+                cards.filter { it != excludedId }
+            }
+
+            is CollectionFilter.ExcludeOtherCollection -> {
+                val excluded = context.pipeline.storedCollections[filter.otherCollectionName]
+                    ?.toSet() ?: emptySet()
+                cards.filter { it !in excluded }
+            }
+        }
     }
 }

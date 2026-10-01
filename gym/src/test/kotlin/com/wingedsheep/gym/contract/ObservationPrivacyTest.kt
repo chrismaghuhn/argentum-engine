@@ -10,6 +10,10 @@ import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.DelayedTriggerOccurrenceChoiceContinuation
+import com.wingedsheep.engine.core.MayAbilityContinuation
+import com.wingedsheep.engine.core.suspendForDecision
+import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.core.OptionMetadata
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.AttackDeclarationDomainSupport
@@ -874,19 +878,29 @@ class ObservationPrivacyTest : FunSpec({
         val env = environment()
         val owner = env.playerIds[1]
         val sourceId = env.state.getHand(owner).first()
-        val state = env.state.copy(
-            pendingDecision = YesNoDecision(
-                id = "private-decision-1",
-                playerId = owner,
-                prompt = "Choose Raging Goblin",
-                context = DecisionContext(
-                    sourceId = sourceId,
-                    sourceName = "Raging Goblin",
-                    triggeringEntityId = sourceId,
-                    effectHint = "Reveal Raging Goblin"
+        // Installed as a Suspension (question + its may-ability answer); the id is a routing id.
+        val state = env.state.suspendForDecision(
+            question = { id ->
+                YesNoDecision(
+                    id = id,
+                    playerId = owner,
+                    prompt = "Choose Raging Goblin",
+                    context = DecisionContext(
+                        sourceId = sourceId,
+                        sourceName = "Raging Goblin",
+                        triggeringEntityId = sourceId,
+                        effectHint = "Reveal Raging Goblin"
+                    )
                 )
-            )
-        )
+            },
+            answer = MayAbilityContinuation(
+                playerId = owner,
+                sourceName = "Raging Goblin",
+                effectIfYes = null,
+                effectIfNo = null,
+                effectContext = EffectContext(sourceId = sourceId, controllerId = owner),
+            ),
+        ).state
 
         val ownerResult = result(state, owner)
         val otherResult = result(state, env.playerIds[0])
@@ -908,19 +922,23 @@ class ObservationPrivacyTest : FunSpec({
         val env = environment()
         val owner = env.playerIds[1]
         val other = env.playerIds[0]
-        val state = env.state.copy(
-            pendingDecision = ChooseOptionDecision(
-                id = "delayed-occurrence-private",
-                playerId = owner,
-                prompt = "Choose a simultaneous occurrence",
-                context = DecisionContext(phase = DecisionPhase.TRIGGER),
-                options = listOf("Trigger for player ${owner.value}", "Trigger for player ${other.value}"),
-                optionMetadata = listOf(
-                    OptionMetadata(triggeringPlayerId = owner),
-                    OptionMetadata(triggeringPlayerId = other)
+        // Installed as a Suspension with the CR 603.7b occurrence-choice answer (never consumed).
+        val state = env.state.suspendForDecision(
+            question = { id ->
+                ChooseOptionDecision(
+                    id = id,
+                    playerId = owner,
+                    prompt = "Choose a simultaneous occurrence",
+                    context = DecisionContext(phase = DecisionPhase.TRIGGER),
+                    options = listOf("Trigger for player ${owner.value}", "Trigger for player ${other.value}"),
+                    optionMetadata = listOf(
+                        OptionMetadata(triggeringPlayerId = owner),
+                        OptionMetadata(triggeringPlayerId = other)
+                    )
                 )
-            )
-        )
+            },
+            answer = DelayedTriggerOccurrenceChoiceContinuation(candidates = emptyList()),
+        ).state
 
         val hidden = result(state, other)
         hidden.observation.pendingDecision!!.kind shouldBe PendingDecisionKind.GENERIC

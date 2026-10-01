@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.mechanics.combat
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
@@ -21,6 +22,7 @@ import com.wingedsheep.sdk.model.EntityId
  */
 class DamageCalculator(
     private val cardRegistry: CardRegistry? = null,
+    private val predicateEvaluator: PredicateEvaluator
 ) {
 
     /**
@@ -104,7 +106,7 @@ class DamageCalculator(
 
         // Use projected values for power and keywords (includes floating effects like +4/+4)
         val projected = state.projectedState
-        val attackerPower = CombatDamageUtils.getAssignedCombatDamage(state, projected, attackerId, cardRegistry)
+        val attackerPower = CombatDamageUtils.getAssignedCombatDamage(state, projected, attackerId, cardRegistry, predicateEvaluator = predicateEvaluator)
         if (attackerPower <= 0) {
             return DamageDistribution(emptyMap(), 0, 0)
         }
@@ -148,8 +150,11 @@ class DamageCalculator(
             remaining -= lethal
         }
 
-        val defenderId = state.getEntity(attackerId)?.get<AttackingComponent>()?.defenderId
-        val hasLiveDefender = defenderId != null &&
+        val attacking = state.getEntity(attackerId)?.get<AttackingComponent>()
+        val defenderId = attacking?.defenderId
+        // An attacked planeswalker/battle removed from combat (CR 506.4c) is no drain recipient,
+        // whichever record says so: the declaration relationship or the removal flag.
+        val hasLiveDefender = defenderId != null && attacking?.attackTargetRemoved == false &&
             CombatDefenders.isCurrentAttackedRecipient(state, projected, attackerId, defenderId)
         if (remaining > 0 && hasLiveDefender) {
             assignments[defenderId] = remaining
@@ -216,7 +221,7 @@ class DamageCalculator(
             ?: return DamageDistribution(emptyMap(), 0, 0)
 
         val projected = state.projectedState
-        val blockerPower = CombatDamageUtils.getAssignedCombatDamage(state, projected, blockerId, cardRegistry)
+        val blockerPower = CombatDamageUtils.getAssignedCombatDamage(state, projected, blockerId, cardRegistry, predicateEvaluator = predicateEvaluator)
         if (blockerPower <= 0) {
             return DamageDistribution(emptyMap(), 0, 0)
         }
@@ -241,5 +246,4 @@ class DamageCalculator(
             unassignedDamage = 0,
         )
     }
-
 }

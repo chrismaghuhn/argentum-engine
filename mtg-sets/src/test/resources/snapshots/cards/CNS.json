@@ -7,7 +7,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Deathreap Ritual:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "END",

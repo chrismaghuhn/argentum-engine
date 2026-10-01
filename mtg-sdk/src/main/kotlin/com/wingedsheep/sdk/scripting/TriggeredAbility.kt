@@ -76,7 +76,7 @@ data class TriggeredAbility(
      * immediately follows a trigger condition."* So an `if` printed **after** the effect —
      * "Whenever this creature attacks, create a token *if* you control a creature with power 4 or
      * greater" — is not this field. That ability triggers unconditionally and checks only as it
-     * resolves, which is a [com.wingedsheep.sdk.scripting.effects.ConditionalEffect], not a
+     * resolves, which is a [com.wingedsheep.sdk.dsl.Effects.If], not a
      * condition on the trigger.
      *
      * For a restriction on *when the ability triggers at all*, use [triggerRestriction]. The two
@@ -140,7 +140,7 @@ data class TriggeredAbility(
      * "pick which Villain connives") unreachable.
      *
      * **Keep the consent gate outermost or last — this is enforced.** The lowering looks for the
-     * consent gate — a `MayEffect` / `mayPay` / `mayPayX` — at the top of [effect] or at the
+     * consent gate — a `Effects.May` / `mayPay` / `mayPayX` — at the top of [effect] or at the
      * **tail** of a `CompositeEffect`, which covers "do X, then you may Y" ("look at the top card
      * of your library. You may cast that card …", Planetarium of Wan Shi Tong). A "you may" sitting
      * anywhere else — mid-composite, or under some other wrapper — would leave the budget gate on
@@ -154,6 +154,17 @@ data class TriggeredAbility(
      * Acrobatic Cheerleader: "This ability triggers only once." Tracked by a component that,
      * unlike the [oncePerTurn] tracker, is NOT cleared at end of turn. */
     val triggersOnce: Boolean = false,
+    /**
+     * True for a *backup* ability (March of the Machine; CR 702.165). "Backup N" is an enters
+     * trigger — put N +1/+1 counters on target creature; if that's another creature, it gains the
+     * printed abilities below backup until end of turn — and the card composes that effect like
+     * any other trigger. This flag is only the keyword marker, the triggered twin of
+     * [ActivatedAbility.isBoast]: it travels with the ability onto the stack so a trigger can ask
+     * whether *a backup ability* did the targeting (Mirror-Shield Hoplite's
+     * [EventPattern.BecomesTargetEvent.backupAbilitiesOnly]). A copy of a backup ability is a
+     * backup ability too (CR 707.2 — the copy copies the ability's text).
+     */
+    val isBackup: Boolean = false,
     /** Optional human-readable description that overrides the auto-generated one. */
     val descriptionOverride: String? = null
 ) : TextReplaceable<TriggeredAbility> {
@@ -229,6 +240,10 @@ data class TriggeredAbility(
     }
 
     companion object {
+        /**
+         * @param id Minted from the card being built by default; code that synthesizes a trigger
+         *   with no card around it (the engine's persist, delayed and saga-chapter triggers) names one.
+         */
         fun create(
             trigger: EventPattern,
             binding: TriggerBinding = TriggerBinding.SELF,
@@ -243,10 +258,12 @@ data class TriggeredAbility(
             oncePerTurn: Boolean = false,
             effectOncePerTurn: Boolean = false,
             triggersOnce: Boolean = false,
-            descriptionOverride: String? = null
+            isBackup: Boolean = false,
+            descriptionOverride: String? = null,
+            id: AbilityId = AbilityId.next(),
         ): TriggeredAbility =
             TriggeredAbility(
-                id = AbilityId.generate(),
+                id = id,
                 trigger = trigger,
                 binding = binding,
                 effect = effect,
@@ -260,7 +277,47 @@ data class TriggeredAbility(
                 oncePerTurn = oncePerTurn,
                 effectOncePerTurn = effectOncePerTurn,
                 triggersOnce = triggersOnce,
+                isBackup = isBackup,
                 descriptionOverride = descriptionOverride
             )
+
+        /**
+         * [create] from a whole [TriggerSpec] — the form a card uses, since a card spells its trigger
+         * with `Triggers.<subject>.<verb>()` and the subject already fixes the binding.
+         */
+        fun create(
+            trigger: TriggerSpec,
+            effect: Effect,
+            targetRequirement: TargetRequirement? = null,
+            additionalTargetRequirements: List<TargetRequirement> = emptyList(),
+            elseEffect: Effect? = null,
+            activeZones: Set<Zone> = setOf(Zone.BATTLEFIELD),
+            interveningIf: Condition? = null,
+            triggerRestriction: Condition? = null,
+            controlledByTriggeringEntityController: Boolean = false,
+            oncePerTurn: Boolean = false,
+            effectOncePerTurn: Boolean = false,
+            triggersOnce: Boolean = false,
+            isBackup: Boolean = false,
+            descriptionOverride: String? = null,
+            id: AbilityId = AbilityId.next(),
+        ): TriggeredAbility = create(
+            trigger = trigger.event,
+            binding = trigger.binding,
+            effect = effect,
+            targetRequirement = targetRequirement,
+            additionalTargetRequirements = additionalTargetRequirements,
+            elseEffect = elseEffect,
+            activeZones = activeZones,
+            interveningIf = interveningIf,
+            triggerRestriction = triggerRestriction,
+            controlledByTriggeringEntityController = controlledByTriggeringEntityController,
+            oncePerTurn = oncePerTurn,
+            effectOncePerTurn = effectOncePerTurn,
+            triggersOnce = triggersOnce,
+            isBackup = isBackup,
+            descriptionOverride = descriptionOverride,
+            id = id,
+        )
     }
 }

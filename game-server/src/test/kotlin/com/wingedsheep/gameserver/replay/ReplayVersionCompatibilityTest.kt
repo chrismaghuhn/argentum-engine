@@ -76,7 +76,7 @@ class ReplayVersionCompatibilityTest : FunSpec({
     }
 
     test("current CompactReplay version is v6") {
-        CompactReplay.CURRENT_VERSION shouldBe 6
+        CompactReplay.CURRENT_VERSION shouldBe 7
     }
 
     test("ExplicitV2 cannot be carried under the historical CompactReplay-v3 label") {

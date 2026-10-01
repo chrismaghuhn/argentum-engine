@@ -99,6 +99,7 @@ class ScenarioBuilderService(
             checkZone("$label graveyard", config.graveyard)
             checkZone("$label library", config.library)
             checkZone("$label exile", config.exile)
+            checkZone("$label sideboard", config.sideboard)
             checkZone("$label commanders", config.commanders)
             val battlefield = config.battlefield ?: emptyList()
             total += battlefield.size
@@ -108,7 +109,7 @@ class ScenarioBuilderService(
             for (card in battlefield) {
                 if (!registry.hasCard(card.name)) errors += "Unknown card: ${card.name}"
                 card.counters?.keys?.forEach { key ->
-                    if (runCatching { CounterType.valueOf(key) }.isFailure) {
+                    if (CounterType.of(key) !in CounterType.KNOWN) {
                         errors += "Unknown counter type '$key' on ${card.name}."
                     }
                 }
@@ -187,6 +188,7 @@ class ScenarioBuilderService(
         config.graveyard?.forEach { builder.withCardInGraveyard(n, it) }
         config.library?.forEach { builder.withCardInLibrary(n, it) }
         config.exile?.forEach { builder.withCardInExile(n, it) }
+        config.sideboard?.forEach { builder.withCardInSideboard(n, it) }
     }
 
     private fun phaseToDefaultStep(phase: Phase): Step = when (phase) {
@@ -237,7 +239,10 @@ class ScenarioBuilderService(
 
             // Initialize empty zones for every player
             for (playerId in playerIds) {
-                for (zoneType in listOf(Zone.HAND, Zone.LIBRARY, Zone.GRAVEYARD, Zone.BATTLEFIELD, Zone.EXILE, Zone.COMMAND)) {
+                for (zoneType in listOf(
+                    Zone.HAND, Zone.LIBRARY, Zone.GRAVEYARD, Zone.BATTLEFIELD,
+                    Zone.EXILE, Zone.COMMAND, Zone.SIDEBOARD
+                )) {
                     val zoneKey = ZoneKey(playerId, zoneType)
                     state = state.copy(zones = state.zones + (zoneKey to emptyList()))
                 }
@@ -283,7 +288,7 @@ class ScenarioBuilderService(
             }
 
             if (counters.isNotEmpty()) {
-                val counterMap = counters.mapKeys { CounterType.valueOf(it.key) }
+                val counterMap = counters.mapKeys { CounterType.of(it.key) }
                 container = container.with(CountersComponent(counterMap))
             }
 
@@ -383,6 +388,14 @@ class ScenarioBuilderService(
             return this
         }
 
+        /** Put a card in the player's sideboard — "outside the game" (CR 400.11). */
+        fun withCardInSideboard(playerNumber: Int, cardName: String): ScenarioBuilder {
+            val playerId = playerFor(playerNumber)
+            val cardId = createCard(cardName, playerId)
+            state = state.addToZone(ZoneKey(playerId, Zone.SIDEBOARD), cardId)
+            return this
+        }
+
         /**
          * Designate a card as the player's commander, placing it in the command zone with a
          * [CommanderComponent] and appending it to the player's [CommanderRegistryComponent].
@@ -403,9 +416,8 @@ class ScenarioBuilderService(
 
         fun withLifeTotal(playerNumber: Int, life: Int): ScenarioBuilder {
             val playerId = playerFor(playerNumber)
-            state = state.updateEntity(playerId) { container ->
-                container.with(LifeTotalComponent(life))
-            }
+            // Through the resolver so a team's shared total (CR 810.9a) lands on its canonical owner.
+            state = state.withLifeTotal(playerId, life)
             return this
         }
 
@@ -489,6 +501,9 @@ class ScenarioBuilderService(
                 // Mirror CardEntityFactory so CardPredicate.HasAdventure (Frantic Firebolt's
                 // graveyard tally) sees adventurer cards created in dev scenarios.
                 hasAdventure = cardDef.isAdventure,
+                // Likewise for CardPredicate.IsDoubleFaced ("If it's a double-faced card, you may
+                // transform it") — a dev-scenario DFC must still report itself as one.
+                isDoubleFaced = cardDef.isDoubleFaced,
             )
 
             var container = ComponentContainer.of(

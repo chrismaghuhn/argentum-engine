@@ -206,11 +206,9 @@ object Hand {
      */
     private val putFromHandThenBounce: Phrase<CardScript> = run {
         val script = CardScript(
-            spellEffect = Patterns.Hand.putFromHand(filter = GameObjectFilter.Creature.withMorph()).then(
-                ConditionalOnCollectionEffect(
-                    collection = "putting",
-                    ifNotEmpty = Effects.Move(EffectTarget.Self, Zone.HAND),
-                )
+            spellEffect = Patterns.Hand.putFromHand(filter = GameObjectFilter.Creature.withMorph()) then ConditionalOnCollectionEffect(
+                collection = "putting",
+                ifNotEmpty = Effects.Move(EffectTarget.Self, Zone.HAND),
             )
         )
         phrase(
@@ -236,31 +234,27 @@ object Hand {
      */
     private val revealAndChooseDiscard: Phrase<CardScript> = run {
         val script = CardScript(
-            spellEffect = Effects.Composite(
-                listOf(
-                    GatherCardsEffect(
-                        source = CardSource.FromZone(Zone.HAND, Player.TriggeringPlayer),
-                        storeAs = "hand",
-                    ),
-                    SelectFromCollectionEffect(
-                        from = "hand",
-                        selection = SelectionMode.ChooseExactly(DynamicAmount.XValue),
-                        chooser = Chooser.TriggeringPlayer,
-                        storeSelected = "revealed",
-                    ),
-                    SelectFromCollectionEffect(
-                        from = "revealed",
-                        selection = SelectionMode.ChooseExactly(DynamicAmount.Fixed(1)),
-                        chooser = Chooser.Controller,
-                        storeSelected = "toDiscard",
-                    ),
-                    MoveCollectionEffect(
-                        from = "toDiscard",
-                        destination = CardDestination.ToZone(Zone.GRAVEYARD, Player.TriggeringPlayer),
-                        moveType = MoveType.Discard,
-                    ),
+            spellEffect = GatherCardsEffect(
+                source = CardSource.FromZone(Zone.HAND, Player.TriggeringPlayer),
+                storeAs = "hand",
+            ) then
+                SelectFromCollectionEffect(
+                    from = "hand",
+                    selection = SelectionMode.ChooseExactly(DynamicAmount.XValue),
+                    chooser = Chooser.TriggeringPlayer,
+                    storeSelected = "revealed",
+                ) then
+                SelectFromCollectionEffect(
+                    from = "revealed",
+                    selection = SelectionMode.ChooseExactly(DynamicAmount.Fixed(1)),
+                    chooser = Chooser.Controller,
+                    storeSelected = "toDiscard",
+                ) then
+                MoveCollectionEffect(
+                    from = "toDiscard",
+                    destination = CardDestination.ToZone(Zone.GRAVEYARD, Player.TriggeringPlayer),
+                    moveType = MoveType.Discard,
                 )
-            )
         )
         phrase(
             "that player reveals X cards from their hand and you choose one of them. that player " +
@@ -270,6 +264,79 @@ object Hand {
             build { script }
             match { if (it == script) bind() else null }
         }
+    }
+
+
+    /**
+     * "Discard your hand." / "Target player discards their hand." — 84 and 31 printed lines.
+     *
+     * The whole hand, so there is no count and no selection: `Patterns.Hand.discardHand` gathers the
+     * zone and moves all of it, which is a different recipe from [discard]'s choose-exactly-N and not
+     * that rule with `n` set to "all". The two rows are the same subject-per-template split the
+     * counted family takes — English inflects the verb with its subject and spells the possessive to
+     * agree ("your" against "their"), neither of which is a word a slot could supply.
+     */
+    private fun discardWholeHand(
+        template: String,
+        name: String,
+        target: EffectTarget,
+        requirements: List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>,
+    ): Phrase<CardScript> {
+        val script = CardScript(
+            spellEffect = Patterns.Hand.discardHand(target),
+            targetRequirements = requirements,
+        )
+        return phrase(template, name = name) {
+            build { script }
+            match { if (it == script) bind() else null }
+        }
+    }
+
+    /**
+     * "Target opponent exiles two cards from their hand." — Aim for the Head, Witness the End,
+     * Vessel of Malignity, and the modal bullet on Perfect Intimidation.
+     *
+     * [discard]'s shape one destination over, and the reason it is a separate family rather than a
+     * slot on that one is the SDK's: exiling and discarding are two published recipes
+     * (`Patterns.Hand.exileFromHand` against `discardCards`), because a discard is a
+     * `MoveType.Discard` that feeds every "whenever you discard" trigger and CR 701.8's turn tally,
+     * and an exile from hand is none of those. A destination slot spanning the two would have let
+     * the grammar print one as the other.
+     *
+     * **The chooser is the sentence's subject and the facade derives it.** "Target opponent exiles"
+     * means that opponent picks, which `exileFromHand` reads off the same [EffectTarget] it takes
+     * for the zone — so the rows differ only in the requirement they declare, and there is no
+     * separate chooser word for a slot to spell.
+     */
+    private fun exileFromHand(
+        template: String,
+        name: String,
+        count: Int?,
+        target: EffectTarget,
+        requirements: List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>,
+    ): Phrase<CardScript> {
+        fun scriptFor(cards: Int) = CardScript(
+            spellEffect = Patterns.Hand.exileFromHand(cards, target),
+            targetRequirements = requirements,
+        )
+        return phrase(template, name = name) {
+            if (count == null) slot("n", Cardinals.word)
+            build { bindings -> scriptFor(count ?: bindings.int("n")) }
+            match { script ->
+                val cards = count ?: exiledFromHandCount(script) ?: return@match null
+                if (count == null && !Cardinals.spellable(cards)) return@match null
+                if (script != scriptFor(cards)) return@match null
+                bind("n" to cards)
+            }
+        }
+    }
+
+    /** How many cards an `exileFromHand` pipeline exiles, read off its select step. */
+    private fun exiledFromHandCount(script: CardScript): Int? {
+        val select = (script.spellEffect as? CompositeEffect)?.effects
+            ?.filterIsInstance<SelectFromCollectionEffect>()?.firstOrNull() ?: return null
+        val mode = select.selection as? SelectionMode.ChooseExactly ?: return null
+        return (mode.count as? DynamicAmount.Fixed)?.amount
     }
 
     val clauses: List<Phrase<CardScript>> = listOf(
@@ -300,6 +367,30 @@ object Hand {
         discard(
             "have target opponent discard a card", "have target opponent discard a card",
             count = 1, target = Targets.bound(), requirements = listOf(Targets.opponent()),
+        ),
+        discardWholeHand(
+            "discard your hand", "discard your hand",
+            target = EffectTarget.Controller, requirements = emptyList(),
+        ),
+        discardWholeHand(
+            "target player discards their hand", "target player discards their hand",
+            target = Targets.bound(), requirements = listOf(Targets.player()),
+        ),
+        exileFromHand(
+            "target opponent exiles a card from their hand", "target opponent exiles a card from their hand",
+            count = 1, target = Targets.bound(), requirements = listOf(Targets.opponent()),
+        ),
+        exileFromHand(
+            "target opponent exiles {n} cards from their hand", "target opponent exiles cards from their hand",
+            count = null, target = Targets.bound(), requirements = listOf(Targets.opponent()),
+        ),
+        exileFromHand(
+            "target player exiles a card from their hand", "target player exiles a card from their hand",
+            count = 1, target = Targets.bound(), requirements = listOf(Targets.player()),
+        ),
+        exileFromHand(
+            "target player exiles {n} cards from their hand", "target player exiles cards from their hand",
+            count = null, target = Targets.bound(), requirements = listOf(Targets.player()),
         ),
         tableWide(
             "each player draws X cards", "each player draws X cards",

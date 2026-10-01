@@ -1,7 +1,6 @@
 package com.wingedsheep.engine.mechanics.combat
 
-import com.wingedsheep.engine.handlers.ConditionEvaluator
-import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
@@ -14,6 +13,8 @@ import com.wingedsheep.sdk.core.ManaSymbol
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AttackTax
 import com.wingedsheep.sdk.scripting.BlockTax
+import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
+import com.wingedsheep.sdk.scripting.CantAttackOrBlockUnlessPay
 
 /**
  * What a proposed attack or block costs in generic mana before it may be declared — Ghostly Prison,
@@ -31,9 +32,6 @@ import com.wingedsheep.sdk.scripting.BlockTax
  */
 object CombatTaxes {
 
-    private val dynamicAmountEvaluator = DynamicAmountEvaluator()
-    private val conditionEvaluator = ConditionEvaluator()
-
     /** [total] generic mana, the shape every combat tax is paid in. */
     fun genericCost(total: Int): ManaCost = ManaCost(List(total) { ManaSymbol.generic(1) })
 
@@ -41,30 +39,36 @@ object CombatTaxes {
      * The generic-mana tax owed for declaring [attackers] (creature → defender), without paying it.
      *
      * [AttackTax] is a per-defender restriction: only permanents controlled by the player being
-     * attacked (or protecting the attacked planeswalker/battle) tax, and only for the attackers
-     * aimed at them.
+     * attacked tax, and only for the attackers aimed at them — at that player, or at a planeswalker
+     * they control when the tax says "or planeswalkers you control" ([AttackTax.coversPlaneswalkers]).
+     * An attack on a battle is taxed by nobody: no printed tax names battles, and the battle's
+     * controller (who may be the attacker, for a Siege) is certainly not the one taxing it.
      */
     fun attackTax(
         state: GameState,
         cardRegistry: CardRegistry,
         attackers: Map<EntityId, EntityId>,
         projected: ProjectedState,
+        predicateEvaluator: PredicateEvaluator
     ): Int {
         if (attackers.isEmpty()) return 0
-        val attackersPerDefender = mutableMapOf<EntityId, Int>()
+        // Per taxing player: attackers aimed at them directly, and attackers aimed at a planeswalker
+        // they control. Battles fall in neither bucket.
+        val attackersAtPlayer = mutableMapOf<EntityId, Int>()
+        val attackersAtPlaneswalkers = mutableMapOf<EntityId, Int>()
         for ((_, defenderId) in attackers) {
-            val defenderPlayerId = if (defenderId in state.activePlayers) {
-                defenderId
-            } else {
-                projected.getController(defenderId)
-            }
-            if (defenderPlayerId != null) {
-                attackersPerDefender[defenderPlayerId] = (attackersPerDefender[defenderPlayerId] ?: 0) + 1
+            // Only a player still in the game is a taxing defender (an eliminated player's id is
+            // neither in the active set nor a planeswalker, so nobody taxes an attack on it).
+            if (defenderId in state.activePlayers) {
+                attackersAtPlayer[defenderId] = (attackersAtPlayer[defenderId] ?: 0) + 1
+            } else if (projected.isPlaneswalker(defenderId)) {
+                val controller = projected.getController(defenderId) ?: continue
+                attackersAtPlaneswalkers[controller] = (attackersAtPlaneswalkers[controller] ?: 0) + 1
             }
         }
 
         var totalGenericTax = 0
-        for ((defenderId, attackerCount) in attackersPerDefender) {
+        for (defenderId in attackersAtPlayer.keys + attackersAtPlaneswalkers.keys) {
             val defenderPermanents = projected.getBattlefieldControlledBy(defenderId)
             for (entityId in defenderPermanents) {
                 val container = state.getEntity(entityId) ?: continue
@@ -72,20 +76,24 @@ object CombatTaxes {
                 val cardDef = cardRegistry.getCard(cardComponent.cardDefinitionId) ?: continue
                 for (ability in cardDef.staticAbilities) {
                     if (ability !is AttackTax) continue
+                    val attackerCount = (attackersAtPlayer[defenderId] ?: 0) +
+                        if (ability.coversPlaneswalkers) attackersAtPlaneswalkers[defenderId] ?: 0 else 0
+                    if (attackerCount == 0) continue
                     val ctx = EffectContext(sourceId = entityId, controllerId = defenderId)
                     // Gate on the source's state (e.g. Archangel of Tithes — only while untapped).
                     val condition = ability.condition
-                    if (condition != null && !conditionEvaluator.evaluate(state, condition, ctx)) {
+                    if (condition != null && !predicateEvaluator.conditions.evaluate(state, condition, ctx)) {
                         continue
                     }
                     val taxPerAttacker =
-                        maxOf(0, dynamicAmountEvaluator.evaluate(state, ability.amountPerAttacker, ctx, projected))
+                        maxOf(0, predicateEvaluator.amounts.evaluate(state, ability.amountPerAttacker, ctx, projected))
                     totalGenericTax += taxPerAttacker * attackerCount
                 }
             }
         }
 
-        return totalGenericTax + perCreatureTax(state, attackers.keys, projected)
+        return totalGenericTax + perCreatureTax(state, attackers.keys, projected) +
+            selfTax(state, cardRegistry, attackers.keys, projected, taxingBlockers = false, predicateEvaluator = predicateEvaluator)
     }
 
     /**
@@ -100,6 +108,7 @@ object CombatTaxes {
         cardRegistry: CardRegistry,
         blockerIds: Set<EntityId>,
         projected: ProjectedState,
+        predicateEvaluator: PredicateEvaluator
     ): Int {
         if (blockerIds.isEmpty()) return 0
         var totalTax = 0
@@ -116,15 +125,70 @@ object CombatTaxes {
                 val controllerId = projected.getController(entityId) ?: continue
                 val ctx = EffectContext(sourceId = entityId, controllerId = controllerId)
                 val condition = ability.condition
-                if (condition != null && !conditionEvaluator.evaluate(state, condition, ctx)) {
+                if (condition != null && !predicateEvaluator.conditions.evaluate(state, condition, ctx)) {
                     continue
                 }
                 val taxPerBlocker =
-                    maxOf(0, dynamicAmountEvaluator.evaluate(state, ability.amountPerBlocker, ctx, projected))
+                    maxOf(0, predicateEvaluator.amounts.evaluate(state, ability.amountPerBlocker, ctx, projected))
                 totalTax += taxPerBlocker * blockerIds.size
             }
         }
-        return totalTax + perCreatureTax(state, blockerIds, projected)
+        return totalTax + perCreatureTax(state, blockerIds, projected) +
+            selfTax(state, cardRegistry, blockerIds, projected, taxingBlockers = true, predicateEvaluator = predicateEvaluator)
+    }
+
+    /**
+     * Tax a creature charges for *itself* — [CantAttackOrBlockUnlessPay], Myr Prototype's "can't
+     * attack or block unless you pay {1} for each +1/+1 counter on it".
+     *
+     * Unlike [AttackTax]/[BlockTax] this doesn't scan the battlefield: only the creatures actually
+     * being declared can charge, and each charges once for itself. That is also what keeps the
+     * whole tax monotone in the declared set — dropping a creature drops exactly its own charge.
+     *
+     * The amount is evaluated with the taxed creature as the source, so a counter-counting amount
+     * reads that creature's counters rather than the declaring player's board. Taxes attackers and
+     * blockers identically, hence one implementation for both.
+     */
+    private fun selfTax(
+        state: GameState,
+        cardRegistry: CardRegistry,
+        creatureIds: Set<EntityId>,
+        projected: ProjectedState,
+        taxingBlockers: Boolean,
+        predicateEvaluator: PredicateEvaluator
+    ): Int {
+        var totalTax = 0
+        for (creatureId in creatureIds) {
+            val container = state.getEntity(creatureId) ?: continue
+            val controllerId = projected.getController(creatureId) ?: continue
+
+            // The creature's own printed statics, plus those on the Auras/Equipment attached to it —
+            // Brainwash charges for its host, not for itself. Walking the creature's *own*
+            // attachments (rather than scanning the battlefield) is what keeps this whole tax
+            // monotone in the declared set: the charge still depends only on the creature being
+            // declared, so dropping a creature drops exactly its own charge.
+            val ownStatics = container.get<CardComponent>()
+                ?.let { cardRegistry.getCard(it.cardDefinitionId) }
+                ?.staticAbilities
+                .orEmpty()
+            val attachedStatics = container.get<AttachmentsComponent>()?.attachedIds.orEmpty()
+                .flatMap { attachmentId ->
+                    state.getEntity(attachmentId)
+                        ?.get<CardComponent>()
+                        ?.let { cardRegistry.getCard(it.cardDefinitionId) }
+                        ?.staticAbilities
+                        .orEmpty()
+                }
+
+            for (ability in ownStatics + attachedStatics) {
+                if (ability !is CantAttackOrBlockUnlessPay) continue
+                // "Can't attack unless …" (Brainwash) charges nothing to block.
+                if (taxingBlockers && !ability.appliesToBlocking) continue
+                val ctx = EffectContext(sourceId = creatureId, controllerId = controllerId)
+                totalTax += maxOf(0, predicateEvaluator.amounts.evaluate(state, ability.amount, ctx, projected))
+            }
+        }
+        return totalTax
     }
 
     /**

@@ -7,6 +7,7 @@ import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import com.wingedsheep.engine.legalactions.TargetInfo
@@ -37,9 +38,7 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.TargetPlayer
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import com.wingedsheep.sdk.scripting.targets.TargetObject
-import com.wingedsheep.sdk.scripting.targets.TargetSpell
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldContain
@@ -59,7 +58,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         typeLine = "Artifact"
         activatedAbility {
             cost = Costs.Mana("{1}")
-            target = TargetCreature()
+            target = TargetObject(filter = TargetFilter.Creature)
             genericCostReduction = DynamicAmount.Conditional(
                 condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
                 ifTrue = DynamicAmount.Fixed(1),
@@ -85,7 +84,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         }
         activatedAbility {
             cost = Costs.Composite(Costs.Mana("{1}"), Costs.Mana("{B}"))
-            target = TargetCreature()
+            target = TargetObject(filter = TargetFilter.Creature)
             genericCostReduction = DynamicAmount.Conditional(
                 condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
                 ifTrue = DynamicAmount.Fixed(1),
@@ -95,7 +94,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         }
         activatedAbility {
             cost = Costs.Mana("{1}")
-            target = TargetCreature(optional = true)
+            target = TargetObject(filter = TargetFilter.Creature, optional = true)
             genericCostReduction = DynamicAmount.Conditional(
                 condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
                 ifTrue = DynamicAmount.Fixed(1),
@@ -105,7 +104,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         }
         activatedAbility {
             cost = Costs.Mana("{1}")
-            target = TargetCreature(unlimited = true)
+            target = TargetObject(filter = TargetFilter.Creature, unlimited = true)
             genericCostReduction = DynamicAmount.Conditional(
                 condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
                 ifTrue = DynamicAmount.Fixed(1),
@@ -114,8 +113,8 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
             effect = Effects.GainLife(1)
         }
         activatedAbility {
-            val first = target("first creature", TargetCreature())
-            target("second creature", TargetCreature())
+            val first = target(TargetFilter.Creature)
+            target(TargetFilter.Creature)
             cost = Costs.Mana("{1}")
             genericCostReduction = DynamicAmount.Conditional(
                 condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
@@ -126,12 +125,12 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         }
         activatedAbility {
             cost = Costs.Mana("{X}")
-            target = TargetCreature()
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.GainLife(1)
         }
         activatedAbility {
             cost = Costs.Mana("{1}")
-            target = TargetSpell()
+            target = TargetObject(filter = TargetFilter.SpellOnStack)
             genericCostReduction = DynamicAmount.Conditional(
                 condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
                 ifTrue = DynamicAmount.Fixed(1),
@@ -151,7 +150,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         }
         activatedAbility {
             cost = Costs.Composite(Costs.Mana("{1}"), Costs.TapAnotherPermanent())
-            target = TargetCreature()
+            target = TargetObject(filter = TargetFilter.Creature)
             genericCostReduction = DynamicAmount.Conditional(
                 condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
                 ifTrue = DynamicAmount.Fixed(1),
@@ -161,7 +160,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         }
         activatedAbility {
             cost = Costs.Mana("{1}")
-            target = TargetCreature(dynamicMaxCount = DynamicAmount.Fixed(1))
+            target = TargetObject(filter = TargetFilter.Creature, dynamicMaxCount = DynamicAmount.Fixed(1))
             genericCostReduction = DynamicAmount.Conditional(
                 condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
                 ifTrue = DynamicAmount.Fixed(1),
@@ -175,7 +174,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         typeLine = "Artifact"
         activatedAbility {
             cost = Costs.Mana("{1}")
-            target = TargetCreature()
+            target = TargetObject(filter = TargetFilter.Creature)
             genericCostReduction = DynamicAmount.Conditional(
                 condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
                 ifTrue = DynamicAmount.Fixed(1),
@@ -831,7 +830,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
 
     test("does not mark a binding affordable through an unrepresentable legacy source") {
         val fixture = prepared(includeUnrepresentableManaSource = true)
-        ManaSolver(fixture.registry).canPay(
+        ManaSolver(fixture.registry, PredicateEvaluator(fixture.registry)).canPay(
             state = fixture.environment.state,
             playerId = fixture.playerId,
             cost = ManaCost.parse("{1}"),

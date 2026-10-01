@@ -183,14 +183,16 @@ internal class PerspectiveEventProjector(
         }
 
         is CountersAddedEvent -> emit(PerspectiveEventFamily.COUNTERS_ADDED) {
-            put("counterType", event.counterType)
+            // The canonical counter id ("PLUS_ONE_PLUS_ONE", "BOUNTY"), the same spelling the
+            // observation's counter maps use.
+            put("counterType", event.counterType.name)
             put("amount", event.amount)
             put("firstThisTurn", event.firstThisTurn)
             event.placedBy?.let { put("placedByRole", playerRole(it, perspectivePlayerId)) }
         }
 
         is CountersRemovedEvent -> emit(PerspectiveEventFamily.COUNTERS_REMOVED) {
-            put("counterType", event.counterType)
+            put("counterType", event.counterType.name)
             put("amount", event.amount)
             event.remainingCount?.let { put("remainingCount", it) }
         }

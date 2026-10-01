@@ -34,7 +34,7 @@ class ActivatedAbilityCopyCrimeCharacterizationTest : FunSpec({
         val genuineController = driver.player1
         val copyController = driver.player2
         val sourceId = driver.putCreatureOnBattlefield(genuineController, "Grizzly Bears")
-        val resolver = StackResolver(driver.cardRegistry)
+        val resolver = driver.services.stackResolver
         val ability = ActivatedAbilityOnStackComponent(
             sourceId = sourceId,
             sourceName = "Targeted activated ability",
@@ -56,11 +56,11 @@ class ActivatedAbilityCopyCrimeCharacterizationTest : FunSpec({
 
         val copied = CopyTargetSpellOrAbilityExecutor.cloneAndPush(
             state = genuine.newState,
-            stackResolver = resolver,
             abilityEntityId = genuine.newState.stack.last(),
             controllerId = copyController,
             targets = listOf(ChosenTarget.Player(genuineController)),
             targetRequirements = listOf(TargetPlayer()),
+            targetValidator = driver.services.targetValidator,
         )
 
         copied.error shouldBe null
@@ -91,7 +91,7 @@ class ActivatedAbilityCopyCrimeCharacterizationTest : FunSpec({
         val genuineController = driver.player1
         val copyController = driver.player2
         val sourceId = driver.putCreatureOnBattlefield(genuineController, "Grizzly Bears")
-        val resolver = StackResolver(driver.cardRegistry)
+        val resolver = driver.services.stackResolver
         val ability = ActivatedAbilityOnStackComponent(
             sourceId = sourceId,
             sourceName = "Non-crime activated ability",
@@ -111,11 +111,11 @@ class ActivatedAbilityCopyCrimeCharacterizationTest : FunSpec({
 
         val copied = CopyTargetSpellOrAbilityExecutor.cloneAndPush(
             state = genuine.newState,
-            stackResolver = resolver,
             abilityEntityId = genuine.newState.stack.last(),
             controllerId = copyController,
             targets = listOf(ChosenTarget.Player(genuineController)),
             targetRequirements = listOf(TargetPlayer()),
+            targetValidator = driver.services.targetValidator,
         )
 
         copied.error shouldBe null

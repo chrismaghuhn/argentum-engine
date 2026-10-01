@@ -1,14 +1,13 @@
 package com.wingedsheep.engine.handlers.effects.composite
 
 import com.wingedsheep.engine.core.*
-import com.wingedsheep.engine.handlers.ConditionEvaluator
-import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.BattlefieldFilterUtils
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
+import com.wingedsheep.engine.handlers.costs.CollectEvidenceResolver
 import com.wingedsheep.engine.legalactions.utils.CostEnumerationUtils
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
@@ -23,25 +22,31 @@ import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.CardDestination
 import com.wingedsheep.sdk.scripting.effects.ChooseActionEffect
+import com.wingedsheep.sdk.scripting.effects.CollectEvidenceEffect
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.DynamicHint
 import com.wingedsheep.sdk.scripting.effects.Gate
 import com.wingedsheep.sdk.scripting.effects.GatedEffect
+import com.wingedsheep.sdk.scripting.effects.GatherCardsEffect
 import com.wingedsheep.sdk.scripting.effects.MoveCollectionEffect
 import com.wingedsheep.sdk.scripting.effects.MoveToZoneEffect
 import com.wingedsheep.sdk.scripting.effects.PayDynamicLifeEffect
 import com.wingedsheep.sdk.scripting.effects.PayDynamicManaCostEffect
+import com.wingedsheep.sdk.scripting.effects.PayExactCountersEffect
 import com.wingedsheep.sdk.scripting.effects.PayLifeEffect
 import com.wingedsheep.sdk.scripting.effects.PayManaCostEffect
 import com.wingedsheep.sdk.scripting.effects.PayManaCostRepeatedlyEffect
 import com.wingedsheep.sdk.scripting.effects.DamageRecipient
+import com.wingedsheep.sdk.scripting.effects.SelectFromCollectionEffect
+import com.wingedsheep.sdk.scripting.effects.SelectionMode
+import com.wingedsheep.sdk.scripting.effects.SelectionRestriction
 import com.wingedsheep.sdk.scripting.effects.SuccessCriterion
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -63,14 +68,15 @@ import kotlin.reflect.KClass
  */
 class GatedEffectExecutor(
     private val cardRegistry: CardRegistry,
-    private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult
+    private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult,
+    private val predicateEvaluator: PredicateEvaluator
 ) : EffectExecutor<GatedEffect> {
+    private val dynamicAmountEvaluator = predicateEvaluator.amounts
+    private val conditionEvaluator = predicateEvaluator.conditions
 
     override val effectType: KClass<GatedEffect> = GatedEffect::class
 
-    private val manaSolver = ManaSolver(cardRegistry)
-    private val conditionEvaluator = ConditionEvaluator()
-    private val dynamicAmountEvaluator = DynamicAmountEvaluator()
+    private val manaSolver = ManaSolver(cardRegistry, predicateEvaluator)
 
     override fun execute(
         state: GameState,
@@ -115,7 +121,7 @@ class GatedEffectExecutor(
             return executeMayPayX(state, effect, context)
         }
 
-        // Gate.MayDecide: two cases where the former MayEffect skipped the prompt entirely.
+        // Gate.MayDecide: two cases where the former Effects.May skipped the prompt entirely.
         if (gate is Gate.MayDecide) {
             // Source must still be in its required zone (e.g. a dies-trigger "may" whose source
             // has since left) — otherwise the may-action is impossible, so skip silently.
@@ -128,7 +134,7 @@ class GatedEffectExecutor(
             // A ChooseActionEffect payoff with no feasible choice — don't ask the may question at all.
             val then = effect.then
             if (then is ChooseActionEffect &&
-                then.choices.none { checkFeasibility(state, context.controllerId, it.feasibilityCheck) }
+                then.choices.none { checkFeasibility(state, context.controllerId, it.feasibilityCheck, predicateEvaluator = predicateEvaluator) }
             ) {
                 return EffectResult.success(state)
             }
@@ -142,21 +148,45 @@ class GatedEffectExecutor(
                     .resolvePlayerRef(then.player, context, state)
                 if (collector == null ||
                     !com.wingedsheep.engine.handlers.costs.CollectEvidenceResolver
-                        .canCollect(state, collector, then.amount)
+                        .canCollect(state, collector, then.amount, predicateEvaluator = predicateEvaluator)
                 ) {
                     return EffectResult.success(state)
                 }
+            }
+            // "You may search your library … then shuffle" while the player can't search libraries
+            // (Shadow of Doubt): they can't choose to search, so nothing happens — not even the
+            // shuffle (the card's first ruling). Only a may whose action *leads* with the search is
+            // skipped; a search nested behind another optional action ("you may sacrifice …. If you
+            // do, search …") keeps its prompt, and the blocked search inside simply finds nothing.
+            if (leadsWithSearch(effect.then) &&
+                state.getEntity(context.controllerId)
+                    ?.has<com.wingedsheep.engine.state.components.player.CantSearchLibrariesComponent>() == true
+            ) {
+                return effect.otherwise
+                    ?.let { effectExecutor(state, it, context) }
+                    ?: EffectResult.success(state)
             }
             // A declared feasibility that isn't met means the may-action is impossible — the player
             // "doesn't", so skip the prompt and run `otherwise` directly. This is the no-target
             // analogue of a targeted "may" with no legal targets falling to its else branch (e.g.
             // "you may sacrifice an artifact. If you don't, …" with no artifact taps you out).
             gate.feasibility?.let { check ->
-                if (!checkFeasibility(state, context.controllerId, check)) {
+                if (!checkFeasibility(state, context.controllerId, check, predicateEvaluator = predicateEvaluator)) {
                     return effect.otherwise
                         ?.let { effectExecutor(state, it, context) }
                         ?: EffectResult.success(state)
                 }
+            }
+            // CR 608.2d — a player can't choose an option that's impossible. "You may exile eight
+            // cards from your graveyard. If you do, this creature becomes prepared" can't be chosen
+            // with fewer than eight cards there: the inner action gate could never clear its
+            // CollectionNonEmpty bar. Offering the prompt anyway lets a "yes" partially perform the
+            // exile — CR 609.3's do-as-much-as-possible, which governs *mandatory* instructions,
+            // not an option that was never available — and spends those cards for nothing.
+            if (!optionalActionCanClearItsBar(state, effect.then, context)) {
+                return effect.otherwise
+                    ?.let { effectExecutor(state, it, context) }
+                    ?: EffectResult.success(state)
             }
         }
 
@@ -197,7 +227,7 @@ class GatedEffectExecutor(
                 ?: EffectResult.success(state)
         }
 
-        // An optional *mana* payment (the lowered MayPayManaEffect shape) keeps its bespoke UX —
+        // An optional *mana* payment (the lowered Effects.MayPay shape) keeps its bespoke UX —
         // a "Pay {cost}?" yes/no that, on "yes", routes through the mana-source-selection
         // continuations rather than the generic auto-tapping cost composite. See [OptionalManaPayment].
         effect.asOptionalManaPayment()?.let { mana ->
@@ -225,8 +255,7 @@ class GatedEffectExecutor(
         // player confirms a number, not a formula.
         val payLabel = (gate as? Gate.MayPay)?.let { computedCostLabel(state, it.cost, context) }
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = YesNoDecision(
+        val decision = { decisionId: String -> YesNoDecision(
             id = decisionId,
             playerId = playerId,
             prompt = effect.description,
@@ -238,31 +267,16 @@ class GatedEffectExecutor(
             yesText = payLabel ?: "Yes",
             noText = if (payLabel != null) "Don't pay" else "No",
             hint = hint
-        )
+        ) }
 
         val continuation = GatedEffectContinuation(
-            decisionId = decisionId,
             gate = gate,
             then = effect.then,
             otherwise = effect.otherwise,
             effectContext = context
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = playerId,
-                    decisionType = "YES_NO",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 
     /**
@@ -282,18 +296,16 @@ class GatedEffectExecutor(
             state.getEntity(sourceId)?.get<CardComponent>()?.name
         }
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = YesNoDecision(
+        val decision = { decisionId: String -> YesNoDecision(
             id = decisionId,
             playerId = playerId,
             prompt = "Pay $manaCost?",
             context = decisionContext(context, sourceName),
             yesText = "Pay $manaCost",
             noText = "Don't pay"
-        )
+        ) }
 
         val continuation = MayPayManaContinuation(
-            decisionId = decisionId,
             playerId = playerId,
             sourceName = sourceName,
             manaCost = manaCost,
@@ -301,20 +313,7 @@ class GatedEffectExecutor(
             effectContext = context
         )
 
-        val stateWithContinuation = state.withPendingDecision(decision).pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = playerId,
-                    decisionType = "YES_NO",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 
     /**
@@ -336,7 +335,7 @@ class GatedEffectExecutor(
         context: EffectContext
     ): EffectResult {
         val costUtils = CostEnumerationUtils(
-            manaSolver, CostCalculator(cardRegistry), PredicateEvaluator(), cardRegistry
+            manaSolver, CostCalculator(cardRegistry, predicateEvaluator), predicateEvaluator, cardRegistry
         )
         val waterbendPermanents = costUtils.findTapForGenericPermanents(state, playerId, TapForGeneric.WATERBEND)
         val affordable = manaSolver.canPay(state, playerId, manaCost) ||
@@ -356,6 +355,7 @@ class GatedEffectExecutor(
                 producesColors = source.producesColors,
                 producesColorless = source.producesColorless,
                 requiresSacrifice = source.requiresSacrifice,
+                manaAmount = source.manaAmount,
                 requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null,
                 manaAbilityId = source.manaAbilityFor(source.producesColors.firstOrNull())?.id
             )
@@ -366,9 +366,9 @@ class GatedEffectExecutor(
             WaterbendPermanentChoice(it.entityId, it.name, it.isCreature)
         }
 
-        val decisionId = UUID.randomUUID().toString()
         val declineText = otherwise?.description?.replaceFirstChar { it.lowercase() }
-        val decision = SelectManaSourcesDecision(
+
+        val decision = { decisionId: String -> SelectManaSourcesDecision(
             id = decisionId,
             playerId = playerId,
             prompt = if (declineText != null) {
@@ -382,10 +382,9 @@ class GatedEffectExecutor(
             autoPaySuggestion = autoPaySuggestion,
             canDecline = true,
             waterbendPermanents = waterbendOptions
-        )
+        ) }
 
         val continuation = MayPayManaSelectionContinuation(
-            decisionId = decisionId,
             playerId = playerId,
             sourceName = sourceName,
             manaCost = manaCost,
@@ -397,20 +396,7 @@ class GatedEffectExecutor(
             otherwise = otherwise
         )
 
-        val stateWithContinuation = state.withPendingDecision(decision).pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = playerId,
-                    decisionType = "SELECT_MANA_SOURCES",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 
     /**
@@ -469,7 +455,7 @@ class GatedEffectExecutor(
     }
 
     /**
-     * Resolve a [Gate.MayPayX] gate (the lowered `MayPayXForEffect`). Computes the most generic mana
+     * Resolve a [Gate.MayPayX] gate (the lowered `Effects.MayPayX`). Computes the most generic mana
      * the decision-maker can produce and, if any, pauses with a 0..max number chooser; the existing
      * [MayPayXContinuation] resumer (`resumeMayPayX`) then auto-taps the chosen X and runs
      * [GatedEffect.then] with `xValue` bound into the context. An unaffordable gate (max <= 0) falls
@@ -495,18 +481,16 @@ class GatedEffectExecutor(
             state.getEntity(sourceId)?.get<CardComponent>()?.name
         }
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = ChooseNumberDecision(
+        val decision = { decisionId: String -> ChooseNumberDecision(
             id = decisionId,
             playerId = playerId,
             prompt = "Pay {X}? Choose X (0 to decline)",
             context = decisionContext(context, sourceName),
             minValue = 0,
             maxValue = maxAffordable
-        )
+        ) }
 
         val continuation = MayPayXContinuation(
-            decisionId = decisionId,
             playerId = playerId,
             sourceName = sourceName,
             effect = effect.then,
@@ -514,28 +498,15 @@ class GatedEffectExecutor(
             effectContext = context
         )
 
-        val stateWithContinuation = state.withPendingDecision(decision).pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = playerId,
-                    decisionType = "CHOOSE_NUMBER",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 
     /**
      * The [DecisionContext] every gate prompt in this executor carries.
      *
      * Beyond the source/trigger plumbing, it stamps the *subject* of the prompt from the enclosing
-     * per-entity iteration ([com.wingedsheep.engine.handlers.PipelineState.iterationTarget], the
-     * binding `EffectTarget.Self` already reads inside a `ForEachInGroup` body). A gate that runs
+     * per-entity iteration ([EffectContext.iterationEntityId], the object
+     * `EffectTarget.IterationEntity` names inside a `ForEachInGroup` body). A gate that runs
      * once per creature — Killing Wave's "sacrifice it unless you pay X life" — otherwise raises N
      * character-identical prompts, and the player has no way to tell which creature each covers.
      */
@@ -549,7 +520,7 @@ class GatedEffectExecutor(
         phase = DecisionPhase.RESOLUTION,
         triggeringEntityId = context.triggeringEntityId,
         inlineOnTrigger = inlineOnTrigger,
-        subjectEntityId = context.pipeline.iterationTarget
+        subjectEntityId = context.iterationEntityId
     )
 
     /**
@@ -576,6 +547,10 @@ class GatedEffectExecutor(
                 // also avoids `"{G}".repeat(negative)` throwing from inside label rendering.
                 val amount = dynamicAmountEvaluator.evaluate(state, cost.amount, context).coerceAtLeast(0)
                 "Pay ${PayDynamicManaCostExecutor.dynamicManaCost(amount, cost.color)}"
+            }
+            is PayExactCountersEffect -> {
+                val amount = dynamicAmountEvaluator.evaluate(state, cost.amount, context).coerceAtLeast(0)
+                "Pay $amount ${cost.counterType.printed} counters"
             }
             is PayLifeEffect -> "Pay ${cost.amount} life"
             is PayDynamicLifeEffect -> {
@@ -610,9 +585,15 @@ class GatedEffectExecutor(
                     state, payerId, PayDynamicManaCostExecutor.dynamicManaCost(amount, cost.color)
                 )
             }
+            is PayExactCountersEffect -> {
+                val payer = TargetResolutionUtils.resolvePlayerRef(cost.player, context, state)
+                val amount = dynamicAmountEvaluator.evaluate(state, cost.amount, context).coerceAtLeast(0)
+                payer != null && com.wingedsheep.engine.mechanics.cost.PlayerCounterPayment.available(
+                    state, payer, cost.counterType
+                ) >= amount
+            }
             is PayLifeEffect -> {
-                val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
-                life >= cost.amount
+                state.canPayLife(playerId, cost.amount) // CR 810.9a / 119.8
             }
             is PayDynamicLifeEffect -> {
                 // Resolve the cost's own payer; a computed amount of <= 0 is free (CR 119.4).
@@ -620,15 +601,22 @@ class GatedEffectExecutor(
                 val payerId = TargetResolutionUtils
                     .resolvePlayerTarget(EffectTarget.PlayerRef(cost.payer), context, state)
                     ?: playerId
-                amount <= 0 || state.lifeTotal(payerId) >= amount
+                state.canPayLife(payerId, amount)
             }
             // "You may pay {1} up to three times" as a gate cost: the repeated payment's floor is
             // one repetition, so a payer who can't afford even that must not be offered the "yes"
             // (the cost would then error and `stopOnError` would swallow the whole payoff). Mirrors
             // ReflexiveTriggerEffectExecutor.isActionFeasible, which scores the same shape.
             is PayManaCostRepeatedlyEffect -> PayManaCostRepeatedlyExecutor.affordableRepetitions(
-                state, playerId, cost.cost, cost.maxTimes, cardRegistry
+                state, playerId, cost.cost, cost.maxTimes, cardRegistry,
+                predicateEvaluator = predicateEvaluator
             ) >= 1
+            // Resolution-time collect evidence is also a payable action (Izoni): the player may
+            // choose it only when their graveyard can meet the full mana-value threshold.
+            is CollectEvidenceEffect -> {
+                val collector = TargetResolutionUtils.resolvePlayerRef(cost.player, context, state)
+                collector != null && CollectEvidenceResolver.canCollect(state, collector, cost.amount, predicateEvaluator = predicateEvaluator)
+            }
             is CompositeEffect -> cost.effects.all { canAfford(state, playerId, it, context) }
             // "You may sacrifice [filter]" — payable only if the player controls enough matching
             // permanents (`any = true`, "sacrifice any number", is always payable: zero is legal).
@@ -636,7 +624,8 @@ class GatedEffectExecutor(
             // no Food still lets you choose "Sacrifice a Food" and wrongly take the +4/+4 branch.
             is com.wingedsheep.sdk.scripting.effects.SacrificeEffect -> cost.any || run {
                 val fodder = BattlefieldFilterUtils.findMatchingOnBattlefield(
-                    state, cost.filter.youControl(), PredicateContext(controllerId = playerId)
+                    state, cost.filter.youControl(), PredicateContext(controllerId = playerId),
+                    predicateEvaluator = predicateEvaluator
                 ).filterNot { cost.excludeSource && it == context.sourceId }
                 fodder.size >= cost.count
             }
@@ -644,7 +633,70 @@ class GatedEffectExecutor(
         }
 
     /**
-     * Resolve a [Gate.DoAction] gate (the lowered `IfYouDoEffect`). Follows the former
+     * Can the "if you do" action under a "you may" still clear its own success bar?
+     *
+     * Recognizes one idiom — "you may [choose exactly N cards from a gathered pool and move
+     * them]. If you do, …": a [Gate.DoAction] scored by [SuccessCriterion.CollectionNonEmpty]
+     * whose named collection is filled by a [SelectFromCollectionEffect] over a
+     * [GatherCardsEffect]'s pool. When that pool holds fewer cards than the criterion demands, no
+     * answer to the yes/no can make the gate succeed, so the option isn't a legal choice at all
+     * (CR 608.2d) and the prompt is skipped. Anything else answers `true` — prompt as before.
+     *
+     * The count is deliberately generous: of a selection's `restrictions`, only
+     * [SelectionRestriction.OnePerCardName] is applied (the pool then offers one card per distinct
+     * name — "reveal exactly two cards with different names", Extrapolate the Impossible); the
+     * others can narrow it further but aren't applied here, so the prompt is only ever withheld when
+     * the payment is impossible outright. Gathering is a pure read — it stores a collection and changes no state and emits no
+     * events — so probing it here costs nothing and can't be observed.
+     */
+    private fun optionalActionCanClearItsBar(
+        state: GameState,
+        then: Effect,
+        context: EffectContext
+    ): Boolean {
+        var inner = then
+        while (true) {
+            val gated = inner as? GatedEffect ?: return true
+            when (val gate = gated.gate) {
+                // The `effectOncePerTurn` lowering sits between the consent gate and the action.
+                is Gate.OnceEachTurn -> inner = gated.then
+                is Gate.DoAction -> return actionCanClearItsBar(state, gate, context)
+                else -> return true
+            }
+        }
+    }
+
+    private fun actionCanClearItsBar(
+        state: GameState,
+        gate: Gate.DoAction,
+        context: EffectContext
+    ): Boolean {
+        val criterion = gate.successCriterion as? SuccessCriterion.CollectionNonEmpty ?: return true
+        val steps = (gate.action as? CompositeEffect)?.effects ?: listOf(gate.action)
+        val select = steps.filterIsInstance<SelectFromCollectionEffect>()
+            .firstOrNull { it.storeSelected == criterion.name } ?: return true
+        if (select.selection !is SelectionMode.ChooseExactly) return true
+        val gather = steps.filterIsInstance<GatherCardsEffect>()
+            .firstOrNull { it.storeAs == select.from } ?: return true
+        val pool = effectExecutor(state, gather, context).updatedCollections[select.from] ?: return true
+        val eligible = if (select.filter == GameObjectFilter.Any) {
+            pool
+        } else {
+            val predicateContext = PredicateContext.fromEffectContext(context)
+            pool.filter { cardId ->
+                predicateEvaluator.matches(state, state.projectedState, cardId, select.filter, predicateContext)
+            }
+        }
+        val achievable = if (select.restrictions.any { it is SelectionRestriction.OnePerCardName }) {
+            eligible.mapNotNull { state.getEntity(it)?.get<CardComponent>()?.name }.toSet().size
+        } else {
+            eligible.size
+        }
+        return achievable >= criterion.min
+    }
+
+    /**
+     * Resolve a [Gate.DoAction] gate (the lowered `Effects.IfYouDo`). Follows the former
      * `IfYouDoEffectExecutor`'s pre-push pattern: a [GatedActionContinuation] is pushed *before*
      * the action runs. If the action completes synchronously the continuation is popped inline and
      * the outcome evaluated; otherwise it stays on the stack for the auto-resumer
@@ -659,7 +711,6 @@ class GatedEffectExecutor(
         val snapshot = captureSnapshot(state, gate.action, gate.successCriterion, context)
 
         val continuation = GatedActionContinuation(
-            decisionId = "pending",
             then = effect.then,
             otherwise = effect.otherwise,
             successCriterion = gate.successCriterion,
@@ -670,7 +721,7 @@ class GatedEffectExecutor(
 
         val result = effectExecutor(stateWithCont, gate.action, context)
 
-        if (result.isPaused) {
+        if (result.outcome is Outcome.Paused) {
             // Action paused; leave the continuation on the stack for the auto-resumer.
             return result
         }
@@ -728,11 +779,14 @@ class GatedEffectExecutor(
         }
 
         SuccessCriterion.Auto.terminalSingleMove(action)?.let { move ->
-            // Only the Self target resolves to a concrete moved entity here; the destination
-            // zone is owned by that entity's owner (e.g. self-exile from a graveyard lands in
-            // that card's owner's exile).
-            if (move.target !is EffectTarget.Self) return GatedActionSnapshot()
-            val movedId = context.sourceId ?: return GatedActionSnapshot()
+            // Only a move of the source or of a loop's current object names a concrete moved
+            // entity here; the destination zone is owned by that entity's owner (e.g. self-exile
+            // from a graveyard lands in that card's owner's exile).
+            val movedId = when (move.target) {
+                EffectTarget.Self -> context.sourceId
+                EffectTarget.IterationEntity -> context.iterationEntityId
+                else -> null
+            } ?: return GatedActionSnapshot()
             val ownerId = state.getEntity(movedId)?.get<OwnerComponent>()?.playerId ?: return GatedActionSnapshot()
             return zoneSnapshot(state, ownerId, move.destination)
         }
@@ -774,7 +828,11 @@ class GatedEffectExecutor(
             val happened = evaluate(state, criterion, snapshot, effectContext, evaluationEvents)
             val branch = if (happened) then else otherwise
                 ?: return EffectResult.success(state, priorEvents)
-            val branchResult = effectExecutor(state, branch, effectContext)
+            // The branch is a later part of the same effect as the action, so it may find the object
+            // the action just moved to a public zone (CR 400.7j) — "exile it. If you do, create a
+            // token that's a copy of that creature" (Kinzu of the Bleak Coven). Same authorization
+            // CompositeEffectExecutor applies between its steps.
+            val branchResult = effectExecutor(state, branch, effectContext.authorizeObjectMoves(evaluationEvents))
             return branchResult.copy(events = priorEvents + branchResult.events)
         }
 
@@ -801,7 +859,18 @@ class GatedEffectExecutor(
             is SuccessCriterion.ControlChanged -> evaluateControlChanged(priorEvents)
             is SuccessCriterion.CountersRemoved -> evaluateCountersRemoved(priorEvents)
             is SuccessCriterion.PermanentsSacrificed -> evaluatePermanentsSacrificed(priorEvents)
+            is SuccessCriterion.TurnedFaceUp -> evaluateTurnedFaceUp(priorEvents)
         }
+
+        /**
+         * Did the gated action actually turn a permanent face up? Scans the action's own events for
+         * a [TurnFaceUpEvent]. `TurnFaceUpExecutor` emits one only when the permanent really flipped:
+         * a manifested/cloaked instant or sorcery card is revealed and left face down (CR 701.40g /
+         * 701.58g, a [CardsRevealedEvent] instead), and an already-face-up permanent produces no
+         * event at all. Both are the "you can't" case Etrata, Deadly Fugitive's fallback branch needs.
+         */
+        private fun evaluateTurnedFaceUp(priorEvents: List<GameEvent>): Boolean =
+            priorEvents.any { event -> event is TurnFaceUpEvent }
 
         /**
          * Did the gated action actually sacrifice something? Scans the action's own events for a
@@ -875,5 +944,13 @@ class GatedEffectExecutor(
             val postSize = state.zones[ZoneKey(owner, zone)]?.size ?: 0
             return postSize > snapshot.destinationZonePreSize
         }
+    }
+
+    /** True when [effect]'s first step is a library search (a `GatherCardsEffect(search = true)`). */
+    private fun leadsWithSearch(effect: Effect): Boolean = when (effect) {
+        is com.wingedsheep.sdk.scripting.effects.GatherCardsEffect -> effect.search
+        is com.wingedsheep.sdk.scripting.effects.CompositeEffect ->
+            effect.effects.firstOrNull()?.let { leadsWithSearch(it) } == true
+        else -> false
     }
 }

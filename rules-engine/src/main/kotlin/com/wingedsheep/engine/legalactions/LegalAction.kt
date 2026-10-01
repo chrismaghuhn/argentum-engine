@@ -118,9 +118,29 @@ data class LegalAction(
 
     // Costs
     val manaCostString: String? = null,
+    /**
+     * The mana this spell adds to its own cost for each target beyond the first — "This spell
+     * costs {W}{U} more to cast for each target beyond the first" (Officious Interrogation) sends
+     * `"{W}{U}"`. Null for every spell that does not tax itself per target.
+     *
+     * When set, [manaCostString] is the *one-target minimum*, not the final price: the real cost
+     * is settled by targeting. The client must therefore run its targeting phase **before** any
+     * manual mana-source phase (the same way an X cost forces `xSelection` first) and scale the
+     * cost it charges there by the number of targets picked. Under auto-tap none of this shows —
+     * the server prices the submitted targets itself and solves.
+     */
+    val manaCostPerExtraTarget: String? = null,
     val hasXCost: Boolean = false,
     val maxAffordableX: Int? = null,
     val minX: Int = 0,
+    /**
+     * Non-null when the caster may pay "any amount of mana" as an additional cost to cast this
+     * spell (an `AdditionalManaForEntryCounters` static — Chorus of the Conclave). The value is an
+     * upper bound on what the caster could pay on top of the spell's cost right now; the client
+     * asks for an amount in `0..max` and sends it as `CastSpell.additionalManaForCounters`. The
+     * server re-validates the payment, so the bound only shapes the picker.
+     */
+    val maxAdditionalManaForCounters: Int? = null,
     val additionalCostInfo: AdditionalCostData? = null,
 
     // Convoke / Delve
@@ -197,6 +217,19 @@ data class LegalAction(
 
     // Source zone
     val sourceZone: String? = null,
+
+    /**
+     * True when taking this action puts the card on the stack **back face up** (CR 712.8c) — i.e.
+     * the spell the player is being offered is the card's *back* face, not the face the zone it
+     * sits in is showing. Disturb (CR 702.146a) is the only enumerated offer that does this today.
+     *
+     * Sent to the client because a face-down-in-its-zone offer is otherwise invisible: a disturb
+     * card sits in the graveyard printed front face up, so an offer rendered from the card's own
+     * characteristics shows the wrong name, art and text for the spell it would actually cast.
+     * The client must never re-derive this from the disturb keyword — which face a cast uses is a
+     * rules question, and [description] / [manaCostString] are already read off that face here.
+     */
+    val castsTransformed: Boolean = false,
 
     // Tap-creatures-for-total-power selection (shared by Crew N and Saddle N: the player taps
     // any number of eligible creatures whose combined power meets [tapForPowerRequired]).
@@ -332,8 +365,23 @@ data class TargetInfo(
      * (`TargetObject.dynamicMaxCount == DynamicAmount.XValue`). The client should
      * clamp selectable targets to the chosen X after X selection.
      */
-    val xConstrainsCount: Boolean = false
+    val xConstrainsCount: Boolean = false,
+    /**
+     * True when the targets chosen for this requirement must each have a different controller
+     * (`TargetObject.differentControllers` — Run Away Together's "two target creatures controlled
+     * by different players"). Lets a chooser that fills the slot itself (the AI) spread its picks.
+     */
+    val differentControllers: Boolean = false,
 )
+
+/**
+ * The per-requirement list a [LegalAction] carries in `targetRequirements`. A single requirement
+ * normally travels flattened onto the action's own `validTargets` / `minTargets` fields, so the list
+ * is only surfaced for several requirements — or for one whose cross-target constraint
+ * ([TargetInfo.differentControllers]) the flattened fields can't express.
+ */
+fun List<TargetInfo>.surfacedRequirements(): List<TargetInfo>? =
+    takeIf { size > 1 || any { it.differentControllers } }
 
 /**
  * Information about a creature that can be tapped for Convoke.
@@ -382,7 +430,22 @@ data class DelveCardData(
 data class TapForPowerCreatureData(
     val entityId: EntityId,
     val name: String,
-    val power: Int
+    /**
+     * What this creature contributes toward the cost. For Crew and Saddle that is its
+     * `CrewSaddleContributionEvaluator` value — the same measure the handlers charge against, which
+     * a "crews as though its power were 2 greater" static can raise above its printed power. For
+     * Teamwork N it is plain projected power, which is what that cost counts.
+     */
+    val power: Int,
+    /**
+     * Whether this creature could legally be declared as an attacker in the current state — the
+     * per-creature attack restrictions of CR 508.1a evaluated by
+     * [com.wingedsheep.engine.mechanics.combat.rules.AttackAvailability]. Tapping a creature to pay
+     * a Crew / Saddle / Teamwork cost takes it out of combat (CR 508.1a: an attacker must be
+     * untapped), so the client sorts its auto-pick to spend the creatures that weren't going to
+     * attack anyway, and marks the ones that were.
+     */
+    val canAttack: Boolean = true
 )
 
 /**
@@ -430,19 +493,69 @@ data class AdditionalCostData(
     val exileMinCount: Int = 0,
     val exileMaxCount: Int = 0,
     /**
-     * For a collect-evidence cost (CR 701.59a): the **floor on the combined mana value** of the
-     * exiled cards. Non-zero only for `costType == "CollectEvidence"`.
+     * The **floor on the combined measure** of the exiled cards, and what each offered card is
+     * worth toward it — the sum gate shared by every graveyard exile cost whose constraint is a
+     * total rather than a count: collect evidence N (CR 701.59a, measured by mana value) and the
+     * filtered `ExileFromGraveyardForTotal` (Baron Helmut Zemo, measured by coloured pips).
      *
-     * Its own field because collect evidence is the one exile cost whose constraint is a sum rather
-     * than a count — [exileMinCount] / [exileMaxCount] bound the selection at 1 and the whole
-     * graveyard, which is all a counted picker can say about it. The client gates its confirm
-     * button on the running total reaching this number and shows that total as the player selects.
-     * The server re-validates the submitted selection against it regardless
-     * ([com.wingedsheep.engine.handlers.costs.CollectEvidenceResolver.isLegalSelection]).
+     * Its own field because [exileMinCount] / [exileMaxCount] can only bound the selection at 1 and
+     * the whole graveyard, which is all a counted picker can say about such a cost. The client sums
+     * [exileCardWeights] over its selection, shows that running total and gates Confirm on it
+     * reaching [exileMinTotalWeight]; the weights are shipped rather than recomputed because a pip
+     * total is a server-side reading of the printed cost, and shipping them for mana value too
+     * keeps one code path instead of a client-computed special case. The server re-validates the
+     * submitted selection regardless
+     * ([com.wingedsheep.engine.handlers.costs.GraveyardTotalExileResolver.isLegalSelection]).
+     *
+     * Non-zero / non-empty only for `costType == "CollectEvidence"` or `"ExileForTotal"`.
      */
-    val exileMinTotalManaValue: Int = 0,
+    val exileMinTotalWeight: Int = 0,
+    /** Per-card weights for [exileMinTotalWeight], keyed by the ids in [validExileTargets]. */
+    val exileCardWeights: Map<EntityId, Int> = emptyMap(),
+    /**
+     * What one unit of [exileMinTotalWeight] is called, for the client's running tally
+     * ("3 / 6 mana value", "5 / 15 black mana symbols"). Straight from
+     * [com.wingedsheep.sdk.scripting.costs.CardMeasure.unitLabel], so the measure names its own
+     * unit and the client never has to know which cost it is looking at.
+     */
+    val exileWeightUnit: String = "",
+    /**
+     * Each offered card's card types (CR 205.2a), for a cost measured by a **union** rather than a
+     * sum — `CardMeasure.DistinctCardTypes`, Nethergoyf's "four or more card types among them".
+     * When non-empty the client's running total is the number of distinct entries across the
+     * selected cards' lists, not the sum of [exileCardWeights] (an artifact creature plus a creature
+     * shows two types, not three); [exileCardWeights] then only carries each card's own type count.
+     */
+    val exileCardTypes: Map<EntityId, List<String>> = emptyMap(),
+    /**
+     * What each of the spell's *legal targets* would add to [exileMinTotalWeight] if chosen —
+     * non-empty only for a cost whose threshold is priced off the targets rather than printed:
+     * Urgent Necropsy's "collect evidence X, where X is the total mana value of the permanents this
+     * spell targets".
+     *
+     * Its presence is the whole contract, and it says two things at once. **The threshold is not
+     * final**: [exileMinTotalWeight] is the part that is already known (0 for Urgent Necropsy,
+     * whose four targets are each "up to one"), and the client adds these per-target weights for
+     * whatever the caster actually chooses. And **the picker runs after targeting** — a cost
+     * determined at CR 601.2f cannot be paid before the targets are announced at 601.2c, so the
+     * client moves its cost-payment step behind the targeting step for exactly these costs, the
+     * way `manaCostPerExtraTarget` already defers mana-source selection.
+     *
+     * A map rather than a boolean because the client must be able to *price* a selection, not just
+     * know that it is deferred, and shipping the weights keeps the one sum-gated picker: the same
+     * running total, drawn from the same server-side reading of the cards.
+     */
+    val exileWeightPerTarget: Map<EntityId, Int> = emptyMap(),
     val validBeholdTargets: List<EntityId> = emptyList(),
     val beholdCount: Int = 0,
+    /**
+     * Cards in the caster's hand that could pay a [com.wingedsheep.sdk.scripting.costs.CostAtom.RevealFromHand]
+     * additional cost, and how many of them to pick. Its own pool rather than
+     * [validBeholdTargets] because behold also offers battlefield permanents (CR 701.4a) and a
+     * reveal never does; the client submits the picks as `additionalCostPayment.revealedCards`.
+     */
+    val validRevealTargets: List<EntityId> = emptyList(),
+    val revealCount: Int = 0,
     val counterRemovalCreatures: List<CounterRemovalCreatureData> = emptyList(),
     val validBlightTargets: List<EntityId> = emptyList(),
     val blightAmount: Int = 0,

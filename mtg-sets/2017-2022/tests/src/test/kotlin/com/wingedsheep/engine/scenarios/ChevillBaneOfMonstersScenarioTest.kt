@@ -7,7 +7,6 @@ import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.CounterType
-import com.wingedsheep.sdk.core.Counters
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.TypeLine
@@ -18,7 +17,7 @@ import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.serialization.CardLoader
+import com.wingedsheep.sdk.tooling.CardLoader
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
@@ -26,6 +25,7 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Focused conformance coverage for Chevill, Bane of Monsters (IKO #181).
@@ -96,7 +96,7 @@ class ChevillBaneOfMonstersScenarioTest : FunSpec({
     fun destroyWithDoomBlade(driver: GameTestDriver, target: EntityId) {
         val doomBlade = driver.putCardInHand(driver.player1, "Doom Blade")
         driver.giveMana(driver.player1, com.wingedsheep.sdk.core.Color.BLACK, 2)
-        driver.castSpell(driver.player1, doomBlade, targets = listOf(target)).isSuccess shouldBe true
+        driver.castSpell(driver.player1, doomBlade, targets = listOf(target)).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -210,7 +210,7 @@ class ChevillBaneOfMonstersScenarioTest : FunSpec({
         val death = driver.events
             .filterIsInstance<ZoneChangeEvent>()
             .last { it.entityId == target && it.fromZone == Zone.BATTLEFIELD }
-        death.lastKnown.shouldNotBeNull().counters[Counters.BOUNTY] shouldBe 1
+        death.lastKnown.shouldNotBeNull().counters[CounterType.BOUNTY] shouldBe 1
         driver.state.getZone(com.wingedsheep.engine.state.ZoneKey(driver.player2, Zone.BATTLEFIELD))
             .contains(target) shouldBe false
 
@@ -232,7 +232,7 @@ class ChevillBaneOfMonstersScenarioTest : FunSpec({
 
         val wipeInHand = driver.putCardInHand(driver.player1, wipe.name)
         driver.giveMana(driver.player1, com.wingedsheep.sdk.core.Color.WHITE, 5)
-        driver.castSpell(driver.player1, wipeInHand).isSuccess shouldBe true
+        driver.castSpell(driver.player1, wipeInHand).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.stackSize shouldBe 2

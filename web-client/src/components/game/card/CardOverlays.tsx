@@ -59,7 +59,10 @@ export function KeywordIcons({
   protections,
   hexproofFromColors,
   hexproofFromMonocolored,
+  hexproofFromMulticolored,
   isSuspected,
+  isSolved,
+  isRenowned,
   topOffset,
   size,
 }: {
@@ -69,8 +72,14 @@ export function KeywordIcons({
   hexproofFromColors?: readonly Color[]
   /** Hexproof from monocolored (CR 105.2) — an uncolored hexproof-quality shield. */
   hexproofFromMonocolored?: boolean
+  /** Hexproof from multicolored (CR 105.2b) — an uncolored hexproof-quality shield. */
+  hexproofFromMulticolored?: boolean
   /** Whether the permanent currently has the suspected status (CR 701.60). */
   isSuspected?: boolean
+  /** Whether the permanent is a solved Case (CR 719.3b). */
+  isSolved?: boolean
+  /** Whether the creature has the renowned designation (CR 702.112b). */
+  isRenowned?: boolean
   /** Override the column's top offset (px) so it can clear the ring-bearer badge in the same corner. */
   topOffset?: number
   size: number
@@ -80,8 +89,11 @@ export function KeywordIcons({
   // already convey the protection set, and showing an uncolored shield alongside misleads the player.
   const hexproofFromList = hexproofFromColors ?? []
   const hasHexproofFromMonocolored = hexproofFromMonocolored === true
-  // Any "hexproof from [quality]" — per-color or monocolored — that conveys the protection set.
-  const hasScopedHexproof = hexproofFromList.length > 0 || hasHexproofFromMonocolored
+  const hasHexproofFromMulticolored = hexproofFromMulticolored === true
+  // Any "hexproof from [quality]" — per-color, monocolored, or multicolored — that conveys the
+  // protection set.
+  const hasScopedHexproof =
+    hexproofFromList.length > 0 || hasHexproofFromMonocolored || hasHexproofFromMulticolored
   const hasFullHexproof = keywords.includes('HEXPROOF' as Keyword)
   const hasDoubleStrike = keywords.includes('DOUBLE_STRIKE' as Keyword)
   const filteredKeywords = keywords.filter(k =>
@@ -95,14 +107,26 @@ export function KeywordIcons({
   const hasHexproofFrom = hasScopedHexproof
   const hasKeywords = filteredKeywords.length > 0 || displayableFlags.length > 0
   const hasSuspected = isSuspected === true
+  const hasSolved = isSolved === true
+  const hasRenowned = isRenowned === true
 
-  if (!hasKeywords && !hasProtections && !hasHexproofFrom && !hasSuspected) return null
+  if (!hasKeywords && !hasProtections && !hasHexproofFrom && !hasSuspected && !hasSolved && !hasRenowned) return null
 
   return (
     <div style={topOffset === undefined ? styles.keywordIconsContainer : { ...styles.keywordIconsContainer, top: topOffset }}>
       {hasSuspected && (
         <div key="suspected" style={styles.keywordIconWrapper} title="Suspected (has menace and can't block)">
           <KeywordGlyph name="SUSPECTED" size={size} />
+        </div>
+      )}
+      {hasSolved && (
+        <div key="solved" style={styles.keywordIconWrapper} title="Solved (its Solved — ability is active)">
+          <KeywordGlyph name="SOLVED" size={size} />
+        </div>
+      )}
+      {hasRenowned && (
+        <div key="renowned" style={styles.keywordIconWrapper} title="Renowned (its renown has resolved and can't trigger again)">
+          <KeywordGlyph name="RENOWNED" size={size} />
         </div>
       )}
       {filteredKeywords.map((keyword) => (
@@ -176,6 +200,28 @@ export function KeywordIcons({
           />
         </div>
       )}
+      {hasHexproofFromMulticolored && (
+        <div
+          key="hexproof-multicolored"
+          style={{
+            ...styles.keywordIconWrapper,
+            // Same neutral quality ring as the monocolored chip; the tooltip tells them apart.
+            border: `1px solid ${HEXPROOF_QUALITY_TINT}`,
+            boxShadow: `0 0 4px ${HEXPROOF_QUALITY_TINT}`,
+          }}
+          title="Hexproof from multicolored"
+        >
+          <i
+            className="ms ms-ability-hexproof"
+            style={{
+              fontSize: size,
+              color: HEXPROOF_QUALITY_TINT,
+              display: 'block',
+              lineHeight: 1,
+            }}
+          />
+        </div>
+      )}
     </div>
   )
 }
@@ -219,6 +265,7 @@ function getBadgeStyle(icon?: string): React.CSSProperties {
         border: '1px solid rgba(255, 140, 140, 0.5)',
       }
     case 'can-attack':
+    case 'can-block':
       // Positive/green — a Defender that can attack right now (e.g. after an artifact entered).
       return {
         backgroundColor: 'rgba(40, 120, 60, 0.9)',
@@ -252,6 +299,14 @@ function getBadgeStyle(icon?: string): React.CSSProperties {
         backgroundColor: 'rgba(80, 110, 160, 0.9)',
         border: '1px solid rgba(160, 200, 255, 0.5)',
       }
+    // A creature type this permanent has noted (Long List of the Ents) or secretly chosen
+    // (A Killer Among Us). Muted parchment — it is a memo the permanent is carrying, not a
+    // change to the board, and the secret variant is only ever shown to the player who wrote it.
+    case 'creature-type':
+      return {
+        backgroundColor: 'rgba(90, 78, 55, 0.92)',
+        border: '1px dashed rgba(225, 205, 155, 0.6)',
+      }
     case 'color-change':
       // Dark badge with a five-color rainbow border — text stays legible while the
       // rainbow ring instantly tells the player "colors changed / all colors".
@@ -269,6 +324,13 @@ function getBadgeStyle(icon?: string): React.CSSProperties {
         backgroundColor: 'rgba(150, 50, 200, 0.9)',
         border: '1px solid rgba(220, 160, 255, 0.6)',
       }
+    // A pump or grant that wears off (Giant Growth, "gains haste until end of turn"): the card's
+    // numbers already show the change, so the badge is about the source and the end — amber, dashed.
+    case 'temporary-effect':
+      return {
+        backgroundColor: 'rgba(120, 85, 20, 0.92)',
+        border: '1px dashed rgba(250, 205, 110, 0.7)',
+      }
     default:
       return {}
   }
@@ -285,6 +347,7 @@ function getTooltipBorderColor(icon?: string): string {
     case 'cant-attack':
       return 'rgba(180, 60, 60, 0.5)'
     case 'can-attack':
+    case 'can-block':
       return 'rgba(120, 220, 140, 0.5)'
     case 'must-attack':
       return 'rgba(200, 120, 20, 0.5)'
@@ -300,12 +363,16 @@ function getTooltipBorderColor(icon?: string): string {
       return 'rgba(255, 160, 100, 0.5)'
     case 'lost-abilities':
       return 'rgba(160, 160, 200, 0.5)'
+    case 'creature-type':
+      return 'rgba(225, 205, 155, 0.5)'
     case 'type-change':
       return 'rgba(160, 200, 255, 0.5)'
     case 'color-change':
       return 'rgba(255, 255, 255, 0.7)'
     case 'granted-ability':
       return 'rgba(220, 160, 255, 0.6)'
+    case 'temporary-effect':
+      return 'rgba(250, 205, 110, 0.6)'
     default:
       return 'rgba(150, 50, 200, 0.5)'
   }
@@ -334,38 +401,40 @@ export function ActiveEffectBadges({ effects, sizing }: {
   effects: readonly ClientCardEffect[]
   sizing?: ActiveEffectBadgeSizing
 }) {
-  const [hoveredEffect, setHoveredEffect] = React.useState<string | null>(null)
+  // Tracked by position: badges from different families can share an effectId, and each must
+  // show its own tooltip.
+  const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null)
   const [tooltipPos, setTooltipPos] = React.useState<{ x: number; y: number } | null>(null)
 
   if (!effects || effects.length === 0) return null
 
-  const handleMouseEnter = (effectId: string, e: React.MouseEvent) => {
+  const handleMouseEnter = (index: number, e: React.MouseEvent) => {
     const rect = e.currentTarget.getBoundingClientRect()
     setTooltipPos({ x: rect.left + rect.width / 2, y: rect.top })
-    setHoveredEffect(effectId)
+    setHoveredIndex(index)
   }
 
   const handleMouseLeave = () => {
-    setHoveredEffect(null)
+    setHoveredIndex(null)
     setTooltipPos(null)
   }
 
-  const hoveredEffectData = effects.find(e => e.effectId === hoveredEffect)
+  const hoveredEffectData = hoveredIndex === null ? undefined : effects[hoveredIndex]
 
   return (
     <>
       <div style={sizing
         ? { ...styles.activeEffectsContainer, bottom: sizing.bottom, gap: sizing.gap }
         : styles.activeEffectsContainer}>
-        {effects.map((effect) => (
+        {effects.map((effect, index) => (
           <div
-            key={effect.effectId}
+            key={`${effect.effectId}-${index}`}
             style={{
               ...styles.activeEffectBadge,
               ...getBadgeStyle(effect.icon),
               ...(sizing ? { padding: sizing.padding, borderRadius: sizing.borderRadius } : {}),
             }}
-            onMouseEnter={(e) => handleMouseEnter(effect.effectId, e)}
+            onMouseEnter={(e) => handleMouseEnter(index, e)}
             onMouseLeave={handleMouseLeave}
           >
             <span style={sizing
@@ -378,7 +447,7 @@ export function ActiveEffectBadges({ effects, sizing }: {
           but it renders from inside a card that may sit under a transform (tapped-card
           rotation, the multiplayer board strip's translateX) — a transformed ancestor
           would re-anchor `fixed` to itself and misplace the tooltip. */}
-      {hoveredEffect && tooltipPos && hoveredEffectData?.description && createPortal(
+      {tooltipPos && hoveredEffectData?.description && createPortal(
         <div style={{
           ...styles.cardEffectTooltip,
           left: tooltipPos.x,

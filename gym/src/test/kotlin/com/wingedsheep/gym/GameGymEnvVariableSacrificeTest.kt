@@ -79,7 +79,8 @@ class GameGymEnvVariableSacrificeTest : FunSpec({
         script = CardScript(
             activatedAbilities = listOf(
                 ActivatedAbility(
-                    id = AbilityId.generate(),
+                    // Built outside card { }, so there is no AbilityIdScope to mint from: name it.
+                    id = AbilityId("Variable Spell Gym Mana Creature:1"),
                     cost = Costs.Tap,
                     effect = Effects.AddMana(Color.GREEN),
                     timing = TimingRule.ManaAbility,

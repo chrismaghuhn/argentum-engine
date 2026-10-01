@@ -1,27 +1,27 @@
 package com.wingedsheep.gameserver.session
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.FACE_DOWN_DISPLAY_NAME
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.gameserver.protocol.ServerMessage
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 
 class DecisionEnricher(private val cardRegistry: CardRegistry) {
-
-    private companion object {
-        /** Generic label for a face-down (morph / manifest) creature; mirrors the client state transformer. */
-        const val FACE_DOWN_CREATURE_NAME = "Face-down creature"
-    }
+    private val visibility = Visibility(cardRegistry, conditionEvaluator = PredicateEvaluator(cardRegistry = null).conditions)
 
     /**
-     * Whether [entityId]'s real name must be hidden from [viewerId]. A face-down permanent's identity
-     * is known only to the player who controls it (they may look at their own face-down creatures);
-     * everyone else sees the generic label. Mirrors the battlefield masking in ClientStateTransformer
-     * (`isFaceDown && controllerId != viewingPlayerId`). It intentionally does not honour
-     * Lens-of-Clarity-style reveals — omitting them only ever over-masks, so it can't leak.
+     * Whether [entityId]'s real name must be hidden from [viewerId]. The engine visibility authority
+     * combines controller access with explicit reveals and effect-granted access; this presenter only
+     * chooses the generic label once that semantic answer is known. A spectator controls no seat,
+     * so a face-down identity is always private to them.
      */
     private fun isHiddenFrom(
         state: GameState,
@@ -29,7 +29,8 @@ class DecisionEnricher(private val cardRegistry: CardRegistry) {
         viewerId: EntityId?,
         isSpectator: Boolean = false,
     ): Boolean = state.getEntity(entityId)?.has<FaceDownComponent>() == true &&
-        (isSpectator || state.projectedState.getController(entityId) != viewerId)
+        (isSpectator || viewerId == null ||
+            !visibility.isCardIdentityVisibleTo(state, Zone.BATTLEFIELD, entityId, viewerId))
 
     /**
      * The source name to display for [decision] to [viewerId]. The combat board copies the (single)
@@ -73,7 +74,7 @@ class DecisionEnricher(private val cardRegistry: CardRegistry) {
         val sourceId = decision.context.sourceId
         if (sourceId != null && isIdentityHiddenFrom(state, sourceId, viewerId, isSpectator)) {
             return if (decision is CombatResolutionDecision && sourceName != "Combat damage") {
-                FACE_DOWN_CREATURE_NAME
+                FACE_DOWN_DISPLAY_NAME
             } else {
                 null
             }
@@ -81,15 +82,34 @@ class DecisionEnricher(private val cardRegistry: CardRegistry) {
         if (decision is CombatResolutionDecision) {
             val single = decision.attackers.singleOrNull() ?: return sourceName
             if (single.name == sourceName && isHiddenFrom(state, single.id, viewerId, isSpectator)) {
-                return FACE_DOWN_CREATURE_NAME
+                return FACE_DOWN_DISPLAY_NAME
             }
         }
         return sourceName
     }
 
     /**
+     * The source id the spectator decision banner carries, from which the client draws the source's
+     * art out of its own masked state. A spectator gets no per-seat card names, so a source sitting
+     * where the spectator can't look (a hand, a library, a sideboard) is not referenced at all: the
+     * client couldn't draw it anyway, and the raw id would be a handle onto a hidden card. A
+     * face-down permanent or spell keeps its id, since that handle is already on the public board.
+     */
+    fun spectatorSourceId(decision: PendingDecision, state: GameState): String? {
+        val sourceId = decision.context.sourceId ?: return null
+        val zoneKey = zoneKeyOf(state, sourceId) ?: return sourceId.value
+        val viewer = nominalSpectatorViewer(state) ?: return null
+        val referenceable = visibility.isZoneVisibleTo(state, zoneKey, viewer, isSpectator = true) ||
+            visibility.isCardIdentityVisibleTo(state, zoneKey, sourceId, viewer, isSpectator = true)
+        return if (referenceable) sourceId.value else null
+    }
+
+    /**
      * Source identities are public only when the source object is public to the
-     * viewer. Hidden-zone cards and face-down public-zone cards are not.
+     * viewer. Hidden-zone cards and face-down public-zone cards are not. The engine
+     * [Visibility] authority answers for the source's actual zone; a spectator holds no seat,
+     * so it is asked as a spectator, where the nominal seat only names the zone and never
+     * grants access.
      */
     private fun isIdentityHiddenFrom(
         state: GameState,
@@ -97,24 +117,35 @@ class DecisionEnricher(private val cardRegistry: CardRegistry) {
         viewerId: EntityId?,
         isSpectator: Boolean,
     ): Boolean {
-        val container = state.getEntity(entityId) ?: return false
-        if (entityId in state.stack) {
-            return container.has<FaceDownComponent>() &&
-                (isSpectator || state.projectedState.getController(entityId) != viewerId)
-        }
-        val zoneKey = state.zones.entries.firstOrNull { (_, ids) -> entityId in ids }?.key
-            ?: return false
-        val faceDown = container.has<FaceDownComponent>()
-        return when (zoneKey.zoneType) {
-            Zone.HAND,
-            Zone.LIBRARY,
-            Zone.SIDEBOARD -> isSpectator || zoneKey.ownerId != viewerId
-            Zone.BATTLEFIELD,
-            Zone.STACK,
-            Zone.EXILE -> faceDown && (isSpectator || state.projectedState.getController(entityId) != viewerId)
-            else -> false
-        }
+        val zoneKey = zoneKeyOf(state, entityId) ?: return false
+        val viewer = viewerId ?: nominalSpectatorViewer(state) ?: return true
+        return !visibility.isCardIdentityVisibleTo(
+            state,
+            zoneKey,
+            entityId,
+            viewer,
+            isSpectator = isSpectator || viewerId == null,
+        )
     }
+
+    /**
+     * Where [entityId] currently is, keyed the way [Visibility] expects: the stack (kept outside
+     * [GameState.zones]) by caster, everything else by its zone entry. Null when the entity is gone
+     * or sits in no zone at all; such a source names nothing hidden.
+     */
+    private fun zoneKeyOf(state: GameState, entityId: EntityId): ZoneKey? {
+        val container = state.getEntity(entityId) ?: return null
+        if (entityId in state.stack) {
+            val casterId = container.get<SpellOnStackComponent>()?.casterId
+                ?: state.projectedState.getController(entityId)
+                ?: return null
+            return ZoneKey(casterId, Zone.STACK)
+        }
+        return state.zones.entries.firstOrNull { (_, ids) -> entityId in ids }?.key
+    }
+
+    /** Any seated player: asked with `isSpectator = true`, the visibility authority grants it nothing. */
+    private fun nominalSpectatorViewer(state: GameState): EntityId? = state.turnOrder.firstOrNull()
 
     fun enrich(decision: PendingDecision, state: GameState, viewerId: EntityId): PendingDecision {
         return when (decision) {
@@ -151,15 +182,15 @@ class DecisionEnricher(private val cardRegistry: CardRegistry) {
                 // leak to the opponent through a shared node. Mask per viewer: the controller keeps
                 // its own creature's name, everyone else sees the generic label.
                 val maskedAttackers = decision.attackers.map {
-                    if (isHiddenFrom(state, it.id, viewerId)) it.copy(name = FACE_DOWN_CREATURE_NAME) else it
+                    if (isHiddenFrom(state, it.id, viewerId)) it.copy(name = FACE_DOWN_DISPLAY_NAME) else it
                 }
                 val maskedBlockers = decision.blockers.map {
-                    if (isHiddenFrom(state, it.id, viewerId)) it.copy(name = FACE_DOWN_CREATURE_NAME) else it
+                    if (isHiddenFrom(state, it.id, viewerId)) it.copy(name = FACE_DOWN_DISPLAY_NAME) else it
                 }
                 // The single-attacker prompt embeds that attacker's name; mask it in lockstep.
                 val single = decision.attackers.singleOrNull()
                 val maskedPrompt = if (single != null && isHiddenFrom(state, single.id, viewerId)) {
-                    decision.prompt.replaceFirst(single.name, FACE_DOWN_CREATURE_NAME)
+                    decision.prompt.replaceFirst(single.name, FACE_DOWN_DISPLAY_NAME)
                 } else {
                     decision.prompt
                 }
@@ -204,7 +235,8 @@ class DecisionEnricher(private val cardRegistry: CardRegistry) {
             playerId = decision.playerId.value,
             decisionType = decision::class.simpleName ?: "Unknown",
             displayText = displayText,
-            sourceName = maskedSourceName(decision, state, viewerId)
+            sourceName = maskedSourceName(decision, state, viewerId),
+            sourceId = decision.context.sourceId?.value
         )
     }
 }

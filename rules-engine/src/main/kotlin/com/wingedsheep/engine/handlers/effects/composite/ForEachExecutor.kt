@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.effects.composite
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.ForEachContinuation
 import com.wingedsheep.engine.core.ForEachItem
@@ -22,6 +23,7 @@ import com.wingedsheep.sdk.scripting.effects.ForEachEffect
 import com.wingedsheep.sdk.scripting.effects.IterationSpace
 import com.wingedsheep.sdk.scripting.references.Player
 import kotlin.reflect.KClass
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * The single executor behind [ForEachEffect]: enumerate the iteration space once
@@ -41,12 +43,16 @@ import kotlin.reflect.KClass
  *   storedCollections wiped.
  * - Players: `controllerId` rebound to the current player
  *   relative to them, storedCollections wiped.
- * - Collection / Group: `pipeline.iterationTarget` set so `EffectTarget.Self` resolves
- *   to the current entity; outer collections preserved.
+ * - Collection / Group: the current entity bound, with its identity, as the context's
+ *   iteration object — what `EffectTarget.IterationEntity` names (`Self` stays the source);
+ *   outer collections preserved.
  * - ColorsOf: `chosenColor` set — the same channel `ChooseColorThen` feeds.
  */
 class ForEachExecutor(
-    private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult
+    private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult,
+    private val predicateEvaluator: PredicateEvaluator,
+    /** For the group look-back freeze in [execute]; the continuation resumer needs none. */
+    private val cardRegistry: com.wingedsheep.engine.registry.CardRegistry? = null
 ) : EffectExecutor<ForEachEffect> {
 
     override val effectType: KClass<ForEachEffect> = ForEachEffect::class
@@ -73,7 +79,18 @@ class ForEachExecutor(
             }
         }
 
-        return processItems(currentState, effect, items, context)
+        // A group loop is one simultaneous event: freeze each member's conditional self-grants
+        // before the first iteration moves anything, for its leaves-the-battlefield look-back
+        // (CR 603.10a). Carried on the outer context, so it survives a mid-loop pause.
+        val loopContext = if (space is IterationSpace.Group && cardRegistry != null) {
+            val frozen = com.wingedsheep.engine.event.ConditionalSelfGrants.frozen(
+                state, items.mapNotNull { (it as? ForEachItem.OfEntity)?.entityId },
+                cardRegistry, predicateEvaluator.conditions
+            )
+            if (frozen.isEmpty()) context else context.copy(lookBackSelfGrants = context.lookBackSelfGrants + frozen)
+        } else context
+
+        return processItems(currentState, effect, items, loopContext)
     }
 
     /**
@@ -86,21 +103,29 @@ class ForEachExecutor(
         items: List<ForEachItem>,
         outerContext: EffectContext
     ): EffectResult {
+        if (items.isEmpty()) {
+            val collected = effect.collectCollections.values.associateWith { aggregate ->
+                outerContext.pipeline.storedCollections[aggregate].orEmpty()
+            }
+            return EffectResult(state = state, updatedCollections = collected)
+        }
+
         var currentState = state
+        var currentOuterContext = outerContext
         val allEvents = mutableListOf<GameEvent>()
 
         for ((index, item) in items.withIndex()) {
             val remainingItems = items.drop(index + 1)
 
-            val iterationContext = bindIterationContext(currentState, outerContext, item)
+            val iterationContext = bindIterationContext(currentState, currentOuterContext, item)
 
-            val stateForExecution = if (remainingItems.isNotEmpty()) {
+            val needsContinuation = remainingItems.isNotEmpty() || effect.collectCollections.isNotEmpty()
+            val stateForExecution = if (needsContinuation) {
                 currentState.pushContinuation(
                     ForEachContinuation(
-                        decisionId = "pending",
                         remainingItems = remainingItems,
                         effect = effect,
-                        effectContext = outerContext
+                        effectContext = currentOuterContext
                     )
                 )
             } else {
@@ -109,28 +134,56 @@ class ForEachExecutor(
 
             val result = effectExecutor(stateForExecution, effect.body, iterationContext)
 
-            if (result.isPaused) {
+            if (result.outcome is Outcome.Paused) {
                 // The body needs a decision; our ForEachContinuation is beneath its
                 // frames and resumes the remaining items once the body completes.
-                return EffectResult.paused(
+                return EffectResult.propagatePause(
                     result.state,
-                    result.pendingDecision!!,
                     allEvents + result.events
                 )
             }
 
             // Pop the pre-pushed continuation (it wasn't needed). A failed body
             // (per CR 608.2 partial resolution) still continues with the next item.
-            currentState = if (remainingItems.isNotEmpty()) {
+            currentState = if (needsContinuation) {
                 val (_, stateWithoutCont) = result.state.popContinuation()
                 stateWithoutCont
             } else {
                 result.state
             }
             allEvents.addAll(result.events)
+
+            if (effect.collectCollections.isNotEmpty()) {
+                currentOuterContext = appendCollectedCollections(
+                    currentOuterContext,
+                    effect,
+                    result.updatedCollections
+                )
+            }
         }
 
-        return EffectResult.success(currentState, allEvents)
+        val collected = effect.collectCollections.values.associateWith { aggregate ->
+            currentOuterContext.pipeline.storedCollections[aggregate].orEmpty()
+        }
+        return EffectResult(currentState, allEvents, updatedCollections = collected)
+    }
+
+    private fun appendCollectedCollections(
+        context: EffectContext,
+        effect: ForEachEffect,
+        outputs: Map<String, List<EntityId>>
+    ): EffectContext {
+        if (outputs.isEmpty()) return context
+        var collections = context.pipeline.storedCollections
+        for ((localName, aggregateName) in effect.collectCollections) {
+            val iterationOutput = outputs[localName].orEmpty()
+            if (iterationOutput.isNotEmpty()) {
+                collections = collections + (
+                    aggregateName to collections[aggregateName].orEmpty() + iterationOutput
+                )
+            }
+        }
+        return context.copy(pipeline = context.pipeline.copy(storedCollections = collections))
     }
 
     /** Snapshot the iteration space into concrete items. */
@@ -153,7 +206,7 @@ class ForEachExecutor(
             resolveGroup(state, space, context).map { ForEachItem.OfEntity(it) }
 
         is IterationSpace.ColorsOf -> {
-            val sourceId = TargetResolutionUtils.resolveEntityReference(space.source, context, state)
+            val sourceId = TargetResolutionUtils.resolveEntity(space.source, context, state)
             if (sourceId == null) {
                 emptyList()
             } else {
@@ -191,7 +244,9 @@ class ForEachExecutor(
         )
 
         is ForEachItem.OfEntity -> outerContext.copy(
-            pipeline = outerContext.pipeline.copy(iterationTarget = item.entityId)
+            objectReferences = outerContext.objectReferences.copy(iteration =
+                com.wingedsheep.engine.handlers.CapturedObjectBinding(item.entityId, state.objectRef(item.entityId))),
+            iterationReferenceLost = false,
         )
 
         is ForEachItem.OfColor -> outerContext.copy(chosenColor = item.color)
@@ -211,6 +266,18 @@ class ForEachExecutor(
             Player.TargetOpponent, Player.TargetPlayer -> listOfNotNull(
                 TargetResolutionUtils.resolvePlayerRef(player, context, state)
             )
+            // "those players" — iterate every player among the chosen targets. Needs its own arm:
+            // the `else` below routes through the single-player resolver, which deliberately
+            // returns null for plural references, so a ForEach over them would silently do nothing.
+            // "those players" — the players a `StorePlayer` step recorded earlier in this
+            // resolution (tempting offer's accepters, Plaguecrafter's "each player who can't"),
+            // in APNAP order and skipping anyone who has left the game. A missing collection is
+            // nobody, not everybody.
+            is Player.InCollection -> TargetResolutionUtils.playersInCollection(state, context, player.collection)
+            Player.EachTargetedPlayer -> context.targets
+                .filterIsInstance<com.wingedsheep.engine.state.components.stack.ChosenTarget.Player>()
+                .map { it.playerId }
+                .distinct()
             // Single-player references (e.g. ControllerOf a targeted permanent — Unwanted
             // Remake's "its controller manifests dread") resolve to exactly that player. An
             // unresolved reference means there is nobody to iterate, not "every player": that
@@ -250,8 +317,9 @@ class ForEachExecutor(
                 else -> null
             }
         } else null
-        val matched = BattlefieldFilterUtils.findMatchingOnBattlefield(state, filter.baseFilter, context, excludeSelfId)
+        val matched = BattlefieldFilterUtils.findMatchingOnBattlefield(state, filter.baseFilter, context, excludeSelfId, predicateEvaluator = predicateEvaluator)
             .filter { excludeTargetId == null || it != excludeTargetId }
+            .filter { !filter.excludeTriggeringEntity || it != context.triggeringEntityId }
 
         // Additionally filter by chosen subtype if specified
         return if (chosenSubtype != null) {

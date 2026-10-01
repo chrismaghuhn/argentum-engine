@@ -13,6 +13,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.ModifyDrawAmount
 import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Runs the draw-replacement checks that fire before each individual card
@@ -20,7 +21,7 @@ import com.wingedsheep.sdk.scripting.effects.Effect
  *
  * Delegates entirely to [ReplacementEffectProcessor], which handles both
  * mandatory replacements (PreventDraw, ModifyDrawAmount, non-optional
- * ReplaceDrawWithEffect) and optional replacements (Parallel Thoughts-style
+ * ReplaceDrawWith) and optional replacements (Parallel Thoughts-style
  * yes/no prompts).
  *
  * The dispatcher is called by [DrawLoop] during each iteration of a multi-draw
@@ -98,7 +99,7 @@ class DrawReplacementDispatcher(
                 // Player must choose between competing replacements (CR 616.1)
                 // or answer a yes/no prompt for an optional replacement.
                 return DispatchResult.Paused(
-                    EffectResult.paused(processorResult.state, processorResult.decision)
+                    EffectResult.propagatePause(processorResult.state, processorResult.events)
                 )
             }
             is ProcessorResult.Resolved -> {
@@ -178,7 +179,7 @@ class DrawReplacementDispatcher(
         when (val processorResult = processor.process(state, event, context)) {
             is ProcessorResult.Paused -> {
                 return DispatchResult.Paused(
-                    EffectResult.paused(processorResult.state, processorResult.decision)
+                    EffectResult.propagatePause(processorResult.state, processorResult.events)
                 )
             }
             is ProcessorResult.Resolved -> {
@@ -272,11 +273,11 @@ class DrawReplacementDispatcher(
         // (containing all effects applied in this chain), so nested effect execution
         // won't re-trigger them. Clear the chain after execution.
         val pipelineResult = executor(state, replacementEffect, context)
-        if (pipelineResult.isPaused) {
+        if (pipelineResult.outcome is Outcome.Paused) {
             // Clear chain on pause so subsequent draw iterations are unaffected.
             val clearedState = pipelineResult.state.copy(activeReplacementChain = null)
             return DispatchResult.Paused(
-                EffectResult.paused(clearedState, pipelineResult.pendingDecision!!, pipelineResult.events)
+                EffectResult.propagatePause(clearedState, pipelineResult.events)
             )
         }
 

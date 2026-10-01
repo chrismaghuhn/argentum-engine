@@ -228,8 +228,8 @@ class FreeForAllHandler(
                 gameSession = gameSession,
                 aiPlayerId = playerId,
                 deckList = lobby.getSubmittedDeck(playerId),
-                onActionReady = { aiPlayerId, action ->
-                    gamePlayHandler.handleAiAction(gameSession, aiPlayerId, action)
+                onActionReady = { aiPlayerId, action, interactionEpoch ->
+                    gamePlayHandler.handleAiAction(gameSession, aiPlayerId, action, interactionEpoch)
                 },
                 onMulliganKeep = { aiPlayerId ->
                     gamePlayHandler.handleAiMulliganKeep(gameSession, aiPlayerId)
@@ -456,11 +456,14 @@ class FreeForAllHandler(
         val seatedIds = gameSession?.getPlayers()?.map { it.playerId }
             ?: lobby.players.keys.toList()
         val eliminated = gameSession?.getEliminationOrder() ?: emptyList()
+        // A team wins together (CR 810.8a): every winning seat is placed first, in seat order,
+        // never the representative alone with their partner filed among the survivors.
+        val winners = gameSession?.getWinnerIds()?.takeIf { it.isNotEmpty() } ?: listOfNotNull(winnerId)
 
         val placementOrder = buildList {
-            if (winnerId != null) add(winnerId)
-            addAll(seatedIds.filter { it != winnerId && it !in eliminated })
-            addAll(eliminated.reversed().filter { it != winnerId })
+            addAll(winners)
+            addAll(seatedIds.filter { it !in winners && it !in eliminated })
+            addAll(eliminated.reversed().filter { it !in winners })
         }
 
         return placementOrder.mapIndexed { index, playerId ->

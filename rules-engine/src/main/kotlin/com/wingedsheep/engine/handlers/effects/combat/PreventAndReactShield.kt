@@ -1,0 +1,76 @@
+package com.wingedsheep.engine.handlers.effects.combat
+
+import com.wingedsheep.engine.event.DelayedTriggeredAbility
+import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.mechanics.layers.Layer
+import com.wingedsheep.engine.mechanics.layers.SerializableModification
+import com.wingedsheep.engine.mechanics.layers.addFloatingEffect
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.Duration
+import com.wingedsheep.sdk.scripting.EventPattern
+import com.wingedsheep.sdk.scripting.TriggerSpec
+import com.wingedsheep.sdk.scripting.effects.DelayedTriggerExpiry
+import com.wingedsheep.sdk.scripting.effects.Effect
+
+/** Installs a one-shot source shield and its linked "when damage is prevented this way" trigger. */
+internal fun GameState.installPreventAndReactShield(
+    damageSourceId: EntityId,
+    protectedEntityId: EntityId?,
+    controllerId: EntityId,
+    effectSourceId: EntityId?,
+    effectSourceName: String?,
+    onPrevented: Effect?,
+    preventDamage: Boolean,
+    objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment,
+    combatOnly: Boolean = false,
+    playersOnly: Boolean = false,
+    duration: Duration = Duration.EndOfTurn
+): GameState {
+    val (stateWithSource, reactionSourceId) = if (effectSourceId != null) {
+        this to effectSourceId
+    } else {
+        val (id, newState) = newEntity()
+        newState to id
+    }
+    val sourceName = effectSourceName
+        ?: stateWithSource.getEntity(reactionSourceId)?.get<CardComponent>()?.name
+        ?: "Source"
+    val (delayedTriggerId, stateWithRoutingId) = stateWithSource.newRoutingId()
+
+    var result = stateWithRoutingId
+    onPrevented?.let { reaction ->
+        result = result.addDelayedTrigger(
+            DelayedTriggeredAbility(
+                id = delayedTriggerId,
+                effect = reaction,
+                objectReferences = objectReferences,
+                sourceId = reactionSourceId,
+                sourceName = sourceName,
+                controllerId = controllerId,
+                trigger = TriggerSpec(event = EventPattern.DamagePreventedEvent),
+                watchedEntityId = damageSourceId,
+                // The detector matches the prevented event's source by battlefield incarnation and
+                // fails closed without a snapshot, so capture the source as it is now.
+                watchedEntitySnapshot = com.wingedsheep.engine.handlers.effects.DamageUtils
+                    .captureDamageEntitySnapshot(this, damageSourceId),
+                expiry = DelayedTriggerExpiry.EndOfTurn
+            )
+        )
+    }
+
+    return result.addFloatingEffect(
+        layer = Layer.ABILITY,
+        modification = SerializableModification.PreventNextDamageFromSourceShield(
+            damageSourceId = damageSourceId,
+            linkId = delayedTriggerId,
+            preventDamage = preventDamage,
+            combatOnly = combatOnly,
+            playersOnly = playersOnly
+        ),
+        affectedEntities = protectedEntityId?.let(::setOf) ?: emptySet(),
+        duration = duration,
+        context = EffectContext(sourceId = effectSourceId, controllerId = controllerId)
+    )
+}

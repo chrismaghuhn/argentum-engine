@@ -9,6 +9,8 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Disenchant (LEA #18) — "Destroy target artifact or enchantment."
@@ -32,7 +34,7 @@ class DisenchantScenarioTest : FunSpec({
         val spell = driver.putCardInHand(caster, "Disenchant")
         driver.giveMana(caster, Color.WHITE, 2)
         driver.castSpellWithTargets(caster, spell, listOf(ChosenTarget.Permanent(target)))
-            .isSuccess shouldBe true
+            .outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -68,7 +70,7 @@ class DisenchantScenarioTest : FunSpec({
 
         val result = driver.castSpellWithTargets(you, spell, listOf(ChosenTarget.Permanent(creature)))
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.findPermanent(opponent, "Grizzly Bears") shouldBe creature
     }
 })

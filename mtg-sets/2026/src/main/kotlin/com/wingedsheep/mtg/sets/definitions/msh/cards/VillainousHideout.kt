@@ -8,7 +8,6 @@ import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.TimingRule
 import com.wingedsheep.sdk.scripting.effects.ManaRestriction
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
 
 /**
  * Villainous Hideout
@@ -22,8 +21,10 @@ import com.wingedsheep.sdk.scripting.targets.TargetCreature
  * [ManaRestriction.SubtypeSpellsOrAbilitiesOnly] with `creatureOnly = false`, covering both the
  * spell and the ability clause. The connive names its own permanent as the counter recipient, so
  * it's the plain [Effects.Connive] over a cast-time `target(...)` (not `ConniveTargeting`, which
- * picks a *different* recipient reflexively at resolution). "Activate only as a sorcery" is
- * [TimingRule.SorcerySpeed].
+ * picks a *different* recipient reflexively at resolution). The target is permanent-scoped, not
+ * creature-scoped: CR 701.50a has connive instruct a *permanent*, and "Villain you control" is the
+ * bare tribal noun, so a noncreature Kindred — Villain is a legal target. "Activate only as a
+ * sorcery" is [TimingRule.SorcerySpeed].
  */
 val VillainousHideout = card("Villainous Hideout") {
     manaCost = ""
@@ -55,13 +56,10 @@ val VillainousHideout = card("Villainous Hideout") {
 
     activatedAbility {
         cost = Costs.Composite(Costs.Mana("{3}"), Costs.Tap)
-        val villain = target(
-            "target Villain you control",
-            TargetCreature(filter = TargetFilter.CreatureYouControl.withSubtype(Subtype.VILLAIN))
-        )
+        val villain = target(TargetFilter.PermanentYouControl.withSubtype(Subtype.VILLAIN))
         effect = Effects.Connive(target = villain)
         timing = TimingRule.SorcerySpeed
-        description = "Target Villain you control connives. Activate only as a sorcery."
+        description = "{3}, {T}: Target Villain you control connives. Activate only as a sorcery."
     }
 
     metadata {

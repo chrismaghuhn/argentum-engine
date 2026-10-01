@@ -41,7 +41,7 @@ internal fun gatedStaticAbilityStmt(cond: String, ability: Dsl): Stmt =
  * [abilities] and is a creature with base power/toughness [P/T]." Renders one threshold-gated
  * `staticAbility { }` row per granted ability — `GrantCardType("CREATURE", …)` for the animate, plus a
  * `GrantKeyword(...)` per listed keyword — each gated on
- * `Conditions.SourceCounterCountAtLeast(Counters.CHARGE, N)`. The base P/T (args[2]) is the card's
+ * `Conditions.SourceCounterCountAtLeast(CounterType.CHARGE, N)`. The base P/T (args[2]) is the card's
  * printed power/toughness, already emitted on the card, so it needs no separate row.
  *
  * Only *bare keyword* abilities render. A threshold that grants a triggered or activated ability (or any
@@ -56,7 +56,7 @@ internal fun EmitCtx.stationAnimateBlock(rule: JsonObject): List<Stmt>? {
         ?.takeIf { it.strField("_GameRange") == "ValueOrBigger" }
         ?.get("args").asInt() ?: return scaffoldStation()
     val abilityRules = (args.getOrNull(1) as? JsonArray)?.filterIsInstance<JsonObject>() ?: emptyList()
-    val cond = "Conditions.SourceCounterCountAtLeast(Counters.CHARGE, $n)"
+    val cond = "Conditions.SourceCounterCountAtLeast(CounterType.CHARGE, $n)"
     val stmts = mutableListOf<Stmt>()
     stmts.add(gatedStaticAbilityStmt(cond, call("GrantCardType", arg("\"CREATURE\""), arg("GroupFilter.source()"))))
     for (ar in abilityRules) {
@@ -232,14 +232,32 @@ internal fun EmitCtx.additionalSourceTriggersBlock(rule: JsonObject): List<Stmt>
 }
 
 /**
+ * One half of a printed "+a/+b for each …" pair, as the SDK spells the three numbers.
+ *
+ * Zero is `Fixed(0)` rather than `Multiply(count, 0)`: the printed half says nothing is added, not
+ * that a count is multiplied by nothing, and every hand-written card in the family (Nim Lasher,
+ * Deadeye Plunderers, Akiri) writes the constant. Emitting the product was a rendering bug rather
+ * than an approximation — it reads back as a different model for text that means the same thing,
+ * which is what Argentum Assay's differential caught on Guidelight Synergist.
+ */
+private fun scaledBonus(count: Dsl, multiplier: Int): Dsl = when (multiplier) {
+    0 -> call("DynamicAmount.Fixed", arg("0"))
+    1 -> count
+    else -> call("DynamicAmount.Multiply", arg(count), arg("$multiplier"))
+}
+
+/**
  * A self-buff `PermanentLayerEffect(ThisPermanent, [AdjustPTForEach])` -> one
- * `staticAbility { ability = GrantDynamicStatsEffect(filter = GroupFilter.source(), powerBonus = …,
+ * `staticAbility { ability = GrantDynamicStats(filter = GroupFilter.source(), powerBonus = …,
  * toughnessBonus = …) }`. `AdjustPTForEach`'s args are `[powerMult, toughnessMult, countNode]`:
  * "this creature gets +powerMult/+toughnessMult for each [countNode]". The per-permanent count is
- * rendered as a resolution-time `DynamicAmount.Count` over the You battlefield with the recovered
- * filter (matching the `Count(Player.You, Zone.BATTLEFIELD, …)` convention used by hand-authored
- * "for each [type] you control" cards, e.g. Desert's Due). A multiplier other than 1 wraps the count
- * in `DynamicAmount.Multiply`.
+ * rendered as `DynamicAmounts.battlefield(Player.You, …).count()` — the `AggregateBattlefield`
+ * spelling, which the hand-written corpus writes 603 times against the equivalent
+ * `Count(Player.You, Zone.BATTLEFIELD, …)`'s 49 and which Argentum Assay therefore treats as
+ * canonical for a battlefield tally. A multiplier other than 1 wraps the count in
+ * `DynamicAmount.Multiply`; **a multiplier of 0 is `DynamicAmount.Fixed(0)`, not a multiply by
+ * zero** — "+1/+0" has no multiplication in the half that is zero, and the product spelling is a
+ * model no hand-written card carries.
  *
  * Only the You-controlled-battlefield count shape renders; any other count scope, a non-AdjustPTForEach
  * layer effect, or a filter the count path can't express exactly returns null so the card scaffolds
@@ -265,12 +283,11 @@ private fun EmitCtx.selfDynamicStatsBlock(rule: JsonObject): List<Stmt>? {
         if (countNode.strField("_GameNumber") == "TheNumberOfCardsInPlayersHand") {
             if (!jsonContains(countNode, "_Player", "You")) return null
             val handCount: Dsl = call("DynamicAmounts.cardsInYourHand")
-            fun handBonus(mult: Int): Dsl =
-                if (mult == 1) handCount else call("DynamicAmount.Multiply", arg(handCount), arg("$mult"))
+            fun handBonus(mult: Int): Dsl = scaledBonus(handCount, mult)
             stmts.add(
                 staticAbilityStmt(
                     call(
-                        "GrantDynamicStatsEffect",
+                        "GrantDynamicStats",
                         arg("filter", call("GroupFilter.source")),
                         arg("powerBonus", handBonus(powerMult)),
                         arg("toughnessBonus", handBonus(toughnessMult)),
@@ -293,13 +310,12 @@ private fun EmitCtx.selfDynamicStatsBlock(rule: JsonObject): List<Stmt>? {
         val subtype = countNode.firstArgWordTagged("IsCreatureType")
         val filter = if (subtype != null) Lit("GameObjectFilter.Creature").dot("withSubtype", arg(subtypeArg(subtype)))
                      else landSearchFilterExpr(countNode)
-        val count: Dsl = call("DynamicAmount.Count", arg("Player.You"), arg("Zone.BATTLEFIELD"), arg(filter))
-        fun bonus(mult: Int): Dsl =
-            if (mult == 1) count else call("DynamicAmount.Multiply", arg(count), arg("$mult"))
+        val count: Dsl = call("DynamicAmounts.battlefield", arg("Player.You"), arg(filter)).dot("count")
+        fun bonus(mult: Int): Dsl = scaledBonus(count, mult)
         stmts.add(
             staticAbilityStmt(
                 call(
-                    "GrantDynamicStatsEffect",
+                    "GrantDynamicStats",
                     arg("filter", call("GroupFilter.source")),
                     arg("powerBonus", bonus(powerMult)),
                     arg("toughnessBonus", bonus(toughnessMult)),
@@ -312,7 +328,7 @@ private fun EmitCtx.selfDynamicStatsBlock(rule: JsonObject): List<Stmt>? {
 
 /**
  * An `Activated` / `ActivatedWithModifiers` rule granted to a group ("All Slivers have '{cost}: …'") ->
- * an `ActivatedAbility(id = AbilityId.generate(), cost = …, [timing = …], effect = …, [targetRequirement
+ * an `ActivatedAbility(id = AbilityId.next(), cost = …, [timing = …], effect = …, [targetRequirement
  * = …])` constructor expression for wrapping in `GrantActivatedAbility`. Reuses the same cost / target /
  * effect recovery as the card-body [activatedBlock], but in expression form: a chosen target becomes
  * `targetRequirement = <node>` and the effect references `EffectTarget.ContextTarget(0)` (the granted
@@ -334,7 +350,7 @@ internal fun EmitCtx.grantedActivatedAbilityExpr(rule: JsonObject): Dsl? {
     val timing = grantedActivationTiming(rule) ?: return null
 
     val args = mutableListOf(
-        arg("id", "AbilityId.generate()"),
+        arg("id", "AbilityId.next()"),
         arg("cost", cost),
     )
     args.add(arg("effect", effect))

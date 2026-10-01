@@ -29,8 +29,8 @@ import kotlin.reflect.KClass
  *    pips remain.
  */
 class AddDynamicManaExecutor(
-    private val amountEvaluator: DynamicAmountEvaluator = DynamicAmountEvaluator(),
-    private val decisionHandler: DecisionHandler = DecisionHandler()
+    private val decisionHandler: DecisionHandler = DecisionHandler(),
+    private val amountEvaluator: DynamicAmountEvaluator
 ) : EffectExecutor<AddDynamicManaEffect> {
 
     override val effectType: KClass<AddDynamicManaEffect> = AddDynamicManaEffect::class
@@ -87,21 +87,10 @@ class AddDynamicManaExecutor(
         val firstColor = colors[0]
         val secondColor = colors[1]
 
-        val decisionResult = decisionHandler.createNumberDecision(
-            state = state,
-            playerId = context.controllerId,
-            sourceId = context.sourceId,
-            sourceName = sourceName,
-            prompt = "Choose how much {${firstColor.symbol}} mana to add (rest will be {${secondColor.symbol}}). Total: $amount",
-            minValue = 0,
-            maxValue = amount,
-            phase = DecisionPhase.RESOLUTION
-        )
-
         val continuation = AddDynamicManaContinuation(
-            decisionId = decisionResult.pendingDecision!!.id,
             playerId = context.controllerId,
             sourceId = context.sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             totalAmount = amount,
             firstColor = firstColor,
@@ -110,11 +99,20 @@ class AddDynamicManaExecutor(
             sourceSubtypes = context.capturedProductionSourceSubtypes(),
         )
 
-        val stateWithContinuation = decisionResult.state.pushContinuation(continuation)
+        val decisionResult = decisionHandler.createNumberDecision(
+            state = state,
+            playerId = context.controllerId,
+            sourceId = context.sourceId,
+            sourceName = sourceName,
+            prompt = "Choose how much {${firstColor.symbol}} mana to add (rest will be {${secondColor.symbol}}). Total: $amount",
+            minValue = 0,
+            maxValue = amount,
+            phase = DecisionPhase.RESOLUTION,
+            answer = continuation
+        )
 
-        return EffectResult.paused(
-            stateWithContinuation,
-            decisionResult.pendingDecision,
+        return EffectResult.propagatePause(
+            decisionResult.state,
             decisionResult.events
         )
     }
@@ -137,17 +135,7 @@ class AddDynamicManaExecutor(
             sourceSubtypes: Set<Subtype>? = null,
             decisionHandler: DecisionHandler = DecisionHandler()
         ): EffectResult {
-            val decisionResult = decisionHandler.createColorDecision(
-                state = state,
-                playerId = playerId,
-                sourceId = sourceId,
-                sourceName = sourceName,
-                prompt = "Choose a color of mana to add ($remainingPips remaining)",
-                phase = DecisionPhase.RESOLUTION,
-                availableColors = allowedColors
-            )
             val continuation = AddManaPipsContinuation(
-                decisionId = decisionResult.pendingDecision!!.id,
                 playerId = playerId,
                 sourceId = sourceId,
                 sourceName = sourceName,
@@ -156,9 +144,20 @@ class AddDynamicManaExecutor(
                 restriction = restriction,
                 sourceSubtypes = sourceSubtypes,
             )
-            return EffectResult.paused(
-                decisionResult.state.pushContinuation(continuation),
-                decisionResult.pendingDecision,
+
+            val decisionResult = decisionHandler.createColorDecision(
+                state = state,
+                playerId = playerId,
+                sourceId = sourceId,
+                sourceName = sourceName,
+                prompt = "Choose a color of mana to add ($remainingPips remaining)",
+                phase = DecisionPhase.RESOLUTION,
+                availableColors = allowedColors,
+                answer = continuation
+            )
+
+            return EffectResult.propagatePause(
+                decisionResult.state,
                 decisionResult.events
             )
         }
@@ -184,6 +183,7 @@ class AddDynamicManaExecutor(
                                 subtypes = sourceSubtypes,
                                 amount = amount,
                                 knownToPlayers = setOf(playerId),
+                                cardTypes = ManaProvenanceTracker.sourceTag(state, sourceId, sourceSubtypes).cardTypes,
                             )
                         } else {
                             manaPool.add(color, amount)

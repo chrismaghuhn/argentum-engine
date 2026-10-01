@@ -11,6 +11,7 @@ import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Fire Diamond (MIR #302) — This artifact enters tapped. {T}: Add {R}.
@@ -43,7 +44,7 @@ class FireDiamondScenarioTest : FunSpec({
         val diamondInHand = driver.putCardInHand(player, "Fire Diamond")
         driver.giveMana(player, Color.RED, 2)
 
-        driver.castSpell(player, diamondInHand).isSuccess shouldBe true
+        driver.castSpell(player, diamondInHand).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val diamond = driver.findPermanent(player, "Fire Diamond")
@@ -53,7 +54,7 @@ class FireDiamondScenarioTest : FunSpec({
         driver.untapPermanent(diamond)
         driver.submit(
             ActivateAbility(playerId = player, sourceId = diamond, abilityId = abilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         driver.isTapped(diamond) shouldBe true
 
@@ -76,7 +77,7 @@ class FireDiamondScenarioTest : FunSpec({
             ActivateAbility(playerId = player, sourceId = diamond, abilityId = abilityId)
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
     }
 
     test("Fire Diamond cannot be cast without paying its generic mana cost") {
@@ -85,6 +86,6 @@ class FireDiamondScenarioTest : FunSpec({
         val diamondInHand = driver.putCardInHand(player, "Fire Diamond")
         driver.giveMana(player, Color.RED)
 
-        driver.castSpell(player, diamondInHand).isSuccess shouldBe false
+        driver.castSpell(player, diamondInHand).outcome shouldNotBe Outcome.Done
     }
 })

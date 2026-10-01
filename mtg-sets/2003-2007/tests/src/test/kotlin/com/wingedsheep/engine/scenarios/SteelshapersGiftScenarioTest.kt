@@ -11,6 +11,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /** Steelshaper's Gift (5DN #19) — searches for an Equipment and reveals it. */
 class SteelshapersGiftScenarioTest : FunSpec({
@@ -31,7 +32,7 @@ class SteelshapersGiftScenarioTest : FunSpec({
         val irrelevant = driver.putCardOnTopOfLibrary(player, "Pacifism")
         driver.giveMana(player, Color.WHITE)
 
-        driver.castSpell(player, gift).isSuccess shouldBe true
+        driver.castSpell(player, gift).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val search = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
@@ -39,7 +40,7 @@ class SteelshapersGiftScenarioTest : FunSpec({
         search.options shouldContain equipment
         search.options shouldNotContain irrelevant
 
-        driver.submitCardSelection(player, listOf(equipment)).isSuccess shouldBe true
+        driver.submitCardSelection(player, listOf(equipment)).outcome shouldBe Outcome.Done
         driver.findCardInHand(player, "Basilisk Collar") shouldBe equipment
         driver.state.getLibrary(player) shouldNotContain equipment
     }

@@ -2,9 +2,9 @@ package com.wingedsheep.mtg.sets.definitions.woe.cards
 
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
  * Royal Treatment
@@ -16,7 +16,7 @@ import com.wingedsheep.sdk.model.Rarity
  *
  * The +1/+1 and ward {1} come from the Royal Role token itself, so the spell only grants
  * hexproof and creates the Role. "If you control another Role on it, put that one into the
- * graveyard" isn't card text to model — it's the Role state-based action (CR 303.7a / 704.5y),
+ * graveyard" isn't card text to model — it's the Role state-based action (CR 303.7a / 704.5z),
  * which keeps only the newest-timestamped Role a player controls on a permanent. The Role sticks
  * around after the turn ends; only the hexproof is until end of turn.
  */
@@ -29,11 +29,8 @@ val RoyalTreatment = card("Royal Treatment") {
         "Enchanted creature gets +1/+1 and has ward {1}.)"
 
     spell {
-        val t = target("target creature you control", Targets.CreatureYouControl)
-        effect = Effects.Composite(
-            Effects.GrantKeyword(Keyword.HEXPROOF, t),
-            Effects.CreateRoleToken("Royal Role", t)
-        )
+        val t = target(TargetFilter.CreatureYouControl)
+        effect = Effects.GrantKeyword(Keyword.HEXPROOF, t) then Effects.CreateRoleToken("Royal Role", t)
     }
 
     metadata {

@@ -8,6 +8,8 @@ import com.wingedsheep.engine.core.DamageEdgeDirection
 import com.wingedsheep.engine.core.DistributeDecision
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.DistributionResponse
+import com.wingedsheep.engine.core.Suspension
+import com.wingedsheep.engine.core.restoreSuspension
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.handlers.actions.decision.DecisionValidators
 import com.wingedsheep.engine.handlers.EffectContext
@@ -70,11 +72,13 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         }
     }
 
+    // A battle with no battle type: its controller is its only legal protector (CR 310.9a), so
+    // the fixtures below — a defender who controls and protects it — stay legal when the engine
+    // checks state-based actions (a Siege protected by its own controller is reassigned, CR 704.5y).
     val testSiege = card("C14 Test Siege") {
         manaCost = "{2}{B}"
-        typeLine = "Battle — Siege"
+        typeLine = "Battle"
         startingDefense = 10
-        oracleText = "(As this Siege enters, choose an opponent to protect it.)"
     }
 
     val doubleStrikeTrampler = CardDefinition.creature(
@@ -112,10 +116,15 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         // The driver has already exposed the normal combat-resolution pause. These
         // characterizations deliberately mutate the pre-damage state and re-enter the
         // production manager, without bypassing its candidate, assignment, or prevention paths.
-        driver.replaceState(driver.state.copy(pendingDecision = null))
+        // The pending question is the top Suspension (the question together with the answer
+        // continuation that consumes it); drop it so the manager re-enters with no open question.
+        if (driver.state.peekContinuation() is Suspension) {
+            driver.replaceState(driver.state.popContinuation().second)
+        }
         return CombatDamageManager(
+            driver.zones,
             driver.cardRegistry,
-            DamageCalculator(driver.cardRegistry),
+            DamageCalculator(driver.cardRegistry, driver.services.predicateEvaluator),
         ).applyCombatDamage(driver.state)
     }
 
@@ -199,6 +208,7 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         val battle = driver.putPermanentOnBattlefield(defenderPlayer, testSiege.name)
         driver.replaceState(driver.state.updateEntity(battle) {
             it.with(ProtectorComponent(defenderPlayer))
+                .with(CountersComponent().withAdded(CounterType.DEFENSE, 10))
         })
         driver.removeSummoningSickness(attacker)
 
@@ -431,6 +441,7 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "Trample Beast")
         val walker = driver.putPermanentOnBattlefield(defenderPlayer, testWalker.name)
+        seedLoyalty(driver, walker, loyalty = 10)
         driver.removeSummoningSickness(attacker)
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
         driver.declareAttackers(attackerPlayer, mapOf(attacker to walker)).error shouldBe null
@@ -459,6 +470,7 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
             driver.putCreatureOnBattlefield(defenderPlayer, "Grizzly Bears"),
         )
         val walker = driver.putPermanentOnBattlefield(defenderPlayer, testWalker.name)
+        seedLoyalty(driver, walker, loyalty = 10)
         driver.removeSummoningSickness(attacker)
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
         driver.declareAttackers(attackerPlayer, mapOf(attacker to walker)).error shouldBe null
@@ -487,6 +499,7 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
             driver.putCreatureOnBattlefield(attackerPlayer, "Trample Beast"),
         )
         val walker = driver.putPermanentOnBattlefield(defenderPlayer, testWalker.name)
+        seedLoyalty(driver, walker, loyalty = 10)
         attackers.forEach(driver::removeSummoningSickness)
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
         driver.declareAttackers(attackerPlayer, attackers.associateWith { walker }).error shouldBe null
@@ -558,6 +571,7 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         val attacker = driver.putCreatureOnBattlefield(attackerPlayer, assignAsUnblockedCreature.name)
         val blocker = driver.putCreatureOnBattlefield(defenderPlayer, "Grizzly Bears")
         val walker = driver.putPermanentOnBattlefield(defenderPlayer, testWalker.name)
+        seedLoyalty(driver, walker, loyalty = 10)
         driver.removeSummoningSickness(attacker)
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
         driver.declareAttackers(attackerPlayer, mapOf(attacker to walker)).error shouldBe null
@@ -742,6 +756,7 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         val battle = driver.putPermanentOnBattlefield(defenderPlayer, testSiege.name)
         driver.replaceState(driver.state.updateEntity(battle) {
             it.with(ProtectorComponent(defenderPlayer))
+                .with(CountersComponent().withAdded(CounterType.DEFENSE, 10))
         })
         driver.removeSummoningSickness(attacker)
 
@@ -887,7 +902,13 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         DecisionValidators.validate(decision, reversed) shouldBe null
 
         val forkDriver = driver()
-        forkDriver.replaceState(setup.driver.state.copy(pendingDecision = decoded))
+        // The fork installs the decoded question in place of the original one: the question lives
+        // in the top Suspension, paired with the same answer continuation.
+        val pausedSuspension = setup.driver.state.peekContinuation().shouldBeInstanceOf<Suspension>()
+        forkDriver.replaceState(
+            setup.driver.state.popContinuation().second
+                .restoreSuspension(Suspension(decoded, pausedSuspension.answer))
+        )
         val originalResult = setup.driver.submitDecision(decision.playerId, ordered)
         val forkResult = forkDriver.submitDecision(decoded.playerId, ordered)
 

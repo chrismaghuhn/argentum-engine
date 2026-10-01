@@ -30,7 +30,6 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class SelectFromCollectionContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
@@ -38,14 +37,20 @@ data class SelectFromCollectionContinuation(
     val storeSelected: String,
     val storeRemainder: String?,
     val storedCollections: Map<String, List<EntityId>> = emptyMap(),
+    /** Castable face indices (-1 is primary, -2 is a modal permanent back) for a spell selection. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val spellFaces: Map<EntityId, List<Int>>? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val selectedSpellCard: EntityId? = null,
     /**
      * Restrictions that tightened the selection bounds. The resumer uses these
      * to normalize the player's response: e.g. [SelectionRestriction.OnePerCardType]
      * drops any extra cards that share a card type with an already-kept selection,
      * routing them into the remainder collection.
      */
-    val restrictions: List<SelectionRestriction> = emptyList()
-) : ContinuationFrame
+    val restrictions: List<SelectionRestriction> = emptyList(),
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after player reorders cards for a MoveCollection with ControllerChooses order.
@@ -70,7 +75,6 @@ data class MoveCollectionOrderCompletion(
 
 @Serializable
 data class MoveCollectionOrderContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
@@ -94,7 +98,8 @@ data class MoveCollectionOrderContinuation(
     val unlinkFromSource: Boolean = false,
     val addCounterType: CounterType? = null,
     val markEnteredViaSourceAbility: Boolean = false,
-) : ContinuationFrame
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after player selects a target during a pipeline effect (mid-resolution targeting).
@@ -111,13 +116,13 @@ data class MoveCollectionOrderContinuation(
  */
 @Serializable
 data class SelectTargetPipelineContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
     val storeAs: String,
-    val storedCollections: Map<String, List<EntityId>> = emptyMap()
-) : ContinuationFrame
+    val storedCollections: Map<String, List<EntityId>> = emptyMap(),
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after player chooses an option in a generic pipeline context.
@@ -134,13 +139,13 @@ data class SelectTargetPipelineContinuation(
  */
 @Serializable
 data class ChooseOptionPipelineContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
     val storeAs: String,
-    val options: List<String>
-) : ContinuationFrame
+    val options: List<String>,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after the player picks a creature type for a [com.wingedsheep.sdk.scripting.effects.NoteCreatureTypeEffect].
@@ -155,16 +160,19 @@ data class ChooseOptionPipelineContinuation(
  *
  * @property storeAs Key under which the chosen value is stored in `chosenValues`.
  * @property options The option strings, indexed by `OptionChosenResponse.optionIndex`.
+ * @property secret Whether the note is hidden information — see
+ *   `NotedCreatureTypesComponent.secretTo`, which the resumer stamps with [controllerId].
  */
 @Serializable
 data class NoteCreatureTypePipelineContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val sourceId: EntityId,
     val sourceName: String?,
     val storeAs: String,
-    val options: List<String>
-) : ContinuationFrame
+    val options: List<String>,
+    val secret: Boolean = false,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after the chooser picks one of two pre-existing pipeline collections
@@ -182,7 +190,6 @@ data class NoteCreatureTypePipelineContinuation(
  */
 @Serializable
 data class ChoosePileContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
@@ -192,8 +199,9 @@ data class ChoosePileContinuation(
     val pileBName: String,
     val storeChosenAs: String,
     val storeOtherAs: String,
-    val storedCollections: Map<String, List<EntityId>> = emptyMap()
-) : ContinuationFrame
+    val storedCollections: Map<String, List<EntityId>> = emptyMap(),
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after the controller chooses a target for an Aura being moved to the battlefield
@@ -211,7 +219,6 @@ data class ChoosePileContinuation(
  */
 @Serializable
 data class MoveCollectionAuraTargetContinuation(
-    override val decisionId: String,
     val auraId: EntityId,
     val controllerId: EntityId,
     val destPlayerId: EntityId,
@@ -219,8 +226,15 @@ data class MoveCollectionAuraTargetContinuation(
     val sourceId: EntityId?,
     val sourceName: String?,
     /** True when the auras are returning under their owner's control (e.g. Seam Rip's LTB trigger). */
-    val underOwnersControl: Boolean = false
-) : ContinuationFrame
+    val underOwnersControl: Boolean = false,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+    /**
+     * Every card of the batch entering the battlefield together with these Auras. An Aura can't
+     * enchant an object entering at the same time as it (CR 303.4f names only objects already
+     * there — Warp World's ruling), so these are never offered as hosts.
+     */
+    val excludedHosts: List<EntityId> = emptyList(),
+) : AnswerContinuation
 
 /**
  * Resume after the controller chooses a host for a card put onto the battlefield attached to a
@@ -236,12 +250,25 @@ data class MoveCollectionAuraTargetContinuation(
  */
 @Serializable
 data class PutOntoBattlefieldAttachedToChosenContinuation(
-    override val decisionId: String,
     val cardId: EntityId,
     val controllerId: EntityId,
     /** Original explicit host domain, or null for the generic Aura-entry path. */
     val hostFilter: GameObjectFilter? = null,
-) : ContinuationFrame
+) : AnswerContinuation
+
+/**
+ * Resume after the controller chooses the new host for an Aura/Equipment already on the battlefield
+ * (AttachToChosenHostEffect — Autumn-Tail, Kitsune Sage). The move is re-checked for legality at
+ * resume and does nothing if the attachment or host can no longer be attached (CR 701.3b).
+ *
+ * @property attachmentId The Aura or Equipment being moved
+ * @property controllerId The player who chose the host
+ */
+@Serializable
+data class AttachToChosenHostContinuation(
+    val attachmentId: EntityId,
+    val controllerId: EntityId
+) : AnswerContinuation
 
 /**
  * Resume after player reorders revealed cards to put on the bottom of their library.
@@ -255,11 +282,11 @@ data class PutOntoBattlefieldAttachedToChosenContinuation(
  */
 @Serializable
 data class PutOnBottomOfLibraryContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceId: EntityId?,
-    val sourceName: String?
-) : ContinuationFrame
+    val sourceName: String?,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after a card's owner chooses one of the offered library positions.
@@ -278,14 +305,33 @@ data class PutOnBottomOfLibraryContinuation(
  */
 @Serializable
 data class PutOnTopOrBottomContinuation(
-    override val decisionId: String,
     val ownerId: EntityId,
     val cardId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
     val options: List<String>,
-    val positions: List<com.wingedsheep.sdk.scripting.effects.LibraryChoicePosition> = emptyList()
-) : ContinuationFrame
+    val positions: List<com.wingedsheep.sdk.scripting.effects.LibraryChoicePosition> = emptyList(),
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
+
+/**
+ * Resume after a counter's controller chose where in its owner's library the countered spell
+ * goes — Hinder's "your choice of the top or bottom" ([com.wingedsheep.sdk.scripting.effects.CounterDestination.Library]
+ * with several positions). The spell is still on the stack; the resumer counters it into the
+ * chosen position.
+ *
+ * @property spellId The spell being countered
+ * @property countererId The controller of the countering spell or ability — the one choosing
+ * @property sourceId The countering spell or ability
+ * @property positions The offered positions, one per option index
+ */
+@Serializable
+data class CounterToLibraryPositionContinuation(
+    val spellId: EntityId,
+    val countererId: EntityId,
+    val sourceId: EntityId?,
+    val positions: List<com.wingedsheep.sdk.scripting.effects.LibraryChoicePosition>,
+) : AnswerContinuation
 
 /**
  * Resume after player chooses a card to return from a linked exile.
@@ -300,11 +346,11 @@ data class PutOnTopOrBottomContinuation(
  */
 @Serializable
 data class ReturnFromLinkedExileContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceId: EntityId,
-    val eligibleCards: List<EntityId>
-) : ContinuationFrame
+    val eligibleCards: List<EntityId>,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after the controller answers "cast this card without paying its mana cost?"
@@ -330,12 +376,12 @@ data class ReturnFromLinkedExileContinuation(
  */
 @Serializable
 data class CascadeMayCastContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceId: EntityId?,
     val exiledCards: List<EntityId>,
-    val cascadeCardId: EntityId
-) : ContinuationFrame
+    val cascadeCardId: EntityId,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Auto-resume frame for the cascade YES branch after the non-hit exiled cards have been
@@ -344,11 +390,10 @@ data class CascadeMayCastContinuation(
  */
 @Serializable
 data class CascadeAfterBottomContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceId: EntityId?,
     val cascadeCardId: EntityId,
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Resume an ExileFromTopRepeating effect after its matching card's hand move has crossed the
@@ -358,13 +403,12 @@ data class CascadeAfterBottomContinuation(
  */
 @Serializable
 data class ExileFromTopRepeatingContinuation(
-    override val decisionId: String,
     val effect: ExileFromTopRepeatingEffect,
     val context: EffectContext,
     val cardsToHand: Int,
     val matchCardId: EntityId,
     val repeatAfterMatch: Boolean,
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Resume after the controller answers "cast the discovered card for free, or put it
@@ -394,14 +438,14 @@ data class ExileFromTopRepeatingContinuation(
  */
 @Serializable
 data class DiscoverMayCastContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceId: EntityId?,
     val exiledCards: List<EntityId>,
     val discoveredCardId: EntityId,
     val storeDiscoveredAs: String? = null,
     val thenEffect: com.wingedsheep.sdk.scripting.effects.Effect? = null,
-) : ContinuationFrame
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Auto-resume frame for discover after the non-discovered exiled cards have been
@@ -410,10 +454,9 @@ data class DiscoverMayCastContinuation(
  */
 @Serializable
 data class DiscoverAfterBottomContinuation(
-    override val decisionId: String,
     val discover: DiscoverMayCastContinuation,
     val cast: Boolean,
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Auto-resume frame for discover's library-exhausted branch. Every exiled card must cross the
@@ -421,12 +464,11 @@ data class DiscoverAfterBottomContinuation(
  */
 @Serializable
 data class DiscoverNoHitBottomContinuation(
-    override val decisionId: String,
     val effect: com.wingedsheep.sdk.scripting.effects.DiscoverEffect,
     val context: EffectContext,
     val threshold: Int,
     val exiledCards: List<EntityId>,
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Resume after the controller picks targets for a spell being cast for free by
@@ -444,7 +486,7 @@ data class DiscoverNoHitBottomContinuation(
  * @property cardId The card being cast for free
  * @property casterId The controller of the effect (also the decision-maker)
  * @property storeCastTo When set, the cast card's id is published to this pipeline collection
- *   once the cast initiates, so an enclosing `IfYouDoEffect` can gate a follow-up.
+ *   once the cast initiates, so an enclosing `Effects.IfYouDo` can gate a follow-up.
  * @property grantedPermissionId The [com.wingedsheep.engine.state.permissions.MayPlayPermission]
  *   created for this synthesized cast, so a failed cast can revoke exactly that grant (a blanket
  *   per-card removal could clobber an unrelated permission covering the same card).
@@ -453,13 +495,14 @@ data class DiscoverNoHitBottomContinuation(
  */
 @Serializable
 data class CastFromCollectionTargetsContinuation(
-    override val decisionId: String,
     val cardId: EntityId,
     val casterId: EntityId,
     val storeCastTo: String? = null,
     val grantedPermissionId: EntityId? = null,
     val onCastFailure: FreeCastFallback = FreeCastFallback.LEAVE,
-) : ContinuationFrame
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val faceIndex: Int? = null,
+) : AnswerContinuation
 
 /**
  * Disposition of the card when a synthesized free cast fails to initiate after target
@@ -502,10 +545,20 @@ enum class FreeCastFallback {
  */
 @Serializable
 data class CastAnyNumberFromCollectionContinuation(
-    override val decisionId: String,
     val from: String,
     val effectContext: com.wingedsheep.engine.handlers.EffectContext,
     /** When true, each chosen card is cast paying its normal mana cost rather than for free. */
     val payManaCost: Boolean = false,
-) : ContinuationFrame
+    /**
+     * Remaining cast budget for a "cast up to N of them" loop, or `null` when uncapped. This is
+     * the budget *as offered by this iteration*; the resumer re-enters the loop with one fewer
+     * after a card is actually cast.
+     */
+    val maxCasts: Int? = null,
+    /**
+     * Remaining total-mana-value budget for a "spells with total mana value N or less" loop, or
+     * `null` when uncapped. The resumer re-enters the loop with the cast card's mana value spent.
+     */
+    val maxTotalManaValue: Int? = null,
+) : AnswerContinuation
 

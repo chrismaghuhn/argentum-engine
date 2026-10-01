@@ -4,7 +4,7 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
-import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.stack.StackPlacement
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
@@ -23,15 +23,17 @@ import kotlin.reflect.KClass
  * If the spell has no targets, all copies are created immediately.
  * If the spell has targets, pauses for target selection for the first copy,
  * then uses StormCopyTargetContinuation for remaining copies.
+ *
+ * When the effect context carries a [ResolvingSpellCopyPayload] for the source spell (a cost-linked
+ * trigger whose source spell may already have left the stack), the copies are built from that
+ * captured payload rather than from the live stack object.
  */
 class StormCopyEffectExecutor(
-    private val cardRegistry: com.wingedsheep.engine.registry.CardRegistry,
-    private val targetFinder: TargetFinder = TargetFinder()
+    private val targetFinder: TargetFinder,
+    private val targetValidator: TargetValidator
 ) : EffectExecutor<StormCopyEffect> {
 
     override val effectType: KClass<StormCopyEffect> = StormCopyEffect::class
-
-    private val targetValidator = TargetValidator()
 
     override fun execute(
         state: GameState,
@@ -41,8 +43,6 @@ class StormCopyEffectExecutor(
         if (effect.copyCount <= 0) {
             return EffectResult.success(state)
         }
-
-        val stackResolver = StackResolver(cardRegistry = cardRegistry)
 
         // Modal source (700.2g): targets live per-mode on the original's
         // [SpellOnStackComponent], not as a flat TargetsComponent. Modes are fixed
@@ -59,12 +59,12 @@ class StormCopyEffectExecutor(
                 sourceSpell.modeTargetRequirements[modeIdx]?.isNotEmpty() == true
             }
             if (!hasAnyTargetedMode) {
-                return createAllCopiesNoTargets(state, effect, context, stackResolver, resolvingPayload)
+                return createAllCopiesNoTargets(state, effect, context, resolvingPayload)
             }
             return EffectResult.from(driveStormModalCopies(
                 state = state,
-                stackResolver = stackResolver,
                 targetFinder = targetFinder,
+                targetValidator = targetValidator,
                 sourceId = sourceId,
                 controllerId = context.controllerId,
                 spellName = effect.spellName,
@@ -81,7 +81,7 @@ class StormCopyEffectExecutor(
 
         // If spell has no targets, create all copies immediately
         if (effect.spellTargetRequirements.isEmpty()) {
-            return createAllCopiesNoTargets(state, effect, context, stackResolver, resolvingPayload)
+            return createAllCopiesNoTargets(state, effect, context, resolvingPayload)
         }
 
         // Spell has targets — need to ask for target selection for each copy
@@ -92,7 +92,6 @@ class StormCopyEffectExecutor(
         state: GameState,
         effect: StormCopyEffect,
         context: EffectContext,
-        stackResolver: StackResolver,
         resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
     ): EffectResult {
         val sourceId = context.sourceId
@@ -105,16 +104,17 @@ class StormCopyEffectExecutor(
             // Put the copy on the stack as a spell (707.12). Modes/targets default to the
             // source's — putSpellCopy reads them off the source SpellOnStackComponent.
             val result = EffectResult.from(
-                stackResolver.putSpellCopy(
+                StackPlacement.putSpellCopy(
                     state = currentState,
                     sourceSpellId = sourceId,
                     copyIndex = i,
                     copyTotal = effect.copyCount,
                     controllerId = context.controllerId,
-                    resolvingSpellCopyPayload = resolvingSpellCopyPayload
+                    resolvingSpellCopyPayload = resolvingSpellCopyPayload,
+                    targetValidator = targetValidator
                 )
             )
-            if (!result.isSuccess) return result
+            if (result.outcome !is Outcome.Done) return result
             currentState = result.newState
             allEvents.addAll(result.events)
         }
@@ -131,7 +131,6 @@ class StormCopyEffectExecutor(
     ): EffectResult {
         val sourceId = context.sourceId
             ?: return EffectResult.error(state, "Storm copy has no source spell to copy")
-        val stackResolver = StackResolver(cardRegistry = cardRegistry)
 
         var currentState = state
         val allEvents = mutableListOf<GameEvent>()
@@ -176,25 +175,23 @@ class StormCopyEffectExecutor(
             val hasNoLegalTargets = legalTargetsMap.any { (_, targets) -> targets.isEmpty() }
             if (hasNoLegalTargets) {
                 val copyIndex = effect.copyCount - copiesLeft + 1
-                val copyResult = stackResolver.putSpellCopy(
+                val copyResult = StackPlacement.putSpellCopy(
                     state = currentState,
                     sourceSpellId = sourceId,
                     copyIndex = copyIndex,
                     copyTotal = effect.copyCount,
                     controllerId = context.controllerId,
-                    resolvingSpellCopyPayload = resolvingSpellCopyPayload
+                    resolvingSpellCopyPayload = resolvingSpellCopyPayload,
+                    targetValidator = targetValidator
                 )
-                if (!copyResult.isSuccess) return EffectResult.from(copyResult)
+                if (copyResult.outcome !is Outcome.Done) return EffectResult.from(copyResult)
                 currentState = copyResult.newState
                 allEvents.addAll(copyResult.events)
                 copiesLeft--
                 continue
             }
 
-            val copyNumber = effect.copyCount - copiesLeft + 1
-            val decisionId = "storm-copy-target-${java.util.UUID.randomUUID()}"
             val continuation = StormCopyTargetContinuation(
-                decisionId = decisionId,
                 remainingCopies = copiesLeft,
                 spellEffect = effect.spellEffect,
                 spellTargetRequirements = effect.spellTargetRequirements,
@@ -204,10 +201,12 @@ class StormCopyEffectExecutor(
                 totalCopies = effect.copyCount,
                 resolvingSpellCopyPayload = resolvingSpellCopyPayload
             )
+
+            val copyNumber = effect.copyCount - copiesLeft + 1
             val copyLabel = if (effect.copyCount > 1)
                 "copy $copyNumber of ${effect.copyCount} of ${effect.spellName}"
                 else "copy of ${effect.spellName}"
-            val decision = ChooseTargetsDecision(
+            val decision = { decisionId: String -> ChooseTargetsDecision(
                 id = decisionId,
                 playerId = context.controllerId,
                 prompt = "Choose new targets for $copyLabel",
@@ -218,12 +217,9 @@ class StormCopyEffectExecutor(
                 ),
                 targetRequirements = targetReqInfos,
                 legalTargets = legalTargetsMap
-            )
+            ) }
 
-            val stateWithDecision = currentState.withPendingDecision(decision)
-            val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-            return EffectResult.paused(stateWithContinuation, decision, allEvents)
+            return EffectResult.from(currentState.suspendForDecision(decision, continuation, allEvents))
         }
 
         return EffectResult.success(currentState, allEvents)
@@ -237,16 +233,18 @@ class StormCopyEffectExecutor(
          * target requirements it pauses with a [ChooseTargetsDecision] and pushes a
          * [StormCopyModalTargetContinuation]; modes without requirements inherit
          * an empty target slot. When all ordinals are collected the copy is
-         * pushed onto the stack via [StackResolver.putSpellCopy] and the loop
+         * pushed onto the stack via [StackPlacement.putSpellCopy] and the loop
          * restarts for the next copy.
          *
          * Called from [execute] on first entry and from the resumer after each
-         * TargetsResponse appends a mode's targets.
+         * TargetsResponse appends a mode's targets. [resolvingSpellCopyPayload], when the source
+         * spell's stack components may already be gone, supplies its spell component and is
+         * threaded onto every copy and continuation.
          */
         fun driveStormModalCopies(
             state: GameState,
-            stackResolver: StackResolver,
             targetFinder: TargetFinder,
+            targetValidator: TargetValidator,
             sourceId: EntityId,
             controllerId: EntityId,
             spellName: String,
@@ -266,7 +264,6 @@ class StormCopyEffectExecutor(
             var accumulated = accumulatedOrdinalTargets
             var ordinal = currentOrdinal
             var copiesLeft = remainingCopies
-            val targetValidator = TargetValidator()
 
             val sourceSpellComp = resolvingSpellCopyPayload?.spell
                 ?: currentState.getEntity(sourceId)?.get<SpellOnStackComponent>()
@@ -326,12 +323,11 @@ class StormCopyEffectExecutor(
                     }
 
                     val copyNumber = totalCopies - copiesLeft + 1
-                    val decisionId = "storm-copy-modal-target-${java.util.UUID.randomUUID()}"
                     val copyLabel = if (totalCopies > 1) "copy $copyNumber of $totalCopies of $spellName"
                         else "copy of $spellName"
                     val modeLabel = if (chosenModes.size > 1) " — mode ${ordinal + 1} of ${chosenModes.size}"
                         else ""
-                    val decision = ChooseTargetsDecision(
+                    val decision = { decisionId: String -> ChooseTargetsDecision(
                         id = decisionId,
                         playerId = controllerId,
                         prompt = "Choose new targets for $copyLabel$modeLabel",
@@ -342,10 +338,9 @@ class StormCopyEffectExecutor(
                         ),
                         targetRequirements = targetReqInfos,
                         legalTargets = legalTargetsMap
-                    )
+                    ) }
 
                     val continuation = StormCopyModalTargetContinuation(
-                        decisionId = decisionId,
                         remainingCopies = copiesLeft,
                         totalCopies = totalCopies,
                         spellName = spellName,
@@ -360,14 +355,11 @@ class StormCopyEffectExecutor(
                         resolvingSpellCopyPayload = resolvingSpellCopyPayload
                     )
 
-                    val pausedState = currentState
-                        .withPendingDecision(decision)
-                        .pushContinuation(continuation)
-                    return ExecutionResult.paused(pausedState, decision, allEvents)
+                    return currentState.suspendForDecision(decision, continuation, allEvents)
                 }
 
                 val copyIndex = totalCopies - copiesLeft + 1
-                val copyResult = stackResolver.putSpellCopy(
+                val copyResult = StackPlacement.putSpellCopy(
                     state = currentState,
                     sourceSpellId = sourceId,
                     chosenModes = chosenModes,
@@ -376,9 +368,10 @@ class StormCopyEffectExecutor(
                     copyIndex = copyIndex,
                     copyTotal = totalCopies,
                     controllerId = controllerId,
-                    resolvingSpellCopyPayload = resolvingSpellCopyPayload
+                    resolvingSpellCopyPayload = resolvingSpellCopyPayload,
+                    targetValidator = targetValidator
                 )
-                if (!copyResult.isSuccess) return copyResult
+                if (copyResult.outcome !is Outcome.Done) return copyResult
                 currentState = applyCopyMutations(
                     copyResult.newState, copyResult.events, keywordsForCopy, removeLegendary
                 )
@@ -393,7 +386,7 @@ class StormCopyEffectExecutor(
         }
 
         /**
-         * After a [StackResolver.putSpellCopy] result, patch the new copy entity:
+         * After a [StackPlacement.putSpellCopy] result, patch the new copy entity:
          * - strip the Legendary supertype if [removeLegendary] (CR 707.10f token-copy clause)
          * - record granted spell keywords (e.g., wither, lifelink) on the copy
          */

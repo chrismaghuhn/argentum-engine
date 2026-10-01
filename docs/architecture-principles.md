@@ -292,7 +292,7 @@ val Blaze = card("Blaze") {
     manaCost = "{X}{R}"
     typeLine = "Sorcery"
     spell {
-        val t = target("target", AnyTarget())
+        val t = target(Targets.Any)
         effect = DealDamageEffect(DynamicAmount.XValue, t)
     }
 }
@@ -337,18 +337,27 @@ data class ProcessedAction(
 
 `ProcessedAction` pairs the core result with an undo checkpoint policy — the engine computes
 the policy based on game rules, and the server follows it mechanically. `ExecutionResult` itself
-captures the three possible outcomes of any action:
+records which of the three possible outcomes an action had, as a sealed type callers `when` over:
 
 ```kotlin
 data class ExecutionResult(
     val state: GameState,
     val events: List<GameEvent> = emptyList(),
-    val error: String? = null,
-    val pendingDecision: PendingDecision? = null
+    val outcome: Outcome = Outcome.Done
 )
+
+sealed interface Outcome {
+    data object Done : Outcome
+    data class Paused(val decision: PendingDecision) : Outcome
+    data class Rejected(val reason: Rejection) : Outcome   // IllegalAction | ExecutionFailed
+}
 ```
 
-The `PausedForDecision` case is central to how the engine handles player input mid-resolution — when a
+A pause is not a failure, and a rejection says whose fault it is. `IllegalAction` means validation
+refused the action (a stale or wrong client request). `ExecutionFailed` means the action passed
+validation and then failed partway, which points at a validator gap or an engine bug.
+
+The `Paused` case is central to how the engine handles player input mid-resolution — when a
 spell requires a choice (e.g., "search your library for a card"), the engine doesn't block. It returns a
 paused result with a `PendingDecision` describing what input is needed and a `ContinuationFrame` on the
 state's continuation stack describing how to resume (see [Section 2.4](#24-reentrant-continuations)).
@@ -367,7 +376,6 @@ data class GameState(
     val step: Step = Step.UNTAP,
     val floatingEffects: List<ActiveFloatingEffect> = emptyList(),
     val continuationStack: List<ContinuationFrame> = emptyList(),
-    val pendingDecision: PendingDecision? = null,
     // ... more fields
 )
 ```
@@ -397,6 +405,31 @@ engine*, not across time. Cards are data this pure function folds through, so ed
 what an old input stream re-simulates to. Stored replays therefore pin the card definitions they ran
 on and carry position checkpoints, with an archived frame stream as the last resort — see
 [data-contracts.md](data-contracts.md) → *Compact replays*.
+
+#### Reproducible routing identity
+
+`GameState.newRoutingId()` allocates game-local correlation tokens for player questions,
+delayed triggers, and combat bands. Fresh questions allocate through `suspendForDecision`. Its serialized `nextRoutingId` counter is
+independent of entity allocation and gameplay RNG. Every caller must carry the returned state
+forward before allocating another token or executing a nested effect. Restoring the same snapshot
+and repeating the same actions reproduces those tokens, including their linked references.
+Tokens are opaque to consumers: their spelling is neither a game identifier nor an action's
+semantic identity, and separate games or divergent simulation branches can reuse the same token.
+
+Live request freshness belongs to `GameSession`, separately from engine correlation identity.
+Browser-facing decision IDs include a session epoch that rotates on successful undo; the server
+validates that epoch before rebinding a response to its engine ID. Undo restores the exact engine
+checkpoint, and replay records only canonical engine actions. Repeated delivery or reconnect to
+the same session preserves an outstanding live ID; a recovered session issues a fresh epoch.
+In-process AI receives engine IDs so its response simulations still address the raw snapshot,
+plus the live epoch captured with that update. Its asynchronous callback returns that epoch;
+the server atomically validates it before execution. An obsolete callback is discarded without
+fallback actions or rejection accounting.
+
+Current-format snapshots may retain opaque UUID or clock-based tokens. An omitted routing
+counter defaults to zero; this default does not provide compatibility with older suspension storage. Historical action logs may still need decision-ID rebinding; replay should use
+its recorded engine version. This routing guarantee does not remove other sources of identity
+variation, such as process-global IDs for dynamically constructed abilities.
 
 ### 2.2 Entity-Component-System (ECS)
 
@@ -469,6 +502,82 @@ combat state, attachments — leaving only the immutable identity (`CardComponen
   the immutable `GameState` — modifying a component means creating a new container, which means
   creating a new entity map, which means creating a new `GameState`.
 
+Because a card entity is a slot rather than an identity, a simulation caller can swap the definition
+occupying a hidden hand or library slot without disturbing the entity id, its zone position, or any
+reference pointing at it — that is what `HiddenSlotRewrite` (`rules-engine/hidden`) does, and what
+lets the AI reason about hypothetical opponent hands. It derives the safe set from what
+`CardEntityFactory` would build for the card currently there, so a slot carrying anything else —
+last-known battlefield information, a reveal someone has been shown — is refused rather than
+transplanted. Its one in-flight-pin answer is the conservative superset of every typed `EntityId` in
+live stack objects, pending decisions, and continuation frames; an incomplete in-flight graph
+traversal pins all candidates. Those three carriers are the whole scope: `GameState` also holds
+lists that name a hand or library entity outside any in-flight execution — `grantedKeywordAbilities`,
+`mayPlayPermissions`, `lastCardDrawnThisTurnByPlayer` — and rewriting such a slot still leaves that
+entry pointing at a different card. Closing that means extending the analysis, not assuming it
+already covers them. `HiddenWorldMaterializer` is the all-or-nothing caller (`docs/ai/architecture.md`
+covers the sampling one).
+
+#### Rules object identity across zones
+
+`EntityId` is the stable card/entity slot. `ObjectRef(entityId, generation)` identifies one rules
+object occupying that slot. `GameState.objectIdentities` stores its generation and logical zone
+outside the ECS component container; battlefield/stack component cleanup cannot strip it. The
+allocator is independent of timestamps used to order continuous effects. `objectRef` and
+`isCurrentObject` are constant-time queries and never infer history from current characteristics.
+
+Every real destination insertion goes through `addToZone`, positional `insertIntoZone`, or
+`pushToStack`. They allocate the first visit, then a new generation on a zone change, including
+exile-to-exile. Removing from a zone list or popping the stack preserves the logical origin until
+the actual destination is committed: a popped spell is still its original stack object while it
+resolves. Shared battlefield/controller buckets denote one zone; private owner-specific zones do
+not. Library ordering, control changes, phasing, transformation, component replacement and hidden
+world reconstruction preserve the object. Deletion removes its identity without resetting the
+allocator, so recreating an entity ID cannot revive an old reference.
+
+A resolving nonpermanent spell stays physically on the stack while its effects execute, including
+nested serialized decisions. `FinishResolvingSpellContinuation` captures the original stack object
+and performs the shared cleanup exactly once after those effects finish. It removes that specific
+spell, preserving any other spells cast during resolution above it, and then applies the ordinary
+resolution destination rules. The finalizer checks the original reference directly: if an effect
+already moved the spell, it cannot move a later visit of that card. This finalization identity is
+separate from the effect context's permission to follow its own moves. Triggers detected between
+nested choices are deferred beneath this finalizer, even when the finalizer is unchanged by the
+latest response. Their placement and target choices happen after the spell leaves the stack.
+
+Insertion is a movement/creation operation, not a reconstruction API. An already-present destination
+member is idempotent; insertion while still present in its origin is rejected. Pure permutations
+use `reorderZone`. Fresh constructor fixtures and legacy JSON without identity fields initialize
+current zone members once through constructor defaults. Copies preserve recorded identity data;
+copy-based imports call `initializeObjectIdentities` explicitly, as do session persistence and dev
+injection boundaries. This migration establishes current visits only: it cannot recover the origin
+of an ability or continuation saved before references were recorded. Consumers must not pretend
+such history was recovered by resolving the entity's latest visit.
+
+`ZoneChangeEvent.oldObject` and `.newObject` are captured at the actual movement before later effects
+can move the entity again. `ZoneTransitionService` returns individual `ZoneTransitionOutcome` values
+with requested/actual destination and `PRIMARY`, `REPLACEMENT_ADDITIONAL`, or `DURATION_RETURN`
+attribution. A replacement's extra move or a duration's return cannot stand in for the requested move. Prevented moves and
+same-zone reordering produce no transition outcome. Last-known characteristics remain separate from
+actionable references: invalidating a live object does not erase the event's last-known information.
+These fields are internal engine data; client event mapping continues to expose the existing game
+log shape.
+
+Zone moves with a source-departure duration store `ZoneReturn` records in `GameState.zoneReturns`.
+Each record identifies the source's battlefield visit, the moved object's destination visit, and its
+previous zone. `ZoneReturnService` consumes expired records inside the zone-transition pipeline,
+before the next instruction can execute, and also after a player's objects leave the game. These
+returns emit ordinary movement events without creating a stack object. Phasing keeps the source's
+identity; a blink ends the duration. The record survives removal of the source's abilities and cannot
+retrieve a later incarnation of the moved card.
+
+Triggered abilities detected before state-based actions carry their origin references into
+`StateBasedActionChecker` as a transient `pendingTriggerSources` set. This lets a zero-defense Siege
+remain while an ability from that exact object awaits the stack. If an SBA pauses for a decision,
+the existing deferred-trigger continuation preserves those references; the battle check also reads
+pending target/mode/consent frames and stacked triggered abilities. A later visit of the same card
+receives no reprieve from an old origin, and removing or declining the last pending ability leaves
+no persistent protection. Other state-based checks ignore this context.
+
 ### 2.3 Rule 613: Base State vs. Projected State
 
 **Principle:** The engine explicitly separates stored state from derived state.
@@ -509,34 +618,59 @@ before falling back to timestamp ordering.
 - **Inspection.** The engine (and UI) can show both "what the card says" and "what the game sees" —
   useful for debugging and player understanding.
 
+#### Effect-created player actions
+
+`GameState.playerActionPermissions` stores repeatable special actions granted to a player by an
+already-resolved effect. Each permission retains that resolution's targets, values, and object
+references; a permanent leaving and returning cannot inherit an old permission's captured target.
+`TakePlayerAction` pays through the shared cost service and executes immediately. These actions
+never become stack objects or activated abilities. Legal-action enumeration exposes them at their
+specified timing, including mana-production permissions inside a suspended payment window.
+End-of-turn permissions expire with the cleanup turn-based actions. Spell and ability mana-payment
+continuations preserve their announced total costs, reserved cost sources, and mana-spending
+context while the player produces mana.
+
 ### 2.4 Reentrant Continuations
 
-**Principle:** When the engine needs player input, it pauses and saves a serializable continuation.
+**Principle:** One serializable suspension owns a question and the operation that consumes its answer.
 
-Many Magic cards require player decisions mid-resolution — "search your library for a card" requires
-the player to browse and choose. The engine cannot block a thread waiting for network input. Instead,
-it pauses by:
-
-1. Setting `GameState.pendingDecision` to describe what input is needed
-2. Pushing a `ContinuationFrame` onto `GameState.continuationStack` that describes how to resume
+An effect supplies its rules-specific question factory and answer data to
+`GameState.suspendForDecision`. This operation allocates the routing ID, associates the question
+with the answer, installs the suspension, and emits `DecisionRequestedEvent`. The factory runs
+immediately; it is not retained in state.
 
 ```kotlin
-sealed interface ContinuationFrame {
-    val decisionId: String
-}
+sealed interface ContinuationFrame
+sealed interface AutomaticContinuation : ContinuationFrame
+sealed interface AnswerContinuation
 
-data class EffectContinuation(
-    override val decisionId: String,
-    val remainingEffects: List<Effect>,
-    val sourceId: EntityId?,
-    val controllerId: EntityId,
-    val storedCollections: Map<String, List<EntityId>>,
-    // ... all context needed to resume
+data class Suspension(
+    val question: PendingDecision,
+    val answer: AnswerContinuation,
 ) : ContinuationFrame
 ```
 
-When the player submits their decision, `ContinuationHandler.resume()` pops the frame, restores
-context, and continues executing the remaining effects.
+`GameState.pendingDecision` is derived from the top suspension. An answer payload cannot be
+pushed independently, and automatic work such as `EffectContinuation` carries no routing ID:
+its position under a suspension supplies its relationship. `ContinuationHandler.resume` checks
+the response against that suspension's question, pops the pair, and dispatches its answer payload.
+
+Creating a question and propagating a pause are separate operations.
+`ExecutionResult.propagatePause` carries an already installed suspension through enclosing
+execution without allocating or emitting another request. Mana-ability execution temporarily
+moves the complete payment suspension into an automatic reopen frame; restoration refreshes
+its menu while preserving the original identity and answer.
+
+Snapshots store the structural representation. `LegacyGameStateSerializer` reads the previous
+format by pairing the active question with its matching top answer and saved mana questions with
+their lower answer frames. It preserves intervening automatic work, counters, and gameplay state;
+malformed associations fail explicitly. The translated state then passes through the current-format
+`GameStateSerializer` rejection check. Writes contain only the current representation.
+
+Automatic work no longer consumes a routing ID, so a given line of play allocates fewer of them
+than it did before this change. `rules-engine/src/test/resources/suspension-traces/` holds captured
+executions from the previous engine as regression evidence; comparing against them rebinds later
+recorded responses while keeping their player and choice payloads.
 
 **Why serializable continuations instead of coroutines or blocked threads?**
 
@@ -602,6 +736,16 @@ class TriggerDetector {
 }
 ```
 
+**Detection happens in exactly one place: the settle boundary.** Handlers, resumers and executors
+only emit events. After every accepted action, `ActionProcessor` runs `Settler.settle`, which is the
+only caller of event-based detection. It detects triggers from the action's events (plus phase/step
+and delayed triggers for a step the action began) and parks them in `GameState.pendingTriggers`,
+the triggered abilities waiting to be put on the stack (CR 603.3). If the action ended on a
+question, they wait there. Otherwise the boundary performs state-based actions, queues the triggers
+those cause, and puts the whole queue on the stack in APNAP order, repeating until nothing is left
+(CR 117.5, 704.3). A trigger is detected once no matter how many handlers its events pass through,
+so there is no "already processed" flag to thread, and no path has its own copy of the loop.
+
 **Why explicit events instead of polling or observer patterns?**
 
 - **Decoupling.** The `CombatManager` dealing damage doesn't need to know about "Enrage" abilities.
@@ -663,9 +807,14 @@ backed `LiveEntityView` both implement one `EntityView` interface, so a read sit
 of an entity — live if it is still on the battlefield, otherwise its snapshot — and reads the same
 accessors either way. Whether a given reference falls back to its snapshot once the permanent has
 left is a declared property, not ad-hoc per-call logic: `lkiPolicyFor(reference)` is an exhaustive
-`when` over `EntityReference` returning `LIVE_THEN_LKI` or `LIVE_ONLY`, so a new reference variant is
-a compile error until its last-known behavior is classified — and filtered enumeration
+`when` over `EffectTarget.SingleEntity` returning `LIVE_THEN_LKI` or `LIVE_ONLY`, so a new reference
+variant is a compile error until its last-known behavior is classified — and filtered enumeration
 (Gather/ForEach) is deliberately `LIVE_ONLY`: a permanent that has left simply is not in the set.
+This is the *value-read* rule. `EffectTarget` is also what effects *act* on, and every reference
+resolves through one mapping (`TargetResolutionUtils`) entered two ways: `resolveEntity` for value
+reads, which then apply the policy above, and `resolveTarget` for actions, which instead refuse an
+object that has changed zones since the ability captured it (CR 400.7) — the source (`Self`), the
+triggering object, or the object a `ForEach` loop is visiting (`IterationEntity`).
 
 ### 2.6 Strategy-Based Registries
 
@@ -701,6 +850,11 @@ and registering them — no changes to `ActionProcessor` or `LegalActionEnumerat
 
 ### 2.7 Replacement Effects
 
+Intrinsic graveyard replacements also enter the shared processor. Dredge uses a
+card-zone identity and checks the affected player's current graveyard before each
+individual draw. The source's immutable effect recipe is prepared once by the
+card factory; non-draw events return before scanning a graveyard.
+
 **Principle:** Replacement effects modify game actions *before* they produce events, without using
 the stack.
 
@@ -731,8 +885,8 @@ data class MultiplyTokenCreation(
 data class ModifyCounterPlacement(
     val modifier: Int,
     override val appliesTo: EventPattern = EventPattern.CounterPlacementEvent(
-        counterType = CounterTypeFilter.PlusOnePlusOne,
-        recipient = RecipientFilter.CreatureYouControl
+        counterType = CounterType.PLUS_ONE_PLUS_ONE,
+        recipient = Recipient.CreatureYouControl
     )
 ) : ReplacementEffect
 
@@ -756,8 +910,8 @@ serialize the state even when a replacement choice is pending.
   points mirrors the rules naturally.
 - **Composability.** The `appliesTo` field uses the same `EventPattern` pattern system as trigger
   conditions. A replacement effect that applies to "damage dealt to creatures you control" reuses
-  the same predicate composition as a trigger that fires on the same event — `RecipientFilter`,
-  `SourceFilter`, and `DamageType` are shared between both systems.
+  the same predicate composition as a trigger that fires on the same event — `Recipient`,
+  `GameObjectFilter` (for the source), and `DamageType` are shared between both systems.
 
 **Ordering multiple replacement effects (Rule 616.1).** When multiple replacement effects would apply
 to the same event, the `ReplacementEffectProcessor` implements the full CR 616.1 pipeline as a
@@ -800,7 +954,7 @@ A floating effect with this duration is removed after its replacement effect is 
 end of turn if never used. The Words cycle cards (Words of War, Words of Wind, etc.) use this mechanism.
 An activated ability creates a `Duration.NextUse` floating
 shield that replaces the next draw with a stored effect. Activation-time variables (`{X}` value,
-targets, named targets) are captured in `SerializableModification.ReplaceDrawWithEffect` and
+targets, named targets) are captured in `SerializableModification.ReplaceDrawWith` and
 replayed when the shield is consumed.
 
 **Why a central processor instead of per-category dispatchers?**
@@ -922,9 +1076,9 @@ val priorityPassedBy: Set<EntityId> = emptySet() // players who passed this roun
 When a player passes priority, the engine adds them to `priorityPassedBy` and checks
 `allPlayersPassed()`. Two outcomes are possible:
 
-1. **Stack is non-empty:** The top item resolves. After resolution, the engine runs state-based
-   actions, detects triggers, and gives priority back to the active player with `priorityPassedBy`
-   reset.
+1. **Stack is non-empty:** The top item resolves and the handler names who receives priority
+   next. The settle boundary then runs state-based actions and puts waiting triggers on the stack,
+   and that player receives priority with `priorityPassedBy` reset.
 2. **Stack is empty:** The `TurnManager` advances to the next step. `priorityPassedBy` is cleared,
    step-specific actions execute (draw a card, deal combat damage, etc.), and priority goes to the
    active player.
@@ -943,12 +1097,15 @@ behavior:
 - **CLEANUP:** Discard to hand size, remove damage, expire end-of-turn effects. Normally no
   priority — but if SBAs or triggers occur during cleanup, a new cleanup step begins with priority.
 
-**Trigger detection at step boundaries.** When the stack empties and the game advances, the engine
+**Trigger detection at step boundaries.** When an action begins a new step, the settle boundary
 runs three rounds of trigger detection: standard event-based triggers (from events emitted during
 advancement), delayed triggers (scheduled for specific future steps, e.g., Astral Slide's "return at
 end of turn"), and phase/step triggers (permanents with "at the beginning of your upkeep" abilities).
-All detected triggers are processed via `TriggerProcessor`, which may pause for targeting decisions
-using the continuation system.
+All detected triggers are placed via `TriggerProcessor`, which may pause for targeting decisions
+using the continuation system. That holds whether the step began from a priority pass or from the
+answer to a question: a turn-based action that stops for a choice (an untap choice, the discard to
+hand size) parks the rest of its turn beneath that choice (`AdvanceStepContinuation`,
+`FinishUntapStepContinuation`), so the answer carries the game on into the next step.
 
 **Why model priority as a passed-by set?**
 
@@ -1222,20 +1379,27 @@ The server's responsibilities are strictly limited to:
 
 ### 3.2 State Masking (Fog of War)
 
-Hidden-zone visibility is centralized in `rules-engine/view/Visibility`. Both
-`ClientStateTransformer` and the engine AI's determinizer consume it, so a reveal effect cannot be
-visible to the client while remaining hidden from the AI (or vice versa). Consumers must not
-reimplement hand, library, teammate, turn-control, or individually-revealed-card rules.
+Card-identity visibility is centralized in `rules-engine/view/Visibility`.
+`ClientStateTransformer`, server decision presentation, the engine AI's determinizer, and Gym
+observations consume it, so a reveal effect cannot be visible to one perspective consumer while
+remaining hidden from another.
+Consumers must not reimplement hand, library, teammate, turn-control, individual-reveal,
+top-of-library, or face-down identity rules. They remain free to encode the shared answer
+differently: for example, the client retains opaque library slots while Gym reports a size plus the
+known subset.
 
 **Principle:** Each player sees a filtered view of the game state.
 
 In Magic, players cannot see each other's hands or libraries. The `ClientStateTransformer` produces a
 per-player view of the state that hides private information:
 
-- **Libraries:** Always hidden — only the count is visible
+- **Libraries:** The zone remains hidden, but an explicitly known top/individual card may have details
 - **Opponent's hand:** Only the count is visible, not the card identities
-- **Face-down cards:** Show as generic "Card back" to all players (even the controller cannot see
-  the identity in the masked view — only when they choose to interact)
+- **Face-down cards:** Show public face-down characteristics while the underlying identity is shown
+  only to a player entitled to look at it. CR 708.5 scopes that entitlement to the two zones it
+  names — you may look at a face-down spell or permanent *you control*, and at face-down cards in no
+  other zone. A face-down card in exile is therefore hidden from its owner as well, and only an
+  effect granting access (foretell, "you may look at and play") opens it
 - **Revealed cards:** `RevealedToComponent` overrides hiding for cards that have been explicitly revealed
 - **Revealed / returned hand cards:** A card revealed *into* a hand, or returned to a hand from a public
   zone (battlefield, graveyard, the stack), stays visible to opponents until its owner *plays* a card with
@@ -1430,10 +1594,53 @@ WAITING_FOR_PLAYERS → DECK_BUILDING → TOURNAMENT_ACTIVE → TOURNAMENT_COMPL
 rounds for N players), then matches start dynamically as players become ready — no waiting for
 the entire round to finish. This "eager match starting" pattern means:
 
-1. A player sends `ReadyForNextRound`
-2. The server checks if their next opponent is also ready
-3. If both are ready, the match starts immediately via a new `GameSession`
+1. A player sends `ReadyForNextRound` — refused while their own match is still running, since a ready
+   click means "I dismissed the game-over overlay"
+2. The server marks them ready and sweeps the *whole* ready set for launchable pairs
+   (`TournamentManager.startableMatches`)
+3. Each pair whose seats are both ready starts immediately via a new `GameSession`
 4. Other players continue waiting or playing their own matches
+
+A ready flag is state, not an event: it is set by a ready click (or the AI auto-ready pass) and
+consumed only when a match actually starts — a round ending does not clear it. Because it doesn't, the
+round-complete path opens the next round explicitly rather than as a side effect of the AI-ready pass;
+`currentRound` is what `isRoundComplete` reads, so leaving it on a finished round makes that path fire
+again on the next result. For the same reason, only a result from the current round can close it —
+later-round matches run concurrently with it and answer for their own round. That matters because a
+pair can be refused for a reason that has nothing to do with readiness: `hasIncompleteMatchBefore`
+holds a later-round match back while either seat still owes an earlier-round game, so a pair goes from
+blocked to launchable when a *third* pair's game finishes, with no change to the ready set at all.
+Every result therefore re-runs the sweep; looking only at ready *transitions* stalls the bracket.
+
+The same guard is why the bracket and the lobby roster must not drift apart. The schedule is built
+once, from the seats the lobby had then, and nothing rebuilds it — so a seat that leaves afterwards
+stays scheduled while no longer being something the server can put in a game. Its matches never
+complete, and `hasIncompleteMatchBefore` then blocks every later match of every opponent it was
+paired against, idling the whole bracket a player per round. Every path that drops a player from
+`lobby.players` therefore forfeits what the bracket still has them down for
+(`LobbyHandler.forfeitBracketMatchesIfSeatGone`, through the same `handleAbandon` a disconnect uses),
+and the sweep re-checks the roster on the way in
+(`TournamentManager.unseatedPlayersWithMatchesLeft`) as a backstop that also repairs a bracket which
+already drifted. Only a seat that is *gone* may be forfeited: `removePlayer` deliberately keeps a
+disconnected player's state during a tournament so they can rejoin.
+
+**Simulated AI-vs-AI matches.** A round-robin with one human and N AI seats schedules O(N²) matches,
+and the human is in only N of them; every other game is two AI controllers driving a full engine game
+that no one is in, which on a shared box is where most of the tournament's CPU goes. When
+`game.tournament.simulate-ai-matches` is on (the default), the start sweep decides such a pair with
+`AiMatchSimulator` instead of launching a `GameSession`, and reports it through the same result path a
+played match uses — so it closes rounds, moves standings and unblocks `hasIncompleteMatchBefore` the
+same way. The winner is a fair coin flip: any cheap deck-strength proxy would be unvalidated against
+how the engine AI actually plays, and an unmeasured bias in the standings is worse than an honest
+50/50. A simulated match never gets a `gameSessionId`, so it has no replay and never appears as
+something to spectate — `TournamentMatch.isSimulated` is what lets the standings say so, and turning
+the property off is how you get the games back when somebody wants to watch them.
+
+An **all-AI bracket is never simulated**, whatever the property says. A bracket with no human seat was
+built to be watched — the AI Sandbox (`/api/dev/ai-tournament`, behind `just watch-ai-match`) and the
+model-comparison runs are exactly that — and simulating it would decide the whole tournament in one
+sweep, deleting the feature rather than speeding it up. The saving only exists next to a human: the
+AI-vs-AI games running *alongside* the matches somebody is sitting in.
 
 BYE handling (odd player counts), reconnection across matches, and spectating between rounds are
 all managed at this layer. The tournament system reuses the same `GameSession` and `ActionProcessor`

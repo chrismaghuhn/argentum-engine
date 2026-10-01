@@ -6,11 +6,8 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.KeywordAbility
-import com.wingedsheep.sdk.scripting.effects.ConditionalEffect
-import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Sevinne's Reclamation
@@ -30,18 +27,13 @@ val SevinnesReclamation = card("Sevinne's Reclamation") {
         "Flashback {4}{W} (You may cast this card from your graveyard for its flashback cost. Then exile it.)"
 
     spell {
-        val permanentCard = target(
-            "target permanent card with mana value 3 or less from your graveyard",
-            TargetObject(filter = TargetFilter.PermanentInYourGraveyard.manaValueAtMost(3)),
-        )
-        effect = Effects.Move(permanentCard, Zone.BATTLEFIELD, fromZone = Zone.GRAVEYARD)
-            .then(
-                ConditionalEffect(
-                    condition = Conditions.WasCastFromZone(Zone.GRAVEYARD),
-                    effect = MayEffect(
-                        Effects.CopyTargetSpell(target = EffectTarget.Self),
-                        descriptionOverride = "You may copy this spell and choose new targets for the copy",
-                    ),
+        val permanentCard = target(TargetFilter.PermanentInYourGraveyard.manaValueAtMost(3))
+        effect = Effects.Move(permanentCard, Zone.BATTLEFIELD, fromZone = Zone.GRAVEYARD) then
+            Effects.If(
+                Conditions.WasCastFromZone(Zone.GRAVEYARD),
+                Effects.May(
+                    Effects.CopyTargetSpell(target = EffectTarget.Self),
+                    descriptionOverride = "You may copy this spell and choose new targets for the copy",
                 ),
             )
     }

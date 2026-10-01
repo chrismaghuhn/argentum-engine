@@ -20,7 +20,8 @@ import kotlin.reflect.KClass
  * effects/filters read the chosen number uniformly (e.g. `manaValueEqualsX()`). Used by Void.
  */
 class ChooseNumberThenExecutor(
-    private val decisionHandler: DecisionHandler
+    private val decisionHandler: DecisionHandler,
+    private val amountEvaluator: com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 ) : EffectExecutor<ChooseNumberThenEffect> {
 
     override val effectType: KClass<ChooseNumberThenEffect> = ChooseNumberThenEffect::class
@@ -30,7 +31,18 @@ class ChooseNumberThenExecutor(
         effect: ChooseNumberThenEffect,
         context: EffectContext
     ): EffectResult {
+        val max = amountEvaluator.evaluate(state, effect.maxValue, context)
+        if (max < effect.minValue) return EffectResult.success(state, emptyList())
+
         val sourceName = context.sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name } ?: "Unknown"
+
+        val continuation = ChooseNumberThenContinuation(
+            controllerId = context.controllerId,
+            sourceId = context.sourceId,
+            sourceName = sourceName,
+            then = effect.then,
+            baseContext = context
+        )
 
         val decisionResult = decisionHandler.createNumberDecision(
             state = state,
@@ -39,22 +51,13 @@ class ChooseNumberThenExecutor(
             sourceName = sourceName,
             prompt = effect.prompt,
             minValue = effect.minValue,
-            maxValue = effect.maxValue,
-            phase = DecisionPhase.RESOLUTION
+            maxValue = max,
+            phase = DecisionPhase.RESOLUTION,
+            answer = continuation
         )
 
-        val continuation = ChooseNumberThenContinuation(
-            decisionId = decisionResult.pendingDecision!!.id,
-            controllerId = context.controllerId,
-            sourceId = context.sourceId,
-            sourceName = sourceName,
-            then = effect.then,
-            baseContext = context
-        )
-
-        return EffectResult.paused(
-            decisionResult.state.pushContinuation(continuation),
-            decisionResult.pendingDecision,
+        return EffectResult.propagatePause(
+            decisionResult.state,
             decisionResult.events
         )
     }

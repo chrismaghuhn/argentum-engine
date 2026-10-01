@@ -2,6 +2,8 @@ package com.wingedsheep.engine.core
 
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.mechanics.targeting.PlayerProtectionRules
+import com.wingedsheep.sdk.core.CounterType
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
@@ -42,7 +44,6 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class ModalContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
@@ -58,10 +59,19 @@ data class ModalContinuation(
     val minChooseCount: Int = chooseCount,
     val selectedModeIndices: List<Int> = emptyList(),
     val availableIndices: List<Int>? = null,
+    /**
+     * Whether the same mode may be chosen more than once ([ModalEffect.allowRepeat]). The cast-time
+     * path has always honoured it; the resolution-time path used to narrow the option list after
+     * every pick regardless, which silently turned "choose X, you may repeat" into "choose X
+     * different" — and, once the caller ran out of distinct modes, dropped picks entirely
+     * (Frankenstein's Monster: X counters, each independently one of the same three).
+     */
+    val allowRepeat: Boolean = false,
     val outerTargets: List<ChosenTarget> = emptyList(),
     /** Position-preserving outer target slots, including nulls dropped by CR 608.2b. */
     val outerAlignedTargets: List<ChosenTarget?> = emptyList(),
     val outerNamedTargets: Map<String, ChosenTarget> = emptyMap(),
+    val pipeline: com.wingedsheep.engine.handlers.PipelineState = com.wingedsheep.engine.handlers.PipelineState.EMPTY,
     /**
      * "Choose one that hasn't been chosen" (Gandalf the Grey): when true, each chosen
      * mode index is recorded in the source's
@@ -76,8 +86,9 @@ data class ModalContinuation(
      * triggers *this turn* exclude it. Cleared at end of turn. Turn-scoped sibling of
      * [recordChosenModesOnSource].
      */
-    val recordChosenModesThisTurn: Boolean = false
-) : ContinuationFrame
+    val recordChosenModesThisTurn: Boolean = false,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * One queued (effect, targets, requirements) triple: an effect whose targets were already chosen, to
@@ -129,14 +140,20 @@ data class PreTargetedEffectEntry(
  */
 @Serializable
 data class ModalPreChosenContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
     val xValue: Int? = null,
     val triggeringEntityId: EntityId? = null,
     val triggeringPlayerId: EntityId? = null,
-    val storedCollections: Map<String, List<EntityId>> = emptyMap(),
+    val triggerContext: com.wingedsheep.engine.event.TriggerContext? = null,
+    /**
+     * The enclosing resolution's pipeline, so the modes still queued behind a paused one read the
+     * same stored collections/numbers the modes before them did. Without it a choose-two modal
+     * whose first mode pauses would run its second mode against an empty pipeline.
+     */
+    val pipeline: com.wingedsheep.engine.handlers.PipelineState =
+        com.wingedsheep.engine.handlers.PipelineState.EMPTY,
     val targetingSourceType: com.wingedsheep.engine.handlers.TargetingSourceType =
         com.wingedsheep.engine.handlers.TargetingSourceType.ANY,
     /**
@@ -150,8 +167,9 @@ data class ModalPreChosenContinuation(
     val outerTargets: List<ChosenTarget> = emptyList(),
     val outerAlignedTargets: List<ChosenTarget?> = emptyList(),
     val outerNamedTargets: Map<String, ChosenTarget> = emptyMap(),
-    val remainingEntries: List<PreTargetedEffectEntry>
-) : ContinuationFrame
+    val remainingEntries: List<PreTargetedEffectEntry>,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AutomaticContinuation
 
 /**
  * Auto-resumed continuation that runs the **spliced text** of a spell with cards spliced onto it
@@ -170,13 +188,11 @@ data class ModalPreChosenContinuation(
  */
 @Serializable
 data class SpliceTailContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
     val xValue: Int? = null,
     val triggeringEntityId: EntityId? = null,
-    val storedCollections: Map<String, List<EntityId>> = emptyMap(),
     val targetingSourceType: com.wingedsheep.engine.handlers.TargetingSourceType =
         com.wingedsheep.engine.handlers.TargetingSourceType.ANY,
     /**
@@ -186,8 +202,9 @@ data class SpliceTailContinuation(
      */
     @Deprecated("Use each PreTargetedEffectEntry.alignedTargets slot mask")
     val legalTargets: List<ChosenTarget>? = null,
-    val remainingEntries: List<PreTargetedEffectEntry>
-) : ContinuationFrame
+    val remainingEntries: List<PreTargetedEffectEntry>,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AutomaticContinuation
 
 /**
  * Auto-resumed continuation that drains the remaining chosen modes of a
@@ -209,7 +226,6 @@ data class SpliceTailContinuation(
  */
 @Serializable
 data class ModalChosenModeTailContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
@@ -220,8 +236,10 @@ data class ModalChosenModeTailContinuation(
      *  [ModalContinuation.outerTargets]. */
     val outerTargets: List<ChosenTarget> = emptyList(),
     val outerAlignedTargets: List<ChosenTarget?> = emptyList(),
-    val outerNamedTargets: Map<String, ChosenTarget> = emptyMap()
-) : ContinuationFrame
+    val outerNamedTargets: Map<String, ChosenTarget> = emptyMap(),
+    val pipeline: com.wingedsheep.engine.handlers.PipelineState = com.wingedsheep.engine.handlers.PipelineState.EMPTY,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AutomaticContinuation
 
 /**
  * Resume after player selects targets for a chosen mode of a modal spell.
@@ -237,7 +255,6 @@ data class ModalChosenModeTailContinuation(
  */
 @Serializable
 data class ModalTargetContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
@@ -253,8 +270,10 @@ data class ModalTargetContinuation(
      *  remaining no-target modes. See [ModalContinuation.outerTargets]. */
     val outerTargets: List<ChosenTarget> = emptyList(),
     val outerAlignedTargets: List<ChosenTarget?> = emptyList(),
-    val outerNamedTargets: Map<String, ChosenTarget> = emptyMap()
-) : ContinuationFrame
+    val outerNamedTargets: Map<String, ChosenTarget> = emptyMap(),
+    val pipeline: com.wingedsheep.engine.handlers.PipelineState = com.wingedsheep.engine.handlers.PipelineState.EMPTY,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after player selects a creature to copy for Clone-style effects.
@@ -269,6 +288,7 @@ data class ModalTargetContinuation(
  * @property castFaceDown Whether the spell was cast face-down
  * @property optional Whether the copy is optional (Clone is optional)
  * @property additionalSubtypes Subtypes to add to the copy (e.g., "Bird" for Mockingbird)
+ * @property additionalColors Colors added to the copy's colors (Lazotep Convert: black)
  * @property additionalKeywords Keywords to grant to the copy (e.g., FLYING for Mockingbird)
  * @property nameOverride When non-null, the copy keeps this name instead of the copied object's
  *   name (Superior Spider-Man: "except his name is Superior Spider-Man")
@@ -282,19 +302,23 @@ data class ModalTargetContinuation(
  */
 @Serializable
 data class CloneEntersContinuation(
-    override val decisionId: String,
     val spellId: EntityId,
     val controllerId: EntityId,
     val ownerId: EntityId,
     val castFaceDown: Boolean,
     val additionalSubtypes: List<String> = emptyList(),
+    val additionalColors: Set<Color> = emptySet(),
     val additionalKeywords: List<Keyword> = emptyList(),
+    val exceptions: com.wingedsheep.sdk.scripting.effects.CopyExceptions =
+        com.wingedsheep.sdk.scripting.effects.CopyExceptions.None,
     val nameOverride: String? = null,
     val powerOverride: Int? = null,
     val toughnessOverride: Int? = null,
     val exileCopiedCard: Boolean = false,
-    val additionalCounters: DynamicAmount? = null
-) : ContinuationFrame
+    val additionalCounters: DynamicAmount? = null,
+    /** [com.wingedsheep.sdk.scripting.EntersAsCopy.duration] — `EndOfTurn` tags the copy to revert at cleanup. */
+    val duration: com.wingedsheep.sdk.scripting.Duration = com.wingedsheep.sdk.scripting.Duration.Permanent
+) : AnswerContinuation
 
 /**
  * Resume after a player chooses (or declines) a card/permanent to copy for an
@@ -304,7 +328,7 @@ data class CloneEntersContinuation(
  * [CloneEntersContinuation]).
  *
  * The resumer copies the chosen object's copiable characteristics (CR 707.2) onto the entity, adds
- * any [additionalSubtypes] / [additionalKeywords] and overrides, taps the entity if
+ * any [additionalSubtypes] / [additionalColors] / [additionalKeywords] and overrides, taps the entity if
  * [tappedIfCopied] and a copy was actually made, optionally exiles the copied card, then fires the
  * entry's ETB triggers off a synthesized [ZoneChangeEvent] (so the copied identity's landfall /
  * "when ~ enters" triggers see the final characteristics). Declining leaves the permanent as its
@@ -319,19 +343,26 @@ data class CloneEntersContinuation(
  */
 @Serializable
 data class CloneEntersOnBattlefieldContinuation(
-    override val decisionId: String,
     val entityId: EntityId,
     val controllerId: EntityId,
     val fromZone: Zone? = null,
     val additionalSubtypes: List<String> = emptyList(),
+    val additionalColors: Set<Color> = emptySet(),
     val additionalKeywords: List<Keyword> = emptyList(),
+    val exceptions: com.wingedsheep.sdk.scripting.effects.CopyExceptions =
+        com.wingedsheep.sdk.scripting.effects.CopyExceptions.None,
     val nameOverride: String? = null,
     val powerOverride: Int? = null,
     val toughnessOverride: Int? = null,
     val exileCopiedCard: Boolean = false,
     val tappedIfCopied: Boolean = false,
-    val additionalCounters: DynamicAmount? = null
-) : ContinuationFrame
+    val additionalCounters: DynamicAmount? = null,
+    /** See [CloneEntersContinuation.duration]. */
+    val duration: com.wingedsheep.sdk.scripting.Duration = com.wingedsheep.sdk.scripting.Duration.Permanent,
+    /** Actual entry refs, retained across every as-enters decision. */
+    val entryOldObject: com.wingedsheep.engine.state.ObjectRef? = null,
+    val entryNewObject: com.wingedsheep.engine.state.ObjectRef? = null
+) : AnswerContinuation
 
 /**
  * Resume after player makes an "as enters" choice for a spell being resolved.
@@ -349,7 +380,6 @@ data class CloneEntersOnBattlefieldContinuation(
  */
 @Serializable
 data class EntersWithChoiceSpellContinuation(
-    override val decisionId: String,
     val spellId: EntityId,
     val controllerId: EntityId,
     val ownerId: EntityId,
@@ -394,7 +424,7 @@ data class EntersWithChoiceSpellContinuation(
      * granted riot instance is a separate choice). The resumer re-pauses that many more times.
      */
     val syntheticRiotRemaining: Int = 0
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume after a player makes an "as enters" choice for a permanent put **directly** onto the
@@ -417,7 +447,6 @@ data class EntersWithChoiceSpellContinuation(
  */
 @Serializable
 data class EntersWithChoiceOnBattlefieldContinuation(
-    override val decisionId: String,
     val entityId: EntityId,
     val controllerId: EntityId,
     val choiceType: com.wingedsheep.sdk.scripting.ChoiceType,
@@ -438,8 +467,13 @@ data class EntersWithChoiceOnBattlefieldContinuation(
     /** See [EntersWithChoiceSpellContinuation.syntheticRiot]. */
     val syntheticRiot: Boolean = false,
     /** See [EntersWithChoiceSpellContinuation.syntheticRiotRemaining]. */
-    val syntheticRiotRemaining: Int = 0
-) : ContinuationFrame
+    val syntheticRiotRemaining: Int = 0,
+    /** Actual entry refs, retained across every as-enters decision. */
+    val entryOldObject: com.wingedsheep.engine.state.ObjectRef? = null,
+    val entryNewObject: com.wingedsheep.engine.state.ObjectRef? = null,
+    /** The printed name of a permanent that entered as a copy, for the entry event. */
+    val copyOfOriginalName: String? = null
+) : AnswerContinuation
 
 /**
  * Resume after player answers yes/no to "pay life or enter tapped" for a land played directly.
@@ -454,12 +488,14 @@ data class EntersWithChoiceOnBattlefieldContinuation(
  */
 @Serializable
 data class PayLifeOrEnterTappedLandContinuation(
-    override val decisionId: String,
     val landId: EntityId,
     val controllerId: EntityId,
     val lifeCost: Int,
-    val fromZone: Zone
-) : ContinuationFrame
+    val fromZone: Zone,
+    /** Actual entry refs, retained across every as-enters decision. */
+    val entryOldObject: com.wingedsheep.engine.state.ObjectRef? = null,
+    val entryNewObject: com.wingedsheep.engine.state.ObjectRef? = null
+) : AnswerContinuation
 
 /**
  * Resume after player answers yes/no to "pay life or enter tapped" for a spell resolving.
@@ -475,12 +511,11 @@ data class PayLifeOrEnterTappedLandContinuation(
  */
 @Serializable
 data class PayLifeOrEnterTappedSpellContinuation(
-    override val decisionId: String,
     val spellId: EntityId,
     val controllerId: EntityId,
     val ownerId: EntityId,
     val lifeCost: Int
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume after player reveals cards for enters-with-reveal-counters (Amplify mechanic).
@@ -492,29 +527,27 @@ data class PayLifeOrEnterTappedSpellContinuation(
  * @property spellId The spell entity being resolved
  * @property controllerId The player who cast the spell
  * @property ownerId The card's owner
- * @property counterType Counter type description (e.g., "+1/+1")
+ * @property counterType The kind of counter to place
  * @property countersPerReveal Number of counters per revealed card
  */
 @Serializable
 data class RevealCountersContinuation(
-    override val decisionId: String,
     val spellId: EntityId,
     val controllerId: EntityId,
     val ownerId: EntityId,
-    val counterType: String,
+    val counterType: CounterType,
     val countersPerReveal: Int
-) : ContinuationFrame
+) : AnswerContinuation
 
 /** Resume an as-enters linked-exile selection before the permanent enters the battlefield. */
 @Serializable
 data class ExileCountersContinuation(
-    override val decisionId: String,
     val spellId: EntityId,
     val controllerId: EntityId,
     val ownerId: EntityId,
-    val counterType: String,
+    val counterType: CounterType,
     val countersPerCard: Int
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume after player selects permanents to sacrifice for Devour (CR 702.82).
@@ -529,17 +562,41 @@ data class ExileCountersContinuation(
  * @property controllerId The player who cast the spell
  * @property ownerId The card's owner
  * @property multiplier Counters placed per sacrificed permanent
- * @property counterType Serialized counter type (string form of [com.wingedsheep.sdk.scripting.events.CounterTypeFilter])
+ * @property counterType The kind of counter devour places
  */
 @Serializable
 data class DevourEntersContinuation(
-    override val decisionId: String,
     val spellId: EntityId,
     val controllerId: EntityId,
     val ownerId: EntityId,
     val multiplier: Int,
-    val counterType: String
-) : ContinuationFrame
+    val counterType: CounterType
+) : AnswerContinuation
+
+/**
+ * Resume after the player selects permanents to sacrifice for Devour on a token minted from a
+ * bare card definition (CR 702.82) — the Momir Basic avatar's random-creature token.
+ *
+ * The sibling of [DevourEntersContinuation] for the path where nothing was ever cast. There is no
+ * entity to hang the pause on: the token does not exist yet, because devour is an as-enters
+ * replacement (CR 614) and a devour creature is typically a 0/0 that state-based actions would bin
+ * on arrival if it were placed first and counted afterwards. So the decision is raised *before*
+ * the mint, keyed by the chosen [cardDefinitionId], and the resumer re-enters
+ * [com.wingedsheep.engine.handlers.effects.token.TokenFromDefinition.mint] with the resulting
+ * counter count so the token enters already carrying it.
+ *
+ * @property cardDefinitionId Name of the definition the token will copy
+ * @property controllerId The player creating (and controlling) the token
+ * @property multiplier Counters placed per sacrificed permanent
+ * @property counterType The kind of counter devour places
+ */
+@Serializable
+data class DevourMintedTokenContinuation(
+    val cardDefinitionId: String,
+    val controllerId: EntityId,
+    val multiplier: Int,
+    val counterType: CounterType
+) : AnswerContinuation
 
 /**
  * Resume after player chooses a budget modal combination (e.g., Season cycle pawprint modes).
@@ -558,14 +615,14 @@ data class DevourEntersContinuation(
  */
 @Serializable
 data class BudgetModalContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
     val modes: List<@Serializable BudgetMode>,
     val remainingBudget: Int,
     val selectedModeIndices: List<Int> = emptyList(),
-) : ContinuationFrame
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after player chooses a permanent to create a token copy of.
@@ -579,11 +636,11 @@ data class BudgetModalContinuation(
  */
 @Serializable
 data class CreateTokenCopyOfChosenContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val sourceId: EntityId?,
-    val sourceName: String?
-) : ContinuationFrame
+    val sourceName: String?,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after the controller chooses what an Aura token copy will enchant (CR 303.4f).
@@ -602,7 +659,6 @@ data class CreateTokenCopyOfChosenContinuation(
  */
 @Serializable
 data class CreateTokenCopyAuraHostContinuation(
-    override val decisionId: String,
     val effect: com.wingedsheep.sdk.scripting.effects.CreateTokenCopyOfTargetEffect,
     val context: com.wingedsheep.engine.handlers.EffectContext,
     val controllerId: EntityId,
@@ -611,7 +667,7 @@ data class CreateTokenCopyAuraHostContinuation(
     val remaining: Int,
     /** Effective copiable characteristics used to derive protection-based host legality. */
     val effectiveSource: PlayerProtectionRules.SourceCharacteristics? = null,
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Auto-resumed continuation that creates the **remaining** token copies of a multi-token
@@ -639,12 +695,11 @@ data class CreateTokenCopyAuraHostContinuation(
  */
 @Serializable
 data class CreateTokenCopyRemainingContinuation(
-    override val decisionId: String,
     val effect: @Serializable Effect,
     val context: com.wingedsheep.engine.handlers.EffectContext,
     val controllerId: EntityId,
     val remaining: Int,
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Resume after a player chooses an action from a list of labeled options.
@@ -664,7 +719,6 @@ data class CreateTokenCopyRemainingContinuation(
  */
 @Serializable
 data class ChooseActionContinuation(
-    override val decisionId: String,
     val choosingPlayerId: EntityId,
     val controllerId: EntityId,
     val sourceId: EntityId?,
@@ -672,5 +726,6 @@ data class ChooseActionContinuation(
     val choices: List<@Serializable EffectChoice>,
     val targets: List<ChosenTarget> = emptyList(),
     val namedTargets: Map<String, ChosenTarget> = emptyMap(),
-    val triggeringEntityId: EntityId? = null
-) : ContinuationFrame
+    val triggeringEntityId: EntityId? = null,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation

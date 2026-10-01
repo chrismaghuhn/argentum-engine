@@ -1,6 +1,7 @@
 package com.wingedsheep.gameserver.session
 
 import com.wingedsheep.engine.core.CombatResolutionDecision
+import com.wingedsheep.engine.core.LeylineDecisionContinuation
 import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.engine.core.PassPriority
@@ -10,10 +11,12 @@ import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownModeComponent
 import com.wingedsheep.sdk.scripting.effects.FaceDownMode
 import com.wingedsheep.engine.state.components.identity.MorphDataComponent
+import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.YesNoDecision
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.view.ClientStateTransformer
 import com.wingedsheep.gameserver.protocol.ServerMessage
 import com.wingedsheep.sdk.core.Step
@@ -118,6 +121,15 @@ class CombatDamageMaskingEnricherTest : FunSpec({
         // The opponent-decision status shown to the defender also masks the attacker's real name.
         val status = enricher.createOpponentDecisionStatus(decision, driver.state, defender)
         (status.sourceName ?: "") shouldNotContain "Centaur Courser"
+
+        // The same presenter must stop masking when the engine's shared identity authority says
+        // this viewer has learned the face-down blocker. The decision DTO stays unchanged; only
+        // the semantic visibility fact in state changes.
+        driver.replaceState(driver.state.updateEntity(manifestBlocker) { container ->
+            container.with(RevealedToComponent.to(attacker))
+        })
+        val afterReveal = enricher.enrich(decision, driver.state, attacker) as CombatResolutionDecision
+        afterReveal.blockers.single { it.id == manifestBlocker }.name shouldBe "Savannah Lions"
     }
 
     test("spectator decision status masks a face-down combat source name") {
@@ -143,7 +155,10 @@ class CombatDamageMaskingEnricherTest : FunSpec({
         )
         advanceUntilDecision(driver)
 
-        val builder = SpectatorStateBuilder(driver.cardRegistry, ClientStateTransformer(driver.cardRegistry))
+        val builder = SpectatorStateBuilder(
+            driver.cardRegistry,
+            ClientStateTransformer(driver.cardRegistry, predicateEvaluator = driver.services.predicateEvaluator),
+        )
         val seats = listOf(
             SpectatorSeat(attacker, "Attacker"),
             SpectatorSeat(defender, "Defender"),
@@ -163,14 +178,21 @@ class CombatDamageMaskingEnricherTest : FunSpec({
         val p1 = driver.player1
         val p2 = driver.player2
         val faceUpSource = driver.putCreatureOnBattlefield(p1, "Trample Beast")
-        val decision = YesNoDecision(
-            id = "decision",
-            playerId = p1,
-            prompt = "Choose",
-            context = DecisionContext(sourceId = faceUpSource, sourceName = "Trample Beast"),
+        val state = driver.state.suspendForDecision(
+            question = { id ->
+                YesNoDecision(
+                    id = id,
+                    playerId = p1,
+                    prompt = "Choose",
+                    context = DecisionContext(sourceId = faceUpSource, sourceName = "Trample Beast"),
+                )
+            },
+            answer = LeylineDecisionContinuation(p1, EntityId("leyline"), "Test leyline"),
+        ).state
+        val builder = SpectatorStateBuilder(
+            driver.cardRegistry,
+            ClientStateTransformer(driver.cardRegistry, predicateEvaluator = driver.services.predicateEvaluator),
         )
-        val state = driver.state.copy(pendingDecision = decision)
-        val builder = SpectatorStateBuilder(driver.cardRegistry, ClientStateTransformer(driver.cardRegistry))
         val seats = listOf(SpectatorSeat(p1, "P1"), SpectatorSeat(p2, "P2"))
         val roster = seats.mapIndexed { index, seat ->
             ServerMessage.PlayerSeatInfo(seat.playerId.value, seat.playerName, index)

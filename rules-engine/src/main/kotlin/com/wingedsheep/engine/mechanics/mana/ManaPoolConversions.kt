@@ -7,7 +7,8 @@ import com.wingedsheep.engine.state.components.player.hasCompleteFloatingManaPro
 
 /**
  * The only conversion seam between the immutable ECS component and the transient payment value.
- * Keep the authoritative source/color map and completeness marker in both directions.
+ * Keep the authoritative source/color map and completeness marker in both directions, and every
+ * aggregate provenance counter (subtype, source, card type) with them.
  */
 internal fun ManaPoolComponent.toManaPool(): ManaPool = ManaPool(
     white = white,
@@ -19,6 +20,7 @@ internal fun ManaPoolComponent.toManaPool(): ManaPool = ManaPool(
     restrictedMana = restrictedMana,
     manaBySubtype = manaBySubtype,
     manaBySource = manaBySource,
+    manaByCardType = manaByCardType,
     manaBySourceAndColor = manaBySourceAndColor,
     manaByFloatingBucket = manaByFloatingBucket,
     manaProvenanceCompleteness = manaProvenanceCompleteness,
@@ -49,7 +51,7 @@ internal fun fromManaPool(pool: ManaPool): ManaPoolComponent {
     val completeness = when {
         complete -> ManaProvenanceCompleteness.COMPLETE
         pool.manaProvenanceCompleteness == ManaProvenanceCompleteness.UNKNOWN &&
-            pool.manaBySource.isEmpty() && pool.manaBySubtype.isEmpty() &&
+            pool.manaBySource.isEmpty() && pool.manaBySubtype.isEmpty() && pool.manaByCardType.isEmpty() &&
             pool.manaBySourceAndColor.isEmpty() && pool.manaByFloatingBucket.isEmpty() ->
             ManaProvenanceCompleteness.UNKNOWN
         else -> ManaProvenanceCompleteness.INCOMPLETE
@@ -64,6 +66,7 @@ internal fun fromManaPool(pool: ManaPool): ManaPoolComponent {
         restrictedMana = pool.restrictedMana,
         manaBySubtype = pool.manaBySubtype,
         manaBySource = pool.manaBySource,
+        manaByCardType = pool.manaByCardType,
         manaBySourceAndColor = if (complete) pool.manaBySourceAndColor else emptyMap(),
         manaByFloatingBucket = if (complete) pool.manaByFloatingBucket else emptyMap(),
         manaProvenanceCompleteness = completeness,

@@ -355,8 +355,8 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
             objectIdentityStamps = mapOf(firstPermanent to 10L, secondPermanent to 11L),
             nextObjectIdentityStamp = 12L,
         )
-        EngineServices(cardRegistry())
-        val result = SacrificeExecutor().execute(
+        val services = EngineServices(cardRegistry())
+        val result = SacrificeExecutor(services.zones).execute(
             state = before,
             effect = SacrificeEffect(filter = GameObjectFilter.Land, count = 2),
             context = EffectContext(sourceId = null, controllerId = player),
@@ -513,8 +513,8 @@ private fun runUnorderedSacrificeSelection(
         objectIdentityStamps = options.mapIndexed { index, entityId -> entityId to (20L + index) }.toMap(),
         nextObjectIdentityStamp = 23L,
     )
-    EngineServices(registry)
-    val paused = SacrificeExecutor().execute(
+    val services = EngineServices(registry)
+    val paused = SacrificeExecutor(services.zones).execute(
         state = before,
         effect = SacrificeEffect(filter = GameObjectFilter.Land, count = 2),
         context = EffectContext(sourceId = null, controllerId = player),

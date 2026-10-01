@@ -10,7 +10,6 @@ import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.scripting.ConditionalStaticAbility
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
-import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 
 /**
@@ -30,10 +29,7 @@ val PuresteelPaladin = card("Puresteel Paladin") {
         "Metalcraft — Equipment you control have equip {0} as long as you control three or more artifacts."
 
     triggeredAbility {
-        trigger = Triggers.entersBattlefield(
-            filter = GameObjectFilter.Any.withSubtype("Equipment").youControl(),
-            binding = TriggerBinding.ANY,
-        )
+        trigger = Triggers.a(GameObjectFilter.Any.withSubtype("Equipment").youControl()).enters()
         optional = true
         effect = Effects.DrawCards(1)
     }

@@ -3,7 +3,9 @@ package com.wingedsheep.mtg.sets.definitions.m14.cards
 import com.wingedsheep.sdk.model.Printing
 import com.wingedsheep.sdk.model.Rarity
 
-/** Fireshrieker reprint in Magic 2014. */
+/**
+ * Fireshrieker reprint in M14. Canonical CardDefinition lives in its earliest set.
+ */
 val FireshriekerReprint = Printing(
     oracleId = "a02e1ca7-23c5-41e3-a744-72fc9e9dd8ba",
     name = "Fireshrieker",

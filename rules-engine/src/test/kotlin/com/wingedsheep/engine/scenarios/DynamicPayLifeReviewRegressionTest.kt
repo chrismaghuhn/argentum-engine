@@ -12,7 +12,7 @@ import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
-import com.wingedsheep.engine.core.ContinuationFrame
+import com.wingedsheep.engine.core.AnswerContinuation
 import com.wingedsheep.engine.core.ManaSourceOption
 import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.core.MayPayManaSelectionContinuation
@@ -284,7 +284,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         val driver = createDriver(initialLife = 1)
         val player = driver.activePlayer!!
         val sourceId = driver.putPermanentOnBattlefield(player, compositeAbility.name)
-        val handler = CostHandler(driver.cardRegistry)
+        val handler = CostHandler(driver.zones)
         val cost = driver.cardRegistry.getCard(compositeAbility.name)!!.activatedAbilities.single().cost
 
         handler.canPayAbilityCost(
@@ -313,7 +313,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         val player = driver.activePlayer!!
         val sourceId = driver.putPermanentOnBattlefield(player, compositeAbility.name)
         val cost = driver.cardRegistry.getCard(compositeAbility.name)!!.activatedAbilities.single().cost
-        val result = CostHandler(driver.cardRegistry).payAbilityCost(
+        val result = CostHandler(driver.zones).payAbilityCost(
             state = driver.state,
             cost = cost,
             sourceId = sourceId,
@@ -331,7 +331,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         val player = driver.activePlayer!!
         val spellId = driver.putCardInHand(player, compositeAdditionalSpell.name)
         val additionalCost = driver.cardRegistry.getCard(compositeAdditionalSpell.name)!!.script.additionalCosts.single()
-        val handler = CostHandler(driver.cardRegistry)
+        val handler = CostHandler(driver.zones)
 
         handler.canPayAdditionalCost(
             state = driver.state,
@@ -417,7 +417,11 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         val player = driver.activePlayer!!
         val sourceId = driver.putPermanentOnBattlefield(player, payOrSufferSource.name)
 
-        val result = PayOrSufferExecutor(driver.cardRegistry).execute(
+        val result = PayOrSufferExecutor(
+            driver.zones,
+            cardRegistry = driver.cardRegistry,
+            costPaymentService = { driver.services.costPaymentService }
+        ).execute(
             state = driver.state,
             effect = PayOrSufferEffect(
                 cost = PayCost.Atom(CostAtom.PayLife(1)),
@@ -438,7 +442,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         val driver = createDriver(initialLife = 10)
         val player = driver.activePlayer!!
         val sourceId = driver.putPermanentOnBattlefield(player, compositeAbility.name)
-        val evaluator = DynamicAmountEvaluator()
+        val evaluator: DynamicAmountEvaluator = driver.services.dynamicAmountEvaluator
 
         evaluator.evaluate(
             state = driver.state,
@@ -582,7 +586,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
             producesColorless = true,
             manaAbilityForColorless = selectedAbility,
         )
-        val result = ManaAbilitySideEffectExecutor(driver.cardRegistry) { state, _, _ ->
+        val result = ManaAbilitySideEffectExecutor(driver.zones, driver.cardRegistry) { state, _, _ ->
             EffectResult.success(state)
         }.tapSourcesWithSideEffects(
             state = driver.state,
@@ -611,6 +615,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
             player = player,
             cost = ManaCost.parse("{1}"),
             cardRegistry = driver.cardRegistry,
+            predicateEvaluator = driver.services.predicateEvaluator,
         )
 
         result.error shouldBe null
@@ -628,6 +633,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
             player = player,
             cost = ManaCost.parse("{G}"),
             cardRegistry = driver.cardRegistry,
+            predicateEvaluator = driver.services.predicateEvaluator,
         )
 
         result.error shouldBe null
@@ -650,13 +656,14 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
             prompt = "Pay {1}",
             context = DecisionContext(sourceId = sourceId, phase = DecisionPhase.RESOLUTION),
             canDecline = false,
-            cardRegistry = driver.cardRegistry,
+            manaSolver = driver.services.manaSolver,
         )
 
         val option = decision.availableSources.single()
         option.manaAbilityId shouldBe driver.cardRegistry.getCard(oneLifeManaSource.name)!!
             .activatedAbilities.single().id
         val result = ManaPaymentWindow.floatSelectedMana(
+            zones = driver.zones,
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{1}"),
@@ -665,7 +672,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
                 selectedSources = listOf(sourceId),
             ),
             availableSources = listOf(option),
-            services = EngineServices(driver.cardRegistry),
+            services = driver.services,
         )
 
         result.paid shouldBe true
@@ -682,6 +689,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         val before = driver.state
 
         val result = ManaPaymentWindow.floatSelectedMana(
+            zones = driver.zones,
             state = before,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -695,7 +703,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
                     manaAbilityId = abilityId,
                 )
             ),
-            services = EngineServices(driver.cardRegistry),
+            services = driver.services,
         )
 
         result.paid shouldBe false
@@ -721,12 +729,13 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         val before = driver.state
 
         val result = ManaPaymentWindow.floatSelectedMana(
+            zones = driver.zones,
             state = before,
             playerId = player,
             cost = ManaCost.parse("{1}"),
             response = ManaSourcesSelectedResponse("review-manual-insufficient", listOf(sourceId)),
             availableSources = listOf(option),
-            services = EngineServices(driver.cardRegistry),
+            services = driver.services,
         )
 
         result.paid shouldBe false
@@ -738,8 +747,10 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         val driver = createDriver(initialLife = 1)
         val player = driver.activePlayer!!
         val sourceId = driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
+        // The routing id belongs to the Suspension pairing the question with this answer; the
+        // resumer is driven directly here, so the response just names the question it answers.
+        val decisionId = "review-manual-resume"
         val continuation = MayPayManaSelectionContinuation(
-            decisionId = "review-manual-resume",
             playerId = player,
             sourceName = oneLifeManaSource.name,
             manaCost = ManaCost.parse("{1}"),
@@ -763,7 +774,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
                 state = driver.state,
                 continuation = continuation,
                 response = ManaSourcesSelectedResponse(
-                    decisionId = continuation.decisionId,
+                    decisionId = decisionId,
                     selectedSources = listOf(sourceId),
                 ),
                 checkForMore = { state, events -> ExecutionResult.success(state, events) },
@@ -780,8 +791,8 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         val sourceId = driver.putPermanentOnBattlefield(player, activationCostPainSource.name)
         val abilityId = driver.cardRegistry.getCard(activationCostPainSource.name)!!
             .activatedAbilities.single().id
+        val decisionId = "review-activation-cost-resume"
         val continuation = MayPayManaSelectionContinuation(
-            decisionId = "review-activation-cost-resume",
             playerId = player,
             sourceName = activationCostPainSource.name,
             manaCost = ManaCost.parse("{G}"),
@@ -805,7 +816,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
                 state = before,
                 continuation = continuation,
                 response = ManaSourcesSelectedResponse(
-                    decisionId = continuation.decisionId,
+                    decisionId = decisionId,
                     selectedSources = listOf(sourceId),
                 ),
                 checkForMore = { state, events -> ExecutionResult.success(state, events) },
@@ -825,7 +836,6 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         val abilityId = driver.cardRegistry.getCard(oneLifeManaSource.name)!!
             .activatedAbilities.single().id
         val original = MayPayManaSelectionContinuation(
-            decisionId = "review-manual-serialization",
             playerId = player,
             sourceName = oneLifeManaSource.name,
             manaCost = ManaCost.parse("{1}"),
@@ -844,8 +854,9 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         )
         val json = Json { serializersModule = engineSerializersModule }
 
-        val encoded = json.encodeToString(ContinuationFrame.serializer(), original)
-        val decoded = json.decodeFromString(ContinuationFrame.serializer(), encoded)
+        // An answer payload reaches the wire inside its Suspension; it has its own sealed root.
+        val encoded = json.encodeToString(AnswerContinuation.serializer(), original)
+        val decoded = json.decodeFromString(AnswerContinuation.serializer(), encoded)
 
         decoded shouldBe original
     }
@@ -856,7 +867,7 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
         driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
 
-        ManaSolver(driver.cardRegistry).solve(
+        ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).solve(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{2}"),

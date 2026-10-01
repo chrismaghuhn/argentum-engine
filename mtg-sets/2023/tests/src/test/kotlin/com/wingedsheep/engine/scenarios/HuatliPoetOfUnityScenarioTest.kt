@@ -2,11 +2,13 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.mechanics.layers.StateProjector
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.SagaComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.mtg.sets.definitions.lci.cards.HuatliPoetOfUnity
@@ -19,10 +21,12 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.effects.GrantStaticAbilityEffect
+import io.kotest.assertions.withClue
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Huatli, Poet of Unity // Roar of the Fifth People (LCI #189).
@@ -105,7 +109,7 @@ class HuatliPoetOfUnityScenarioTest : FunSpec({
         driver.giveColorlessMana(player, 3)
         val abilityId = HuatliPoetOfUnity.activatedAbilities.first().id
         driver.submit(ActivateAbility(playerId = player, sourceId = huatli, abilityId = abilityId))
-            .isSuccess shouldBe true
+            .outcome shouldBe Outcome.Done
         driver.bothPass()
         resolveStack(driver)
         clearBenignDecisions(driver)
@@ -172,7 +176,7 @@ class HuatliPoetOfUnityScenarioTest : FunSpec({
 
         // Before chapter II the vanilla bear doesn't have the ability — activation is rejected.
         driver.submit(ActivateAbility(playerId = active, sourceId = bear, abilityId = manaAbilityId))
-            .isSuccess shouldBe false
+            .outcome shouldNotBe Outcome.Done
 
         // Accrue lore to 2 — chapter II resolves during the advance, granting Roar the lasting static
         // "creatures you control have '{T}: Add {R}, {G}, or {W}'".
@@ -182,10 +186,17 @@ class HuatliPoetOfUnityScenarioTest : FunSpec({
 
         // The bear (a creature we control) can now activate the granted mana ability — the
         // activation handler honors a GrantActivatedAbility that was itself granted to Roar, not
-        // just printed ones. (Resolution of the ManaColorSet.Specific choice is the pre-existing
-        // AddManaOfChoice path, exercised by the Devotee / Vivi Ornitier cards.)
+        // just printed ones. The grant is a real mana ability, so it resolves off the stack and
+        // pauses for the {R}/{G}/{W} choice (the pre-existing AddManaOfChoice path, exercised by
+        // the Devotee / Vivi Ornitier cards) rather than completing in one step.
         driver.removeSummoningSickness(bear)
-        driver.submit(ActivateAbility(playerId = active, sourceId = bear, abilityId = manaAbilityId))
-            .isSuccess shouldBe true
+        val activation =
+            driver.submit(ActivateAbility(playerId = active, sourceId = bear, abilityId = manaAbilityId))
+        withClue("activation error: ${activation.error}") { activation.error shouldBe null }
+
+        val colorDecision = driver.pendingDecision
+        colorDecision shouldNotBe null
+        driver.submitDecision(active, ColorChosenResponse(colorDecision!!.id, Color.RED))
+        driver.state.getEntity(active)?.get<ManaPoolComponent>()?.red shouldBe 1
     }
 })

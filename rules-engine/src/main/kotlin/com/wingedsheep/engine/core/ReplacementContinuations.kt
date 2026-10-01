@@ -23,7 +23,6 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class ReplacementChoiceContinuation(
-    override val decisionId: String,
     val pendingEvent: PendingGameEvent,
     val options: List<GatheredReplacement>,
     /**
@@ -34,7 +33,7 @@ data class ReplacementChoiceContinuation(
     val declineOptional: List<GatheredReplacement> = emptyList(),
     val alreadyApplied: Set<ReplacementEffectIdentity>,
     val context: EffectContext? = null
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Generic yes/no continuation for an optional replacement that is not part
@@ -42,21 +41,19 @@ data class ReplacementChoiceContinuation(
  */
 @Serializable
 data class OptionalReplacementContinuation(
-    override val decisionId: String,
     val pendingEvent: PendingGameEvent,
     val gathered: GatheredReplacement,
     val alreadyApplied: Set<ReplacementEffectIdentity>,
     val context: EffectContext? = null
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Auto-resumed physical completion for a replacement-resolved zone change.
  */
 @Serializable
 data class ZoneChangeContinuation(
-    override val decisionId: String,
     val pendingEvent: PendingGameEvent.ZoneChangePending
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Continuation frame for resuming the original execution context after a
@@ -67,9 +64,7 @@ data class ZoneChangeContinuation(
  * stack. After it completes, this frame auto-resumes to carry the original
  * context forward so the caller can continue.
  *
- * This uses decisionId = "pending" for auto-resumption.
+ * Its stack position supplies the resumption relationship; it has no question ID.
  */
 @Serializable
-data class ReplacementResolveContinuation(
-    override val decisionId: String
-) : ContinuationFrame
+data object ReplacementResolveContinuation : AutomaticContinuation

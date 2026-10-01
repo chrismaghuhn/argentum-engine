@@ -26,7 +26,7 @@ import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
  * sacrifices *another nontoken* creature ([Costs.SacrificeAnother] excludes the source, plus a
  * `.nontoken()` filter). The token's X/X reads the sacrificed creature's toughness via
  * last-known information ([DynamicAmounts.sacrificedToughness], the Priest of Yawgmoth
- * [EntityReference.Sacrificed] LKI template), fed to both P and T of a dynamic token
+ * [EffectTarget.SacrificedAsCost] LKI template), fed to both P and T of a dynamic token
  * ([Effects.CreateDynamicToken], the Soul Separator Zombie-token shape) — so a 0-toughness
  * sacrifice makes a 0/0 that dies as a state-based action.
  */
@@ -44,7 +44,7 @@ val GeralfVisionaryStitcher = card("Geralf, Visionary Stitcher") {
     staticAbility {
         ability = GrantKeyword(
             Keyword.FLYING,
-            GroupFilter(GameObjectFilter.Creature.withSubtype(Subtype.ZOMBIE).youControl())
+            GroupFilter(GameObjectFilter.Permanent.withSubtype(Subtype.ZOMBIE).youControl())
         )
     }
 

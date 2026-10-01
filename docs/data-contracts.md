@@ -43,14 +43,22 @@ Sent whenever the game state changes.
           {
             "id": "ent-2",
             "name": "Generous Gift"
-          },
-          // Visible to owner
-          {
-            "id": "ent-3",
-            "name": "???"
           }
-          // Masked to opponent
+          // Visible to owner. An opponent receives no entry at all, only the zone's size:
+          // a hidden card is never referenced by ID, since an ID is enough to follow the card.
+          // For the same reason a browser seat that loses track of a card it saw (a revealed
+          // hand card cast face down, a card shuffled away and manifested) gets it under a new,
+          // seat-specific ID ("h1", "h2", …). The client echoes IDs back as received; a stale
+          // one is rejected ("Refers to a card by a name you no longer have").
         ]
+      },
+      {
+        "name": "LIBRARY",
+        "ownerId": "player-1",
+        "size": 53,
+        "cards": [],
+        "positions": []
+        // Only cards the viewer may identify are listed, each with its index from the top.
       }
     ]
   },
@@ -185,6 +193,9 @@ panel is the pre-existing view, and shows card backs for everything not revealed
 `StateDelta.deck` is sent only when a count actually moved (a draw, a mill, a tutor), so the
 many updates that just shuffle the battlefield around don't re-send the list. Absent from a delta
 means unchanged — the client carries the previous value forward.
+
+`StateDelta.activeYields` and `StateDelta.voidActive` follow the same rule: present only when
+they changed. `StateDeltaTest` fails when a new `ClientGameState` field is left off `StateDelta`.
 
 ### C. Connection Liveness (Client <-> Server)
 
@@ -495,9 +506,15 @@ sealed, or premade), then one N-player game".
     individually (CR 104.3b), and a team loses only once all its members have left (CR 104.2c).
     `maxPlayers` caps at 8.
 
-  The seat roster (`PlayerSeatInfo`) carries `teamIndex` for grouping and a game-level
-  `teamSharedLife` flag (`true` for 2HG, `false` for Team vs. Team) so the client renders either a
-  single shared-life team header or per-player life. Ignored outside a team mode.
+  Both facts reach the client twice. The seat roster (`PlayerSeatInfo`) carries `teamIndex` for
+  grouping and a game-level `teamSharedLife` flag (`true` for 2HG, `false` for Team vs. Team), and
+  **`ClientPlayer` carries the same two fields on every state update**. The roster alone is not
+  enough: it rides a one-shot game-start message, so a client that joins by *reconnecting*
+  (hotseat, scenario, a dropped connection resuming) never sees it and would render a team game as
+  a free-for-all. The client re-derives its seat → team map from the state on each update, which
+  covers every entry path into live play; spectate and replay still seed theirs from their own
+  rosters. Both `ClientPlayer` fields are additive with defaults (`null` / `false`), so they
+  serialize away entirely outside a team mode.
 - **Free mulligan.** A game that begins with more than two players (any FFA pod) uses the CR 800.6
   multiplayer mulligan: a player's *first* mulligan is free — it bottoms 0 cards and doesn't count
   toward the mulligan limit. This is engine-internal; the existing `MulliganDecision.cardsToPutOnBottom`
@@ -550,6 +567,7 @@ shape + builder via `ScenarioBuilderService` / `ScenarioSessionFactory`).
     "graveyard": ["Mountain"],
     "exile": ["Swamp"],
     "library": ["Forest", "Forest"],
+    "sideboard": ["Boomerang Basics"],
     "commanders": []
   },
   "player2": { "lifeTotal": 20, "battlefield": [{ "name": "Hill Giant" }] },
@@ -563,6 +581,9 @@ shape + builder via `ScenarioBuilderService` / `ScenarioSessionFactory`).
   yourself — one token controls both seats), `AI` (engine AI, requires `game.ai.enabled`;
   `aiPlayer` 1|2 picks the seat), or `TWO_PLAYER` (two tokens). When omitted it is derived from
   `aiPlayer` for back-compat.
+- `sideboard` is the "outside the game" zone (CR 400.11). Without it a card that reaches outside
+  the game has nothing to find, so the wish cycle and Strixhaven's **Learn** (CR 701.48) can only
+  ever take their other branch — seed a Lesson here to exercise Learn's Lesson half.
 - Validation rejects unknown card names and (production) enforces per-zone + total card caps,
   returning `400` with `{ "errors": ["Unknown card: …", …] }`.
 - `customCards` (optional) is a list of **Scryfall(-style) card objects, as JSON strings**. Argentum
@@ -637,9 +658,31 @@ from a state-threaded counter (never a UUID), `ReplayReconstructor` rebuilds the
 deltas}` stream the viewer consumes. This is kilobytes per game instead of a masked snapshot + a
 per-frame delta + a full unmasked `GameState` per frame.
 
-Decision ids are minted afresh each run (they are not part of the deterministic state), so a
-recorded `SubmitDecision` is re-bound to the freshly created decision's id during reconstruction;
-the choice payload (entity-id targets/cards) is unchanged, so the outcome is identical.
+Decision IDs now come from the serialized `GameState.nextRoutingId` counter, independently of
+entity allocation and gameplay RNG. Repeating the same execution reproduces those IDs, so current
+`SubmitDecision` records already address the reconstructed decision. Historical recordings used
+random or clock-based IDs; reconstruction retains rebinding for those records while preserving
+the recorded choice payload (entity-id targets/cards). Routing IDs are game-local correlation
+tokens and must not be interpreted as globally unique identifiers or semantic action identity.
+
+Both browser and AI adapters produce `LiveActionSubmission`: a canonical engine action and the
+live `interactionEpoch` from the update that originated the choice. `GameSession.executeLiveAction`
+checks that epoch and any pending-question ID under the same lock as execution, before changing
+undo checkpoints, replay inputs, or message-id bookkeeping. Successful undo rotates the live
+epoch without changing the restored engine checkpoint. A new session instance starts a new epoch.
+
+Every full and delta update captures the epoch under the session lock. Browser decisions retain
+an epoch-prefixed opaque ID; `executeClientAction` decodes it and verifies any explicit envelope
+origin agrees. Other browser actions require the originating `interactionEpoch` in `SubmitAction`.
+The client retains that origin while selecting targets, modes, or combat assignments, and clears
+in-progress interaction state when a replacement epoch arrives. It never stamps an older choice
+with the latest update's epoch. Older clients lacking an origin for ordinary actions fail closed.
+
+In-process AI updates retain raw question IDs for engine simulations. The AI carries the update's
+epoch through thinking and approval delays into its callback. Its adapter and every fallback action
+use the same live acceptance operation. Missing or obsolete AI deliveries are discarded before
+fallbacks, rejection accounting, or broadcasts. Rejection accounting and any resulting concession
+also check the originating epoch atomically. Replay records only canonical engine actions.
 
 Payment modes are part of the recorded action payload. In particular, an equip action's
 `alternativePayment.equipPayment` is serialized unchanged (`NORMAL` or `FREE_FIRST_EQUIP`); replay
@@ -655,6 +698,27 @@ accounts (and therefore a database) are enabled, and a bounded `InMemoryReplaySt
 running without one. In-progress recordings are flushed to the store every few seconds by
 `ReplayCheckpointFlusher` and picked back up on restart, which is what lets the Redis session blob
 carry no replay data at all.
+
+#### Bounded recordings
+
+A recording stops after `ReplayRecordingPolicy.MAX_RECORDED_ACTIONS` (25,000) actions and the record
+is flagged `truncated`. Storage isn't the reason — the input log is ~7 stored bytes per action — the
+cost of *recording* is: the live log is a copy-on-write list, so a game's recording is O(n²) element
+copies in its own length, and the flusher re-encodes the whole log every few seconds until the game
+ends. Both are free at the few hundred actions a real game takes and ruinous at six figures.
+
+Past the cap the log is frozen: an undo may still shorten it (leaving a valid shorter prefix) but
+nothing may extend it again, or the record would have a hole in the middle and reconstruct a game
+nobody played. The result is the same "keep the honest shorter prefix" outcome a lost flush already
+produces, and `viewerPayload` reports it — the frames are an exact re-simulation and
+`stateReproducible` stays true, so the scenario buttons keep working; only the ending is missing, and
+the viewer shows a **Partial recording** badge (as against **From archive**, which means `DIVERGED`).
+
+The cap sits deliberately *below* the game-level runaway backstop
+(`GameStallGuard.MAX_ACTIONS`, 50,000 — see
+[engine-server-interface.md](engine-server-interface.md) → *The server's own game over*): if a game
+gets that long we would rather truncate the record than end a game somebody is playing, so the
+recording gives up first and the game carries on.
 
 The flush is on a timer, not per action, so a crash can lose the tail of a recording. Splicing the
 rest of the game onto that short prefix would produce a record of a game nobody played, so each
@@ -750,8 +814,12 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym wire contract is currently `argentum-gym-contract@v1.26-repeat-count-domain`, and the
+The Gym wire contract is currently `argentum-gym-contract@v1.27-upstream-sync-05` (the fork's
+v1.26 contract merged with upstream's v1.3–v1.6 observation changes: per-player zone views in
+`TRAINING_OBSERVATION_ZONE_ORDER`, including SIDEBOARD; stack abilities carrying their source name and
+description; null power/toughness for a noncreature permanent; projected entity names), and the
 complete stored action-domain contract is `argentum-gym-action-domain@v2`. The preceding
+`argentum-gym-contract@v1.26-repeat-count-domain`,
 `argentum-gym-contract@v1.25-target-payment-domain` and
 `argentum-gym-contract@v1.24-mana-color-domain` identifiers remain historical and must not be
 interpreted as the current observation schema.
@@ -1177,7 +1245,7 @@ joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 
 The preceding Gym observation schemas were
 `argentum-gym-contract@v1.25-target-payment-domain` and
 `argentum-gym-contract@v1.24-mana-color-domain`. Current observations use
-`argentum-gym-contract@v1.26-repeat-count-domain`. `PaymentDomainV4` remains a historical
+`argentum-gym-contract@v1.27-upstream-sync-05`. `PaymentDomainV4` remains a historical
 payment-domain DTO. A client must compare the hash before interpreting the current payment domain
 and fail closed on mismatch. Historical V4 payloads remain decodable only through their historical
 DTO and are not reinterpreted as V5.
@@ -1376,3 +1444,10 @@ and the authoritative `KeepHand` / `TakeMulligan` / `BottomCards` actions:
 - There is no random, first-card, implicit-keep, Engine-AI, auto-pass, or other fallback on
   any ML path. A normal ML seat can now progress from initial `GameSession` start through
   pregame into gameplay. No Arena ML launcher or UI is part of C1_07C.
+
+### Mana spending permissions
+
+`ClientPlayer.manaPaymentColors` is an optional map from required pip symbols to accepted actual
+mana colors, computed by the engine. For Sunglasses of Urza it includes `"R": ["R", "W"]`.
+The existing mana readouts consume these server-provided options; mana source/pool colors and printed
+costs remain unchanged. The field defaults to empty and is public information.

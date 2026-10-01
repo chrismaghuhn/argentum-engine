@@ -4,7 +4,6 @@ import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.core.ActivateAbility
-import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
@@ -25,11 +24,13 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 import com.wingedsheep.sdk.scripting.references.Player
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 private data class ActivatedSourceWitnessFacts(
     val beforeWitnessPresent: Boolean,
@@ -49,9 +50,10 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         val ability = TriggeredAbility.create(
             trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
             effect = Effects.GainLife(1),
-            targetRequirement = TargetCreature(),
+            targetRequirement = TargetObject(filter = TargetFilter.Creature),
             descriptionOverride = "Synthetic pre-stack authority fizzle",
-        ).copy(id = AbilityId("synthetic-pre-stack-authority-fizzle"))
+            id = AbilityId("synthetic-pre-stack-authority-fizzle"),
+        )
         val pending = PendingTrigger(
             ability = ability,
             sourceId = sourceId,
@@ -66,8 +68,8 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         pending.effectiveSourceEndpointAuthority shouldBe
             AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION
         pending.effectiveSourceObjectIncarnationStamp(driver.state) shouldBe sourceStamp
-        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
-            .processTargetedTrigger(driver.state, pending, TargetCreature())
+        val result = driver.services.triggerProcessor
+            .processTargetedTrigger(driver.state, pending, TargetObject(filter = TargetFilter.Creature))
         val event = result.events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
 
         result.error shouldBe null
@@ -107,12 +109,12 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
             sourceEndpointAuthority = AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION,
             sourceObjectIncarnationStamp = capturedSourceStamp,
         )
-        val resolver = StackResolver(driver.cardRegistry)
+        val resolver = driver.services.stackResolver
         val placement = resolver.putTriggeredAbility(
             state = initialState,
             ability = ability,
             targets = listOf(ChosenTarget.Permanent(targetId)),
-            targetRequirements = listOf(TargetCreature()),
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
         )
         placement.error shouldBe null
         val stackId = placement.newState.stack.single()
@@ -174,12 +176,12 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
             controllerId = driver.player1,
             effect = Effects.GainLife(1),
         )
-        val resolver = StackResolver(driver.cardRegistry)
+        val resolver = driver.services.stackResolver
         val placement = resolver.putActivatedAbility(
             state = initialState,
             ability = ability,
             targets = listOf(ChosenTarget.Permanent(targetId)),
-            targetRequirements = listOf(TargetCreature()),
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
             targetLockState = initialState,
         )
         placement.error shouldBe null
@@ -255,7 +257,7 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(targetId)),
             ),
         )
-        activation.isSuccess shouldBe true
+        activation.outcome shouldBe Outcome.Done
         val activationEvent = activation.events.filterIsInstance<AbilityActivatedEvent>().single()
         activationEvent.sourceId shouldBe sourceId
         // The existing AbilityActivatedEvent History-C contract binds its source at activation time.
@@ -286,7 +288,7 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         )
         val resolutionSourceStamp = changedBeforeResolution.objectIdentityStamps[sourceId]
         (resolutionSourceStamp != activationSourceStamp) shouldBe true
-        val fizzle = StackResolver(driver.cardRegistry).resolveTop(changedBeforeResolution)
+        val fizzle = driver.services.stackResolver.resolveTop(changedBeforeResolution)
             .events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
         fizzle.sourceId shouldBe sourceId
         fizzle.reason shouldBe "All targets are invalid"
@@ -325,7 +327,7 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(targetId)),
             ),
         )
-        activation.isSuccess shouldBe true
+        activation.outcome shouldBe Outcome.Done
         val activationEvent = activation.events.filterIsInstance<AbilityActivatedEvent>().single()
         activationEvent.sourceId shouldBe sourceId
         // The existing AbilityActivatedEvent History-C contract binds its source at activation time.
@@ -355,7 +357,7 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
             ZoneKey(driver.player2, Zone.GRAVEYARD),
             targetId,
         )
-        val fizzle = StackResolver(driver.cardRegistry).resolveTop(beforeResolution)
+        val fizzle = driver.services.stackResolver.resolveTop(beforeResolution)
             .events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
         fizzle.sourceId shouldBe sourceId
         fizzle.reason shouldBe "All targets are invalid"
@@ -378,7 +380,7 @@ private val persistentActivationSource = card("Synthetic Persistent Activation S
     typeLine = "Artifact"
     activatedAbility {
         cost = Costs.Tap
-        target = TargetCreature()
+        target = TargetObject(filter = TargetFilter.Creature)
         effect = Effects.GainLife(1)
     }
 }

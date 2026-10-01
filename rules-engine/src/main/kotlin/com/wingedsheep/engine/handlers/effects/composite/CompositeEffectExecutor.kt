@@ -8,6 +8,8 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
 import kotlin.reflect.KClass
+import com.wingedsheep.engine.core.Outcome
+import com.wingedsheep.engine.core.Rejection
 
 /**
  * Executor for CompositeEffect.
@@ -44,8 +46,7 @@ class CompositeEffectExecutor(
             // The EffectContinuation will be below it, and checkForMoreContinuations will
             // process it after the sub-effect's continuation is handled.
             val stateForExecution = if (remainingEffects.isNotEmpty()) {
-                val continuation = EffectContinuation(
-                    decisionId = "pending", // Will be found by checkForMoreContinuations
+                val continuation = EffectContinuation( // Will be found by checkForMoreContinuations
                     remainingEffects = remainingEffects,
                     effectContext = currentContext
                 )
@@ -67,12 +68,13 @@ class CompositeEffectExecutor(
                 return EffectResult(
                     state = cleanState,
                     events = allEvents + result.events,
-                    error = result.error ?: "Unsupported path during composite execution",
+                    outcome = result.outcome as? Outcome.Rejected
+                        ?: Outcome.Rejected(Rejection.ExecutionFailed("Unsupported path during composite execution")),
                     diagnostics = allDiagnostics,
                 )
             }
 
-            if (!result.isSuccess && !result.isPaused) {
+            if (result.outcome !is Outcome.Done && result.outcome !is Outcome.Paused) {
                 if (effect.stopOnError) {
                     // Cost-then-payoff composite: if the cost fails, abort remaining effects.
                     // Used by the GatedEffect Gate.MayPay resumer, where paying the cost is
@@ -103,14 +105,13 @@ class CompositeEffectExecutor(
                 continue
             }
 
-            if (result.isPaused) {
+            if (result.outcome is Outcome.Paused) {
                 // Sub-effect needs a decision.
                 // Its continuation is on top of the stack.
                 // Our pre-pushed EffectContinuation is underneath, ready to be
                 // processed by checkForMoreContinuations after the sub-effect resolves.
-                return EffectResult.paused(
+                return EffectResult.propagatePause(
                     result.state,
-                    result.pendingDecision!!,
                     allEvents + result.events,
                     diagnostics = allDiagnostics,
                 )
@@ -124,6 +125,7 @@ class CompositeEffectExecutor(
                 result.state
             }
             allEvents.addAll(result.events)
+            currentContext = currentContext.authorizeObjectMoves(result.events)
 
             // Merge any updated collections / subtype groups / stored numbers / chosen values from the sub-effect into the context
             if (result.updatedCollections.isNotEmpty() ||

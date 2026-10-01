@@ -1,7 +1,6 @@
 package com.wingedsheep.mtg.sets.definitions.ths.cards
 
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Patterns
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
@@ -10,7 +9,8 @@ import com.wingedsheep.sdk.scripting.targets.EffectTarget
  * Read the Bones
  * {2}{B}
  * Sorcery
- * Scry 2, then draw two cards. You lose 2 life.
+ *
+ * Scry 2, then draw two cards. You lose 2 life. (To scry 2, look at the top two cards of your library, then put any number of them on the bottom and the rest on top in any order.)
  */
 val ReadTheBones = card("Read the Bones") {
     manaCost = "{2}{B}"
@@ -19,11 +19,9 @@ val ReadTheBones = card("Read the Bones") {
     oracleText = "Scry 2, then draw two cards. You lose 2 life. (To scry 2, look at the top two cards of your library, then put any number of them on the bottom and the rest on top in any order.)"
 
     spell {
-        effect = Effects.Composite(
-            Patterns.Library.scry(2),
-            Effects.DrawCards(2),
+        effect = Effects.Scry(2) then
+            Effects.DrawCards(2) then
             Effects.LoseLife(2, EffectTarget.Controller)
-        )
     }
 
     metadata {
@@ -31,6 +29,6 @@ val ReadTheBones = card("Read the Bones") {
         collectorNumber = "101"
         artist = "Lars Grant-West"
         flavorText = "The dead know lessons the living haven't learned."
-        imageUri = "https://cards.scryfall.io/normal/front/d/b/dbbdbf1a-2d15-4291-aa19-614f854d8cb3.jpg?1783939772"
+        imageUri = "https://cards.scryfall.io/normal/front/d/b/dbbdbf1a-2d15-4291-aa19-614f854d8cb3.jpg"
     }
 }

@@ -1,10 +1,10 @@
 package com.wingedsheep.mtg.sets.definitions.dmu.cards
 
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.KeywordAbility
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
  * Tear Asunder — Dominaria United #183 (canonical printing).
@@ -27,10 +27,10 @@ val TearAsunder = card("Tear Asunder") {
     keywordAbility(KeywordAbility.kicker("{1}{B}"))
 
     spell {
-        val baseTarget = target("target artifact or enchantment", Targets.ArtifactOrEnchantment)
+        val baseTarget = target(TargetFilter.ArtifactOrEnchantment)
         effect = Effects.Exile(baseTarget)
 
-        val kickedTarget = kickerTarget("target nonland permanent", Targets.NonlandPermanent)
+        val kickedTarget = kickerTarget(TargetFilter.NonlandPermanent)
         kickerEffect = Effects.Exile(kickedTarget)
     }
 

@@ -113,6 +113,7 @@ class LegalActionEnricher(
             mandatoryBlockerAssignments = action.mandatoryBlockerAssignments,
             hasXCost = action.hasXCost,
             maxAffordableX = action.maxAffordableX,
+            maxAdditionalManaForCounters = action.maxAdditionalManaForCounters,
             minX = action.minX,
             isManaAbility = action.isManaAbility,
             requiresManaColorChoice = action.requiresManaColorChoice,
@@ -130,6 +131,7 @@ class LegalActionEnricher(
             hasHarmonize = action.hasHarmonize,
             validHarmonizeCreatures = action.harmonizeCreatures?.map { it.toDto() },
             manaCostString = action.manaCostString,
+            manaCostPerExtraTarget = action.manaCostPerExtraTarget,
             minimumManaCostString = minimumManaCostString(action),
             requiresDamageDistribution = action.requiresDamageDistribution,
             totalDamageToDistribute = action.totalDamageToDistribute,
@@ -138,6 +140,7 @@ class LegalActionEnricher(
             availableManaSources = if (shouldExposeManaSources(action)) manaSourceInfos else null,
             eligibleRestrictedMana = eligibleRestrictedMana,
             sourceZone = action.sourceZone,
+            castsTransformed = action.castsTransformed,
             tapForPower = action.tapForPower,
             tapForPowerRequired = action.tapForPowerRequired,
             tapForPowerCreatures = action.tapForPowerCreatures?.map { it.toDto() },
@@ -257,7 +260,8 @@ class LegalActionEnricher(
         xConstrainsManaValue = xConstrainsManaValue,
         xConstrainsManaValueExactly = xConstrainsManaValueExactly,
         xConstrainsPower = xConstrainsPower,
-        xConstrainsCount = xConstrainsCount
+        xConstrainsCount = xConstrainsCount,
+        mustDifferFromEarlier = mustDifferFromEarlier
     )
 
     private fun AdditionalCostData.toDto() = AdditionalCostInfo(
@@ -278,8 +282,15 @@ class LegalActionEnricher(
         validExileTargets = validExileTargets,
         exileMinCount = exileMinCount,
         exileMaxCount = exileMaxCount,
+        exileMinTotalWeight = exileMinTotalWeight,
+        exileCardWeights = exileCardWeights,
+        exileWeightUnit = exileWeightUnit,
+        exileCardTypes = exileCardTypes,
+        exileWeightPerTarget = exileWeightPerTarget,
         validBeholdTargets = validBeholdTargets,
         beholdCount = beholdCount,
+        validRevealTargets = validRevealTargets,
+        revealCount = revealCount,
         counterRemovalCreatures = counterRemovalCreatures.map { it.toDto() },
         validBlightTargets = validBlightTargets,
         blightAmount = blightAmount,
@@ -320,7 +331,8 @@ class LegalActionEnricher(
     private fun TapForPowerCreatureData.toDto() = TapForPowerCreatureInfo(
         entityId = entityId,
         name = name,
-        power = power
+        power = power,
+        canAttack = canAttack
     )
 
     private fun CounterRemovalCreatureData.toDto() = CounterRemovalCreatureInfo(

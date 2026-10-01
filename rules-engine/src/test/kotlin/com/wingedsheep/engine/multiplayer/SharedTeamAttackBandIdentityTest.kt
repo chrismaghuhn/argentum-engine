@@ -26,6 +26,8 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * The shared active team may submit the combined attack through either teammate's input window.
@@ -95,7 +97,7 @@ class SharedTeamAttackBandIdentityTest : FunSpec({
                 bands = listOf(setOf(first, second)),
             ),
         ).result
-        check(firstDeclaration.isSuccess) { "first declaration failed: ${firstDeclaration.error}" }
+        check((firstDeclaration.outcome is Outcome.Done)) { "first declaration failed: ${firstDeclaration.error}" }
 
         val secondDeclaration = processor.process(
             firstDeclaration.newState.withPriority(players[1]),
@@ -105,7 +107,7 @@ class SharedTeamAttackBandIdentityTest : FunSpec({
                 bands = listOf(setOf(third, fourth)),
             ),
         ).result
-        check(secondDeclaration.isSuccess) { "second declaration failed: ${secondDeclaration.error}" }
+        check((secondDeclaration.outcome is Outcome.Done)) { "second declaration failed: ${secondDeclaration.error}" }
 
         val bandIds = listOf(first, second, third, fourth).map { attacker ->
             secondDeclaration.newState.getEntity(attacker)
@@ -133,7 +135,7 @@ class SharedTeamAttackBandIdentityTest : FunSpec({
                 bands = listOf(setOf(first, second)),
             ),
         ).result
-        check(firstDeclaration.isSuccess) { "first declaration failed: ${firstDeclaration.error}" }
+        check((firstDeclaration.outcome is Outcome.Done)) { "first declaration failed: ${firstDeclaration.error}" }
 
         val exhaustedBandId = "combat-band-${Long.MAX_VALUE}"
         val exhaustedState = firstDeclaration.newState
@@ -154,7 +156,7 @@ class SharedTeamAttackBandIdentityTest : FunSpec({
             ),
         ).result
 
-        rejected.isSuccess shouldBe false
+        rejected.outcome shouldNotBe Outcome.Done
         rejected.newState shouldBe before
     }
 })

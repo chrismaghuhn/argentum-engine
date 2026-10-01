@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ContinuationFrame
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.SelectCardsDecision
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.continuations.SacrificeAndPayContinuationResumer
 import com.wingedsheep.engine.handlers.effects.player.AnyPlayerMayPayExecutor
@@ -122,7 +123,7 @@ class CostExcludeSelfConsistencyTest : ScenarioTestBase() {
         test("COST-EXCLUDE-04: AnyPlayerMayPay includes a paying player's source when excludeSelf=false") {
             val game = sacrificeGame()
             val source = cardOnBattlefield(game.state, game.player1Id, "Goblin Guide")
-            val result = AnyPlayerMayPayExecutor().execute(
+            val result = anyPlayerMayPayExecutor().execute(
                 game.state,
                 anyPlayerCost(excludeSelf = false),
                 EffectContext(sourceId = source, controllerId = game.player1Id)
@@ -135,7 +136,7 @@ class CostExcludeSelfConsistencyTest : ScenarioTestBase() {
         test("COST-EXCLUDE-05: AnyPlayerMayPay excludes a paying player's source when excludeSelf=true") {
             val game = sacrificeGame()
             val source = cardOnBattlefield(game.state, game.player1Id, "Goblin Guide")
-            val result = AnyPlayerMayPayExecutor().execute(
+            val result = anyPlayerMayPayExecutor().execute(
                 game.state,
                 anyPlayerCost(excludeSelf = true),
                 EffectContext(sourceId = source, controllerId = game.player1Id)
@@ -159,22 +160,26 @@ class CostExcludeSelfConsistencyTest : ScenarioTestBase() {
                     .withCardOnBattlefield(2, "Goblin Guide")
                     .build()
                 val source = cardOnBattlefield(game.state, game.player2Id, "Goblin Guide")
-                val first = AnyPlayerMayPayExecutor().execute(
+                val first = anyPlayerMayPayExecutor().execute(
                     game.state,
                     anyPlayerCost(excludeSelf),
                     EffectContext(sourceId = source, controllerId = game.player2Id)
                 )
                 val firstDecision = first.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
-                val continuation = first.state.peekContinuation()
-                    .shouldBeInstanceOf<AnyPlayerMayPayContinuation>()
-                val encoded = json.encodeToString(ContinuationFrame.serializer(), continuation)
-                val decoded = json.decodeFromString(ContinuationFrame.serializer(), encoded)
-                    .shouldBeInstanceOf<AnyPlayerMayPayContinuation>()
+                // The question and the answer continuation that consumes it are one Suspension frame.
+                val suspension = first.state.peekContinuation().shouldBeInstanceOf<Suspension>()
+                val continuation = suspension.answer.shouldBeInstanceOf<AnyPlayerMayPayContinuation>()
+                val encoded = json.encodeToString(ContinuationFrame.serializer(), suspension)
+                val decodedSuspension = json.decodeFromString(ContinuationFrame.serializer(), encoded)
+                    .shouldBeInstanceOf<Suspension>()
+                decodedSuspension shouldBe suspension
+                val decoded = decodedSuspension.answer.shouldBeInstanceOf<AnyPlayerMayPayContinuation>()
                 decoded shouldBe continuation
 
                 val resumed = SacrificeAndPayContinuationResumer(EngineServices(cardRegistry))
                     .resumeAnyPlayerMayPay(
-                        state = first.state.clearPendingDecision(),
+                        // As the engine does on an answer: the answered Suspension is popped first.
+                        state = first.state.popContinuation().second,
                         continuation = decoded,
                         response = CardsSelectedResponse(firstDecision.id, emptyList()),
                         checkForMore = { state: GameState, events ->
@@ -211,7 +216,7 @@ class CostExcludeSelfConsistencyTest : ScenarioTestBase() {
                 )
                 game.state.projectedState.getController(source) shouldBe game.player2Id
 
-                val first = AnyPlayerMayPayExecutor().execute(
+                val first = anyPlayerMayPayExecutor().execute(
                     game.state,
                     anyPlayerCost(excludeSelf),
                     EffectContext(sourceId = source, controllerId = game.player1Id)
@@ -221,10 +226,12 @@ class CostExcludeSelfConsistencyTest : ScenarioTestBase() {
                 firstDecision.options shouldNotContain source
 
                 val continuation = first.state.peekContinuation()
+                    .shouldBeInstanceOf<Suspension>().answer
                     .shouldBeInstanceOf<AnyPlayerMayPayContinuation>()
                 val resumed = SacrificeAndPayContinuationResumer(EngineServices(cardRegistry))
                     .resumeAnyPlayerMayPay(
-                        state = first.state.clearPendingDecision(),
+                        // As the engine does on an answer: the answered Suspension is popped first.
+                        state = first.state.popContinuation().second,
                         continuation = continuation,
                         response = CardsSelectedResponse(firstDecision.id, emptyList()),
                         checkForMore = { state: GameState, events ->
@@ -245,7 +252,11 @@ class CostExcludeSelfConsistencyTest : ScenarioTestBase() {
         test("COST-EXCLUDE-07: PayOrSuffer keeps its existing excludeSelf=true control behavior") {
             val game = sacrificeGame()
             val source = cardOnBattlefield(game.state, game.player1Id, "Goblin Guide")
-            val result = PayOrSufferExecutor(cardRegistry).execute(
+            val result = PayOrSufferExecutor(
+                services.zones,
+                cardRegistry = cardRegistry,
+                costPaymentService = { services.costPaymentService }
+            ).execute(
                 game.state,
                 PayOrSufferEffect(
                     cost = sacrificeCost(excludeSelf = true),
@@ -299,6 +310,9 @@ class CostExcludeSelfConsistencyTest : ScenarioTestBase() {
             action.additionalCostInfo!!.validTapTargets shouldNotContain source
         }
     }
+
+    private fun anyPlayerMayPayExecutor(): AnyPlayerMayPayExecutor =
+        AnyPlayerMayPayExecutor(predicateEvaluator = services.predicateEvaluator)
 
     private fun sacrificeGame(onlySource: Boolean = false): TestGame {
         val builder = scenario().withPlayers()

@@ -20,6 +20,7 @@ import com.wingedsheep.sdk.scripting.Duration
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Characterizes the blocker-domain privacy boundary for face-down permanents.
@@ -50,7 +51,7 @@ class BlockerDomainPrivacyCharacterizationTest : FunSpec({
         val blocker = driver.putCreatureOnBattlefield(defendingPlayer, "Grizzly Bears")
         driver.removeSummoningSickness(attacker)
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).isSuccess shouldBe true
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
 
         val hiddenPermanent = driver.putPermanentOnBattlefield(defendingPlayer, "Forest")
@@ -84,7 +85,7 @@ class BlockerDomainPrivacyCharacterizationTest : FunSpec({
         driver.putCreatureOnBattlefield(defendingPlayer, "Grizzly Bears")
         driver.removeSummoningSickness(attacker)
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).isSuccess shouldBe true
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
 
         driver.replaceState(
@@ -116,7 +117,7 @@ class BlockerDomainPrivacyCharacterizationTest : FunSpec({
         driver.removeSummoningSickness(attacker)
         val hiddenPermanent = driver.putPermanentOnBattlefield(attackerPlayer, "Forest")
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).isSuccess shouldBe true
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
 
         driver.replaceState(

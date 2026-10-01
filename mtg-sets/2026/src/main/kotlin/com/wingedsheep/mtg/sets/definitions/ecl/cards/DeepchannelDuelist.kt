@@ -8,7 +8,7 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.ModifyStats
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.core.Step
 
 /**
  * Deepchannel Duelist
@@ -28,10 +28,10 @@ val DeepchannelDuelist = card("Deepchannel Duelist") {
     oracleText = "At the beginning of your end step, untap target Merfolk you control.\nOther Merfolk you control get +1/+1."
 
     triggeredAbility {
-        trigger = Triggers.YourEndStep
-        val merfolk = target("merfolk", TargetCreature(
-            filter = TargetFilter(GameObjectFilter.Creature.withSubtype("Merfolk").youControl())
-        ))
+        trigger = Triggers.you.beginningOf(Step.END)
+        // "target Merfolk" is a Merfolk **permanent**, not a Merfolk creature — the reading the
+        // differential settled corpus-wide, and the one this card's own static already uses.
+        val merfolk = target(TargetFilter(GameObjectFilter.Permanent.withSubtype("Merfolk").youControl()))
         effect = Effects.Untap(merfolk)
     }
 
@@ -39,7 +39,7 @@ val DeepchannelDuelist = card("Deepchannel Duelist") {
         ability = ModifyStats(
             powerBonus = 1,
             toughnessBonus = 1,
-            filter = GroupFilter(GameObjectFilter.Creature.withSubtype("Merfolk").youControl(), excludeSelf = true)
+            filter = GroupFilter(GameObjectFilter.Permanent.withSubtype("Merfolk").youControl(), excludeSelf = true)
         )
     }
 

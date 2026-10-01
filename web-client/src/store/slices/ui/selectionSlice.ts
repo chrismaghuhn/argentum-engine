@@ -2,6 +2,7 @@
  * Selection sub-slice — handles X cost, convoke, crew, delve, mana color,
  * decision selection, and mana source selection flows.
  */
+import { decisionInteractionEpoch } from '@/network/liveAction'
 import type {
   SliceCreator,
   EntityId,
@@ -20,8 +21,6 @@ import type {
   ConvokeCreatureSelection,
 } from '../types'
 import type { LegalActionInfo } from '@/types'
-import { createSubmitActionMessage } from '@/types'
-import { getWebSocket } from '../shared'
 import {
   parseManaCost as parseManaCostUtil,
   getRemainingCostSymbols,
@@ -29,8 +28,6 @@ import {
   reduceCostByHarmonizeTap,
 } from '@/utils/manaCost'
 
-// Note: getWebSocket/createSubmitActionMessage are still used by confirmTapForPowerSelection
-// and confirmDecisionSelection (which are not part of the pipeline).
 
 export interface SelectionSliceState {
   modalModeSelectionState: ModalModeSelectionState | null
@@ -49,51 +46,57 @@ export interface SelectionSliceState {
 
 export interface SelectionSliceActions {
   startModalModeSelection: (state: ModalModeSelectionState) => void
-  confirmModalModeSelection: (chosenModes: number[]) => void
-  cancelModalModeSelection: () => void
+  confirmModalModeSelection: (interactionEpoch: string | null, chosenModes: number[]) => void
+  cancelModalModeSelection: (interactionEpoch: string | null) => void
   startXSelection: (state: XSelectionState) => void
   updateXValue: (x: number) => void
-  cancelXSelection: () => void
-  confirmXSelection: () => void
+  cancelXSelection: (interactionEpoch: string | null) => void
+  confirmXSelection: (interactionEpoch: string | null) => void
   startBlightVariableSelection: (state: BlightVariableSelectionState) => void
   updateBlightVariableX: (x: number) => void
-  cancelBlightVariableSelection: () => void
-  confirmBlightVariableSelection: () => void
+  cancelBlightVariableSelection: (interactionEpoch: string | null) => void
+  confirmBlightVariableSelection: (interactionEpoch: string | null) => void
   startPayXLifeSelection: (state: PayXLifeSelectionState) => void
   updatePayXLifeX: (x: number) => void
-  cancelPayXLifeSelection: () => void
-  confirmPayXLifeSelection: () => void
+  cancelPayXLifeSelection: (interactionEpoch: string | null) => void
+  confirmPayXLifeSelection: (interactionEpoch: string | null) => void
   startConvokeSelection: (state: ConvokeSelectionState) => void
   toggleConvokeCreature: (entityId: EntityId, name: string, payingColor: string | null) => void
-  cancelConvokeSelection: () => void
-  confirmConvokeSelection: () => void
+  cancelConvokeSelection: (interactionEpoch: string | null) => void
+  confirmConvokeSelection: (interactionEpoch: string | null) => void
   startTapForGenericSelection: (state: TapForGenericSelectionState) => void
   toggleTapForGenericPermanent: (entityId: EntityId) => void
-  cancelTapForGenericSelection: () => void
-  confirmTapForGenericSelection: () => void
+  cancelTapForGenericSelection: (interactionEpoch: string | null) => void
+  confirmTapForGenericSelection: (interactionEpoch: string | null) => void
   startHarmonizeSelection: (state: HarmonizeSelectionState) => void
   toggleHarmonizeCreature: (entityId: EntityId) => void
-  cancelHarmonizeSelection: () => void
-  confirmHarmonizeSelection: () => void
+  cancelHarmonizeSelection: (interactionEpoch: string | null) => void
+  confirmHarmonizeSelection: (interactionEpoch: string | null) => void
   startTapForPowerSelection: (state: TapForPowerSelectionState) => void
   toggleTapForPowerCreature: (entityId: EntityId) => void
-  cancelTapForPowerSelection: () => void
-  confirmTapForPowerSelection: () => void
+  setTapForPowerCreatures: (entityIds: readonly EntityId[]) => void
+  cancelTapForPowerSelection: (interactionEpoch: string | null) => void
+  confirmTapForPowerSelection: (interactionEpoch: string | null) => void
   startDelveSelection: (state: DelveSelectionState) => void
   toggleDelveCard: (entityId: EntityId) => void
-  cancelDelveSelection: () => void
-  confirmDelveSelection: () => void
+  cancelDelveSelection: (interactionEpoch: string | null) => void
+  confirmDelveSelection: (interactionEpoch: string | null) => void
   startManaColorSelection: (state: ManaColorSelectionState) => void
-  confirmManaColorSelection: (color: string) => void
-  cancelManaColorSelection: () => void
+  confirmManaColorSelection: (interactionEpoch: string | null, color: string) => void
+  cancelManaColorSelection: (interactionEpoch: string | null) => void
   startDecisionSelection: (state: DecisionSelectionState) => void
   toggleDecisionSelection: (cardId: EntityId) => void
-  cancelDecisionSelection: () => void
-  confirmDecisionSelection: () => void
+  cancelDecisionSelection: (decisionId: string) => void
+  confirmDecisionSelection: (decisionId: string) => void
   startManaSelection: (actionInfo: LegalActionInfo) => void
   toggleManaSource: (entityId: EntityId) => void
-  cancelManaSelection: () => void
-  confirmManaSelection: () => void
+  togglePhyrexianLifePayment: (pipIndex: number) => void
+  cancelManaSelection: (interactionEpoch: string | null) => void
+  confirmManaSelection: (
+    interactionEpoch: string | null,
+    selection: ManaSelectionState,
+    executeAction: (actionInfo: LegalActionInfo) => void,
+  ) => void
 }
 
 export type SelectionSlice = SelectionSliceState & SelectionSliceActions
@@ -118,14 +121,16 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     set({ modalModeSelectionState })
   },
 
-  confirmModalModeSelection: (chosenModes) => {
+  confirmModalModeSelection: (interactionEpoch, chosenModes) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { modalModeSelectionState, pipelineState, advancePipeline } = get()
     if (!modalModeSelectionState || !pipelineState) return
     set({ modalModeSelectionState: null })
     advancePipeline({ type: 'modalModes', chosenModes })
   },
 
-  cancelModalModeSelection: () => {
+  cancelModalModeSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ modalModeSelectionState: null })
@@ -148,17 +153,23 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     })
   },
 
-  cancelXSelection: () => {
+  cancelXSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ xSelectionState: null })
   },
 
-  confirmXSelection: () => {
+  confirmXSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { xSelectionState, pipelineState } = get()
     if (!xSelectionState || !pipelineState) return
 
     set({ xSelectionState: null })
+    if (xSelectionState.isAdditionalManaForCounters) {
+      get().advancePipeline({ type: 'additionalManaForCounters', amount: xSelectionState.selectedX })
+      return
+    }
     get().advancePipeline({
       type: 'xSelection',
       xValue: xSelectionState.selectedX,
@@ -184,13 +195,15 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     })
   },
 
-  cancelBlightVariableSelection: () => {
+  cancelBlightVariableSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ blightVariableSelectionState: null })
   },
 
-  confirmBlightVariableSelection: () => {
+  confirmBlightVariableSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { blightVariableSelectionState, pipelineState } = get()
     if (!blightVariableSelectionState || !pipelineState) return
     const { selectedX } = blightVariableSelectionState
@@ -219,13 +232,15 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     })
   },
 
-  cancelPayXLifeSelection: () => {
+  cancelPayXLifeSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ payXLifeSelectionState: null })
   },
 
-  confirmPayXLifeSelection: () => {
+  confirmPayXLifeSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { payXLifeSelectionState, pipelineState } = get()
     if (!payXLifeSelectionState || !pipelineState) return
     const { selectedX } = payXLifeSelectionState
@@ -263,13 +278,15 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     })
   },
 
-  cancelConvokeSelection: () => {
+  cancelConvokeSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ convokeSelectionState: null })
   },
 
-  confirmConvokeSelection: () => {
+  confirmConvokeSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { convokeSelectionState, pipelineState } = get()
     if (!convokeSelectionState || !pipelineState) return
 
@@ -308,13 +325,15 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     })
   },
 
-  cancelTapForGenericSelection: () => {
+  cancelTapForGenericSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ tapForGenericSelectionState: null })
   },
 
-  confirmTapForGenericSelection: () => {
+  confirmTapForGenericSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { tapForGenericSelectionState, pipelineState } = get()
     if (!tapForGenericSelectionState || !pipelineState) return
     const tapForGenericPermanents = [...tapForGenericSelectionState.selectedPermanents]
@@ -342,13 +361,15 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     })
   },
 
-  cancelHarmonizeSelection: () => {
+  cancelHarmonizeSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ harmonizeSelectionState: null })
   },
 
-  confirmHarmonizeSelection: () => {
+  confirmHarmonizeSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { harmonizeSelectionState, pipelineState } = get()
     if (!harmonizeSelectionState || !pipelineState) return
     const selected = harmonizeSelectionState.selectedCreature
@@ -361,6 +382,8 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
 
   // Tap-creatures-for-power selection actions (Crew N / Saddle N)
   startTapForPowerSelection: (tapForPowerSelectionState) => {
+    const origin = tapForPowerSelectionState.actionInfo.interactionEpoch
+    if (!origin || origin !== get().interactionEpoch) return
     set({ tapForPowerSelectionState })
   },
 
@@ -383,11 +406,26 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     })
   },
 
-  cancelTapForPowerSelection: () => {
+  setTapForPowerCreatures: (entityIds) => {
+    set((state) =>
+      state.tapForPowerSelectionState
+        ? {
+            tapForPowerSelectionState: {
+              ...state.tapForPowerSelectionState,
+              selectedCreatures: [...entityIds],
+            },
+          }
+        : state
+    )
+  },
+
+  cancelTapForPowerSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     set({ tapForPowerSelectionState: null })
   },
 
-  confirmTapForPowerSelection: () => {
+  confirmTapForPowerSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { tapForPowerSelectionState, playerId } = get()
     if (!tapForPowerSelectionState || !playerId) return
 
@@ -396,9 +434,9 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
 
     // The tapped-creature list goes into the action's mechanic-specific field.
     if (action.type === 'CrewVehicle') {
-      getWebSocket()?.send(createSubmitActionMessage({ ...action, crewCreatures: selectedCreatures }))
+      get().submitAction({ ...action, crewCreatures: selectedCreatures }, actionInfo.interactionEpoch)
     } else if (action.type === 'SaddleMount') {
-      getWebSocket()?.send(createSubmitActionMessage({ ...action, saddleCreatures: selectedCreatures }))
+      get().submitAction({ ...action, saddleCreatures: selectedCreatures }, actionInfo.interactionEpoch)
     }
 
     set({ tapForPowerSelectionState: null })
@@ -433,13 +471,15 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     })
   },
 
-  cancelDelveSelection: () => {
+  cancelDelveSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ delveSelectionState: null })
   },
 
-  confirmDelveSelection: () => {
+  confirmDelveSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { delveSelectionState, pipelineState } = get()
     if (!delveSelectionState || !pipelineState) return
 
@@ -460,7 +500,8 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     set({ manaColorSelectionState })
   },
 
-  confirmManaColorSelection: (color) => {
+  confirmManaColorSelection: (interactionEpoch, color) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { manaColorSelectionState, pipelineState } = get()
     if (!manaColorSelectionState || !pipelineState) return
 
@@ -468,7 +509,8 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     get().advancePipeline({ type: 'manaColorChoice', color })
   },
 
-  cancelManaColorSelection: () => {
+  cancelManaColorSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ manaColorSelectionState: null })
@@ -526,13 +568,15 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     })
   },
 
-  cancelDecisionSelection: () => {
+  cancelDecisionSelection: (decisionId) => {
+    if (get().decisionSelectionState?.decisionId !== decisionId) return
     set({ decisionSelectionState: null })
   },
 
-  confirmDecisionSelection: () => {
+  confirmDecisionSelection: (decisionId) => {
     const { decisionSelectionState, pendingDecision, playerId } = get()
     if (!decisionSelectionState || !pendingDecision || !playerId) return
+    if (decisionSelectionState.decisionId !== decisionId || pendingDecision.id !== decisionId) return
 
     const action = {
       type: 'SubmitDecision' as const,
@@ -544,15 +588,16 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
         selectedCards: [...decisionSelectionState.selectedOptions],
       },
     }
-    getWebSocket()?.send(createSubmitActionMessage(action))
+    get().submitAction(action, decisionInteractionEpoch(action.response.decisionId))
 
     set({ decisionSelectionState: null })
   },
 
   // Mana source selection actions (pre-cast)
   startManaSelection: (actionInfo) => {
-    const sources = actionInfo.availableManaSources
-    if (!sources || sources.length === 0) return
+    if (!actionInfo.interactionEpoch || actionInfo.interactionEpoch !== get().interactionEpoch) return
+    const sources = actionInfo.availableManaSources ?? []
+    if (sources.length === 0 && !(actionInfo.manaCostString ?? '').includes('/P}')) return
     const sourceColors: Record<string, readonly string[]> = {}
     const sourceManaAmounts: Record<string, number> = {}
     for (const source of sources) {
@@ -567,10 +612,10 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     // sources to also cover xValue * (number of {X} symbols).
     const action = actionInfo.action as {
       xValue?: number
+      targets?: readonly unknown[]
       alternativePayment?: { harmonizeCreature?: EntityId | null }
       additionalCostPayment?: { sacrificedPermanents?: readonly EntityId[] }
     }
-    const xValue = action.xValue ?? 0
     // Emerge (CR 702.119): the creature chosen in the prior costPayment phase reduces the emerge
     // cost by its mana value, so the printed `manaCostString` overstates what's owed. The server
     // sent the resulting cost for every candidate, so price this step off the chosen entry rather
@@ -579,7 +624,22 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     const emergeCost = emergeSacrifice
       ? actionInfo.additionalCostInfo?.costAfterSacrifice?.[emergeSacrifice]
       : undefined
-    const manaCost = emergeCost ?? actionInfo.manaCostString ?? ''
+    // "This spell costs {W}{U} more to cast for each target beyond the first" (Officious
+    // Interrogation): the server advertises the one-target minimum, because it prices the cost
+    // before any target exists. `computePhases` puts targeting ahead of this step precisely so the
+    // tax is knowable here — append one copy of the increment per target beyond the first. Same
+    // shape as the emerge/harmonize adjustments around it: the server owns the rule, the client
+    // only applies the choice the player has since made.
+    const perExtraTarget = actionInfo.manaCostPerExtraTarget
+    const extraTargets = Math.max(0, (action.targets?.length ?? 0) - 1)
+    const targetTax =
+      perExtraTarget && extraTargets > 0 ? perExtraTarget.repeat(extraTargets) : ''
+    const manaCost = (emergeCost ?? actionInfo.manaCostString ?? '') + targetTax
+    // A preceding delve or convoke phase materializes {X} as generic in the cost it hands on, so
+    // its exiles/taps can pay the X down (CR 601.2f). Once that has happened the X is already in
+    // [manaCost] and must not be added on top of it again.
+    const xMaterialized = actionInfo.hasXCost === true && !/\{X\}/.test(manaCost)
+    const xValue = xMaterialized ? 0 : action.xValue ?? 0
     const xSymbolCount = Math.max(1, (manaCost.match(/\{X\}/g)?.length ?? 0))
 
     // Harmonize creature-tap (chosen in the prior `harmonize` phase) reduces the
@@ -608,6 +668,7 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
           harmonizeReduction,
           sourceColors,
           sourceManaAmounts,
+          phyrexianLifePipIndices: [],
         },
       })
       return
@@ -658,6 +719,7 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
         harmonizeReduction: 0,
         sourceColors,
         sourceManaAmounts,
+        phyrexianLifePipIndices: [],
       },
     })
   },
@@ -678,15 +740,69 @@ export const createSelectionSlice: SliceCreator<SelectionSlice> = (set, get) => 
     })
   },
 
-  cancelManaSelection: () => {
+  togglePhyrexianLifePayment: (pipIndex) => {
+    set((state) => {
+      if (!state.manaSelectionState) return state
+      const selected = state.manaSelectionState.phyrexianLifePipIndices
+      return {
+        manaSelectionState: {
+          ...state.manaSelectionState,
+          phyrexianLifePipIndices: selected.includes(pipIndex)
+            ? selected.filter((index) => index !== pipIndex)
+            : [...selected, pipIndex],
+        },
+      }
+    })
+  },
+
+  cancelManaSelection: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { pipelineState, cancelPipeline } = get()
     if (pipelineState) { cancelPipeline(); return }
     set({ manaSelectionState: null })
   },
 
-  confirmManaSelection: () => {
-    // Note: actual confirm logic is in GameBoard's handleConfirmManaSelection
-    // which routes through executeAction (legacy) or advancePipeline (pipeline).
-    set({ manaSelectionState: null })
+  confirmManaSelection: (interactionEpoch, manaSelectionState, executeAction) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
+    if (get().manaSelectionState !== manaSelectionState) return
+    if (manaSelectionState.actionInfo.interactionEpoch !== interactionEpoch) return
+    const { pipelineState, advancePipeline } = get()
+    if (pipelineState) {
+      // Pipeline path: clear mana UI state directly (not via cancelManaSelection
+      // which would cancel the entire pipeline) and advance
+      set({ manaSelectionState: null })
+      advancePipeline({
+        type: 'manaSource',
+        selectedSources: [...manaSelectionState.selectedSources],
+        phyrexianLifePayments: manaSelectionState.phyrexianLifePipIndices.map((pipIndex) => {
+          const pip = manaSelectionState.manaCost.match(/\{([^}]+)\}/g)?.[pipIndex]?.slice(1, -1).split('/')[0]
+          return pip === 'B' ? 'BLACK' : pip === 'W' ? 'WHITE' : pip === 'U' ? 'BLUE' : pip === 'R' ? 'RED' : 'GREEN'
+        }),
+      })
+      return
+    }
+
+    // Direct mana-button path: build Explicit payment and enter pipeline for remaining phases
+    const paymentStrategy = {
+      type: 'Explicit' as const,
+      manaAbilitiesToActivate: [...manaSelectionState.selectedSources],
+      phyrexianLifePayments: manaSelectionState.phyrexianLifePipIndices.map((pipIndex) => {
+        const symbol = manaSelectionState.manaCost.match(/\{([^}]+)\}/g)?.[pipIndex] ?? ''
+        return symbol.slice(1, -1).split('/')[0] === 'B' ? 'BLACK'
+          : symbol.slice(1, -1).split('/')[0] === 'W' ? 'WHITE'
+          : symbol.slice(1, -1).split('/')[0] === 'U' ? 'BLUE'
+          : symbol.slice(1, -1).split('/')[0] === 'R' ? 'RED' : 'GREEN'
+      }),
+    }
+    // Cast to add paymentStrategy - only actions with mana costs reach here
+    const modifiedAction = { ...manaSelectionState.action, paymentStrategy } as import('@/types').GameAction
+    // Strip mana-source fields so executeAction doesn't loop back here
+    const { availableManaSources: _, autoTapPreview: _2, ...restActionInfo } = manaSelectionState.actionInfo
+    const modifiedActionInfo: LegalActionInfo = {
+      ...restActionInfo,
+      action: modifiedAction,
+    }
+    get().cancelManaSelection(interactionEpoch)
+    executeAction(modifiedActionInfo)
   },
 })

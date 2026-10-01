@@ -2,7 +2,6 @@ package com.wingedsheep.engine.handlers.effects.zones
 
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.DecisionHandler
-import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
@@ -26,12 +25,12 @@ import kotlin.reflect.KClass
  * which were previously missing for battlefield permanents).
  */
 class ForceExileMultiZoneExecutor(
+    private val zones: ZoneTransitionService,
     private val decisionHandler: DecisionHandler = DecisionHandler()
 ) : EffectExecutor<ForceExileMultiZoneEffect> {
+    private val amountEvaluator = zones.predicateEvaluator.amounts
 
     override val effectType: KClass<ForceExileMultiZoneEffect> = ForceExileMultiZoneEffect::class
-
-    private val amountEvaluator = DynamicAmountEvaluator()
 
     override fun execute(
         state: GameState,
@@ -64,11 +63,17 @@ class ForceExileMultiZoneExecutor(
 
         if (allOptions.size <= exileCount) {
             // Auto-exile everything — no choice needed
-            return exileEntities(state, playerId, allOptions)
+            return exileEntities(zones, state, playerId, allOptions)
         }
 
         // Player must choose which to exile
         val prompt = "Choose $exileCount permanent(s) or card(s) to exile"
+
+        val continuation = ExileMultiZoneContinuation(
+            playerId = playerId,
+            sourceId = sourceId,
+            sourceName = sourceName
+        )
 
         val decisionResult = decisionHandler.createCardSelectionDecision(
             state = state,
@@ -81,21 +86,12 @@ class ForceExileMultiZoneExecutor(
             maxSelections = exileCount,
             ordered = false,
             phase = DecisionPhase.RESOLUTION,
-            useTargetingUI = true
+            useTargetingUI = true,
+            answer = continuation
         )
 
-        val continuation = ExileMultiZoneContinuation(
-            decisionId = decisionResult.pendingDecision!!.id,
-            playerId = playerId,
-            sourceId = sourceId,
-            sourceName = sourceName
-        )
-
-        val stateWithContinuation = decisionResult.state.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decisionResult.pendingDecision,
+        return EffectResult.propagatePause(
+            decisionResult.state,
             decisionResult.events
         )
     }
@@ -128,6 +124,7 @@ class ForceExileMultiZoneExecutor(
          * Delegates to [ZoneTransitionService] for consistent cleanup.
          */
         fun exileEntities(
+            zones: ZoneTransitionService,
             state: GameState,
             playerId: EntityId,
             entityIds: List<EntityId>
@@ -136,7 +133,7 @@ class ForceExileMultiZoneExecutor(
             val allEvents = mutableListOf<GameEvent>()
 
             for (entityId in entityIds) {
-                val transitionResult = ZoneTransitionService.moveToZone(
+                val transitionResult = zones.moveToZone(
                     currentState, entityId, Zone.EXILE,
                     ZoneEntryOptions(skipZoneChangeRedirect = true)
                 )

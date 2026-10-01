@@ -7,7 +7,6 @@ import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.CounterType
-import com.wingedsheep.sdk.core.Counters
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.TypeLine
@@ -76,11 +75,11 @@ class NamedCounterLkiTest : FunSpec({
 
     fun bountyFilter() = GameObjectFilter.Permanent
         .opponentControls()
-        .withCounter(Counters.BOUNTY)
+        .withCounter(CounterType.BOUNTY)
 
     fun event(
         driver: GameTestDriver,
-        counters: Map<String, Int>,
+        counters: Map<CounterType, Int>,
         controllerId: EntityId = driver.player2,
         ownerId: EntityId = driver.player2,
         entityId: EntityId = EntityId.generate(),
@@ -100,7 +99,7 @@ class NamedCounterLkiTest : FunSpec({
     )
 
     fun zoneChangeTriggers(driver: GameTestDriver, event: GameEvent): List<*> =
-        TriggerDetector(driver.cardRegistry)
+        driver.services.triggerDetector
             .detectTriggers(driver.state, listOf(event))
             .filter { it.ability.trigger is EventPattern.ZoneChangeEvent }
 
@@ -127,8 +126,8 @@ class NamedCounterLkiTest : FunSpec({
         val death = driver.events
             .filterIsInstance<ZoneChangeEvent>()
             .last { it.entityId == target && it.fromZone == Zone.BATTLEFIELD }
-        death.lastKnown.shouldNotBeNull().counters[Counters.BOUNTY] shouldBe 1
-        death.lastKnown.counters[Counters.PLUS_ONE_PLUS_ONE] shouldBe 3
+        death.lastKnown.shouldNotBeNull().counters[CounterType.BOUNTY] shouldBe 1
+        death.lastKnown.counters[CounterType.PLUS_ONE_PLUS_ONE] shouldBe 3
         zoneChangeTriggers(driver, death) shouldHaveSize 1
     }
 
@@ -137,7 +136,7 @@ class NamedCounterLkiTest : FunSpec({
 
         zoneChangeTriggers(
             driver,
-            event(driver, mapOf(Counters.PLUS_ONE_PLUS_ONE to 3)),
+            event(driver, mapOf(CounterType.PLUS_ONE_PLUS_ONE to 3)),
         ).shouldBeEmpty()
     }
 
@@ -171,14 +170,14 @@ class NamedCounterLkiTest : FunSpec({
         val death = driver.events
             .filterIsInstance<ZoneChangeEvent>()
             .last { it.entityId == target && it.fromZone == Zone.BATTLEFIELD }
-        death.lastKnown.shouldNotBeNull().counters[Counters.BOUNTY] shouldBe null
+        death.lastKnown.shouldNotBeNull().counters[CounterType.BOUNTY] shouldBe null
         zoneChangeTriggers(driver, death).shouldBeEmpty()
     }
 
     test("LKI-05: BOUNTY matches while FINALITY does not in a multi-counter snapshot") {
         val counters = mapOf(
-            Counters.BOUNTY to 1,
-            Counters.PLUS_ONE_PLUS_ONE to 3,
+            CounterType.BOUNTY to 1,
+            CounterType.PLUS_ONE_PLUS_ONE to 3,
         )
         val bountyDriver = createDriver(bountyFilter())
         zoneChangeTriggers(bountyDriver, event(bountyDriver, counters)) shouldHaveSize 1
@@ -186,17 +185,17 @@ class NamedCounterLkiTest : FunSpec({
         val finalityDriver = createDriver(
             GameObjectFilter.Permanent
                 .opponentControls()
-                .withCounter(Counters.FINALITY),
+                .withCounter(CounterType.FINALITY),
         )
         zoneChangeTriggers(finalityDriver, event(finalityDriver, counters)).shouldBeEmpty()
     }
 
     test("LKI-06: simultaneous deaths retain independent counter answers") {
         val driver = createDriver(bountyFilter())
-        val bountyDeath = event(driver, mapOf(Counters.BOUNTY to 1))
-        val unmarkedDeath = event(driver, mapOf(Counters.PLUS_ONE_PLUS_ONE to 3))
+        val bountyDeath = event(driver, mapOf(CounterType.BOUNTY to 1))
+        val unmarkedDeath = event(driver, mapOf(CounterType.PLUS_ONE_PLUS_ONE to 3))
 
-        TriggerDetector(driver.cardRegistry)
+        driver.services.triggerDetector
             .detectTriggers(driver.state, listOf(bountyDeath, unmarkedDeath))
             .filter { it.ability.trigger is EventPattern.ZoneChangeEvent } shouldHaveSize 1
     }
@@ -206,11 +205,11 @@ class NamedCounterLkiTest : FunSpec({
 
         zoneChangeTriggers(
             driver,
-            event(driver, mapOf(Counters.BOUNTY to 1), controllerId = driver.player2),
+            event(driver, mapOf(CounterType.BOUNTY to 1), controllerId = driver.player2),
         ) shouldHaveSize 1
         zoneChangeTriggers(
             driver,
-            event(driver, mapOf(Counters.BOUNTY to 1), controllerId = driver.player1),
+            event(driver, mapOf(CounterType.BOUNTY to 1), controllerId = driver.player1),
         ).shouldBeEmpty()
     }
 
@@ -252,8 +251,8 @@ class NamedCounterLkiTest : FunSpec({
         val snapshot = EntitySnapshot(
             entityId = EntityId("marked-permanent"),
             counters = mapOf(
-                Counters.BOUNTY to 1,
-                Counters.PLUS_ONE_PLUS_ONE to 3,
+                CounterType.BOUNTY to 1,
+                CounterType.PLUS_ONE_PLUS_ONE to 3,
             ),
         )
         val encoded = CardSerialization.json.encodeToString(EntitySnapshot.serializer(), snapshot)
@@ -264,9 +263,9 @@ class NamedCounterLkiTest : FunSpec({
         val plusOneDriver = createDriver(
             GameObjectFilter.Permanent
                 .opponentControls()
-                .withCounter(Counters.PLUS_ONE_PLUS_ONE),
+                .withCounter(CounterType.PLUS_ONE_PLUS_ONE),
         )
-        val plusOneEvent = event(plusOneDriver, mapOf(Counters.PLUS_ONE_PLUS_ONE to 3))
+        val plusOneEvent = event(plusOneDriver, mapOf(CounterType.PLUS_ONE_PLUS_ONE to 3))
         zoneChangeTriggers(plusOneDriver, plusOneEvent) shouldHaveSize 1
 
         val anyCounterDriver = createDriver(
@@ -276,7 +275,7 @@ class NamedCounterLkiTest : FunSpec({
         )
         zoneChangeTriggers(
             anyCounterDriver,
-            event(anyCounterDriver, mapOf(Counters.FINALITY to 1)),
+            event(anyCounterDriver, mapOf(CounterType.FINALITY to 1)),
         ) shouldHaveSize 1
     }
 })

@@ -1,13 +1,10 @@
 package com.wingedsheep.mtg.sets.definitions.atq.cards
 
-import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
-import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Argivian Archaeologist
@@ -26,10 +23,7 @@ val ArgivianArchaeologist = card("Argivian Archaeologist") {
 
     activatedAbility {
         cost = Costs.Composite(Costs.Mana("{W}{W}"), Costs.Tap)
-        val artifact = target(
-            "target artifact card from your graveyard",
-            TargetObject(filter = TargetFilter(GameObjectFilter.Artifact.ownedByYou(), zone = Zone.GRAVEYARD))
-        )
+        val artifact = target(TargetFilter.ArtifactInYourGraveyard)
         effect = Effects.ReturnToHand(artifact)
         description = "{W}{W}, {T}: Return target artifact card from your graveyard to your hand."
     }

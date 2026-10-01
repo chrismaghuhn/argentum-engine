@@ -11,11 +11,9 @@ import com.wingedsheep.assay.syntax.separated
 import com.wingedsheep.assay.syntax.token
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.CounterType
-import com.wingedsheep.sdk.core.Counters
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.scripting.ProtectionScope
-import com.wingedsheep.sdk.scripting.events.CounterTypeFilter
 
 /**
  * The leaf rules every other rule is built from. Slots are themselves phrases, recursively, so
@@ -80,12 +78,12 @@ object Primitives {
      *
      * ### Gated on the SDK's own list, for [creatureSubtype]'s reason
      *
-     * The model field is a bare `String`, so an ungated leaf would read *any* lowercase word as a
-     * counter kind and round-trip it perfectly — "put a growing counter on it" naming a counter Magic
-     * does not have, byte-exact in both directions. [CounterType.fromName] is the SDK's own answer to
-     * "is this a counter", the same function `StatePredicate.HasCounter` parses with, so a word it
-     * rejects makes this leaf decline rather than invent a kind. That is the difference between
-     * recovering information and inventing it, and it is why "Elves" → `Elve` could happen here too.
+     * [CounterType] is open — [CounterType.of] names a kind for any word — so an ungated leaf would
+     * read *any* lowercase word as a counter kind and round-trip it perfectly — "put a growing
+     * counter on it" naming a counter Magic does not have, byte-exact in both directions.
+     * [CounterType.KNOWN] is the SDK's own answer to "is this a counter", so a word outside it makes
+     * this leaf decline rather than invent a kind. That is the difference between recovering
+     * information and inventing it, and it is why "Elves" → `Elve` could happen here too.
      *
      * ### The second word, and why it needs a lookahead
      *
@@ -95,14 +93,18 @@ object Primitives {
      * decline the lot. The lookahead spells out what the noun cannot be, which costs one clause and
      * keeps both quantities of every kind readable.
      */
-    val counterKind: Phrase<String> = token(
+    val counterKind: Phrase<CounterType> = token(
         name = "a counter kind",
         pattern = Regex("""[+-][0-9]+/[+-][0-9]+|[a-z]+(?: (?!counters?\b)[a-z]+)?"""),
-        read = { it.takeIf(::isCounterKind) },
-        write = { it.takeIf(::isCounterKind) },
+        read = ::knownCounterKind,
+        write = ::printedCounterKind,
     )
 
-    private fun isCounterKind(name: String) = CounterType.fromName(name) != null
+    /** The [CounterType.KNOWN] kind [text] prints, or null for a word the SDK does not name. */
+    private fun knownCounterKind(text: String): CounterType? =
+        CounterType.of(text).takeIf { it in CounterType.KNOWN && it.printed == text }
+
+    private fun printedCounterKind(kind: CounterType): String? = kind.takeIf { it in CounterType.KNOWN }?.printed
 
     /**
      * One counter of a kind, **article included** — "a +1/+1", "an aim", "an hourglass".
@@ -125,14 +127,14 @@ object Primitives {
      * whose article this got wrong could not round-trip: `token` re-reads what it writes on every
      * call, and [read] rejects an article that disagrees with [article].
      */
-    val singularCounterKind: Phrase<String> = token(
+    val singularCounterKind: Phrase<CounterType> = token(
         name = "a counter kind",
         pattern = Regex("""an? (?:[+-][0-9]+/[+-][0-9]+|[a-z]+(?: (?!counters?\b)[a-z]+)?)"""),
         read = { text ->
-            val kind = text.substringAfter(' ')
-            kind.takeIf { isCounterKind(it) && text.substringBefore(' ') == article(it) }
+            knownCounterKind(text.substringAfter(' '))
+                ?.takeIf { text.substringBefore(' ') == article(it.printed) }
         },
-        write = { kind -> kind.takeIf(::isCounterKind)?.let { "${article(it)} $it" } },
+        write = { kind -> printedCounterKind(kind)?.let { "${article(it)} $it" } },
     )
 
     /** Silent-h kinds, which take "an" against the letter rule. Only `hourglass` is an SDK counter. */
@@ -140,38 +142,6 @@ object Primitives {
 
     private fun article(kind: String): String =
         if (kind in SILENT_H || kind.first() in "aeiou") "an" else "a"
-
-    /**
-     * The same kind as [CounterTypeFilter], which is how `EntersWithCounters` spells it.
-     *
-     * ### One concept, two SDK types — and a `Named` spelling the grammar must never emit
-     *
-     * An effect says which counter it means with a `String`; a replacement effect says it with a
-     * [CounterTypeFilter], whose `Named` case takes that same string. So `PlusOnePlusOne` and
-     * `Named("+1/+1")` are two spellings of one value, and registering both would be genuine
-     * ambiguity with nothing for the printer to choose between. This maps to the dedicated case
-     * wherever the SDK has published one and to `Named` only where it has not — and [counterKindOf],
-     * its inverse, **refuses** a `Named` carrying a name that has a dedicated case, so a card written
-     * the minority way reports as a divergence rather than quietly agreeing.
-     */
-    fun counterFilter(kind: String): CounterTypeFilter =
-        DEDICATED_COUNTER_FILTERS[kind] ?: CounterTypeFilter.Named(kind)
-
-    /** [counterFilter]'s inverse; null where the value is a spelling this grammar does not emit. */
-    fun counterKindOf(filter: CounterTypeFilter): String? = when (filter) {
-        is CounterTypeFilter.Named -> filter.name.takeIf { it !in DEDICATED_COUNTER_FILTERS }
-        else -> DEDICATED_COUNTER_FILTERS.entries.firstOrNull { it.value == filter }?.key
-    }
-
-    private val DEDICATED_COUNTER_FILTERS: Map<String, CounterTypeFilter> = mapOf(
-        Counters.PLUS_ONE_PLUS_ONE to CounterTypeFilter.PlusOnePlusOne,
-        Counters.MINUS_ONE_MINUS_ONE to CounterTypeFilter.MinusOneMinusOne,
-        Counters.PLUS_ONE_PLUS_ZERO to CounterTypeFilter.PlusOnePlusZero,
-        Counters.PLUS_ZERO_PLUS_ONE to CounterTypeFilter.PlusZeroPlusOne,
-        Counters.MINUS_ONE_MINUS_ZERO to CounterTypeFilter.MinusOneMinusZero,
-        Counters.MINUS_ZERO_MINUS_ONE to CounterTypeFilter.MinusZeroMinusOne,
-        Counters.LOYALTY to CounterTypeFilter.Loyalty,
-    )
 
     /**
      * A run of mana symbols — `{2}{U}`, `{W/P}`, `{X}`. Symbols are lexed as tokens and never as
@@ -279,6 +249,83 @@ object Primitives {
     val itPronoun: Phrase<Unit> = constant("it", Unit)
 
     /**
+     * The subject of a *later* clause when that subject is the **target an earlier clause chose** —
+     * "Untap target creature. **It** gets +2/+4…", "…and put a +1/+1 counter on **that creature**."
+     *
+     * The third position [self] and the [selfNamed]/[itPronoun] pair index, and the one that makes
+     * [SelfSteps.retargetable] a shape rather than a rule: the same vocabulary, aimed at
+     * [Targets.bound] instead of at the source. It is reachable only from a later position in a
+     * clause run — [Steps] never offers it first — which is what keeps "it" denoting one thing in
+     * each position rather than two things in one.
+     *
+     * **Which spelling is canonical was measured, not chosen.** Over the Oracle bulk, counting the
+     * lines that print each anaphor in this position: "put a counter on **it**" 2122 against "on
+     * **that creature**" 86; "**It** gains …" 311 against "**That creature** gains …" 56; "**It**
+     * gets …" 38 against 12. So the pronoun prints and the demonstratives parse. The one verb that
+     * disagrees is untap — 66 against 69, near enough to even — and a per-verb canonical is the
+     * frozen-word defect this whole family exists to undo, so untap follows the measurement with
+     * the rest and the sixty-nine lines that spell it the other way come back as variants.
+     */
+    val targetPronoun: Phrase<Unit> = oneOf(
+        "the object an earlier clause chose",
+        constant("it", Unit),
+        alternate(constant("that creature", Unit)),
+        alternate(constant("that permanent", Unit)),
+    )
+
+    // ---------------------------------------------------------------------------------------
+    // The same three anaphors in the **possessive** — what reads a characteristic off the object
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * The possessive of [self] — "**~'s** power", "**its** power".
+     *
+     * A sibling vocabulary rather than a derivation from [self], because English does not inflect
+     * these regularly and the inverse is what a printer needs: "it" possessivizes to "its" with no
+     * apostrophe, `~` takes one, and "that creature" takes one too. A rule that appended `'s` would
+     * print "it's power" — a different word — so the possessive form is spelled in the table and the
+     * two vocabularies stay parallel by construction rather than by a lowering.
+     *
+     * The canonical/alternate split is [self]'s, unchanged: normalization has already abstracted
+     * "this creature's base power" to "~'s base power" (see
+     * [com.wingedsheep.assay.normalize.Normalizer], whose tokenizer ends a word at the apostrophe
+     * for exactly this), so the name is what prints and the pronoun parses.
+     */
+    val selfPossessive: Phrase<Unit> = oneOf(
+        "this permanent's",
+        constant("${Normalizer.SELF}'s", Unit),
+        alternate(constant("its", Unit)),
+    )
+
+    /** [selfNamed]'s possessive — the half that means the source in every position there is. */
+    val selfNamedPossessive: Phrase<Unit> = constant("${Normalizer.SELF}'s", Unit)
+
+    /** [itPronoun]'s possessive — the half a filtered trigger reads as the object it matched. */
+    val itsPronoun: Phrase<Unit> = constant("its", Unit)
+
+    /**
+     * [targetPronoun]'s possessive — "**its** mana value", "**that creature's** toughness".
+     *
+     * Two rows more than the nominative has, and they are the corpus's: an earlier clause in this
+     * position can have chosen a *card* ("Return target creature card from your graveyard to the
+     * battlefield. You gain life equal to **its** mana value.") or a *spell* ("Counter target spell.
+     * … **that spell's** mana value"), and Oracle names those with the noun rather than the
+     * permanent word. All four denote `EffectTarget.ContextTarget`; the noun is printed shape.
+     *
+     * Which spelling is canonical is [targetPronoun]'s measurement, re-taken for the possessive over
+     * the Oracle bulk: "its ⟨characteristic⟩" 525 lines against the demonstratives' 149 together. So
+     * the pronoun prints and the four nouns parse, exactly as in the nominative.
+     */
+    val targetPossessive: Phrase<Unit> = oneOf(
+        "the object an earlier clause chose, possessive",
+        constant("its", Unit),
+        alternate(constant("that creature's", Unit)),
+        alternate(constant("that permanent's", Unit)),
+        alternate(constant("that card's", Unit)),
+        alternate(constant("that spell's", Unit)),
+    )
+
+    /**
      * Plurals whose singular the general rules would get wrong *in either direction*.
      *
      * The "-ves" family needs to be listed rather than derived, because the inverse is not a rule:
@@ -295,10 +342,63 @@ object Primitives {
         "Scarecrows" to "Scarecrow",
     )
 
-    private val SUBTYPE_PLURAL = Regex("""[A-Z][A-Za-z-]*s""")
+    /**
+     * The creature types whose plural **is** the singular, spelled without a trailing "s".
+     *
+     * Listed rather than derived, for [IRREGULAR_PLURALS]' reason turned around: nothing in the
+     * spelling of a word says whether English inflects it. "Merfolk" and "Kithkin" are invariant;
+     * "Elemental" and "Goblin" are not, and no rule over the letters separates them. The list is
+     * read off printed Oracle text — a type earns a row here when the corpus puts the bare word in a
+     * slot only a plural can fill ("Other **Merfolk** you control get +1/+1", "the number of
+     * **Kithkin** you control", "**Eldrazi** you control are Slivers", "activate abilities of
+     * **Myr**" beside "activate abilities of Dragon**s**"). A type English probably does not inflect
+     * but that no printed line puts in a plural slot stays off the list: the corpus is the evidence,
+     * and a name added without it would be a guess that round-trips.
+     *
+     * Invariance is not the same property [pluralCandidates] already handles with
+     * `singular.endsWith("s")`. That branch covers "Plains", where the *singular* ends in "s" and so
+     * the ordinary "-s" plural would double it; these nine end in no "s" at all, which is why
+     * [SUBTYPE_PLURAL] could not even tokenize them and the whole family was unreachable in both
+     * directions — a plural-position bare subtype declined, and a filter carrying one could not be
+     * printed.
+     */
+    private val INVARIANT_PLURAL_SUBTYPES: Set<String> = setOf(
+        "Aetherborn",
+        "Eldrazi",
+        "Fish",
+        "Kithkin",
+        "Merfolk",
+        "Myr",
+        "Nephilim",
+        "Samurai",
+        "Treefolk",
+        "Zubera",
+    )
+
+    /**
+     * A printed plural: the ordinary "-s" run, or one of the invariant spellings by name.
+     *
+     * The alternation is built from [INVARIANT_PLURAL_SUBTYPES] rather than widened to "any word",
+     * and that is the gate this token needs: a pattern with the "s" dropped would let *every*
+     * singular subtype tokenize as a plural, and [pluralSubtype] and [subtype] would then read one
+     * word two ways with two different numbers. Naming the nine keeps the two slots disjoint.
+     */
+    /**
+     * The invariant spellings as an alternation, each closed off with a boundary so a listed name
+     * cannot match a *prefix* of a longer word — without it "Fisherman" would tokenize as "Fish"
+     * and strand "erman" for the template to choke on.
+     */
+    private fun invariantAlternation(anyCase: Boolean): String =
+        INVARIANT_PLURAL_SUBTYPES.joinToString("|") { type ->
+            val head = if (anyCase) "[${type.first().uppercaseChar()}${type.first().lowercaseChar()}]" else type.take(1)
+            "$head${type.drop(1)}(?![A-Za-z-])"
+        }
+
+    private val SUBTYPE_PLURAL = Regex("""[A-Z][A-Za-z-]*s|${invariantAlternation(anyCase = false)}""")
 
     /** The same run with a lowercased initial allowed — see [subtype] for why that is a reading. */
-    private val SUBTYPE_PLURAL_ANY_CASE = Regex("""[A-Za-z][A-Za-z-]*s""")
+    private val SUBTYPE_PLURAL_ANY_CASE =
+        Regex("""[A-Za-z][A-Za-z-]*s|${invariantAlternation(anyCase = true)}""")
 
     /** A printed word as a subtype: exact when capitalized, gated to known types when it is not. */
     private fun readSubtype(text: String): Subtype? {
@@ -418,6 +518,34 @@ object Primitives {
         write = { it.value.takeIf { v -> v in CREATURE_SUBTYPES } },
     )
 
+    /**
+     * The same word where it stands alone in a position whose object is **not a permanent** — the
+     * type phrase under "card", and the adjective in front of "spells" — with the five basic land
+     * types held out. See `Filters.nonPermanentSubtype`, which is its only caller.
+     *
+     * The asymmetry with [creatureSubtype] is which list it is measured against, and why. That leaf
+     * is *ranked in* — a bare noun standing where a permanent goes has to imply "creature", so only
+     * a word the SDK names as a creature type may be read. This one is **filtered out**, because the
+     * position implies no card type at all: "a Goblin card", "an Equipment card" and "a Gate card"
+     * are all `Any.withSubtype`, so the word is taken whatever it is — that ungatedness is the whole
+     * reason the rule exists.
+     *
+     * The five basic land types are the exception, and the only one, because they are the five words
+     * where the card type *is* recoverable: CR 205.3i makes Plains, Island, Swamp, Mountain and
+     * Forest land types, so a card with one is a land by definition. `Filters.BASIC_LAND_TYPES`
+     * therefore spells them as a type noun carrying `IsLand` in every position, and the corpus
+     * agrees — Molten Man and Call the Mountain Chocobo both write `Land.withSubtype` for "a
+     * Mountain card". Reading them here as well would give "a Forest card" two readings with two
+     * different models, which is exactly the hard ambiguity [CREATURE_SUBTYPES] was introduced to
+     * stop one position earlier, arriving in the position that leaf does not gate.
+     */
+    val nonBasicLandSubtype: Phrase<Subtype> = token(
+        name = "a subtype that is not a land type",
+        pattern = Regex("""[A-Za-z][A-Za-z-]*"""),
+        read = { readSubtype(it)?.takeIf { s -> s.value !in Subtype.ALL_BASIC_LAND_TYPES } },
+        write = { it.value.takeIf { v -> v !in Subtype.ALL_BASIC_LAND_TYPES } },
+    )
+
     /** …and its plural, which is [pluralSubtype] with the same list applied as a gate. */
     val pluralCreatureSubtype: Phrase<Subtype> = token(
         name = "a creature type",
@@ -468,6 +596,7 @@ object Primitives {
         colorScope,
         constant("everything", ProtectionScope.Everything),
         constant("each opponent", ProtectionScope.EachOpponent),
+        constant("multicolored", ProtectionScope.Multicolored),
         subtypeScope,
         constant("artifacts", ProtectionScope.CardType("Artifact")),
         constant("creatures", ProtectionScope.CardType("Creature")),
@@ -536,8 +665,10 @@ object Primitives {
      */
     private fun pluralCandidates(singular: String): List<String> = listOfNotNull(
         IRREGULAR_PLURALS.entries.firstOrNull { it.value == singular }?.key,
-        // An invariant plural is its own plural, and must be offered before "…s" would win.
-        singular.takeIf { it.endsWith("s") },
+        // An invariant plural is its own plural, and must be offered before "…s" would win. Two
+        // spellings reach this: a singular that already ends in "s" ("Plains"), and one the corpus
+        // shows English does not inflect at all ("Merfolk").
+        singular.takeIf { it.endsWith("s") || it in INVARIANT_PLURAL_SUBTYPES },
         // Consonant + y pluralizes as "-ies" ("Ally" → "Allies"); vowel + y does not ("Monkeys").
         (singular.dropLast(1) + "ies").takeIf { singular.endsWithConsonantY() },
         "${singular}s",

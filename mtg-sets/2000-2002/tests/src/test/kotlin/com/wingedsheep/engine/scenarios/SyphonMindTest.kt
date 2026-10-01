@@ -10,6 +10,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Tests for Syphon Mind.
@@ -47,7 +48,7 @@ class SyphonMindTest : FunSpec({
         driver.giveMana(activePlayer, Color.BLACK, 4)
 
         val castResult = driver.castSpell(activePlayer, syphonMind)
-        castResult.isSuccess shouldBe true
+        castResult.outcome shouldBe Outcome.Done
 
         // Resolve - both pass priority
         driver.bothPass()
@@ -104,7 +105,7 @@ class SyphonMindTest : FunSpec({
         driver.giveMana(activePlayer, Color.BLACK, 4)
 
         val castResult = driver.castSpell(activePlayer, syphonMind)
-        castResult.isSuccess shouldBe true
+        castResult.outcome shouldBe Outcome.Done
 
         // Resolve
         driver.bothPass()
@@ -121,5 +122,42 @@ class SyphonMindTest : FunSpec({
 
         // Controller gained 1 card net from the draw
         driver.getHandSize(activePlayer) shouldBe activeHandBefore + 1
+    }
+
+    test("Syphon Mind makes every other player discard and draws for every card discarded") {
+        val driver = createDriver()
+        val players = driver.initMultiplayer(
+            decks = List(4) { Deck.of("Swamp" to 20, "Forest" to 20) },
+            startingLife = 20
+        )
+        val controller = players.first()
+        val opponents = players.drop(1)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val controllerHandBefore = driver.getHandSize(controller)
+        val opponentHandsBefore = opponents.associateWith(driver::getHandSize)
+        val syphonMind = driver.putCardInHand(controller, "Syphon Mind")
+        driver.giveMana(controller, Color.BLACK, 4)
+        driver.castSpell(controller, syphonMind).outcome shouldBe Outcome.Done
+
+        // A multiplayer priority round: every seat passes before the spell resolves.
+        repeat(players.size) {
+            driver.passPriority(driver.state.priorityPlayerId!!)
+        }
+
+        // Each opponent gets their own discard choice, in turn order.
+        opponents.forEach { opponent ->
+            driver.pendingDecision?.playerId shouldBe opponent
+            driver.submitCardSelection(opponent, listOf(driver.getHand(opponent).first()))
+        }
+
+        opponents.forEach { opponent ->
+            driver.getHandSize(opponent) shouldBe opponentHandsBefore.getValue(opponent) - 1
+        }
+        // The controller is not included and draws once for each of the three actual discards.
+        driver.getHandSize(controller) shouldBe controllerHandBefore + 3
+        driver.events.filterIsInstance<CardsDrawnEvent>()
+            .any { it.playerId == controller && it.count == 3 } shouldBe true
     }
 })

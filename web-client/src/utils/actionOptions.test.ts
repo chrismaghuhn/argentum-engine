@@ -152,6 +152,66 @@ describe('playCostRange', () => {
   })
 })
 
+describe('buildActionOptions — modal double-faced lands', () => {
+  const pathwayCard = card('', { name: 'Riverglide Pathway', cardTypes: ['LAND'] } as Partial<ClientCard>)
+
+  it('lists one entry per land face, labelled by the face rather than by the card', () => {
+    // CR 712.12: the server sends one PlayLand per land face, each described by the face it plays.
+    // `cardInfo.name` is the front face's name for both, so the descriptions are the only thing
+    // telling them apart — a `find` here would silently drop the back face.
+    const options = buildActionOptions(pathwayCard, [
+      action({
+        action: { type: 'PlayLand' },
+        actionType: 'PlayLand',
+        description: 'Play Riverglide Pathway',
+      }),
+      action({
+        action: { type: 'PlayLand', asBackFace: true },
+        actionType: 'PlayLand',
+        description: 'Play Lavaglide Pathway',
+      }),
+    ])
+    expect(options.map((o) => o.label)).toEqual([
+      'Play Riverglide Pathway',
+      'Play Lavaglide Pathway',
+    ])
+    expect(options.map((o) => o.key)).toEqual(['playLand', 'playLand-1'])
+    expect(options.every((o) => o.actionType === 'playLand')).toBe(true)
+  })
+
+  it('an ordinary land still reads "Play <card name>"', () => {
+    const options = buildActionOptions(
+      card('', { name: 'Island', cardTypes: ['LAND'] } as Partial<ClientCard>),
+      [action({ action: { type: 'PlayLand' }, actionType: 'PlayLand', description: 'Play Island' })],
+    )
+    expect(options.map((o) => o.label)).toEqual(['Play Island'])
+  })
+})
+
+describe('buildActionOptions — casting a single face', () => {
+  it('a prepare-spell copy is labelled and priced by the face it casts, not by the creature', () => {
+    // The exiled copy of Bloodline Recollector casts its prepare spell (faceIndex 0). The server
+    // names and prices that face; the card itself still reads as the {1}{B} creature.
+    const options = buildActionOptions(
+      card('{1}{B}', { name: 'Bloodline Recollector' } as Partial<ClientCard>),
+      [action({
+        action: { type: 'CastSpell', faceIndex: 0 },
+        description: 'Cast Ancestral Craving',
+        manaCostString: '{B}',
+      })],
+    )
+    expect(options.map((o) => [o.label, o.manaCost])).toEqual([['Cast Ancestral Craving', '{B}']])
+  })
+
+  it('an ordinary cast still reads "Cast <card name>"', () => {
+    const options = buildActionOptions(
+      card('{1}{B}', { name: 'Leech Collector' } as Partial<ClientCard>),
+      [action({ action: { type: 'CastSpell', faceIndex: null }, description: 'Cast Leech Collector' })],
+    )
+    expect(options.map((o) => o.label)).toEqual(['Cast Leech Collector'])
+  })
+})
+
 describe('playLadderOptions', () => {
   it('lists cycling alongside the cast, even though cycling stays out of the range', () => {
     const options = buildActionOptions(card('{5}{W}'), [
@@ -196,5 +256,122 @@ describe('playLadderOptions', () => {
 
     expect(options.filter((option) => option.actionType === 'activate').map((option) => option.manaCost))
       .toEqual(['{1}', '{0}'])
+  })
+})
+
+describe('buildActionOptions — keyword alternative costs (evoke, impending)', () => {
+  const mulldrifter = card('{4}{U}', { name: 'Mulldrifter', evoke: '{2}{U}' } as Partial<ClientCard>)
+
+  it('offers the evoke price next to the printed one when only evoke is affordable', () => {
+    // The server enumerates only the casts it can pay for, so an unaffordable hard cast arrives as
+    // nothing at all. Before this, that left one option and the drag-to-play path fired it — you
+    // evoked a Mulldrifter you meant to hard-cast, and sacrificed it, without being asked.
+    const options = buildActionOptions(mulldrifter, [
+      action({
+        action: { type: 'CastSpell', alternativeCostType: 'EVOKE' },
+        actionType: 'CastWithAlternativeCost',
+        description: 'Evoke Mulldrifter ({2}{U})',
+        manaCostString: '{2}{U}',
+      }),
+    ])
+    expect(options.map((o) => o.key)).toEqual(['cast', 'evoke'])
+    expect(options[0]).toMatchObject({ label: 'Cast Mulldrifter', manaCost: '{4}{U}', isAvailable: false, action: null })
+    expect(options[1]).toMatchObject({ label: 'Evoke Mulldrifter', manaCost: '{2}{U}', isAvailable: true })
+    expect(options[1]!.hint).toContain('sacrificed')
+  })
+
+  it('offers the evoke price grayed out when only the hard cast is affordable', () => {
+    // The other direction: seven lands and no evoke action enumerated (it is affordable too, but a
+    // server that omits it must not cost the player the choice).
+    const options = buildActionOptions(mulldrifter, [
+      action({ manaCostString: '{4}{U}' }),
+    ])
+    expect(options.map((o) => o.key)).toEqual(['cast', 'evoke'])
+    expect(options[0]).toMatchObject({ isAvailable: true })
+    expect(options[1]).toMatchObject({ label: 'Evoke Mulldrifter', manaCost: '{2}{U}', isAvailable: false, action: null })
+  })
+
+  it('wires both cast actions to their own option when the player can afford either', () => {
+    const options = buildActionOptions(mulldrifter, [
+      action({ manaCostString: '{4}{U}' }),
+      action({
+        action: { type: 'CastSpell', alternativeCostType: 'EVOKE' },
+        actionType: 'CastWithAlternativeCost',
+        description: 'Evoke Mulldrifter ({2}{U})',
+        manaCostString: '{2}{U}',
+      }),
+    ])
+    expect(options.map((o) => o.key)).toEqual(['cast', 'evoke'])
+    expect(options.every((o) => o.isAvailable && o.action !== null)).toBe(true)
+  })
+
+  it('still pairs impending with the printed cost, keeping its time-counter glyph', () => {
+    const overlord = card('{5}{W}{W}', {
+      name: 'Overlord of the Mistmoors',
+      impending: { cost: '{2}{W}{W}', time: 4 },
+    } as Partial<ClientCard>)
+    const options = buildActionOptions(overlord, [
+      action({
+        action: { type: 'CastSpell', alternativeCostType: 'IMPENDING' },
+        actionType: 'CastWithAlternativeCost',
+        description: 'Impending Overlord of the Mistmoors ({2}{W}{W})',
+        manaCostString: '{2}{W}{W}',
+      }),
+    ])
+    expect(options.map((o) => o.key)).toEqual(['cast', 'impending'])
+    expect(options[1]).toMatchObject({ label: 'Cast for Impending', manaCost: '{2}{W}{W}', impendingTime: 4 })
+  })
+
+  it('keeps any further cost variant the server offered alongside the pair', () => {
+    const options = buildActionOptions(mulldrifter, [
+      action({ manaCostString: '{4}{U}' }),
+      action({
+        action: { type: 'CastSpell', alternativeCostType: 'EVOKE' },
+        actionType: 'CastWithAlternativeCost',
+        description: 'Evoke Mulldrifter ({2}{U})',
+        manaCostString: '{2}{U}',
+      }),
+      action({
+        action: { type: 'CastSpell', alternativeCostType: 'GRANTED' },
+        actionType: 'CastWithAlternativeCost',
+        description: 'Cast Mulldrifter (Omniscience)',
+        manaCostString: '{0}',
+      }),
+    ])
+    expect(options.map((o) => o.key)).toEqual(['cast', 'evoke', 'cast-extra-0'])
+  })
+})
+
+
+describe('buildActionOptions — bestow', () => {
+  const creature = card('{1}{G}', { name: 'Test Bestow', bestow: { cost: '{3}{G}' } })
+  const normal = action({ manaCostString: '{1}{G}' })
+  const bestow = action({
+    action: { type: 'CastSpell', alternativeCostType: 'BESTOW', useAlternativeCost: true },
+    actionType: 'CastWithAlternativeCost',
+    manaCostString: '{3}{G}',
+    validTargets: [{ targetId: 'creature' }],
+  })
+
+  it.each([
+    { actions: [normal], enabled: [true, false] },
+    { actions: [bestow], enabled: [false, true] },
+    { actions: [normal, bestow], enabled: [true, true] },
+  ])('shows both prices and follows server availability: $enabled', ({ actions, enabled }) => {
+    const options = buildActionOptions(creature, actions)
+    expect(options.map(o => o.key)).toEqual(['cast', 'bestow'])
+    expect(options.map(o => o.isAvailable)).toEqual(enabled)
+    expect(options[1]).toMatchObject({ label: 'Bestow Test Bestow', manaCost: '{3}{G}' })
+    expect(options[1]!.hint).toContain('Aura')
+    if (enabled[1]) expect(options[1]!.action).toBe(bestow)
+    else expect(options[1]!.action).toBeNull()
+  })
+
+  it('shows the nonmana payment even when bestow is unavailable', () => {
+    const options = buildActionOptions(card('{1}{G}', {
+      bestow: { cost: '{G}', additionalCostDescription: 'Pay 2 life' },
+    }), [normal])
+    expect(options[1]).toMatchObject({ manaCost: '{G}', isAvailable: false, action: null })
+    expect(options[1]!.hint).toContain('Pay 2 life')
   })
 })

@@ -1,5 +1,6 @@
 package com.wingedsheep.sdk.dsl
 
+import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.scripting.ActivationRestriction
@@ -16,7 +17,7 @@ import com.wingedsheep.sdk.scripting.ModifyLifeLoss
 import com.wingedsheep.sdk.scripting.ModifyMillAmount
 import com.wingedsheep.sdk.scripting.ModifySpellCost
 import com.wingedsheep.sdk.scripting.PreventDamage
-import com.wingedsheep.sdk.scripting.ReplaceDrawWithEffect
+import com.wingedsheep.sdk.scripting.ReplaceDrawWith
 import com.wingedsheep.sdk.scripting.ReplacementEffect
 import com.wingedsheep.sdk.scripting.StaticAbility
 import com.wingedsheep.sdk.scripting.TriggeredAbility
@@ -31,7 +32,7 @@ import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
  * speed becomes 1."
  *
  * Nothing but the keyword is wired here, and that is the whole design: raising a controller's speed
- * to 1 is a *state-based action* (CR 704.5z), not a triggered ability, so the engine's
+ * to 1 is a *state-based action* (CR 704.5aa), not a triggered ability, so the engine's
  * `StartYourEnginesCheck` does it by scanning projected battlefield permanents for
  * [Keyword.START_YOUR_ENGINES]. Consequences that fall out for free:
  *
@@ -109,8 +110,8 @@ fun CardBuilder.startYourEngines() {
  *         ModifyDamageAmount(
  *             modifier = 1,
  *             appliesTo = EventPattern.DamageEvent(
- *                 source = SourceFilter.YouControl,
- *                 recipient = RecipientFilter.OpponentOrPermanentTheyControl,
+ *                 source = GameObjectFilter.Any.youControl(),
+ *                 recipient = Recipient.OpponentOrPermanentTheyControl,
  *             ),
  *         )
  *     )
@@ -238,7 +239,7 @@ class MaxSpeedBuilder {
             is ModifyDamageAmount -> effect.copy(restrictions = effect.restrictions + MAX_SPEED_GATE)
             is ModifyDrawAmount -> effect.copy(restrictions = effect.restrictions + MAX_SPEED_GATE)
             is ModifyMillAmount -> effect.copy(restrictions = effect.restrictions + MAX_SPEED_GATE)
-            is ReplaceDrawWithEffect -> effect.copy(restrictions = effect.restrictions + MAX_SPEED_GATE)
+            is ReplaceDrawWith -> effect.copy(restrictions = effect.restrictions + MAX_SPEED_GATE)
             is ModifyLifeGain -> effect.copy(restrictions = effect.restrictions + MAX_SPEED_GATE)
             is ModifyLifeLoss -> effect.copy(restrictions = effect.restrictions + MAX_SPEED_GATE)
             is LifeLossFloor -> effect.copy(restrictions = effect.restrictions + MAX_SPEED_GATE)

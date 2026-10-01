@@ -16,6 +16,8 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Command Tower (CMD #269) — {T}: Add one mana of any color in your commander's color identity.
@@ -43,12 +45,12 @@ class CommandTowerScenarioTest : FunSpec({
         val activation = driver.submit(
             ActivateAbility(playerId = player, sourceId = tower, abilityId = abilityId)
         )
-        activation.isPaused shouldBe true
+        activation.outcome.shouldBeInstanceOf<Outcome.Paused>()
 
         val decision = driver.pendingDecision.shouldBeInstanceOf<ChooseColorDecision>()
         decision.playerId shouldBe player
         decision.availableColors shouldBe setOf(Color.BLACK, Color.GREEN)
-        driver.submitDecision(player, ColorChosenResponse(decision.id, Color.GREEN)).isSuccess shouldBe true
+        driver.submitDecision(player, ColorChosenResponse(decision.id, Color.GREEN)).outcome shouldBe Outcome.Done
 
         driver.isTapped(tower) shouldBe true
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
@@ -66,7 +68,7 @@ class CommandTowerScenarioTest : FunSpec({
             ActivateAbility(playerId = player, sourceId = tower, abilityId = abilityId)
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.state.getEntity(player)?.get<ManaPoolComponent>()?.let { pool ->
             pool.black shouldBe 0
             pool.green shouldBe 0

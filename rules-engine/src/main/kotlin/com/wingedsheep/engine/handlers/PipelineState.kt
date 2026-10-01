@@ -28,11 +28,12 @@ data class PipelineState(
      * gathered. Consumed by `CardPredicate.HasSubtypeInEachStoredGroup`.
      */
     val storedSubtypeGroups: Map<String, List<Set<String>>> = emptyMap(),
-    /** When inside a ForEachInGroupEffect, the current iteration entity. EffectTarget.Self resolves to this. */
-    val iterationTarget: EntityId? = null
 ) {
     companion object {
         val EMPTY = PipelineState()
+
+        /** Reserved metadata published by ChooseSpell alongside its selected card collection. */
+        fun spellFaceKey(collection: String): String = "$collection:spellFace"
 
         /**
          * Pipeline collection name under which a batch trigger seeds the entities it captured

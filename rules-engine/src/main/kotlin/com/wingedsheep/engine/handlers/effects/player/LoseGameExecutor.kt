@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.effects.player
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEndReason
 import com.wingedsheep.engine.core.PlayerLostEvent
@@ -17,7 +18,9 @@ import kotlin.reflect.KClass
  * Executor for LoseGameEffect.
  * Target player loses the game immediately (e.g., Phage the Untouchable).
  */
-class LoseGameExecutor : EffectExecutor<LoseGameEffect> {
+class LoseGameExecutor(
+    private val predicateEvaluator: PredicateEvaluator
+) : EffectExecutor<LoseGameEffect> {
 
     override val effectType: KClass<LoseGameEffect> = LoseGameEffect::class
 
@@ -26,7 +29,11 @@ class LoseGameExecutor : EffectExecutor<LoseGameEffect> {
         effect: LoseGameEffect,
         context: EffectContext
     ): EffectResult {
-        val targetId = context.resolvePlayerTarget(effect.target)
+        // State-aware resolution: the stateless overload only knows the four "chosen target"
+        // references, so an attachment- or relation-derived player (Sinner's Judgment's
+        // `Player.EnchantedPlayer`, `ChosenOpponent`, `OwnerOf`, …) silently resolved to null and
+        // the loss never happened. `resolvePlayerRef` is the switch that knows all of them.
+        val targetId = context.resolvePlayerTarget(effect.target, state)
             ?: return EffectResult.error(state, "No target player for LoseGameEffect")
 
         // Check if player has already lost
@@ -39,7 +46,7 @@ class LoseGameExecutor : EffectExecutor<LoseGameEffect> {
         // Check if player can't lose the game. Shared with the state-based-action checks so the
         // gate on a conditional grant and the CR 810.8a team reach are applied identically
         // wherever a player would lose.
-        if (playerCantLoseGame(state, targetId)) {
+        if (playerCantLoseGame(state, targetId, predicateEvaluator = predicateEvaluator)) {
             return EffectResult.success(state)
         }
 

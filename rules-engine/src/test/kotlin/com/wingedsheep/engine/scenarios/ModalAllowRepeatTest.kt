@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.core.CastModalModeSelectionContinuation
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ChooseOptionDecision
@@ -19,6 +20,8 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Tests F1 / F2 from [`backlog/modal-cast-time-choices-plan.md`]: enforcement of
@@ -77,7 +80,7 @@ class ModalAllowRepeatTest : FunSpec({
 
         val spell = d.putCardInHand(p1, "Test Non-Repeat Modal")
         val result = d.submit(CastSpell(playerId = p1, cardId = spell))
-        result.isPaused shouldBe true
+        (result.outcome is Outcome.Paused) shouldBe true
 
         // First decision offers all three modes (none picked yet).
         val firstDecision = d.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
@@ -97,6 +100,7 @@ class ModalAllowRepeatTest : FunSpec({
 
         // The continuation's narrowed availableIndices must exclude the picked mode.
         val continuation = d.state.continuationStack
+            .filterIsInstance<Suspension>().map { it.answer }
             .filterIsInstance<CastModalModeSelectionContinuation>()
             .single()
         continuation.allowRepeat shouldBe false
@@ -128,6 +132,7 @@ class ModalAllowRepeatTest : FunSpec({
 
         // Continuation reflects allowRepeat semantics: no narrowed availableIndices.
         val continuation = d.state.continuationStack
+            .filterIsInstance<Suspension>().map { it.answer }
             .filterIsInstance<CastModalModeSelectionContinuation>()
             .single()
         continuation.allowRepeat shouldBe true
@@ -169,7 +174,7 @@ class ModalAllowRepeatTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         result.error shouldBe "modeDamageDistribution cannot be supplied for repeated mode index(es): 0"
     }
 
@@ -196,6 +201,7 @@ class ModalAllowRepeatTest : FunSpec({
         d.submitDecision(p1, OptionChosenResponse(secondDecision.id, secondDecision.options.indexOf("Draw a card")))
 
         // The continuation should now have transitioned past mode selection entirely.
-        d.state.continuationStack.filterIsInstance<CastModalModeSelectionContinuation>() shouldBe emptyList()
+        d.state.continuationStack.filterIsInstance<Suspension>().map { it.answer }
+            .filterIsInstance<CastModalModeSelectionContinuation>() shouldBe emptyList()
     }
 })

@@ -1,6 +1,7 @@
 package com.wingedsheep.gameserver.ai
 
 import com.wingedsheep.ai.AiPlayerController
+import com.wingedsheep.ai.jev.JevAiPlayerController
 import com.wingedsheep.ai.engine.EngineAiPlayerController
 import com.wingedsheep.ai.llm.LlmAiPlayerController
 import com.wingedsheep.ai.llm.LlmClient
@@ -24,9 +25,10 @@ private val logger = LoggerFactory.getLogger(AiGameManager::class.java)
 /**
  * Manages the lifecycle of AI opponents in games.
  *
- * Supports two AI modes:
+ * Supports built-in and externally supplied AI modes:
  * - **engine** (default): Built-in rules-engine AI. No API key needed. Fast, deterministic.
  * - **llm**: LLM-based AI via OpenAI-compatible API. Requires API key.
+ * - any unique mode registered by an [AiControllerProvider].
  */
 @Service
 class AiGameManager(
@@ -36,7 +38,9 @@ class AiGameManager(
     private val cardRegistry: CardRegistry,
     private val llmCostTracker: com.wingedsheep.gameserver.tournament.llm.LlmCostTracker,
     private val aiInsightService: AiInsightService,
+    controllerProviders: List<AiControllerProvider> = emptyList(),
 ) {
+    private val controllerProviders = AiControllerProviderRegistry(controllerProviders)
     /**
      * The live AI sessions of each game, keyed game → AI player. A multiplayer pod seats more than
      * one AI (an FFA table, a Two-Headed Giant team), so this is per *seat* and not per game: keyed
@@ -62,10 +66,13 @@ class AiGameManager(
         }
         if (ai.isEngineMode) {
             logger.info("AI opponent: enabled | mode=engine (built-in)")
-        } else {
+        } else if (ai.isLlmMode) {
             val provider = if (ai.baseUrl.contains("openrouter")) "OpenRouter" else "Local (${ai.baseUrl})"
             logger.info("AI opponent: enabled | mode=llm | provider={} | model={} | deckbuilding-model={}",
                 provider, ai.model, ai.effectiveDeckbuildingModel)
+        } else {
+            requireExternalProvider(ai.mode)
+            logger.info("AI opponent: enabled | mode={} (external)", ai.mode)
         }
     }
 
@@ -93,10 +100,10 @@ class AiGameManager(
 
     val isEnabled: Boolean get() {
         if (!gameProperties.ai.enabled) return false
-        // Engine mode doesn't need an API key
-        if (gameProperties.ai.isEngineMode) return true
-        // LLM mode requires an API key
-        return gameProperties.ai.effectiveApiKey.isNotBlank()
+        val ai = gameProperties.ai
+        if (ai.isEngineMode) return true
+        if (ai.isLlmMode) return ai.effectiveApiKey.isNotBlank()
+        return controllerProviders[ai.mode] != null
     }
 
     /**
@@ -118,7 +125,12 @@ class AiGameManager(
 
     /**
      * Create the appropriate AI controller based on configuration.
+     *
      * @param modelOverride If non-null, overrides the server's configured model for LLM mode.
+     *        An override needs an API key to mean anything, so the two bring-up paths that have a
+     *        caller to report to reject an uncredentialed one up front (see
+     *        [requireCredentialedOverride]); the paths that recover or re-wire an *existing* AI
+     *        drop the override instead — see [usableModelOverride].
      */
     private fun createController(
         aiPlayerId: EntityId,
@@ -127,6 +139,18 @@ class AiGameManager(
         forceEngine: Boolean = false,
     ): AiPlayerController {
         val ai = gameProperties.ai
+        // A per-player model override explicitly requests the built-in LLM even when the
+        // server-wide mode is external. A locked Engine-AI preset ([forceEngine]) never reaches an
+        // external provider either.
+        if (!forceEngine && modelOverride == null && !ai.isEngineMode && !ai.isLlmMode) {
+            return requireExternalProvider(ai.mode).create(
+                AiControllerContext(
+                    playerId = aiPlayerId,
+                    gameSessionId = gameSession?.sessionId,
+                    snapshot = { gameSession?.getAiRuntimeSnapshot() },
+                )
+            )
+        }
         // A model override implicitly requests LLM mode for this player, regardless of the server's
         // global mode setting. A locked dev preset may explicitly force the Engine AI below.
         val aiConfig = ai.toAiConfig().let { cfg ->
@@ -159,6 +183,47 @@ class AiGameManager(
         }
     }
 
+    private fun requireExternalProvider(mode: String): AiControllerProvider =
+        requireNotNull(controllerProviders[mode]) {
+            "Unknown game.ai.mode '$mode'; expected ${controllerProviders.supportedModes().sorted().joinToString()}"
+        }
+
+    /**
+     * Reject a per-player LLM model override that no key can serve.
+     *
+     * Only for the paths that *mint* an AI ([createAiOpponent], [createAiIdentity]): there is a live
+     * caller to hand the error to, nothing exists yet to be left half-built, and silently seating a
+     * model-labelled AI that is really the engine fallback would make an LLM tournament a lie about
+     * what it compared.
+     */
+    private fun requireCredentialedOverride(modelOverride: String?) {
+        require(modelOverride == null || gameProperties.ai.effectiveApiKey.isNotBlank()) {
+            "A per-player LLM model override requires an API key"
+        }
+    }
+
+    /**
+     * The same check for the paths that adopt an AI that already exists — [rehydrateAiIdentity] on
+     * startup and [wireAiForGame] at match start — where throwing costs more than degrading.
+     *
+     * Rehydration runs inside [com.wingedsheep.gameserver.persistence.SessionRecoveryService]'s
+     * `@PostConstruct`, so an override persisted while a key was configured would fail bean
+     * initialisation and take the whole server down on the next restart after the key went away.
+     * Wiring runs after both seats have already been told the match is starting, so throwing leaves
+     * a live table whose AI never acts. Both drop the override and fall back to the server-wide
+     * mode, which is what the LLM controller's engine fallback did anyway — loudly, so the operator
+     * can see that a model-specific AI is no longer playing its model.
+     */
+    private fun usableModelOverride(modelOverride: String?, context: String): String? {
+        if (modelOverride == null || gameProperties.ai.effectiveApiKey.isNotBlank()) return modelOverride
+        logger.warn(
+            "Ignoring LLM model override '{}' while {}: no API key is configured. " +
+                "This AI falls back to game.ai.mode={}.",
+            modelOverride, context, gameProperties.ai.mode
+        )
+        return null
+    }
+
     private fun com.wingedsheep.gameserver.config.AiProperties.toAiConfig() = com.wingedsheep.ai.llm.AiConfig(
         enabled = enabled, mode = mode, baseUrl = baseUrl,
         apiKey = apiKey, openRouterApiKey = openRouterApiKey,
@@ -184,7 +249,7 @@ class AiGameManager(
         aiPlayerId: EntityId,
         controller: AiPlayerController,
         gameSession: GameSession?,
-        onActionReady: (EntityId, GameAction) -> Unit = { _, _ -> },
+        onActionReady: (EntityId, GameAction, String?) -> Unit = { _, _, _ -> },
         onMulliganKeep: (EntityId) -> Unit = { _ -> },
         onMulliganTake: (EntityId) -> Unit = { _ -> },
         onBottomCards: (EntityId, List<EntityId>) -> Unit = { _, _ -> },
@@ -196,6 +261,7 @@ class AiGameManager(
         onMulliganKeep = onMulliganKeep,
         onMulliganTake = onMulliganTake,
         onBottomCards = onBottomCards,
+        allowActionsOnlyFallback = controller is EngineAiPlayerController || controller is LlmAiPlayerController || controller is JevAiPlayerController,
         actionGate = gameSession?.let { aiInsightService.gateFor(it.sessionId) },
     )
 
@@ -213,7 +279,7 @@ class AiGameManager(
         playerName: String,
         controller: AiPlayerController,
         modelOverride: String? = null,
-        onActionReady: (EntityId, GameAction) -> Unit,
+        onActionReady: (EntityId, GameAction, String?) -> Unit,
         onMulliganKeep: (EntityId) -> Unit,
         onMulliganTake: (EntityId) -> Unit,
         onBottomCards: (EntityId, List<EntityId>) -> Unit,
@@ -254,7 +320,7 @@ class AiGameManager(
      * Create an AI opponent and add it to the game session.
      *
      * @param gameSession The game session to add the AI to.
-     * @param onActionReady Callback invoked (async) when the AI wants to submit an action.
+     * @param onActionReady Callback invoked (async) with the action and its snapshot interaction epoch.
      *        This MUST NOT be called while holding stateLock.
      * @param onMulliganKeep Callback for AI keeping hand.
      * @param onMulliganTake Callback for AI taking mulligan.
@@ -264,7 +330,7 @@ class AiGameManager(
     fun createAiOpponent(
         gameSession: GameSession,
         setCode: String? = null,
-        onActionReady: (EntityId, GameAction) -> Unit,
+        onActionReady: (EntityId, GameAction, String?) -> Unit,
         onMulliganKeep: (EntityId) -> Unit,
         onMulliganTake: (EntityId) -> Unit,
         onBottomCards: (EntityId, List<EntityId>) -> Unit,
@@ -280,7 +346,7 @@ class AiGameManager(
         require(isEnabled) { "AI is not enabled. Set game.ai.enabled=true." }
 
         val aiPlayerId = EntityId("ai-${UUID.randomUUID().toString().take(8)}")
-        val aiName = randomAiName()
+        val aiName = randomAiName() + if (gameProperties.ai.mode.trim().equals("jev", ignoreCase = true)) " (Jev)" else ""
 
         val controller = createController(aiPlayerId, gameSession)
 
@@ -330,7 +396,7 @@ class AiGameManager(
         gameSession: GameSession,
         aiPlayerId: EntityId,
         playerName: String,
-        onActionReady: (EntityId, GameAction) -> Unit,
+        onActionReady: (EntityId, GameAction, String?) -> Unit,
         onMulliganKeep: (EntityId) -> Unit,
         onMulliganTake: (EntityId) -> Unit,
         onBottomCards: (EntityId, List<EntityId>) -> Unit
@@ -383,6 +449,9 @@ class AiGameManager(
         require(if (forceEngine) aiEnabledToggle else isEnabled) {
             "AI is not enabled. Set game.ai.enabled=true."
         }
+        // A locked Engine-AI identity drops the override (see aiModelOverride below), so only an
+        // override that will actually drive an LLM needs a key.
+        if (!forceEngine) requireCredentialedOverride(modelOverride)
 
         val aiPlayerId = EntityId("ai-${UUID.randomUUID().toString().take(8)}")
         val aiProperties = gameProperties.ai
@@ -401,7 +470,8 @@ class AiGameManager(
         val effectiveModel = if (forceEngine) null
             else modelOverride ?: if (gameProperties.ai.isLlmMode) gameProperties.ai.model else null
         val modelSuffix = effectiveModel?.substringAfterLast('/')?.let { " ($it)" } ?: ""
-        val aiName = randomAiName() + modelSuffix
+        val suffix = if (gameProperties.ai.mode.trim().equals("jev", ignoreCase = true) && modelOverride == null) " (Jev)" else modelSuffix
+        val aiName = randomAiName() + suffix
         val identity = PlayerIdentity(
             token = "ai-token-${UUID.randomUUID().toString().take(8)}",
             playerId = aiPlayerId,
@@ -451,9 +521,14 @@ class AiGameManager(
         val aiPlayerId = identity.playerId
         val aiProperties = gameProperties.ai
 
+        // A locked Engine-AI identity never carries a usable override; don't warn about one.
+        val modelOverride = if (forceEngine) null else usableModelOverride(
+            identity.aiModelOverride,
+            "rehydrating AI identity ${identity.playerName}"
+        )
         val controller = createController(
             aiPlayerId,
-            modelOverride = identity.aiModelOverride,
+            modelOverride = modelOverride,
             forceEngine = forceEngine,
         )
         // Replaced when a match (or draft) wires this AI, so no callbacks and no step gate here.
@@ -470,7 +545,8 @@ class AiGameManager(
         aiPlayerIds.add(aiPlayerId)
 
         logger.info("Rehydrated AI identity: {} ({}) [model={}]",
-            identity.playerName, aiPlayerId.value, identity.aiModelOverride ?: aiProperties.model)
+            identity.playerName, aiPlayerId.value,
+            if (forceEngine) "engine" else modelOverride ?: aiProperties.model)
     }
 
     /**
@@ -483,7 +559,7 @@ class AiGameManager(
         gameSession: GameSession,
         aiPlayerId: EntityId,
         deckList: Map<String, Int>?,
-        onActionReady: (EntityId, GameAction) -> Unit,
+        onActionReady: (EntityId, GameAction, String?) -> Unit,
         onMulliganKeep: (EntityId) -> Unit,
         onMulliganTake: (EntityId) -> Unit,
         onBottomCards: (EntityId, List<EntityId>) -> Unit,
@@ -501,7 +577,11 @@ class AiGameManager(
         }
 
         val aiProperties = gameProperties.ai
-        val modelOverride = lookupModelOverride(aiPlayerId)
+        // A locked Engine-AI seat ignores any override, so it is neither looked up nor warned about.
+        val modelOverride = if (effectiveForceEngine) null else usableModelOverride(
+            lookupModelOverride(aiPlayerId),
+            "wiring AI ${aiPlayerId.value} for game ${gameSession.sessionId}"
+        )
         val controller = createController(
             aiPlayerId,
             gameSession,
@@ -534,6 +614,11 @@ class AiGameManager(
             )
             sessionRegistry.setPlayerSession(newSession.id, playerSession)
         }
+
+        // The transport delta cache belongs to the previous virtual session. A replacement
+        // AiWebSocketSession has no synchronized ClientGameState yet, so force its first update
+        // to be a full masked StateUpdate rather than a delta based on stale transport history.
+        gameSession.clearLastSentState(aiPlayerId)
 
         trackSession(gameSession.sessionId, aiPlayerId, newSession)
         logger.info(

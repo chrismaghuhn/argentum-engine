@@ -11,8 +11,6 @@ import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.targets.TargetObject
-import com.wingedsheep.sdk.scripting.targets.TargetPermanent
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
@@ -37,10 +35,7 @@ private val OutlandLiberatorFront = card("Outland Liberator") {
     daybound()
     activatedAbility {
         cost = Costs.Composite(Costs.Mana("{1}"), Costs.SacrificeSelf)
-        val target = target(
-            "target artifact or enchantment",
-            TargetPermanent(filter = TargetFilter.ArtifactOrEnchantment),
-        )
+        val target = target(TargetFilter.ArtifactOrEnchantment)
         effect = Effects.Destroy(target)
     }
 
@@ -68,22 +63,16 @@ private val FrenziedTrapbreaker = card("Frenzied Trapbreaker") {
     nightbound()
     activatedAbility {
         cost = Costs.Composite(Costs.Mana("{1}"), Costs.SacrificeSelf)
-        val target = target(
-            "target artifact or enchantment",
-            TargetPermanent(filter = TargetFilter.ArtifactOrEnchantment),
-        )
+        val target = target(TargetFilter.ArtifactOrEnchantment)
         effect = Effects.Destroy(target)
     }
     triggeredAbility {
-        trigger = Triggers.Attacks
+        trigger = Triggers.self.attacks()
         val target = target(
-            "target artifact or enchantment defending player controls",
-            TargetObject(
-                filter = TargetFilter(
-                    baseFilter = GameObjectFilter.ArtifactOrEnchantment
-                        .targetPlayerControls(EffectTarget.PlayerRef(Player.DefendingPlayer)),
-                ),
-            ),
+            TargetFilter(
+                baseFilter = GameObjectFilter.ArtifactOrEnchantment
+                    .targetPlayerControls(EffectTarget.PlayerRef(Player.DefendingPlayer)),
+            )
         )
         effect = Effects.Destroy(target)
     }

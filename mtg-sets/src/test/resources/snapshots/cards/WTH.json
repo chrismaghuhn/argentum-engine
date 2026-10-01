@@ -81,7 +81,8 @@
                 "filter": {
                     "baseFilter": "instant|sorcery",
                     "zone": "Stack"
-                }
+                },
+                "id": "t0"
             }
         ]
     },
@@ -95,6 +96,102 @@
     ]
 }
 
+// Doomsday
+{
+    "name": "Doomsday",
+    "manaCost": "{B}{B}{B}",
+    "typeLine": "Sorcery",
+    "oracleText": "Search your library and graveyard for five cards and exile the rest. Put the chosen cards on top of your library in any order. You lose half your life, rounded up.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "GatherCards",
+                    "source": {
+                        "type": "FromMultipleZones",
+                        "zones": [
+                            "Library",
+                            "Graveyard"
+                        ]
+                    },
+                    "storeAs": "gathered0",
+                    "search": true
+                },
+                {
+                    "type": "SelectFromCollection",
+                    "from": "gathered0",
+                    "selection": {
+                        "type": "ChooseExactly",
+                        "count": {
+                            "type": "Fixed",
+                            "amount": 5
+                        }
+                    },
+                    "storeSelected": "selected1",
+                    "storeRemainder": "remainder1",
+                    "prompt": "Choose five cards to put on top of your library",
+                    "selectedLabel": "Put on top of library",
+                    "remainderLabel": "Exile"
+                },
+                {
+                    "type": "MoveCollection",
+                    "from": "remainder1",
+                    "destination": {
+                        "type": "ToZone",
+                        "zone": "Exile"
+                    }
+                },
+                {
+                    "type": "MoveCollection",
+                    "from": "selected1",
+                    "destination": {
+                        "type": "ToZone",
+                        "zone": "Library",
+                        "placement": "Top"
+                    },
+                    "order": "ControllerChooses"
+                },
+                "EmitLibrarySearchedEvent",
+                {
+                    "type": "LoseLife",
+                    "amount": {
+                        "type": "Divide",
+                        "numerator": {
+                            "type": "LifeTotal",
+                            "player": "You"
+                        },
+                        "denominator": {
+                            "type": "Fixed",
+                            "amount": 2
+                        }
+                    },
+                    "target": "Controller"
+                }
+            ]
+        }
+    },
+    "metadata": {
+        "collectorNumber": "66",
+        "rarity": "RARE",
+        "artist": "Adrian Smith",
+        "imageUri": "https://cards.scryfall.io/normal/front/5/b/5b3c6d87-9383-450b-bba5-33435b6b0d08.jpg?1783946736",
+        "rulings": [
+            {
+                "date": "2018-03-16",
+                "text": "If your graveyard and library combined contain five or more cards, you must choose five cards from among them. You can't choose to find fewer than that."
+            },
+            {
+                "date": "2018-03-16",
+                "text": "If your graveyard and library combined contain fewer than five cards, all of those cards will wind up in your library."
+            }
+        ]
+    },
+    "colorIdentityOverride": [
+        "BLACK"
+    ]
+}
+
 // Festering Evil
 {
     "name": "Festering Evil",
@@ -104,7 +201,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Festering Evil:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -127,7 +224,7 @@
                                     "type": "Fixed",
                                     "amount": 1
                                 },
-                                "target": "Self"
+                                "target": "IterationEntity"
                             }
                         },
                         {
@@ -151,7 +248,7 @@
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Festering Evil:2",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -182,7 +279,7 @@
                                     "type": "Fixed",
                                     "amount": 3
                                 },
-                                "target": "Self"
+                                "target": "IterationEntity"
                             }
                         },
                         {
@@ -216,6 +313,38 @@
     ]
 }
 
+// Gerrard's Wisdom
+{
+    "name": "Gerrard's Wisdom",
+    "manaCost": "{2}{W}{W}",
+    "typeLine": "Sorcery",
+    "oracleText": "You gain 2 life for each card in your hand.",
+    "script": {
+        "spellEffect": {
+            "type": "GainLife",
+            "amount": {
+                "type": "Multiply",
+                "amount": {
+                    "type": "Count",
+                    "player": "You",
+                    "zone": "Hand"
+                },
+                "multiplier": 2
+            }
+        }
+    },
+    "metadata": {
+        "collectorNumber": "15",
+        "rarity": "UNCOMMON",
+        "artist": "Heather Hudson",
+        "flavorText": "\"Fighting without an army is called a duel, and you'll lose a duel if your enemy comes expecting a war.\"\n—Gerrard of the *Weatherlight*",
+        "imageUri": "https://cards.scryfall.io/normal/front/f/8/f81defa5-edb4-4f1f-b13c-7cfb34511138.jpg?1783946748"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Guided Strike
 {
     "name": "Guided Strike",
@@ -238,7 +367,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 {
@@ -246,7 +375,7 @@
                     "keyword": "FIRST_STRIKE",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 {
@@ -264,7 +393,7 @@
                 "filter": {
                     "baseFilter": "creature"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -292,7 +421,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Hidden Horror:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -332,7 +461,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Mind Stone:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -345,7 +474,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Mind Stone:2",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -378,6 +507,44 @@
     "colorIdentityOverride": []
 }
 
+// Relearn
+{
+    "name": "Relearn",
+    "manaCost": "{1}{U}{U}",
+    "typeLine": "Sorcery",
+    "oracleText": "Return target instant or sorcery card from your graveyard to your hand.",
+    "script": {
+        "spellEffect": {
+            "type": "MoveToZone",
+            "target": {
+                "type": "BoundVariable",
+                "name": "t0"
+            },
+            "destination": "Hand"
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "instant|sorcery own:you",
+                    "zone": "Graveyard"
+                },
+                "id": "t0"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "51",
+        "rarity": "UNCOMMON",
+        "artist": "Zina Saunders",
+        "flavorText": "\"Barrin taught me that the hardest lessons to grasp are the ones you've already learned.\"\n—Ertai, wizard adept",
+        "imageUri": "https://cards.scryfall.io/normal/front/9/0/902f8480-8ae7-4b5f-abdf-1bd46066049e.jpg?1783946738"
+    },
+    "colorIdentityOverride": [
+        "BLUE"
+    ]
+}
+
 // Sage Owl
 {
     "name": "Sage Owl",
@@ -394,7 +561,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Sage Owl:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -436,5 +603,72 @@
     },
     "colorIdentityOverride": [
         "BLUE"
+    ]
+}
+
+// Thunderbolt
+{
+    "name": "Thunderbolt",
+    "manaCost": "{1}{R}",
+    "typeLine": "Instant",
+    "oracleText": "Choose one —\n• Thunderbolt deals 3 damage to target player or planeswalker.\n• Thunderbolt deals 4 damage to target creature with flying.",
+    "script": {
+        "spellEffect": {
+            "type": "Modal",
+            "modes": [
+                {
+                    "effect": {
+                        "type": "DealDamage",
+                        "amount": {
+                            "type": "Fixed",
+                            "amount": 3
+                        },
+                        "target": {
+                            "type": "BoundVariable",
+                            "name": "t0"
+                        }
+                    },
+                    "targetRequirements": [
+                        {
+                            "type": "TargetPlayerOrPlaneswalker",
+                            "id": "t0"
+                        }
+                    ],
+                    "description": "Thunderbolt deals 3 damage to target player or planeswalker"
+                },
+                {
+                    "effect": {
+                        "type": "DealDamage",
+                        "amount": {
+                            "type": "Fixed",
+                            "amount": 4
+                        },
+                        "target": {
+                            "type": "BoundVariable",
+                            "name": "t1"
+                        }
+                    },
+                    "targetRequirements": [
+                        {
+                            "type": "TargetObject",
+                            "filter": {
+                                "baseFilter": "creature kw:flying"
+                            },
+                            "id": "t1"
+                        }
+                    ],
+                    "description": "Thunderbolt deals 4 damage to target creature with flying"
+                }
+            ]
+        }
+    },
+    "metadata": {
+        "collectorNumber": "115",
+        "artist": "Dylan Martens",
+        "flavorText": "\"Most wizards consider a thunderbolt to be a proper retort.\"\n—Ertai, wizard adept",
+        "imageUri": "https://cards.scryfall.io/normal/front/a/0/a0a4b641-2eb3-482b-91a1-236ebe2a7a41.jpg?1783946723"
+    },
+    "colorIdentityOverride": [
+        "RED"
     ]
 }

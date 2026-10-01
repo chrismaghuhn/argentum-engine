@@ -22,6 +22,7 @@ import com.wingedsheep.sdk.scripting.AdditionalManaOnTap
 import com.wingedsheep.sdk.scripting.effects.AddManaOfChoiceEffect
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.values.ManaColorSet
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Resolves "additional one mana of any color" tap bonuses from [AdditionalManaOnTap] auras with
@@ -30,17 +31,17 @@ import com.wingedsheep.sdk.scripting.values.ManaColorSet
  * the pending bonuses one at a time, pausing for a [ChooseAnyColorTapBonusContinuation] when a
  * color choice is needed and resuming with the remaining bonuses afterward.
  *
- * Fixed-color and mirror-color tap bonuses are handled directly (no decision) by
- * `ActivateAbilityHandler.resolveAdditionalManaOnTap` / `resolveAdditionalManaOnSourceTap`; this
+ * Fixed-color and mirror-color tap bonuses are handled directly (no decision) earlier in
+ * [ManaAbilityResolutionPipeline.finishTapBonuses], which drives this resolver last; this
  * resolver only handles the any-color choice case. The shared [AddManaOfChoiceExecutor] keeps the
  * actual mana addition (and its events) consistent with normal "add one mana of any color".
  */
 class TappedForManaBonusResolver(
     private val cardRegistry: CardRegistry,
-    private val dynamicAmountEvaluator: DynamicAmountEvaluator = DynamicAmountEvaluator(),
-    private val decisionHandler: DecisionHandler = DecisionHandler(),
+    private val dynamicAmountEvaluator: DynamicAmountEvaluator,
+    private val decisionHandler: DecisionHandler = DecisionHandler()
 ) {
-    private val manaExecutor = AddManaOfChoiceExecutor(cardRegistry)
+    private val manaExecutor = AddManaOfChoiceExecutor(cardRegistry, amountEvaluator = dynamicAmountEvaluator)
 
     /**
      * Collect the any-color tap bonuses owed when the land [landId] (controlled by [landController])
@@ -83,7 +84,8 @@ class TappedForManaBonusResolver(
         val item = items.first()
         val remaining = items.drop(1)
         val available = ManaColorSetResolver.resolve(
-            ManaColorSet.AnyColor, state, state.projectedState, item.auraId, item.controllerId, cardRegistry
+            ManaColorSet.AnyColor, state, state.projectedState, item.auraId, item.controllerId, cardRegistry,
+            predicateEvaluator = dynamicAmountEvaluator.predicates
         )
         if (available.isEmpty()) {
             return drive(state, remaining, accumulatedEvents, accumulatedDiagnostics)
@@ -103,6 +105,11 @@ class TappedForManaBonusResolver(
         }
 
         val sourceName = state.getEntity(item.auraId)?.get<CardComponent>()?.name
+        val continuation = ChooseAnyColorTapBonusContinuation(
+            current = item,
+            remaining = remaining,
+        )
+
         val decision = decisionHandler.createColorDecision(
             state = state,
             playerId = item.controllerId,
@@ -111,15 +118,11 @@ class TappedForManaBonusResolver(
             prompt = "Choose a color for the additional mana",
             phase = DecisionPhase.RESOLUTION,
             availableColors = available,
+            answer = continuation
         )
-        val continuation = ChooseAnyColorTapBonusContinuation(
-            decisionId = decision.pendingDecision!!.id,
-            current = item,
-            remaining = remaining,
-        )
-        return ExecutionResult.paused(
-            decision.state.pushContinuation(continuation),
-            decision.pendingDecision,
+
+        return ExecutionResult.propagatePause(
+            decision.state,
             accumulatedEvents + decision.events,
             diagnostics = accumulatedDiagnostics,
         )
@@ -137,7 +140,8 @@ class TappedForManaBonusResolver(
         }
         val item = continuation.current
         val available = ManaColorSetResolver.resolve(
-            ManaColorSet.AnyColor, state, state.projectedState, item.auraId, item.controllerId, cardRegistry
+            ManaColorSet.AnyColor, state, state.projectedState, item.auraId, item.controllerId, cardRegistry,
+            predicateEvaluator = dynamicAmountEvaluator.predicates
         )
         val added = manaExecutor.addManaToPool(state, bonusEffect(item.amount), contextFor(state, item.auraId, item.controllerId), response.color, available)
         val driveResult = drive(
@@ -146,7 +150,7 @@ class TappedForManaBonusResolver(
             added.events.toList(),
             accumulatedDiagnostics = added.diagnostics,
         )
-        if (driveResult.isPaused) return driveResult
+        if (driveResult.outcome is Outcome.Paused) return driveResult
         val next = checkForMore(driveResult.state, driveResult.events)
         return next.copy(diagnostics = driveResult.diagnostics + next.diagnostics)
     }

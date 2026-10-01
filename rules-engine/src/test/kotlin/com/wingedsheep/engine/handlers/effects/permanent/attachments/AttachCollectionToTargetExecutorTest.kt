@@ -26,6 +26,8 @@ import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
  * RED-first characterization for the generic mixed attachment-transfer primitive.
@@ -79,7 +81,7 @@ class AttachCollectionToTargetExecutorTest : ScenarioTestBase() {
         manaCost = "{0}"
         typeLine = "Enchantment — Aura"
         oracleText = "Enchant creature"
-        auraTarget = Targets.Creature
+        auraTarget = TargetObject(filter = TargetFilter.Creature)
     }
 
     private val dualPlayerAttachment = card("Test Transfer Dual Attachment") {
@@ -103,7 +105,7 @@ class AttachCollectionToTargetExecutorTest : ScenarioTestBase() {
         manaCost = "{0}"
         typeLine = "Enchantment — Aura"
         oracleText = "Enchant permanent"
-        auraTarget = Targets.Permanent
+        auraTarget = TargetObject(filter = TargetFilter.Permanent)
     }
 
     private val artifactProtectedCreature = card("Test Transfer Artifact-Protected Creature") {

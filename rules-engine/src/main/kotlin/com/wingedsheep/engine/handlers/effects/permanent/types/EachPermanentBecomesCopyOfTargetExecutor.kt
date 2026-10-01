@@ -1,15 +1,18 @@
 package com.wingedsheep.engine.handlers.effects.permanent.types
 
+import com.wingedsheep.engine.state.components.identity.copiableCardComponent
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.event.GrantedActivatedAbility
 import com.wingedsheep.engine.handlers.EffectContext
-import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.handlers.effects.BattlefieldFilterUtils
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.copy.CopyExceptionApplier
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.CopyOfComponent
+import com.wingedsheep.engine.state.components.identity.CopyWhileAttachedComponent
 import com.wingedsheep.engine.state.components.identity.RevertCopyAtEndOfTurnComponent
 import com.wingedsheep.engine.state.components.identity.RevertCopyAtNextEndStepComponent
 import com.wingedsheep.engine.state.components.identity.RevertCopyAtYourNextTurnComponent
@@ -45,7 +48,7 @@ import kotlin.reflect.KClass
  * mana value X, except it has flying and this ability" is both riders at once.
  */
 class EachPermanentBecomesCopyOfTargetExecutor(
-    private val cardRegistry: CardRegistry
+    private val predicateEvaluator: PredicateEvaluator
 ) : EffectExecutor<EachPermanentBecomesCopyOfTargetEffect> {
 
     override val effectType: KClass<EachPermanentBecomesCopyOfTargetEffect> =
@@ -59,7 +62,7 @@ class EachPermanentBecomesCopyOfTargetExecutor(
         val targetId = context.resolveTarget(effect.target, state)
             ?: return EffectResult.success(state)
 
-        val targetCard = state.getEntity(targetId)?.get<CardComponent>()
+        val targetCard = state.getEntity(targetId)?.copiableCardComponent()
             ?: return EffectResult.success(state)
 
         // Target must still be on the battlefield to serve as a copy source — unless the effect
@@ -70,7 +73,7 @@ class EachPermanentBecomesCopyOfTargetExecutor(
         }
 
         val affectedTarget = effect.affected
-        val affected = if (affectedTarget != null) {
+        var affected = if (affectedTarget != null) {
             // "target permanent A becomes a copy of target permanent B" — the affected set is the
             // single resolved [affected] target (Fleeting Reflection). Resolving to nothing is a
             // no-op. Must still be on the battlefield to become a copy.
@@ -85,11 +88,24 @@ class EachPermanentBecomesCopyOfTargetExecutor(
                 state,
                 effect.filter.baseFilter,
                 context,
-                excludeSelfId = if (effect.filter.excludeSelf) context.sourceId else null
+                excludeSelfId = if (effect.filter.excludeSelf) context.sourceId else null,
+                predicateEvaluator = predicateEvaluator
             )
                 // "each OTHER … becomes a copy of that …" — the copy source keeps its own identity
                 // (and any counter just placed on it), so exclude the target from the affected set.
                 .filterNot { effect.excludeTarget && it == targetId }
+        }
+
+        // "For as long as this Equipment remains attached to it" (Blade of Shared Souls): the copy
+        // is keyed to the source's attachment. A permanent the source is no longer attached to by
+        // resolution gets nothing — the duration has already ended (CR 611.2b).
+        val attachedSourceId = if (effect.duration == Duration.WhileSourceAttachedToAffected) {
+            context.sourceId?.takeIf { it in state.getBattlefield() }
+                ?: return EffectResult.success(state)
+        } else null
+        if (attachedSourceId != null) {
+            val hostId = state.getEntity(attachedSourceId)?.get<AttachedToComponent>()?.targetId
+            affected = affected.filter { it == hostId }
         }
 
         if (affected.isEmpty()) {
@@ -100,7 +116,9 @@ class EachPermanentBecomesCopyOfTargetExecutor(
         // (reverted at cleanup), `UntilNextEndStep` (reverted on entry to the next end step,
         // coincident with a paired "return it at the beginning of the next end step" trigger —
         // Niko, Light of Hope), and `UntilYourNextTurn` (reverted after the controller's next
-        // untap step — Absorbing Man, Taskmaster). Anything else degrades to permanent.
+        // untap step — Absorbing Man, Taskmaster), and `WhileSourceAttachedToAffected` (reverted by
+        // `AttachedCopyExpiryCheck` once the source stops being attached — Blade of Shared Souls).
+        // Anything else degrades to permanent.
         var newState = state
         for (entityId in affected) {
             val container = newState.getEntity(entityId) ?: continue
@@ -110,8 +128,11 @@ class EachPermanentBecomesCopyOfTargetExecutor(
             // The "except …" clause (CR 707.9) is applied by the shared [CopyExceptionApplier],
             // the same helper the token-copy path uses, so it rides on the copy's own
             // CardComponent and lasts exactly as long as the copy does.
+            // `isDoubleFaced` stays the copying permanent's own: layout is not a copiable value
+            // (CR 707.2), and CR 712.9's Clone/Kruin Outlaw examples turn on the copy's *own* card
+            // being double-faced, not the copied one's.
             val copiedCard = CopyExceptionApplier.apply(targetCard, effect.exceptions)
-                .copy(ownerId = currentCard.ownerId)
+                .copy(ownerId = currentCard.ownerId, isDoubleFaced = currentCard.isDoubleFaced)
 
             // If this permanent is already a copy, keep the existing pre-copy snapshot
             // so a chain of copy effects still reverts to the printed identity on exit.
@@ -137,37 +158,25 @@ class EachPermanentBecomesCopyOfTargetExecutor(
                     Duration.UntilYourNextTurn -> updated = updated.with(
                         RevertCopyAtYourNextTurnComponent(context.controllerId)
                     )
+                    Duration.WhileSourceAttachedToAffected -> if (attachedSourceId != null) {
+                        updated = updated.with(CopyWhileAttachedComponent(attachedSourceId))
+                    }
                     else -> {}
                 }
                 updated
             }
 
-            // "…and this ability": re-grant the activated ability that produced this copy. The
-            // resolving ability's identity carries the *permanent's* card definition id, which has
-            // already drifted to whatever it last copied — so read the granted record first (that's
-            // where the ability lives after the first copy) and fall back to the printed definition
-            // for the very first activation.
-            if (effect.retainActivatingAbility) {
-                val identity = context.abilityIdentity
-                if (identity != null && newState.grantedActivatedAbilities
-                        .none { it.entityId == entityId && it.ability.id == identity.abilityId }
-                ) {
-                    val ability = state.grantedActivatedAbilities
-                        .firstOrNull { it.entityId == entityId && it.ability.id == identity.abilityId }
-                        ?.ability
-                        ?: cardRegistry.getCard(identity.cardDefinitionId)
-                            ?.activatedAbilities?.firstOrNull { it.id == identity.abilityId }
-                    if (ability != null) {
-                        newState = newState.copy(
-                            grantedActivatedAbilities = newState.grantedActivatedAbilities +
-                                GrantedActivatedAbility(
-                                    entityId = entityId,
-                                    ability = ability,
-                                    duration = Duration.Permanent
-                                )
-                        )
-                    }
+            // The activation snapshot survives changes to the source and to its granting effect.
+            val retainedAbility = context.activatedAbility
+            if (effect.retainActivatingAbility && retainedAbility != null &&
+                newState.grantedActivatedAbilities.none {
+                    it.entityId == entityId && it.ability.id == retainedAbility.id
                 }
+            ) {
+                newState = newState.copy(
+                    grantedActivatedAbilities = newState.grantedActivatedAbilities +
+                        GrantedActivatedAbility(entityId, retainedAbility, Duration.Permanent)
+                )
             }
         }
 

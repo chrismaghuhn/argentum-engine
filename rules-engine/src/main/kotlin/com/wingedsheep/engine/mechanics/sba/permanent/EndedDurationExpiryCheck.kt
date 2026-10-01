@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.mechanics.layers.ActiveFloatingEffect
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
+import com.wingedsheep.engine.mechanics.durations.GrantDurationGate
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.mechanics.sba.SbaOrder
 import com.wingedsheep.engine.mechanics.sba.StateBasedActionCheck
@@ -14,7 +15,6 @@ import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
-import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.Duration
 
@@ -54,6 +54,12 @@ import com.wingedsheep.sdk.scripting.Duration
  * granted Treasure mana ability is the source-keyed case, Ultima's counter-keyed "{T}: Add {C}"
  * and Braided Net's activation lock the affected-keyed ones.
  *
+ * The same applies to [GameState.mayPlayPermissions]: a cast-from-exile permission granted "for as
+ * long as you control this [permanent]" (Taster of Wares, `MayPlayExpiry.WhileYouControlSource`)
+ * has no floating-effect representation either, so it is latched off here when its source leaves
+ * the battlefield or changes controller — the [Duration.WhileYouControlSource] gate above, applied
+ * to a permission instead of an effect.
+ *
  * Affected entities no longer on the battlefield are left untouched: the effect as a whole is
  * reaped by the untap-step cleanup / zone-change handling, and we must not emit spurious
  * control-change events for permanents that merely left.
@@ -73,7 +79,10 @@ class EndedDurationExpiryCheck : StateBasedActionCheck {
         // condition fails — otherwise a de-blighted land keeps the mana ability / an untapped
         // permanent stays locked / a Treasured permanent keeps saccing for mana after its
         // Larcenist died. This latch is one-way by nature: the grant is never re-added.
-        val prunedState = pruneEndedGrants(state)
+        // A cast-from-exile permission granted "for as long as you control this [permanent]"
+        // (Taster of Wares) has no floating-effect representation either, so it needs the same
+        // one-way latch: revoke it the moment its source leaves the battlefield or changes hands.
+        val prunedState = pruneEndedMayPlayPermissions(pruneEndedGrants(state))
 
         if (prunedState.floatingEffects.isEmpty()) {
             return if (prunedState === state) ExecutionResult.success(state)
@@ -160,12 +169,23 @@ class EndedDurationExpiryCheck : StateBasedActionCheck {
                 else all
             }
 
+            // Seasinger — the conjunction of the two gates above. Either half failing ends the
+            // effect for good (CR 611.2b), which is what makes untapping Seasinger hand the
+            // borrowed creature back permanently rather than for one turn.
+            is Duration.WhileYouControlSourceAndSourceTapped -> {
+                val sourceId = floating.sourceId
+                if (sourceId == null || !state.getBattlefield().contains(sourceId)) emptySet()
+                else if (!sourceTapped(state, sourceId)) emptySet()
+                else if (projected.getController(sourceId) != floating.controllerId) emptySet()
+                else all
+            }
+
             is Duration.WhileAffectedHasCounter -> {
                 // "for as long as it has a [X] counter on it" (Ultima) — keep only affected
                 // entities that still carry the counter (CR 611.2b). Entities that merely left
                 // the battlefield are kept here and reaped by zone-change cleanup instead, matching
                 // the other per-affected gates.
-                val counterType = CounterType.fromName(floating.duration.counterType) ?: return emptySet()
+                val counterType = floating.duration.counterType
                 all.filterTo(LinkedHashSet()) { id ->
                     !state.getBattlefield().contains(id) ||
                         (state.getEntity(id)?.get<CountersComponent>()?.getCount(counterType) ?: 0) > 0
@@ -201,12 +221,19 @@ class EndedDurationExpiryCheck : StateBasedActionCheck {
      *    effects revert through the per-effect loop in [check], but the granted ability has no
      *    floating-effect representation, so without this it would outlive Kitesail.
      *
-     * Covers [GameState.grantedActivatedAbilities] and [GameState.grantedStaticAbilities] — the two
-     * grant stores a "for as long as …" duration can reach today. [GameState.grantedTriggeredAbilities],
-     * [GameState.grantedReplacementEffects] and [GameState.globalGrantedTriggeredAbilities] are
+     * Covers [GameState.grantedActivatedAbilities], [GameState.grantedStaticAbilities] and
+     * [GameState.grantedTriggeredAbilities] — the three grant stores a "for as long as …" duration
+     * can reach today. The triggered store joined when Makeshift Mannequin arrived: "for as long as
+     * that creature has a mannequin counter on it, it has 'When this creature becomes the target of
+     * a spell or ability, sacrifice it'" is a [Duration.WhileAffectedHasCounter] grant into it, and
+     * without this pass removing the counter left the drawback behind — the trigger lookup in
+     * `TriggerAbilityResolver` reads the store directly and has no duration gate of its own.
+     *
+     * [GameState.grantedStateTriggeredAbilities], [GameState.grantedReplacementEffects] and
+     * [GameState.globalGrantedTriggeredAbilities] are still
      * deliberately *not* pruned here: no card grants into them with a conditional duration, so they
      * only ever need the `EndOfTurn` / `UntilYourNextTurn` filters in `CleanupPhaseManager`. Their
-     * executors do accept any [Duration] though, so the first card that grants a trigger or
+     * executors do accept any [Duration] though, so the first card that grants a state trigger or
      * replacement effect "for as long as …" has to be added here (and carry a `sourceId` for a
      * source-keyed gate) or it will leak exactly the way the activated-ability grant did.
      *
@@ -229,7 +256,62 @@ class EndedDurationExpiryCheck : StateBasedActionCheck {
                 }
             )
         }
+        if (state.grantedTriggeredAbilities.any { grantConditionFails(state, it.entityId, it.sourceId, it.duration) }) {
+            result = result.copy(
+                grantedTriggeredAbilities = state.grantedTriggeredAbilities.filterNot {
+                    grantConditionFails(state, it.entityId, it.sourceId, it.duration)
+                }
+            )
+        }
         return result
+    }
+
+    /**
+     * Revoke every [com.wingedsheep.engine.state.permissions.MayPlayPermission] whose source-keyed
+     * window has closed. Two windows share this pass because they share the zone half:
+     * `endsWhenSourceUncontrolled` closes when the granting permanent leaves the battlefield **or**
+     * its *projected* controller is no longer the grant's "you"; `endsWhenSourceLeavesBattlefield`
+     * closes on the zone alone, whoever controls the source.
+     *
+     * "You" is `expiryControllerId ?: controllerId`, the same resolution the turn-keyed cleanup
+     * window uses. For an ordinary grant those coincide; for an owner-scoped one the granting
+     * executor pins `expiryControllerId` to the player whose ability granted the permission, so the
+     * window still belongs to them rather than to each card's owner (who never controls the source).
+     *
+     * Reading the *projected* controller rather than [ControllerComponent] is what makes a
+     * Threaten-style steal of the source close the window, matching
+     * [Duration.WhileYouControlSource] — losing control is as much an end to "for as long as you
+     * control this" as the permanent dying (CR 611.2b).
+     *
+     * Removal, not gating, is deliberate: the latch must be one-way, so a source that comes back
+     * or a control change that reverts must not revive a permission. Returns the same instance
+     * when nothing changed.
+     */
+    private fun pruneEndedMayPlayPermissions(state: GameState): GameState {
+        if (state.mayPlayPermissions.none {
+                it.endsWhenSourceUncontrolled || it.endsWhenSourceLeavesBattlefield
+            }
+        ) {
+            return state
+        }
+        val projected = state.projectedState
+        val battlefield = state.getBattlefield()
+        val surviving = state.mayPlayPermissions.filterNot { permission ->
+            val windowed = permission.endsWhenSourceUncontrolled ||
+                permission.endsWhenSourceLeavesBattlefield
+            if (!windowed) return@filterNot false
+            val sourceId = permission.sourceId ?: return@filterNot true
+            if (!battlefield.contains(sourceId)) return@filterNot true
+            // Only the "for as long as **you** control it" window reads the controller. The
+            // battlefield-only window (Shared Fate) must not, because its grantees are usually
+            // other players — reading the controller there would revoke every opponent's grant
+            // on the first state-based check after it was made.
+            permission.endsWhenSourceUncontrolled &&
+                projected.getController(sourceId) !=
+                (permission.expiryControllerId ?: permission.controllerId)
+        }
+        return if (surviving.size == state.mayPlayPermissions.size) state
+        else state.copy(mayPlayPermissions = surviving)
     }
 
     /**
@@ -248,68 +330,22 @@ class EndedDurationExpiryCheck : StateBasedActionCheck {
         entityId: EntityId,
         sourceId: EntityId?,
         duration: Duration
-    ): Boolean =
-        !sourceGateHolds(state, duration, sourceId, entityId) ||
-            affectedGrantConditionFails(state, entityId, duration)
+    ): Boolean = !GrantDurationGate.holds(state, entityId, sourceId, duration)
 
     /**
-     * Whether a *source-keyed* "for as long as …" gate still holds for the grant/effect made by
-     * [sourceId] on [affectedId]. Returns `true` for every other duration, so callers can apply it
-     * unconditionally.
-     *
-     * Depends only on the source's zone, tapped state, and attachment — no projection — which is
-     * what lets the granted-ability path (which has no [ProjectedState] at hand) share it with
-     * [activeAffectedEntities]. A missing [sourceId] means there is no source on the battlefield,
-     * so the gate is closed.
+     * Whether a *source-keyed* "for as long as …" gate still holds. Shared with the per-read gate
+     * the trigger lookup applies to `grantedTriggeredAbilities` — see [GrantDurationGate], which
+     * owns the logic so the latch here and that gate can never disagree.
      */
     private fun sourceGateHolds(
         state: GameState,
         duration: Duration,
         sourceId: EntityId?,
         affectedId: EntityId
-    ): Boolean = when (duration) {
-        // "for as long as this permanent remains on the battlefield" (Kitesail Larcenist).
-        is Duration.WhileSourceOnBattlefield ->
-            sourceId != null && state.getBattlefield().contains(sourceId)
-
-        // "for as long as this creature remains tapped" (Old Man of the Sea).
-        is Duration.WhileSourceTapped -> sourceTapped(state, sourceId)
-
-        // "for as long as [the source Aura/Equipment] remains attached to it" — the source leaving
-        // the battlefield, becoming unattached, or moving to a different host all end it.
-        Duration.WhileSourceAttachedToAffected ->
-            sourceId != null && state.getBattlefield().contains(sourceId) &&
-                state.getEntity(sourceId)?.get<AttachedToComponent>()?.targetId == affectedId
-
-        else -> true
-    }
-
-    /**
-     * True when [duration] is an affected-object-keyed "for as long as …" duration whose
-     * condition no longer holds for [entityId]. False for every other duration.
-     */
-    private fun affectedGrantConditionFails(
-        state: GameState,
-        entityId: EntityId,
-        duration: Duration
-    ): Boolean = when (duration) {
-        is Duration.WhileAffectedHasCounter -> {
-            if (!state.getBattlefield().contains(entityId)) true
-            else {
-                val counterType = CounterType.fromName(duration.counterType)
-                counterType == null ||
-                    (state.getEntity(entityId)?.get<CountersComponent>()?.getCount(counterType) ?: 0) <= 0
-            }
-        }
-        Duration.WhileAffectedTapped ->
-            !state.getBattlefield().contains(entityId) ||
-                state.getEntity(entityId)?.has<TappedComponent>() != true
-        else -> false
-    }
+    ): Boolean = GrantDurationGate.sourceGateHolds(state, duration, sourceId, affectedId)
 
     private fun sourceTapped(state: GameState, sourceId: EntityId?): Boolean =
-        sourceId != null && state.getBattlefield().contains(sourceId) &&
-            state.getEntity(sourceId)?.has<TappedComponent>() == true
+        GrantDurationGate.sourceTapped(state, sourceId)
 
     /**
      * Emit a [ControlChangedEvent] for each dropped entity of a control effect, reverting from the

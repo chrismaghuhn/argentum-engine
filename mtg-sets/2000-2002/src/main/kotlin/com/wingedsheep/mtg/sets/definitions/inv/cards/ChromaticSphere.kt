@@ -4,7 +4,6 @@ import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
-import com.wingedsheep.sdk.scripting.TimingRule
 
 /**
  * Chromatic Sphere
@@ -12,6 +11,12 @@ import com.wingedsheep.sdk.scripting.TimingRule
  * Artifact
  *
  * {1}, {T}, Sacrifice this artifact: Add one mana of any color. Draw a card.
+ *
+ * Not a mana ability. CR 605.1a (August 7, 2026) added "and its cost and effect don't move any card
+ * to or from a library" to the criteria, and the draw is exactly that — so this is an ordinary
+ * activated ability: it uses the stack, can be countered or responded to, and can't be activated
+ * while paying a cost. The 2008 ruling below describes the pre-update classification and is kept
+ * because it is what Scryfall still carries; it no longer describes how the card plays.
  */
 val ChromaticSphere = card("Chromatic Sphere") {
     manaCost = "{1}"
@@ -21,12 +26,7 @@ val ChromaticSphere = card("Chromatic Sphere") {
 
     activatedAbility {
         cost = Costs.Composite(Costs.Mana("{1}"), Costs.Tap, Costs.SacrificeSelf)
-        effect = Effects.Composite(
-            Effects.AddAnyColorMana(1),
-            Effects.DrawCards(1),
-        )
-        manaAbility = true
-        timing = TimingRule.ManaAbility
+        effect = Effects.AddAnyColorMana(1) then Effects.DrawCards(1)
     }
 
     metadata {

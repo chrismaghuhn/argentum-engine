@@ -1,5 +1,6 @@
 package com.wingedsheep.sdk.scripting
 
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.costs.CostAtom
@@ -144,7 +145,7 @@ sealed interface AdditionalCost : TextReplaceable<AdditionalCost> {
      * non-mana costs*. Options where one branch instead pays *additional mana* ("… or pay {2}") are
      * [OrPay] (and [BlightOrPay], the one shape it can't wrap) — those fold the alternative into the
      * spell's mana cost, which [Choice] never does.
-     * [Forage] (CR 701.61) is the named keyword shortcut for a fixed two-option cost-vs-cost (exile
+     * [Forage] (CR 701.59a) is the named keyword shortcut for a fixed two-option cost-vs-cost (exile
      * three from your graveyard / sacrifice a Food); [Choice] is its open, parameterized generalization.
      *
      * Each option surfaces as its own cast-time legal action (the same multi-action pattern the OrPay
@@ -153,12 +154,15 @@ sealed interface AdditionalCost : TextReplaceable<AdditionalCost> {
      * option is recovered from which [AdditionalCostPayment] field the client populated; options that
      * consume *different* payment fields (sacrifice vs. discard vs. exile) disambiguate cleanly. Two
      * options that consume the *same* field (e.g. two different Sacrifice filters) are not
-     * distinguishable by payment alone — keep options on distinct fields.
+     * distinguishable by payment alone — declare [Choice.choiceSlot] to require an explicit
+     * branch selection and retain it for later effects.
      */
     @SerialName("ChoiceCost")
     @Serializable
     data class Choice(
-        val options: List<AdditionalCost>
+        val options: List<AdditionalCost>,
+        /** Store the explicitly chosen zero-based branch in this durable cast-choice slot. */
+        val choiceSlot: ChoiceSlot? = null,
     ) : AdditionalCost {
         override val description: String get() = options.joinToString(" or ") { it.description }
 
@@ -313,7 +317,7 @@ sealed interface AdditionalCost : TextReplaceable<AdditionalCost> {
      *
      *  - [cost] must be a *selection-carrying* cost, i.e. one whose payment lands in its own field:
      *    [Behold], or an [Atom] over [CostAtom.Sacrifice], [CostAtom.Discard], [CostAtom.ExileFrom],
-     *    [CostAtom.TapPermanents], [CostAtom.ReturnToHand]. Costs that are auto-paid with no
+     *    [CostAtom.TapPermanents], [CostAtom.ReturnToHand], [CostAtom.RevealFromHand]. Costs that are auto-paid with no
      *    selection ([CostAtom.PayLife], [CostAtom.Mill]) leave no trace to read the choice from, so
      *    they can't sit on this leg.
      *  - Don't pair it on one card with another additional cost that consumes the *same* payment
@@ -387,7 +391,7 @@ sealed interface AdditionalCost : TextReplaceable<AdditionalCost> {
      * is recorded in [AdditionalCostPayment.beheldCards] and surfaced to the
      * resolution context under [storeAs] via the spell's pipeline storage.
      * Downstream effects can reference the chosen entity via
-     * [com.wingedsheep.sdk.scripting.values.EntityReference.FromCostStorage].
+     * [com.wingedsheep.sdk.scripting.targets.EffectTarget.PipelineTarget].
      *
      * This is the silent sibling of [Behold]: same general shape (filter the
      * candidates, record one pick under a `storeAs` key) but **no reveal
@@ -410,7 +414,7 @@ sealed interface AdditionalCost : TextReplaceable<AdditionalCost> {
      * @property captureSnapshot When true and the chosen entity is on the
      *   battlefield at cost-pay time, capture a [EntitySnapshot] so power /
      *   toughness / subtypes / controller can still be read after the entity
-     *   leaves between cost-pay and resolution (Rule 112.7a; ruling on Close
+     *   leaves between cost-pay and resolution (Rule 113.7a; ruling on Close
      *   Encounter).
      */
     @SerialName("ChooseEntity")
@@ -503,6 +507,30 @@ data class AdditionalCostPayment(
     /** Cards chosen via Behold (from battlefield or hand) */
     val beheldCards: List<EntityId> = emptyList(),
 
+    /**
+     * Cards revealed from hand for a [com.wingedsheep.sdk.scripting.costs.CostAtom.RevealFromHand]
+     * cost — "reveal an Elf card from your hand" (Wren's Run Vanquisher).
+     *
+     * Its own channel rather than [beheldCards] because behold is the strictly *wider* action:
+     * CR 701.4a defines "behold a [quality]" as "reveal a [quality] card from your hand **or**
+     * choose a [quality] permanent you control", so a behold payment can be a battlefield
+     * permanent and a reveal payment never can. Sharing the field would let a caster satisfy a
+     * hand-only reveal cost with a permanent, and would make the two indistinguishable on the
+     * [AdditionalCost.OrPay] leg, whose whole disambiguation is which field the client populated.
+     *
+     * The cards stay in hand (CR 701.20b — revealing doesn't move a card), so paying emits a
+     * `CardsRevealedEvent` and changes no zone.
+     */
+    val revealedCards: List<EntityId> = emptyList(),
+
+    /**
+     * Cards put from hand on top of the library for a
+     * [com.wingedsheep.sdk.scripting.costs.CostAtom.PutFromHandOnTopOfLibrary] cost (Leashling),
+     * in the order chosen — the last one ends up on top. Its own channel rather than
+     * [discardedCards] because the move is not a discard (no discard trigger, no madness).
+     */
+    val cardsPutOnLibrary: List<EntityId> = emptyList(),
+
     /** Permanents that were tapped */
     val tappedPermanents: List<EntityId> = emptyList(),
 
@@ -540,6 +568,8 @@ data class AdditionalCostPayment(
                 exiledCards.isEmpty() &&
                 variableCostPermanents.isEmpty() &&
                 beheldCards.isEmpty() &&
+                revealedCards.isEmpty() &&
+                cardsPutOnLibrary.isEmpty() &&
                 tappedPermanents.isEmpty() &&
                 bouncedPermanents.isEmpty() &&
                 blightTargets.isEmpty() &&
@@ -556,11 +586,9 @@ data class AdditionalCostPayment(
  * A single removal entry for distributed counter-removal costs.
  * Remove [count] counters of [counterType] from [entityId].
  *
- * `counterType` is the canonical symbol (e.g. `"+1/+1"`, `"-1/-1"`, `"stun"`)
- * — the same string keys used in [CounterRemovalCreatureInfo.availableCountersByType]
- * — not the [CounterType] enum name. Stored as a string so the wire format
- * stays human-friendly and matches what the engine emits in those DTOs; the
- * engine resolves it back to a [CounterType] when paying the cost.
+ * `counterType` is the printed spelling ([CounterType.printed] — `"+1/+1"`, `"stun"`), the same
+ * string keys the client is offered in `CounterRemovalCreatureInfo.availableCountersByType` and
+ * echoes back here. The engine reads it back with [CounterType.of] when paying the cost.
  */
 @Serializable
 data class DistributedCounterRemoval(

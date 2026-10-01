@@ -1,8 +1,8 @@
 package com.wingedsheep.engine.handlers.effects.permanent.counters
 
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
-import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.DistributeCountersContinuation
 import com.wingedsheep.engine.core.DistributeDecision
 import com.wingedsheep.engine.core.EffectResult
@@ -12,7 +12,6 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.scripting.effects.DistributeCountersFromSelfEffect
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -35,7 +34,7 @@ class DistributeCountersFromSelfExecutor : EffectExecutor<DistributeCountersFrom
         val sourceId = context.sourceId
             ?: return EffectResult.error(state, "No source for distribute counters effect")
 
-        val counterType = resolveCounterType(effect.counterType)
+        val counterType = effect.counterType
 
         // Check how many counters are on the source
         val sourceEntity = state.getEntity(sourceId)
@@ -62,11 +61,10 @@ class DistributeCountersFromSelfExecutor : EffectExecutor<DistributeCountersFrom
 
         val sourceName = sourceEntity.get<CardComponent>()?.name ?: "Creature"
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = DistributeDecision(
+        val decision = { decisionId: String -> DistributeDecision(
             id = decisionId,
             playerId = context.controllerId,
-            prompt = "Distribute up to $totalCounters ${effect.counterType} counter${if (totalCounters != 1) "s" else ""} from $sourceName onto other creatures",
+            prompt = "Distribute up to $totalCounters ${effect.counterType.printed} counter${if (totalCounters != 1) "s" else ""} from $sourceName onto other creatures",
             context = DecisionContext(
                 sourceId = sourceId,
                 sourceName = sourceName,
@@ -76,28 +74,14 @@ class DistributeCountersFromSelfExecutor : EffectExecutor<DistributeCountersFrom
             targets = otherCreatures,
             minPerTarget = 0,
             allowPartial = true
-        )
+        ) }
 
         val continuation = DistributeCountersContinuation(
-            decisionId = decisionId,
             sourceId = sourceId,
             controllerId = context.controllerId,
             counterType = effect.counterType
         )
 
-        val newState = state
-            .withPendingDecision(decision)
-            .pushContinuation(continuation)
-
-        val events = listOf(
-            DecisionRequestedEvent(
-                decisionId = decisionId,
-                playerId = context.controllerId,
-                decisionType = "DISTRIBUTE",
-                prompt = decision.prompt
-            )
-        )
-
-        return EffectResult.paused(newState, decision, events)
+        return EffectResult.from(state.suspendForDecision(decision, continuation, eventType = "DISTRIBUTE"))
     }
 }

@@ -65,7 +65,7 @@ review, it is a change to decline.
   destructured. If you find yourself defining a type to hold "what the text means", stop — that type
   belongs in `mtg-sdk` and it is `add-feature` work, not Assay work.
 - **`build` goes through the SDK's companion facades** — `Effects.Destroy(...)`,
-  `KeywordAbility.flashback(...)`, `Triggers.EntersBattlefield` — for the reason cards do: the
+  `KeywordAbility.flashback(...)`, `Triggers.self.enters()` — for the reason cards do: the
   facades are the curated surface, and this is the half that would otherwise drift from how cards are
   actually written. `match` necessarily destructures concrete classes; that asymmetry is inherent to
   a bidirectional rule, which is exactly why the `build` half must not compound it.
@@ -103,7 +103,7 @@ rule per printed phrase. Five habits keep off it.
 
 **Write the rule *shape*, not the rule.** A family is a private function returning a `Phrase`, and
 the members are rows in a list: `Keywords.costKeyword`, `numericKeyword`, `simple`,
-`Steps.targetedPermanentStep`, `Filters.controlledBy`, `Keywords.qualityRun`. Seventeen numeric
+`Steps.quantifiedPermanentSteps`, `Filters.controlledBy`, `Keywords.qualityRun`. Seventeen numeric
 keywords and twenty-odd cost keywords are two shapes, not thirty-seven rules. Don't pre-abstract —
 write it inline the first time, and factor when the *second* member of the shape appears.
 
@@ -142,6 +142,27 @@ suffix owns `controllerPredicate` and strips precisely that field before delegat
 dimension (power/toughness, colour, subtype, tapped-ness) adds one layer that owns one field — not a
 combinator that can also print the others.
 
+**An omissible modifier is a row, not template text.** The `.` decline family — the tail ranking's
+number one at 179 cards — was one defect shape repeated: a rule whose template spelled a clause
+English can leave off, so the *bare* sentence died on its own full stop. "sacrifice ~ unless you pay
+{2}" could not read "Sacrifice ~."; "~ gets +1/+1 for each {counted} on the battlefield." could not
+read "for each artifact you control." Two tests before you freeze a word into a template: does Oracle
+print the sentence without it, and does the SDK have a distinct value for the version that has it? If
+the answer is *yes, no*, the clause is a row of a shared layer and the absent spelling is a row too —
+`Amounts.scopes` is the worked example, published once because five families had each frozen a
+different subset of the same three rows. If it is *yes, yes*, the bare form is a separate rule over a
+separate value, which is what "Sacrifice ~." needed. Watch the ranking for it: a decline whose tail is
+a bare `.` is always this, never a construct.
+
+The family came back to the top of the ranking and the frozen word was the **subject** that time —
+four members of `SelfSteps.retargetable` spelled the pronoun as literal template text ("exile **it**",
+"return **it** to its owner's hand") instead of putting it in the `{self}` slot every other member
+has, which cost twenty-nine spells the sentence "Exile ~." and forced a `pronominal` flag to exist so
+the positions that read the *name* could exclude them. So the test has a third question after the two
+above: **is the word in the template one the shape already has a slot for?** A row that spells by hand
+what its family parameterizes is the same defect one level up, and it is invisible to the ranking
+until something else makes the position reachable.
+
 **Generalize the axis when the rules define one.** `qualityRun` started as a colour-join fix and
 generalized in the same change to any quality, to the Oxford-comma three-way, and to hexproof under
 CR 702.11f, because the Comprehensive Rules define the join over *qualities*. Reach for the rule the
@@ -175,6 +196,19 @@ both are worth knowing before touching a leaf: a subtype is a *proper noun* stan
 `SentenceCase` has already lowercased it, and the fix belongs to the leaf and is gated on the SDK's
 own type list — an ungated one reads "**Other** creatures you control get +0/+1." as a tribe called
 *Other*, byte-perfect and wrong, which the differential caught and the README records.
+
+A set is also worth reading **twice**. Bloomburrow's second pass cost rows in six existing families
+and no machinery at all, and it moved the set 69 → 83 cards while moving the corpus 8,364 → 8,516 —
+eleven times as far, because two of its rows ("each opponent loses N life", "~ deals N damage to each
+opponent") are printed on five Bloomburrow cards and six hundred others. That ratio is the argument
+for a second pass: the first pass takes a set's machinery and the second takes its *vocabulary*, and
+vocabulary is what the rest of the corpus shares. The pass also produced the module's clearest case
+of a construct that is not a line rule: gift's printed line means `KeywordAbility.Gift` plus a
+derived enters trigger on a permanent and a modal fold inside the spell's own resolution on an
+instant, and nothing but the **type line** separates them — which the line grammar does not have and
+should not get. Both halves were written, the differential reported two instants being read whole as
+cards the validator would reject, and both were reverted. A construct whose meaning depends on the
+face rather than the line is a finding to report, not a rule to widen.
 
 The **Bloomburrow band** is the third, and it is the shape of a set picked *because it is already
 implemented*: every card in it has a golden, so every declined line is a grammar gap whose answer is
@@ -309,6 +343,112 @@ That last group is also this band's write-off with an expiry date, in the sense 
 records: the day some band builds `EventPattern`, `Prevention`'s KDoc is what says the prevention
 statics are sitting there waiting for it.
 
+The **batch-trigger band** — CR 603.2c's "one or more" — adds three, and the first is about *where a
+rider lives*. "This ability triggers only once each turn." is `TriggeredAbility.oncePerTurn`: a field
+on the ability, part of no event, so **one wrapper rule reaches every trigger sentence the grammar
+can read** where a row per family would have been thirty rows. It also had to be written before the
+family it was written for could land, because the fail-closed reconstruction each trigger family
+performs compares the whole model — a capped ability *refused to print*, so every card carrying the
+rider declined however ordinary its trigger. Ask of any rider whether it belongs to the sentence or
+to the model the sentence builds; the second kind is one rule, and it is usually overdue.
+
+Its corollary is about the meta-tests. `TriggersTest` asserted that an ability carrying `oncePerTurn`
+refuses to print, and that assertion became *false* — correctly — the moment the rider was spelled.
+**A fail-closed test names a field no rule spells, so it is expected to move every time a band spells
+one**; the witness went to `triggersOnce`. A fail-closed test that never moves is one whose property
+has quietly stopped being checked.
+
+Second, **a position can change what an absent field means.** `Filters.pluralSubject` is a third
+instantiation of the noun cascade beside `filter` and `spellQuality`, and its reason is sharper than
+the spell-cost band's: every batched `EventPattern` folds a null `controllerPredicate` to "you
+control", so the bare plural does not mean "any controller" there. Slotting `Filters.plural` would
+have printed "creatures you control" out of `ControlledByYou` — a second spelling of what the event
+already says — so the controller clause is a word in each trigger's own surface, one row per scope,
+and the vocabulary stops one layer below the field. Crossed with each family's "other" flag that is a
+six-row product per family rather than six rules. Before slotting an existing vocabulary, ask what
+its *default* denotes in the new position.
+
+Third, the probe's sharpest result so far, and it names the *next* band rather than this one.
+`one or more …` led the tail ranking by every column — 355 cards, 140 sole, 359 lines — and the probe
+put it at 89 lines and **35 whole cards**. Sub-family by sub-family the split was the whole story:
+26 of 68 combat-damage payoffs read, against **6 of 48** for attacks and **2 of 24** for enters,
+because a batch names a *set* and Oracle addresses it as "that many", "them", "those creatures". The
+grammar has no vocabulary for a captured collection, and 261 of the family's lines are still waiting
+on one. **When a probe's sub-families disagree by an order of magnitude, the number is telling you
+where the real band is** — here it is the collection, not any of the trigger prefixes. The **fronted
+duration** band below found the same shape one row down the same ranking, which is why the two are
+worth reading together: a family that is a *position* measures its payload, not itself.
+
+The **fronted duration** is the first band whose product is a *measurement*, and it is the one to
+read before picking anything off the top of the tail ranking. "Until end of turn, …" was the second
+row — 265 cards blocked, 189 sole-blocked — and moving the duration to the back of its own 266
+declined lines finishes **five**. The rest decline again on the payload: 54 animate a permanent, 42
+grant a quoted ability, 32 set base power and toughness, 14 pump by a count. So the honest reading is
+that **a family which is a clause position measures its payload rather than itself** — the ranking
+counts the cards whose *first* unreadable clause is this one, and for an opening clause that is every
+card whose sentence the grammar cannot read at all. The band still ships, because the position is
+what every one of those four families lands in the day it is written; what it must not do is claim
+the 265.
+
+Three things transfer. **The probe was exact for once, and the reason generalizes**: every previous
+band substituted a stand-in prefix and overstated (234 → 183, 101 → 75), while this one performed the
+family's own transformation — moving a word — so there was no gap between the measurement and the
+rule to be wrong in. When a family's construct can be *applied* rather than approximated, the probe
+stops being a prediction. Second, **a second spelling of one rule is not a second rule**: the fronted
+form needs the identical `build` and `match`, so the kernel grew `PhraseBuilder.alsoSpelled` — an
+extra surface template on the same rule, sharing its closures, alternate by construction — and
+`Durations` owns the derivation. Copying a rule to move one word is how a grammar acquires two halves
+that agree until someone edits one. Third, **the derivation belongs to the family and the capability
+to the kernel**: `alsoSpelled` knows nothing about durations, which is what keeps it usable by the
+next family that finds one model with two word orders, and what keeps Oracle vocabulary out of
+`syntax/`.
+
+The **entry band** — "When ~ enters …" and "As ~ enters, …" — is the one to read when the SDK offers
+*two* spellings of one sentence. Its trigger half found `pairedTriggerRule` already written for
+"attacks or blocks" and needed only the list, so the list was counted in the corpus rather than
+designed: five joins are printed, and a cross product of the ten self-events would have been
+forty-five rules for them. Its replacement half is `EntersWithChoice`, a type whose own KDoc calls it
+"a single parameterized type" and which the grammar was calling with every parameter frozen — the
+cost band's lesson a fourth time. Two things transfer. **Split the axes by how Oracle spells them**:
+the kind of choice is a *noun phrase*, so it is a rule parameter and each is a row, while who chooses
+is *one word position*, so it is a slot the whole noun list shares; getting that backwards is either
+eight copies of a rule or a slot with nothing to put in it. And **two SDK spellings of one sentence
+is a divergence to classify, never a fold and never a second reading**: `EventPattern.AnyOf` is one
+ability watching both events, and three cards use it where sixty write two abilities, so the grammar
+prints the majority and the gate reports the rest. A `match` that accepted both would be `AMBIGUOUS`
+by construction; a fold entry would be the gate agreeing with itself.
+
+The **step-trigger band** — "At the beginning of each opponent's end step, …" — is the frozen-facade
+lesson a fifth time, and it is the one to read for *where a derivation lives*. The SDK's
+`Triggers.<player>.beginningOf(step)` says in its own KDoc to "reach for this factory for any other
+combination", and the grammar was calling the thirteen constants that call it with all three
+arguments fixed. Three things transfer.
+
+**A derivation the SDK publishes is the spelling; the family only chooses the membership.** Every
+word the whose-turn layer needs — "your", "each player's", "each opponent's", "the chosen player's",
+"enchanted player's" — is `Player.possessive`, which exists precisely so zone and step descriptions
+do not each restate it, so the rule takes the `Player` and asks. A table copied into `grammar/` would
+have agreed exactly until someone added a `Player`. But `possessive` is *total*, and "target player's
+upkeep" is a sentence no card writes — so the members are an explicit list and only the spelling is
+borrowed. Borrowing a total derivation without bounding its domain is how a rule acquires the ability
+to print English that does not exist.
+
+**Which spelling is canonical can be decided by the argument, not by the family.** `Player.Each` is
+printed both bare and possessive, and the majority flips with the *step*: "each upkeep" 100:83, "each
+end step" 98:23, and 0:13 for the draw step, where only "each player's draw step" is ever printed. One
+template with the step slotted would print the minority form for a third of the family, so it is one
+rule per step with its own `alsoSpelled` list — the same shape `TopOfLibrary`'s impulse durations
+take, and the second time this exact question has come up. Check the majority *per value of the other
+axis* before making an axis a slot.
+
+**And the third band in a row to confirm it: a family at the front of its line measures its payload.**
+This one was the tail ranking's third row (197 cards, 106 sole-blocked) and finished **3**. The probe
+said 17 lines before it was written, which is the number to have believed. What the band is actually
+worth is that its 200 lines are now keyed on what blocks them rather than on their opening clause, and
+the ranking names three successors — "sacrifice ~." as a bare step (171 cards, now the table's top
+row), the triggering *player* as a subject, and the delayed trigger. **When the fronted-duration
+lesson applies, say the small number and publish the ranking it uncovered; that is the product.**
+
 The top-of-library band's differential result is the argument for the whole discipline: it put
 `SelectFromCollectionEffect` under comparison for the first time, and **every newly-compared card
 that disagreed was wrong** — five had silently dropped `restOrder` so "in any order" resolved as "in
@@ -319,7 +459,7 @@ grammar cannot yet produce is a field nothing is checking.
 ## Fail-closed matching — the rule that catches the dangerous bug class
 
 **A `match` half reconstructs what `build` would have produced and compares the whole model.** Not a
-walk over the fields it cares about. See `Steps.targetedPermanentStep`, `Triggers.triggerRule`,
+walk over the fields it cares about. See `Steps.quantifiedPermanentSteps`, `Triggers.triggerRule`,
 `Targets.permanentFilter`: each rebuilds and tests equality, so a script carrying an
 intervening-if, an `elseEffect`, an `excludeSelf`, a non-battlefield zone or a once-per-turn cap
 *refuses to print* rather than printing a sentence that quietly drops it.
@@ -333,6 +473,82 @@ The same discipline covers values the text does not determine — target slot na
 Mint one fixed constant (`Targets.SLOT`, `Triggers.ID`); the differential normalizes both sides by
 position. A rule that tried to reproduce a generated id would be reading a counter, not a card.
 
+The **chosen count** band is the one to read before assuming a *word* can be a slot. "any number of"
+stands where a number word stands, reads like one, and is a different SDK **value** in every position
+it appears in: `TargetRequirement.unlimited` on a target, `CostAtom.VariablePermanents` in a cost,
+`SacrificeEffect.any` in an effect, `SelectionMode.ChooseAnyNumber` in a pipeline. Slotting the
+phrase into the counted rules would have made one model printable by two rules. Ask of any word that
+looks slottable whether the SDK gives it the same *type* everywhere it is printed; if it does not, it
+is a family per position and the word is a row inside each.
+
+Three of its lessons transfer. **A band can be worth writing when its probe returns zero.** The
+substitution finished three of 123 lines and no whole cards, and that is a measurement of the
+*payload*, not a verdict on the count — the ranking fell from 123 cards to 77 and off the top of the
+table because 46 lines started declining on what actually blocks them. A position band's product is
+the ranking it leaves behind, which the fronted-duration band said about a clause and this says about a
+word. **Two printed forms of one value is an `alsoSpelled`, and the reach can be larger than the
+band.** "Remove any number of charge counters from ~" is the same `RemoveCounters(XValue, self)` as
+"Remove X charge counters from ~"; one line moved seventeen lands onto a single remaining sentence,
+where the whole `VariablePermanents` product delivered one card. And **a spelling that is ambiguous
+by position must not be registered until the position can be seen.** CR 601.2b makes a variable
+cost's count the ability's X, so "for each storage counter removed this way" *is* `XValue` — after a
+cost. After an effect (Coalition Relic) the identical clause is a collection count. The grammar has
+no way to scope a leaf inside `Steps.step` to the cost above it, so the spelling stays unwritten and
+the write-off names its own fix: a fail-closed guard where an ability is assembled, refusing a script
+that reads `XValue` under a cost that declares none. Registering it unscoped would have round-tripped
+and meant something else — the reversible-but-wrong class, in one clause.
+
+The **combat restriction** band is the one to read before believing a ranked family is a *missing*
+construct. "Can't be blocked" led the tail ranking by every column (122 cards, 79 sole) and the
+grammar had read it since Phase 1 — three times, each frozen into a whole sentence, covering three of
+the twenty-odd combinations Oracle prints. `mtg-sdk` had the factoring right all along: every
+`CantBeBlocked*` static carries the affected set as one `GroupFilter` and differs only in what it
+forbids, so the grammar's job was to become the same **product** — a subject crossed with a
+restriction — rather than to acquire a construct. **When a top-ranked family names something you are
+sure is implemented, check how many of its combinations are, not whether any is.**
+
+Four of its lessons transfer.
+
+**A deliberate hole in a product is where the card bugs live.** The source's bare "~ can't be
+blocked." stays an `AbilityFlag` (19 hand-written cards to 6), so the grammar must *not* offer a
+source-scoped bare static — two rules for one text. But a card-level flag lands on the permanent the
+card **is**, so on an Aura or an Equipment that same shortcut grants the evasion to the enchantment:
+silently inert, and the board looks right. Three shipped cards were doing it. Ask of every hole in a
+product whether the spelling that fills it elsewhere is *reachable* in the positions the hole covers.
+
+**Neighbouring SDK families with opposite defaults for one field are a card bug generator.** Every
+ability in `BlockingStaticAbilities.kt` defaults `filter` to `GroupFilter.source()`; `GrantKeyword`
+and `ModifyStats` default to `attachedCreature()`. Air Bladder's two lines took the two defaults and
+one of them was wrong. The grammar's answer is to spell the subject in every rule and never rely on a
+default — and the finding goes in the *SDK's* KDoc, because that is where the next card author will be
+standing.
+
+**One printed sentence can be a row of a family it does not look like.** "Target creature can't be
+blocked this turn." is `GrantKeywordEffect` — the same effect "gains flying until end of turn" builds
+— over an `AbilityFlag` rather than a `Keyword`. A CR 702.x keyword is a *noun* a creature can gain;
+an `AbilityFlag` names a sentence and has no noun, so Oracle prints it as its own predicate with the
+duration spelled "this turn". That is an irregular *surface* on an existing model, not a second
+vocabulary — and once it was a row, three more restrictions ("can't block this turn", "can't attack
+this turn", "can't attack or block this turn") were rows of the same table for free. Before writing a
+family, check whether the model you are about to build is one an existing family already builds under
+a different word.
+
+**A sub-band's card count is a claim about the payload, and it can be off by 19×.** The conditioned
+form ("~ can't be blocked as long as defending player controls an artifact") is 31 of the family's
+lines and an upper bound of 19 cards; substituting a readable conditional finishes **2 of 29**,
+because the payload is `Conditions` and not this family. Writing the wrapper would have bought one
+card. The band's product there is the *name of the next band*, which is the fronted-duration lesson a
+fourth time. Note also that the exact probe corrected the first probe from 18 cards to 7 for the same
+band's cheapest row — the fifth overstatement in the same direction, and it happened because the
+first run substituted a stand-in for the printed filter as well as for the construct.
+
+Two mechanical notes. `effectOver`/`memberOf` moved from `Steps` onto `Targets.Quantifier`, because
+they are the same knowledge `requirement` is — what a quantifier *denotes* — and a second family
+taking the whole table must not carry a second copy of the iteration-space decision. And a family's
+findings are **not bounded by what the differential can compare**: Whispersilk Cloak and My Precious
+have the same bug as Cloak of Mists and are not comparable (their line is a static clause run the
+grammar does not read), so they were found by grepping the flag the band had just classified.
+
 **Three anaphors, three positions.** Oracle's "it" means the source in a first clause ("Whenever this
 creature attacks, **it** gets +2/+0"), the target in a later one ("Untap target creature. **It**
 gets +2/+4"), and — inside a trigger whose event names a **filter** — the object that matched
@@ -341,6 +557,29 @@ always means the target. `SelfSteps.anaphoric`, `Continuations` and `SelfSteps.t
 reachable from disjoint positions for exactly that reason — registering any surface form in two of
 them is two readings of one text. The differential found the second and third by *running*: both
 wrong readings round-tripped byte-perfectly and meant a different creature.
+
+**A position is only an anaphor position if it is an instantiation.** For a long time the *later*
+clause of a run was not: `Continuations` was a file of individually written sentences ("untap that
+creature", "it gets {mod} until end of turn"), so the pronoun could only reach the verbs somebody had
+copied, and everything else — untap, regenerate, transform, the keyword grants, the animate, the
+combat restrictions — declined on its own full stop. It is now
+`retargetable(Targets.bound(), Primitives.targetPronoun)` plus the four clauses that genuinely have no
+source-side twin, and the check that keeps the pronoun honest moved with it: `Steps.merge` refuses a
+run that reads the target slot **while declaring no requirement**, so a dangling "it" is a decline
+rather than a byte-perfect reading of the wrong permanent. One guard for the vocabulary beats one
+omission per family — `Combat` had been carrying the omission as a stated design decision.
+
+There is a **fourth** position and it does not belong to the grammar: `~` inside the quotes a
+*granted* ability is printed in. CR 201.4 makes a reference by **name** the object that printed the
+ability (an Equipment, `EffectTarget.GrantingSource`) and "this creature" the object that *has* it
+(`EffectTarget.Self`), and normalization used to abstract both to one token — so the moment a rule
+read the clause, Ninja's Kunai bounced the equipped creature instead of the Equipment. The distinction
+is in the printed text, so the fix is `Normalizer.GRANTED_SELF`: inside a quotation the name gets its
+own token, no rule spells it, and the line declines and is counted. The general shape is worth
+remembering — **when two readings differ and the printed text does tell them apart, the split belongs
+to normalization, not to a guard in the grammar.** The guard was written first and measured: refusing
+any quoted ability that pointed at the source withdrew twenty-one correct readings to prevent two
+wrong ones.
 
 The third one is also the worked example of **how** to add an anaphor position. The distinction
 exists only at parse time — after parsing, "~ gets +1/+1" and "it gets +1/+1" are the same model, so
@@ -402,6 +641,7 @@ has not surfaced yet.
 | `token` re-reads what it writes | The kernel cannot cross-check a leaf's two halves the way a template can, so `unparse` is verified against `read` on every call. |
 | `furthest`/`expected` | The entire source of `assay explain`'s caret. Any new combinator must call `ctx.fail(pos, name)` where it gives up. |
 | Declaration order inside an `object` | Initializers run in order; a rule referencing a later one reads a null out of a half-initialized object. Declare leaves first. |
+| `alsoSpelled` shares the rule's closures | Two spellings of one model must not be two rules — a copied `build`/`match` pair agrees until someone edits one. The extra template is alternate by construction, and the *derivation* between the two spellings belongs to a grammar family (`Durations`), never here. |
 
 ## Adding a rule
 
@@ -518,6 +758,27 @@ before trusting a number: it substitutes a prefix into the lines that *declined*
 family's payoff was partly in lines that had never declined as a family at all — the 204 cards whose
 header sits inside a trigger, which the probe measured as trigger declines. A family that is a
 *clause position* rather than a line shape will do this again. Read the probe as a floor there.
+
+The fronted duration is the same shape and it came out the other way, which is what makes the pair
+useful. It is a clause position too, and its probe was **exact** — 5 lines and 4 whole cards
+predicted, 5 and 4 delivered — because the substitution *was* the rule: moving "until end of turn" to
+the back of a line is precisely what the band taught the grammar to read. **A probe that performs the
+family's own transformation has no gap to be wrong in; one that stands in for it does.** What the
+ranking got wrong there was not the probe but the *card count*: an opening clause is where every
+unreadable sentence dies, so 265 cards "blocked" and 189 "sole-blocked" were mostly cards whose
+payload the grammar cannot read either. When the family sits at the *front* of its line, read the
+sole-blocked number as an upper bound with no lower bound in it, and let the probe say the rest.
+
+**A family that dies at offset 0 may be an artifact of your own templates, not of the corpus.** A
+`TemplatePhrase` fails at the start of the *literal* it could not match, so a template that swallows a
+whole clause into one literal — `"when ~ enters, {effect}"`, where the prefix and its comma are one
+run — reports every near-miss at offset 0. `TAIL` then keys all of them on the opening words, and the
+result is a family named after a construct the grammar has read since Phase 1. The trigger join found
+the top row of the whole table that way: 177 cards and 88 sole-blocked on "When ~ enters …", which
+dissolved into a hundred-odd per-payload rows of 15 the moment the prefix became a slot. So when a
+ranked family names something you are sure is implemented, **check the template before believing the
+number** — and note that the fix is the same edit reuse wants anyway: a clause that is a slot is a
+clause another sentence can borrow. See [the trigger join](README.md#the-trigger-join).
 
 **Three keyings, three biases, and knowing which to read.** `DeclineKey` holds all of them and the
 gate computes all three in the one sweep, so the CLI and the explorer cannot disagree about a family.

@@ -4,8 +4,6 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Patterns
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
-import com.wingedsheep.sdk.scripting.effects.IfYouDoEffect
-import com.wingedsheep.sdk.scripting.effects.MayEffect
 
 /**
  * Thrilling Discovery — Strixhaven #243
@@ -19,18 +17,14 @@ val ThrillingDiscovery = card("Thrilling Discovery") {
     typeLine = "Sorcery"
     oracleText = "You gain 2 life. Then you may discard two cards. If you do, draw three cards."
     spell {
-        effect = Effects.Composite(
-            listOf(
-                Effects.GainLife(2),
-                MayEffect(
-                    effect = IfYouDoEffect(
-                        action = Patterns.Hand.discardCards(2),
-                        ifYouDo = Effects.DrawCards(3),
-                    ),
-                    descriptionOverride = "You may discard two cards. If you do, draw three cards.",
+        effect = Effects.GainLife(2) then
+            Effects.May(
+                effect = Effects.IfYouDo(
+                    action = Patterns.Hand.discardCards(2),
+                    then = Effects.DrawCards(3),
                 ),
+                descriptionOverride = "You may discard two cards. If you do, draw three cards.",
             )
-        )
     }
     metadata {
         rarity = Rarity.COMMON

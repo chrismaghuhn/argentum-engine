@@ -1,0 +1,820 @@
+package com.wingedsheep.engine.handlers.actions.spell
+
+import com.wingedsheep.engine.mechanics.mana.withSpendingColors
+import com.wingedsheep.engine.core.AlternativeCostType
+import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.LifeChangeReason
+import com.wingedsheep.engine.core.LifeChangedEvent
+import com.wingedsheep.engine.core.ManaSpentEvent
+import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.tap
+import com.wingedsheep.engine.handlers.ConditionEvaluator
+import com.wingedsheep.engine.handlers.CostHandler
+import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.costs.ForageCostResolver
+import com.wingedsheep.engine.handlers.effects.DamageUtils
+import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils.toEntityId
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+import com.wingedsheep.engine.handlers.effects.bend.BendEvents
+import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
+import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
+import com.wingedsheep.engine.mechanics.EmergeCasts
+import com.wingedsheep.engine.mechanics.SneakWindow
+import com.wingedsheep.engine.mechanics.WebSlinging
+import com.wingedsheep.engine.mechanics.cost.spell.SpellCostCheck
+import com.wingedsheep.engine.mechanics.cost.spell.SpellCostLedger
+import com.wingedsheep.engine.mechanics.cost.spell.SpellCosts
+import com.wingedsheep.engine.mechanics.mana.AlternativePaymentHandler
+import com.wingedsheep.engine.mechanics.mana.CostCalculator
+import com.wingedsheep.engine.mechanics.mana.LifePayableMana
+import com.wingedsheep.engine.mechanics.mana.ManaPool
+import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
+import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
+import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
+import com.wingedsheep.engine.mechanics.mana.isResolvedFixedAlternativeCastPayment
+import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
+import com.wingedsheep.engine.mechanics.mana.toManaPool
+import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.TappedComponent
+import com.wingedsheep.engine.state.components.combat.AttackingComponent
+import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
+import com.wingedsheep.engine.state.components.player.ManaSpentOnSpellsThisTurnComponent
+import com.wingedsheep.engine.state.components.stack.captureEntitySnapshots
+import com.wingedsheep.engine.state.permissions.activeMayPlayFor
+import com.wingedsheep.sdk.core.BendType
+import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.core.ManaSymbol
+import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.model.CardDefinition
+import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AdditionalCost
+import com.wingedsheep.sdk.scripting.ChoiceSlot
+import com.wingedsheep.sdk.scripting.KeywordAbility
+import com.wingedsheep.sdk.scripting.costs.CostAtom
+
+/** What paying a cast's costs produced, for the stages after it. */
+internal class CastPayment(
+    val payment: PaymentResult,
+    /** Total mana spent on this cast — Expend's running total and the stack object's record. */
+    val manaSpent: Int,
+    /** The first mana-spent event, carrying the per-colour breakdown mana-spent triggers read. */
+    val manaSpentEvent: ManaSpentEvent?,
+    /** Cast from a graveyard through a forage permission (Osteomancer Adept) — the entry rider's cue. */
+    val isForageCast: Boolean,
+)
+
+/** The alternative costs whose non-mana portion returns a creature you control to hand. */
+internal class ReturnedForAlternativeCost(
+    val wasSneaked: Boolean,
+    /** The player or planeswalker the sneak-returned creature was attacking (CR 702.190b). */
+    val sneakAttackDefenderId: EntityId?,
+    val wasWebSlung: Boolean,
+    /** The web-slinging-returned creature's own mana value (CR 118.9c). */
+    val webSlungReturnedManaValue: Int,
+)
+
+/**
+ * The "pay the total cost" stage of casting a spell (CR 601.2g–h), and the affordability check
+ * validation makes against the same terms.
+ *
+ * Also owns the cast's *owed* additional costs — which ones the declared modes, optional costs,
+ * alternative cost and cast permission add up to — since both validation and payment read them.
+ */
+internal class CastCostPayer(
+    private val zones: ZoneTransitionService,
+    private val cardRegistry: CardRegistry,
+    private val costHandler: CostHandler,
+    private val costCalculator: CostCalculator,
+    private val manaSolver: ManaSolver,
+    private val alternativePaymentHandler: AlternativePaymentHandler,
+    private val paymentProcessor: CastPaymentProcessor,
+    private val castCostTotaller: CastCostTotaller,
+    private val zoneResolver: CastZoneResolver,
+    private val castPermissionUtils: CastPermissionUtils,
+    private val conditionEvaluator: ConditionEvaluator,
+    private val predicateEvaluator: PredicateEvaluator,
+) {
+
+    // ---------------------------------------------------------------------------------------------
+    // Owed additional costs (CR 601.2b / 601.2f)
+    // ---------------------------------------------------------------------------------------------
+
+    private val additionalCosts = CastAdditionalCosts(cardRegistry, costCalculator, zoneResolver, predicateEvaluator)
+    private val paymentPlanValidator = PaymentPlanValidator(manaSolver)
+
+    fun additionalCostsForModes(cardDef: CardDefinition, action: CastSpell): List<AdditionalCost> =
+        additionalCosts.additionalCostsForModes(cardDef, action)
+
+    fun declaredSlotCost(action: CastSpell, cardDef: CardDefinition?): AdditionalCost? =
+        additionalCosts.declaredSlotCost(action, cardDef)
+
+    fun owedAdditionalCosts(state: GameState, action: CastSpell, cardDef: CardDefinition?): List<AdditionalCost> =
+        additionalCosts.owedAdditionalCosts(state, action, cardDef)
+
+    // ---------------------------------------------------------------------------------------------
+    // Paying (CR 601.2g–h)
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Pays everything the cast owes into [ledger], in the order the rules put it: the additional
+     * costs and optional additional costs, the tap/exile payments that reduce the mana (delve,
+     * convoke, harmonize, waterbend, improvise), the mana itself, then the costs paid as the mana is
+     * (the held-back sacrifices, emerge's sacrifice, forage from a graveyard, the life taxes).
+     * Returns the payment on success, or why it can't be paid — the caller then discards the whole
+     * ledger, so a failure never leaves a partial payment behind.
+     */
+    fun pay(
+        ledger: SpellCostLedger,
+        cardComponent: CardComponent,
+        cardDef: CardDefinition?,
+        totalCost: ManaCost,
+        owedCosts: List<AdditionalCost>,
+        playForFree: Boolean,
+    ): CastPaymentOutcome {
+        val action = ledger.action
+        // The untouched state the mana preflight below is judged against.
+        val transactionStartState = ledger.state
+        // Fixed before any cost is paid: a granted emerge must survive the granter leaving or
+        // changing control during payment (Herigast's ruling).
+        val isEmergeCast = action.useAlternativeCost && action.altAllows(AlternativeCostType.EMERGE) &&
+            EmergeCasts.effectiveEmerge(
+                ledger.state, action.cardId, cardDef, action.playerId, cardRegistry, predicateEvaluator
+            ) != null
+        // Every life the additional costs take, resolved against one pre-payment state and paid as
+        // one total; an amount that can't be resolved fails the cast rather than paying a guess.
+        val additionalLife = SpellCosts.totalLifeToPay(spellCostCheck(ledger.state, action), owedCosts)
+            ?: return CastPaymentOutcome.Failed("Cannot resolve life cost")
+        payAdditionalCosts(ledger, owedCosts, additionalLife)?.let { return CastPaymentOutcome.Failed(it) }
+        payConspire(ledger)
+        payCasualty(ledger)
+
+        // The X charged as mana (see CastCostTotaller.paymentXValue); action.xValue — the effect's
+        // X — is untouched.
+        val paymentXValue = castCostTotaller.paymentXValue(ledger.state, action, cardDef, totalCost)
+        var cost = payWithPermanentsAndCards(ledger, totalCost, cardDef, playForFree)
+
+        // "Mana of any type can be spent" — relax colored requirements for cast-from-exile
+        // permissions that carry the flag (Taster of Wares, Cruelclaw's Heist).
+        if (isCastWithAnyManaType(ledger.state, action)) {
+            cost = cost.relaxColors()
+        }
+        // "Pay 2 life rather than pay that {B}" (K'rrik) over the *whole* mana owed — including
+        // mana added after pricing (kicker, X) that the cost calculator never saw.
+        cost = LifePayableMana.apply(ledger.state, cardRegistry, action.playerId, cost)
+        val substitutedPips = LifePayableMana.substitutedPipCount(
+            ledger.state, cardRegistry, action.playerId, cardComponent.manaCost
+        )
+
+        // Re-run the authoritative payment check against the untouched transaction state. This
+        // mirrors validation for direct/internal callers that skip it, and judges the additional
+        // life already paid above together with the exact mana sources the payment would use,
+        // before the payment processor can tap or pay anything.
+        validateManaPayment(transactionStartState, action, cost, paymentXValue, additionalPayLife = additionalLife)
+            ?.let { return CastPaymentOutcome.Failed(it) }
+
+        val processed = paymentProcessor.processPayment(
+            ledger.state, action, cost, cardComponent.name, paymentXValue,
+            spellPaymentContext(ledger.state, action, cardComponent), xManaRestriction(action, cardDef)
+        )
+        if (processed.error != null) {
+            return CastPaymentOutcome.Failed(processed.error)
+        }
+        // Compleated (CR 702.150a) counts only *Phyrexian* symbols paid with life. A pip that is
+        // life-payable only through a substitution isn't one, and the payer chooses which pip each
+        // life payment covers, so those absorb the life payments first.
+        val paymentResult = if (substitutedPips == 0) processed
+            else processed.copy(phyrexianLifePips = (processed.phyrexianLifePips - substitutedPips).coerceAtLeast(0))
+        ledger.state = paymentResult.state
+        ledger.events.addAll(paymentResult.events)
+
+        // Mana abilities are activated before the total cost is paid (CR 601.2g), so the sacrifices
+        // the additional costs chose were held back until now: a chosen permanent may have funded
+        // the cast before it is sacrificed. Tap, bounce and the other costs were paid above.
+        ledger.sacrificeDeferred()
+
+        if (isEmergeCast) payEmergeSacrifice(ledger)
+        val manaSpent = recordManaSpent(ledger, paymentResult)
+
+        // Forage from a graveyard via MayCastCreaturesFromGraveyardWithForageComponent (e.g.,
+        // Osteomancer Adept). See payGraveyardForage.
+        val isForageCast = zoneResolver.hasMayCastCreaturesFromGraveyardWithForage(
+            ledger.state, action.playerId, action.cardId, cardComponent
+        ) && action.cardId in ledger.state.getZone(ZoneKey(action.playerId, Zone.GRAVEYARD))
+        if (isForageCast) {
+            payGraveyardForage(ledger)?.let { return CastPaymentOutcome.Failed(it) }
+        }
+        payGraveyardLifeCost(ledger)
+        payTargetLifeTaxes(ledger)
+
+        return CastPaymentOutcome.Paid(
+            CastPayment(
+                payment = paymentResult,
+                manaSpent = manaSpent,
+                manaSpentEvent = paymentResult.events.filterIsInstance<ManaSpentEvent>().firstOrNull(),
+                isForageCast = isForageCast,
+            )
+        )
+    }
+
+    /** The check the cost kinds read for [action] against [state]. */
+    fun spellCostCheck(state: GameState, action: CastSpell): SpellCostCheck =
+        SpellCostCheck(state, action, costHandler, predicateEvaluator, cardRegistry)
+
+    /**
+     * Pays [costs] into [ledger]: first the [lifeToPay] every life cost takes, as one payment —
+     * fixed by the cast, so it is paid whether or not the client sent a payment object, and either
+     * all of it is paid or the cast fails — then each cost in order: from the submitted selection,
+     * or — for a cost that selects nothing — unprompted. Returns an error to abort the cast.
+     */
+    private fun payAdditionalCosts(ledger: SpellCostLedger, costs: List<AdditionalCost>, lifeToPay: Int): String? {
+        // CR 119.4 — the whole amount must be payable (CR 810.9a — the team's shared total;
+        // CR 119.8 — not at all while the payer can't lose life).
+        if (!ledger.state.canPayLife(ledger.playerId, lifeToPay)) {
+            return "Not enough life to pay $lifeToPay life"
+        }
+        if (lifeToPay > 0) {
+            val (afterPayment, paymentEvents) =
+                LifePaymentService.pay(zones, ledger.state, ledger.playerId, lifeToPay)
+                    ?: return "Unable to pay life cost"
+            ledger.state = afterPayment
+            ledger.events.addAll(paymentEvents)
+        }
+        val submitted = ledger.action.additionalCostPayment != null
+        for (cost in costs) {
+            if (!submitted && !SpellCosts.paysUnprompted(cost)) continue
+            SpellCosts.pay(ledger, cost)?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * Conspire's optional additional cost: tap the two chosen creatures (CR 702.78). Validated in
+     * validate(); emits TappedEvent so "becomes tapped" self-triggers fire.
+     */
+    private fun payConspire(ledger: SpellCostLedger) {
+        for (creatureId in ledger.action.conspiredCreatures) {
+            val (tappedState, tapEvent) = tap(ledger.state, creatureId)
+            ledger.state = tappedState
+            tapEvent?.let(ledger.events::add)
+        }
+    }
+
+    /**
+     * Casualty's optional additional cost: sacrifice the chosen creature (CR 702.153). The creature
+     * was validated against the pre-payment state; it is sacrificed with the other held-back
+     * sacrifices once the mana is paid (CR 601.2g), through the shared cost sacrifice so the
+     * leave-the-battlefield events are emitted for dies/leaves triggers, and its pre-sacrifice
+     * snapshot feeds the spell's own effect context (CR 608.2h / 113.7a).
+     */
+    private fun payCasualty(ledger: SpellCostLedger) {
+        val permId = ledger.action.casualtyCreature ?: return
+        ledger.deferSacrifice(listOf(permId))
+    }
+
+    /**
+     * The payments that take mana off [cost] by tapping or exiling things — delve, convoke and
+     * harmonize; waterbend, bounded by the waterbend amount; improvise — and the "whenever you
+     * waterbend" record. Returns the mana still owed.
+     */
+    private fun payWithPermanentsAndCards(
+        ledger: SpellCostLedger,
+        totalCost: ManaCost,
+        cardDef: CardDefinition?,
+        playForFree: Boolean,
+    ): ManaCost {
+        val action = ledger.action
+        var cost = totalCost
+        val alternativePayment = action.alternativePayment
+
+        // Delve / convoke / harmonize (an equip-payment mode on the same carrier pays nothing here)
+        if (alternativePayment != null && alternativePayment.hasResourcePayment && cardDef != null) {
+            val result = alternativePaymentHandler.apply(
+                ledger.state, cost, alternativePayment, action.playerId, cardDef, action.cardId
+            )
+            cost = result.reducedCost
+            ledger.state = result.newState
+            ledger.events.addAll(result.events)
+            ledger.convokedCreatures.putAll(result.convokedCreatures)
+        }
+
+        // Waterbend (Avatar): tap the chosen artifacts/creatures, each paying {1} of the waterbend
+        // generic, bounded by the waterbend amount. Sums the spell-level `waterbend {N}` additional
+        // cost and Hama's fixed-alternative waterbend cost (only one is ever non-zero). > 0 exactly
+        // when a waterbend cost is actually being paid on this cast (an optional "you may
+        // waterbend" that was declined yields 0).
+        val waterbendPaidAmount = (if (cardDef != null) castCostTotaller.spellWaterbendAmount(cardDef, action) else 0) +
+            castCostTotaller.fixedAltWaterbendAmount(ledger.state, action, playForFree)
+        if (waterbendPaidAmount > 0 && alternativePayment != null && alternativePayment.tapForGenericPermanents.isNotEmpty()) {
+            val result = alternativePaymentHandler.applyWaterbendForSpell(
+                ledger.state, cost, alternativePayment, action.playerId, waterbendPaidAmount
+            )
+            cost = result.reducedCost
+            ledger.state = result.newState
+            ledger.events.addAll(result.events)
+        }
+
+        // Improvise (CR 702.126a): tap the chosen artifacts, each paying {1} of the generic in the
+        // spell's total cost. Unlike waterbend there is no separate amount to cap at — improvise is
+        // not a cost of its own (CR 702.126b) — so it runs only when no waterbend cost claimed the
+        // taps, and the handler re-checks the keyword before tapping anything.
+        if (waterbendPaidAmount == 0 && !playForFree && cardDef != null &&
+            alternativePayment != null && alternativePayment.tapForGenericPermanents.isNotEmpty()
+        ) {
+            val result = alternativePaymentHandler.applyImproviseForSpell(
+                ledger.state, cost, alternativePayment, action.playerId, cardDef, action.cardId
+            )
+            cost = result.reducedCost
+            ledger.state = result.newState
+            ledger.events.addAll(result.events)
+        }
+
+        // CR 701.67c: paying a spell's waterbend cost (however paid — taps above and/or plain mana)
+        // fires "whenever you waterbend". A later payment failure rolls the cast (and this event)
+        // back, so emitting here is safe.
+        if (waterbendPaidAmount > 0) {
+            val (bendState, bendEvent) = BendEvents.record(ledger.state, action.playerId, BendType.WATER)
+            ledger.state = bendState
+            ledger.events.add(bendEvent)
+        }
+        return cost
+    }
+
+    /**
+     * Emerge (CR 702.119a/c): the chosen creature is sacrificed *as the total cost is paid*
+     * (CR 601.2h), which is why this runs after the mana payment rather than with the additional
+     * costs — mana abilities are activated first (CR 601.2f–g), so the creature can legally be
+     * tapped for mana toward its own emerge cost before it dies. Its mana value was already taken
+     * off the generic portion of the total cost while it was on the battlefield.
+     */
+    private fun payEmergeSacrifice(ledger: SpellCostLedger) {
+        val action = ledger.action
+        val emergeSacrifice = action.additionalCostPayment?.sacrificedPermanents?.firstOrNull() ?: return
+        if (ledger.state.getEntity(emergeSacrifice) == null) return
+        // The [GameState] overload: besides last-known P/T it freezes the creature's *name*, which is
+        // what lets the stack card and the game log say which body paid for this cast once it is
+        // gone (a sacrificed token leaves no entity to read a name off). The snapshot feeds "as it
+        // last existed on the battlefield" reads (CR 608.2h) exactly like a scripted sacrifice cost.
+        ledger.sacrificedSnapshots.addAll(captureEntitySnapshots(listOf(emergeSacrifice), ledger.state))
+        ledger.sacrifice(emergeSacrifice)
+    }
+
+    /** Adds this cast's mana to the player's running total for the turn (Expend). */
+    private fun recordManaSpent(ledger: SpellCostLedger, paymentResult: PaymentResult): Int {
+        val manaSpent = paymentResult.events.filterIsInstance<ManaSpentEvent>().sumOf { it.total }
+        if (manaSpent > 0) {
+            ledger.state = ledger.state.updateEntity(ledger.playerId) { container ->
+                val existing = container.get<ManaSpentOnSpellsThisTurnComponent>() ?: ManaSpentOnSpellsThisTurnComponent()
+                container.with(existing.copy(totalSpent = existing.totalSpent + manaSpent))
+            }
+        }
+        return manaSpent
+    }
+
+    /**
+     * Forage paid to cast a creature from a graveyard (Osteomancer Adept). The spell being cast is
+     * excluded from the exile pool — it has left the graveyard for the stack and can't be one of the
+     * three cards it exiles to pay for itself. The player's mode + card/Food choice (when supplied
+     * via additionalCostPayment) is honored; otherwise a legal mode is auto-paid. See
+     * [ForageCostResolver].
+     */
+    private fun payGraveyardForage(ledger: SpellCostLedger): String? {
+        val action = ledger.action
+        return when (val forageResult = ForageCostResolver.pay(
+            zones,
+            ledger.state, action.playerId,
+            exileChoices = action.additionalCostPayment?.exiledCards ?: emptyList(),
+            sacrificeChoices = action.additionalCostPayment?.sacrificedPermanents ?: emptyList(),
+            excludeCardId = action.cardId,
+        )) {
+            is ForageCostResolver.Result.Success -> {
+                ledger.state = forageResult.state
+                ledger.events.addAll(forageResult.events)
+                null
+            }
+            is ForageCostResolver.Result.Failure -> forageResult.reason
+        }
+    }
+
+    /** The life a graveyard-cast permission charges (e.g., Festival of Embers). */
+    private fun payGraveyardLifeCost(ledger: SpellCostLedger) {
+        val lifeCost = ledger.action.graveyardLifeCost
+        if (lifeCost <= 0) return
+        val currentLife = ledger.state.lifeTotal(ledger.playerId) // CR 810.9a — team's shared total
+        val newLife = currentLife - lifeCost
+        ledger.state = ledger.state.withLifeTotal(ledger.playerId, newLife)
+        ledger.events.add(LifeChangedEvent(ledger.playerId, currentLife, newLife, LifeChangeReason.LIFE_LOSS))
+        ledger.state = DamageUtils.markLifeLostThisTurn(ledger.state, ledger.playerId, lifeCost)
+    }
+
+    /**
+     * Life owed to opponents' ModifySpellCost abilities for what this spell targets (e.g. Terror of
+     * the Peaks: "Spells your opponents cast that target this creature cost an additional 3 life to
+     * cast.").
+     */
+    private fun payTargetLifeTaxes(ledger: SpellCostLedger) {
+        val action = ledger.action
+        if (action.targets.isEmpty()) return
+        val additionalLifeCost = costCalculator.calculateAdditionalLifeCost(ledger.state, action.playerId, action.targets)
+        if (additionalLifeCost <= 0) return
+        LifePaymentService.pay(zones, ledger.state, action.playerId, additionalLifeCost)
+            ?.let { (afterPayment, paymentEvents) ->
+                ledger.state = afterPayment
+                ledger.events.addAll(paymentEvents)
+            }
+    }
+
+    /**
+     * The non-mana portion of sneak and web-slinging: return a creature you control to its owner's
+     * hand. The mana was paid with the rest of the cost.
+     *
+     * - Sneak (CR 702.190a) returns an unblocked attacker; the defender it was attacking is captured
+     *   first so a resolving permanent spell can enter attacking the same player or planeswalker
+     *   (CR 702.190b). Printed sneak, or a granted graveyard sneak (Ninja Teen). The card may
+     *   already be on the stack, so the grant is detected via the player's battlefield
+     *   (zone-independent) rather than the card's current zone.
+     * - Web-slinging (CR 702.188a) returns a tapped creature; its own mana value is captured first
+     *   (CR 118.9c — Scarlet Spider, Ben Reilly reads it).
+     *
+     * A commander returned this way already went through its owner's command-zone choice
+     * (CR 903.9b) before the cast resumed; the action then carries the defender / mana value read
+     * before that move, and no longer lists the commander among the permanents to return.
+     */
+    fun returnForAlternativeCost(ledger: SpellCostLedger, cardDef: CardDefinition?): ReturnedForAlternativeCost {
+        val action = ledger.action
+        val wasSneaked = action.useAlternativeCost && cardDef != null &&
+            action.altAllows(AlternativeCostType.SNEAK) &&
+            (cardDef.keywordAbilities.any { it.ninjutsuStyleCost != null } ||
+                SneakWindow.graveyardSneakGrantCost(ledger.state, action.playerId, cardRegistry) != null)
+        var sneakAttackDefenderId: EntityId? = action.preResolvedSneakAttackDefenderId
+        if (wasSneaked) {
+            action.additionalCostPayment?.bouncedPermanents?.firstOrNull()?.let { bounceId ->
+                sneakAttackDefenderId = ledger.state.getEntity(bounceId)?.get<AttackingComponent>()?.defenderId
+                returnToHand(ledger, bounceId)
+            }
+        }
+
+        val wasWebSlung = action.useAlternativeCost && cardDef != null &&
+            action.altAllows(AlternativeCostType.WEB_SLINGING) &&
+            WebSlinging.effectiveWebSlinging(ledger.state, action.cardId, cardDef, action.playerId, cardRegistry, predicateEvaluator) != null
+        var webSlungReturnedManaValue = action.preResolvedWebSlingReturnedManaValue ?: 0
+        if (wasWebSlung) {
+            action.additionalCostPayment?.bouncedPermanents?.firstOrNull()?.let { bounceId ->
+                webSlungReturnedManaValue = ledger.state.getEntity(bounceId)?.get<CardComponent>()?.manaValue ?: 0
+                returnToHand(ledger, bounceId)
+            }
+        }
+        return ReturnedForAlternativeCost(wasSneaked, sneakAttackDefenderId, wasWebSlung, webSlungReturnedManaValue)
+    }
+
+    private fun returnToHand(ledger: SpellCostLedger, permId: EntityId) {
+        val bounceResult = zones.moveToZone(ledger.state, permId, Zone.HAND)
+        ledger.state = bounceResult.state
+        ledger.events.addAll(bounceResult.events)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The mana terms, shared with validation
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * What conditional mana is judged against when it pays for this spell. A face-down cast
+     * (CR 708.2) is a nameless 2/2 creature spell regardless of what the card says, so it gets its
+     * own context rather than the printed card's.
+     */
+    fun spellPaymentContext(state: GameState, action: CastSpell, cardComponent: CardComponent?): SpellPaymentContext? =
+        if (action.castFaceDown) {
+            SpellPaymentContext.faceDownCast(isFromHand = isCastFrom(state, action.cardId, Zone.HAND))
+        } else if (cardComponent != null) {
+            spellPaymentContextFor(
+                cardComponent,
+                isKicked = action.declaredCostSlot == ChoiceSlot.KICKED,
+                isFromExile = isCastFrom(state, action.cardId, Zone.EXILE),
+                isFromHand = isCastFrom(state, action.cardId, Zone.HAND),
+            )
+        } else null
+
+    /**
+     * "Spend only [colors] on X" (Soul Burn). Uses the cast face's script for split/adventure cards,
+     * otherwise the card's own.
+     */
+    fun xManaRestriction(action: CastSpell, cardDef: CardDefinition?): Set<Color> =
+        (action.faceIndex?.let { cardDef?.cardFaces?.getOrNull(it)?.script } ?: cardDef?.script)
+            ?.xManaRestriction ?: emptySet()
+
+    /**
+     * True if mana of any type may be spent on this spell's mana cost (CR 118.14 / 609.4b). Two
+     * independent sources:
+     *
+     * 1. A [com.wingedsheep.sdk.scripting.SpendAnyManaTypeForSpells] static controlled by the
+     *    caster whose filter matches the card — the blanket "you can spend mana of any type to cast
+     *    [these] spells" (Vizier of the Menagerie). Zone-agnostic, so it is checked first and covers
+     *    hand and top-of-library casts too.
+     * 2. A [com.wingedsheep.engine.state.permissions.MayPlayPermission] carrying the
+     *    `withAnyManaType` rider. That is a *per-card* grant, so the card must currently be in a
+     *    zone a may-play permission can grant casting from — exile (the card's owner's, which may be
+     *    an opponent — e.g. Taster of Wares leaves the exiled card in the revealing player's exile)
+     *    or a graveyard (per-card grants that leave the card in the graveyard — e.g. Tinybones, the
+     *    Pickpocket lets you cast a targeted nonland permanent card from the damaged player's
+     *    graveyard). An active permission must be granted to the casting player with its condition
+     *    gate open, and the `withAnyManaType` flag must be set on at least one of them.
+     */
+    fun isCastWithAnyManaType(state: GameState, action: CastSpell): Boolean {
+        if (castPermissionUtils.canSpendAnyManaTypeForSpell(state, action.playerId, action.cardId)) {
+            return true
+        }
+        val inGrantableZone = isCastFrom(state, action.cardId, Zone.EXILE) || isCastFrom(state, action.cardId, Zone.GRAVEYARD)
+        if (!inGrantableZone) return false
+        if (state.activeMayPlayFor(action.cardId, action.playerId, conditionEvaluator, cardRegistry)
+                .any { it.withAnyManaType }
+        ) {
+            return true
+        }
+        // 3. A linked-exile cast grant ([com.wingedsheep.sdk.scripting.GrantMayCastFromLinkedExile])
+        //    carrying the same rider — "you may cast the exiled card, and mana of any type can be
+        //    spent to cast that spell" (Null Summoner). Only exile hosts a linked pile.
+        return isCastFrom(state, action.cardId, Zone.EXILE) &&
+            zoneResolver.findLinkedExileGranter(state, action.playerId, action.cardId)?.withAnyManaType == true
+    }
+
+    private fun isCastFrom(state: GameState, cardId: EntityId, zone: Zone): Boolean =
+        state.turnOrder.any { ownerId -> cardId in state.getZone(ZoneKey(ownerId, zone)) }
+
+    /**
+     * Whether the caster can pay [cost] (with [paymentXValue] as the X paid in mana) the way their
+     * [CastSpell.paymentStrategy] says they will, with [additionalPayLife] life already committed to
+     * the cast's additional costs (so a life-costing mana source is judged against what is left);
+     * null when they can.
+     *
+     * An exact payment plan (PaymentPlanV1 on [PaymentStrategy.Explicit], V2, V3) is validated as
+     * the complete payment it describes and never falls back to another strategy; a cast shape a
+     * plan can't represent is refused with [PAYMENT_DOMAIN_UNSUPPORTED].
+     */
+    fun validateManaPayment(
+        state: GameState,
+        action: CastSpell,
+        cost: ManaCost,
+        paymentXValue: Int = action.xValue ?: 0,
+        additionalPayLife: Int = 0,
+    ): String? {
+        val xValue = paymentXValue
+        if (additionalPayLife < 0) return "Cannot resolve life cost"
+        if (!state.canPayLife(action.playerId, additionalPayLife)) {
+            return "Not enough life to pay $additionalPayLife life"
+        }
+        val cardComponent = state.getEntity(action.cardId)?.get<CardComponent>()
+        val spellCtx = spellPaymentContext(state, action, cardComponent)
+
+        // "Mana of any type can be spent" — relax colored requirements when the cast permission
+        // carries that flag (e.g. Taster of Wares, Cruelclaw's Heist).
+        val effectiveCost = LifePayableMana.apply(
+            state, cardRegistry, action.playerId,
+            if (isCastWithAnyManaType(state, action)) cost.relaxColors() else cost
+        )
+
+        // "Spend only [colors] on X" restriction (Soul Burn) — limits which mana can pay X.
+        val cardDef = cardComponent?.let { cardRegistry.getCard(it.cardDefinitionId) }
+        val xManaRestriction = xManaRestriction(action, cardDef)
+
+        if (exactPaymentPlanOf(action.paymentStrategy) != null) {
+            return validateExactPaymentPlan(state, action, cost, effectiveCost, cardDef, spellCtx, additionalPayLife)
+        }
+
+        val validationCost = when (val strategy = action.paymentStrategy) {
+            is PaymentStrategy.Explicit -> effectiveCost.withPhyrexianPaidByLife(strategy.phyrexianLifePayments)
+                ?: return "Invalid Phyrexian mana payment"
+            else -> effectiveCost
+        }
+
+        return when (action.paymentStrategy) {
+            is PaymentStrategy.AutoPay -> {
+                if (!manaSolver.canPay(
+                        state,
+                        action.playerId,
+                        validationCost,
+                        xValue,
+                        spellContext = spellCtx,
+                        xManaRestriction = xManaRestriction,
+                        additionalPayLife = additionalPayLife,
+                    )
+                ) {
+                    "Not enough mana to cast this spell"
+                } else null
+            }
+            is PaymentStrategy.FromPool -> {
+                if (!floatingPool(state, action.playerId).canPay(validationCost, spellCtx)) {
+                    "Insufficient mana in pool to cast this spell"
+                } else null
+            }
+            is PaymentStrategy.Explicit -> {
+                for (sourceId in action.paymentStrategy.manaAbilitiesToActivate) {
+                    val sourceContainer = state.getEntity(sourceId)
+                        ?: return "Mana source not found: $sourceId"
+                    if (sourceContainer.has<TappedComponent>()) {
+                        return "Mana source is already tapped: $sourceId"
+                    }
+                }
+                // Mirror what [CastPaymentProcessor.autoPay] actually does: pay from the floating
+                // pool first, then verify the chosen sources can cover the rest. Otherwise a player
+                // who has already floated mana before clicking cast gets a false "Selected mana
+                // sources cannot pay this spell's cost" because the validator demands the chosen
+                // sources alone cover the full (post-convoke/delve) cost.
+                val partial = floatingPool(state, action.playerId).payPartial(validationCost, spellCtx)
+                val remainingCost = partial.remainingCost
+                // Floating mana also covers the {X} portion (execution — explicitPay → autoPay —
+                // spends it before tapping anything), so only ask the chosen sources for the X the
+                // pool can't pay. Eligible restricted mana counts via ManaPool.xCoverage.
+                val xSymbolCount = validationCost.xCount.coerceAtLeast(1)
+                val totalXMana = xValue * xSymbolCount
+                val xRemaining = totalXMana - partial.newPool.xCoverage(totalXMana, xManaRestriction, spellCtx)
+                if (remainingCost.isEmpty() && xRemaining == 0) {
+                    null
+                } else {
+                    val chosen = action.paymentStrategy.manaAbilitiesToActivate.toSet()
+                    val excluded = manaSolver.findAvailableManaSources(state, action.playerId)
+                        .map { it.entityId }
+                        .filter { it !in chosen }
+                        .toSet()
+                    if (manaSolver.solve(
+                            state,
+                            action.playerId,
+                            remainingCost,
+                            xRemaining,
+                            excludeSources = excluded,
+                            spellContext = spellCtx,
+                            xManaRestriction = xManaRestriction,
+                            additionalPayLife = additionalPayLife,
+                        ) == null
+                    ) {
+                        "Selected mana sources cannot pay this spell's cost"
+                    } else null
+                }
+            }
+            // A V2/V3 strategy without its plan has nothing to pay with; with one it was validated
+            // above as an exact plan.
+            is PaymentStrategy.ExplicitV2 -> "PaymentStrategy.ExplicitV2 requires PaymentPlanV2"
+            is PaymentStrategy.ExplicitV3 -> "PaymentStrategy.ExplicitV3 requires PaymentPlanV3"
+        }
+    }
+
+    /** The exact payment plan [strategy] carries, or null for a strategy that leaves the choice to the engine. */
+    private fun exactPaymentPlanOf(strategy: PaymentStrategy): Any? = when (strategy) {
+        is PaymentStrategy.Explicit -> strategy.paymentPlan
+        is PaymentStrategy.ExplicitV2 -> strategy.paymentPlan
+        is PaymentStrategy.ExplicitV3 -> strategy.paymentPlan
+        is PaymentStrategy.AutoPay, is PaymentStrategy.FromPool -> null
+    }
+
+    /**
+     * An exact payment plan (PaymentPlanV1 / V2 / V3) for this cast: refused with
+     * [PAYMENT_DOMAIN_UNSUPPORTED] when the cast has a payment choice no plan can represent,
+     * otherwise checked by [PaymentPlanValidator] against the canonical cost as the complete
+     * payment — never completed by a different strategy.
+     */
+    private fun validateExactPaymentPlan(
+        state: GameState,
+        action: CastSpell,
+        cost: ManaCost,
+        effectiveCost: ManaCost,
+        cardDef: CardDefinition?,
+        spellCtx: SpellPaymentContext?,
+        additionalPayLife: Int,
+    ): String? {
+        val explicitStrategy = action.paymentStrategy as? PaymentStrategy.Explicit
+        val explicitV2Strategy = action.paymentStrategy as? PaymentStrategy.ExplicitV2
+        val explicitV3Strategy = action.paymentStrategy as? PaymentStrategy.ExplicitV3
+        val explicitPlan = explicitStrategy?.paymentPlan
+        val explicitV2Plan = explicitV2Strategy?.paymentPlan
+        val explicitV3Plan = explicitV3Strategy?.paymentPlan
+        val hasTargetDependentCastCost = if (cardDef != null && action.useAlternativeCost) {
+            val targetIds = action.targets.map { it.toEntityId() }
+            costCalculator.hasTargetDependentCastCost(
+                state = state,
+                cardDef = cardDef,
+                casterId = action.playerId,
+                advertisedCost = effectiveCost,
+                legalTargets = targetIds,
+                targetCount = targetIds.size,
+                minimumTargetCount = targetIds.size,
+                fromZone = castCostTotaller.castSourceZone(state, action.cardId),
+                declaredCostSlot = action.declaredCostSlot,
+                compareEmptyTargetCost = false,
+                compareTargetCosts = false,
+            )
+        } else {
+            false
+        }
+        val unsupportedReason = when {
+            action.castFaceDown -> "face-down payment choices are not representable"
+            // Checked on the printed total and on the cost after life-payable lowering (K'rrik), so a
+            // pip the payer could pay with life is refused rather than silently paid with mana.
+            action.xValue != null || listOf(cost, effectiveCost).any { c ->
+                c.symbols.any { it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic }
+            } -> "X, hybrid, Phyrexian, and twobrid costs are not representable"
+            action.useAlternativeCost &&
+                (explicitV3Plan == null || !isResolvedFixedAlternativeCastPayment(
+                    action = action,
+                    effectiveCost = effectiveCost,
+                    hasTargetDependentCost = hasTargetDependentCastCost,
+                    hasApplicableAdditionalCost = owedAdditionalCosts(state, action, cardDef).isNotEmpty(),
+                )) -> "alternative mana costs are not representable"
+            action.faceIndex != null -> "alternative face payment choices are not representable"
+            action.alternativePayment?.hasResourcePayment == true ->
+                "convoke, delve, harmonize, and tap-for-generic choices are not representable"
+            action.wasWaterbendPaid -> "waterbend choices are not representable"
+            action.splicedCardIds.isNotEmpty() -> "splice adds an unresolved secondary payment choice"
+            (action.chosenModes.isNotEmpty() || action.modeTargetsOrdered.isNotEmpty()) &&
+                (cardDef == null || !ModalPaymentPlanSupport.supportsFixedChooseOne(
+                    state = state,
+                    cardDef = cardDef,
+                    action = action,
+                    conditionEvaluator = conditionEvaluator,
+                )) -> "modal payment choices are not representable"
+            action.useWithoutPayingManaCost -> "free-cast payment choices are not representable"
+            cardDef?.script?.additionalCosts?.any(::containsSecondaryManaCost) == true ->
+                "secondary mana costs are not representable"
+            else -> null
+        }
+        if (unsupportedReason != null) return paymentDomainUnsupported(unsupportedReason)
+        val legacyHandles = explicitStrategy?.manaAbilitiesToActivate
+            ?: explicitV2Strategy?.manaAbilitiesToActivate.orEmpty()
+        if (legacyHandles.isNotEmpty()) {
+            val planName = when {
+                explicitV3Plan != null -> "PaymentPlanV3"
+                explicitV2Plan != null -> "PaymentPlanV2"
+                else -> "PaymentPlanV1"
+            }
+            return "$planName must not include legacy runtime mana source handles"
+        }
+        val canonicalCost = effectiveCost.canonicalPaymentManaCost()
+        val paymentValidation = when {
+            explicitV3Plan != null -> paymentPlanValidator.validateV3(
+                state = state,
+                playerId = action.playerId,
+                cost = canonicalCost,
+                plan = explicitV3Plan,
+                spellContext = spellCtx,
+                reservedOuterLifePayment = additionalPayLife,
+            )
+            explicitV2Plan != null -> paymentPlanValidator.validateV2(
+                state = state,
+                playerId = action.playerId,
+                cost = canonicalCost,
+                plan = explicitV2Plan,
+                spellContext = spellCtx,
+            )
+            explicitPlan != null -> paymentPlanValidator.validate(
+                state = state,
+                playerId = action.playerId,
+                cost = canonicalCost,
+                plan = explicitPlan,
+                spellContext = spellCtx,
+            )
+            else -> return null
+        }
+        return when (paymentValidation) {
+            is PaymentPlanValidation.Accepted -> null
+            is PaymentPlanValidation.AcceptedV3 -> null
+            is PaymentPlanValidation.Rejected -> paymentValidation.reason
+        }
+    }
+
+    /**
+     * The caster's floating mana as a payment value — the component's full provenance (the one
+     * conversion seam, [toManaPool]) with the color-spending substitutions in force for them.
+     */
+    private fun floatingPool(state: GameState, playerId: EntityId): ManaPool {
+        val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
+        return poolComponent.toManaPool().withSpendingColors(state, playerId)
+    }
+}
+
+/** The prefix of every payment-validation refusal for a cast shape an exact payment plan can't represent. */
+private const val PAYMENT_DOMAIN_UNSUPPORTED = "PAYMENT_DOMAIN_UNSUPPORTED"
+
+private fun paymentDomainUnsupported(reason: String): String =
+    "$PAYMENT_DOMAIN_UNSUPPORTED: $reason"
+
+/** Whether [cost] (or any leg of it) can add mana to the spell's total cost — a secondary mana payment. */
+private fun containsSecondaryManaCost(cost: AdditionalCost): Boolean = when (cost) {
+    is AdditionalCost.Atom -> cost.atom is CostAtom.Mana
+    is AdditionalCost.Choice -> cost.options.any(::containsSecondaryManaCost)
+    is AdditionalCost.OrPay -> true
+    is AdditionalCost.BlightOrPay -> true
+    is AdditionalCost.Composite -> cost.steps.any(::containsSecondaryManaCost)
+    else -> false
+}
+
+/** How paying a cast's costs went. */
+internal sealed interface CastPaymentOutcome {
+    class Paid(val payment: CastPayment) : CastPaymentOutcome
+
+    /** The costs couldn't be paid; [reason] rejects the cast. */
+    class Failed(val reason: String) : CastPaymentOutcome
+}

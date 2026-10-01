@@ -4,10 +4,9 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
-import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.stack.StackPlacement
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
-import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
@@ -29,14 +28,12 @@ import kotlin.reflect.KClass
  * that created it."
  */
 class CopyTargetTriggeredAbilityExecutor(
-    private val cardRegistry: CardRegistry,
-    private val targetFinder: TargetFinder = TargetFinder()
+    private val targetFinder: TargetFinder,
+    private val targetValidator: TargetValidator
 ) : EffectExecutor<CopyTargetTriggeredAbilityEffect> {
 
     override val effectType: KClass<CopyTargetTriggeredAbilityEffect> =
         CopyTargetTriggeredAbilityEffect::class
-
-    private val targetValidator = TargetValidator()
 
     override fun execute(
         state: GameState,
@@ -58,12 +55,15 @@ class CopyTargetTriggeredAbilityExecutor(
         // No targets — clone directly and push
         if (targetRequirements.isEmpty()) {
             val copy = cloneAbility(sourceAbility, context.controllerId)
-            val stackResolver = StackResolver(cardRegistry = cardRegistry)
             return EffectResult.from(
-                stackResolver.putTriggeredAbility(
+                StackPlacement.putTriggeredAbility(
                     state,
                     copy,
-                    emitTriggeredEvent = false
+                    // CR 707.10: copying does not trigger the ability again. Crime remains
+                    // evaluated by putTriggeredAbility because CR 700.13 still covers putting the
+                    // copy on the stack.
+                    emitTriggeredEvent = false,
+                    targetValidator = targetValidator
                 )
             )
         }
@@ -78,15 +78,17 @@ class CopyTargetTriggeredAbilityExecutor(
         abilityEntityId: EntityId,
         targetRequirements: List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>
     ): EffectResult {
-        val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
-        val sourcePredicateContext = state.getEntity(abilityEntityId)
+        // The copied ability's own trigger facts and carried pipeline scope its target filters
+        // ("that player", stored collections), not the copier's.
+        val sourceAbility = state.getEntity(abilityEntityId)
             ?.get<TriggeredAbilityOnStackComponent>()
+        val sourcePredicateContext = sourceAbility
             ?.let { source ->
                 com.wingedsheep.engine.handlers.PredicateContext(
                     controllerId = context.controllerId,
                     sourceId = abilityEntityId,
-                    triggeringEntityId = source.triggeringEntityId,
-                    triggeringPlayerId = source.triggeringPlayerId,
+                    triggeringEntityId = source.triggerContext?.triggeringEntityId,
+                    triggeringPlayerId = source.triggerContext?.triggeringPlayerId,
                     xValue = source.xValue,
                     storedCollections = source.carriedPipeline?.storedCollections ?: emptyMap(),
                     chosenValues = source.carriedPipeline?.chosenValues ?: emptyMap(),
@@ -95,6 +97,7 @@ class CopyTargetTriggeredAbilityExecutor(
                 )
             }
             ?: com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context)
+        val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
         for ((index, requirement) in targetRequirements.withIndex()) {
             val legalTargets = targetFinder.findLegalTargets(
                 state = state,
@@ -107,13 +110,12 @@ class CopyTargetTriggeredAbilityExecutor(
             legalTargetsMap[index] = legalTargets
         }
 
-        val sourceAbility = state.getEntity(abilityEntityId)
-            ?.get<TriggeredAbilityOnStackComponent>()
         val pendingTargetContext = context.copy(
             sourceId = abilityEntityId,
             xValue = sourceAbility?.xValue ?: context.xValue,
-            triggeringEntityId = sourceAbility?.triggeringEntityId ?: context.triggeringEntityId,
-            triggeringPlayerId = sourceAbility?.triggeringPlayerId ?: context.triggeringPlayerId,
+            triggeringEntityId = sourceAbility?.triggerContext?.triggeringEntityId ?: context.triggeringEntityId,
+            triggeringPlayerId = sourceAbility?.triggerContext?.triggeringPlayerId ?: context.triggeringPlayerId,
+            triggerContext = sourceAbility?.triggerContext ?: context.triggerContext,
             pipeline = sourceAbility?.carriedPipeline ?: context.pipeline,
         )
         val targetReqInfos = targetRequirements.mapIndexed { index, requirement ->
@@ -131,18 +133,16 @@ class CopyTargetTriggeredAbilityExecutor(
             return EffectResult.success(state)
         }
 
-        val decisionId = "copy-triggered-ability-target-${System.nanoTime()}"
         val sourceName = state.getEntity(abilityEntityId)
             ?.get<TriggeredAbilityOnStackComponent>()?.sourceName ?: "ability"
 
         val continuation = CopyTriggeredAbilityTargetContinuation(
-            decisionId = decisionId,
             abilityEntityId = abilityEntityId,
             controllerId = context.controllerId,
             targetRequirements = targetRequirements
         )
 
-        val decision = ChooseTargetsDecision(
+        val decision = { decisionId: String -> ChooseTargetsDecision(
             id = decisionId,
             playerId = context.controllerId,
             prompt = "Choose new targets for copy of $sourceName's ability",
@@ -153,12 +153,9 @@ class CopyTargetTriggeredAbilityExecutor(
             ),
             targetRequirements = targetReqInfos,
             legalTargets = legalTargetsMap
-        )
+        ) }
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(stateWithContinuation, decision)
+        return EffectResult.from(state.suspendForDecision(decision, continuation, emptyList()))
     }
 
     companion object {
@@ -174,6 +171,7 @@ class CopyTargetTriggeredAbilityExecutor(
         ): TriggeredAbilityOnStackComponent {
             return source.copy(
                 controllerId = copyController,
+                stateTriggerAbilityId = null,
                 description = "Copy of ${source.description}"
             )
         }

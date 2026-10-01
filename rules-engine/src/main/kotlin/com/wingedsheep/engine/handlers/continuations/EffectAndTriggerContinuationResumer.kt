@@ -1,17 +1,18 @@
 package com.wingedsheep.engine.handlers.continuations
 
 import com.wingedsheep.engine.core.*
+import com.wingedsheep.engine.handlers.DependentTargetSelection
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
+import com.wingedsheep.sdk.scripting.effects.DistributeCountersAmongTargetsEffect
 import com.wingedsheep.sdk.scripting.effects.DividedDamageEffect
 import com.wingedsheep.engine.handlers.effects.composite.asMayDecide
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.Gate
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
-import java.util.UUID
 
 /**
  * Handles core effect and trigger resumption:
@@ -25,9 +26,9 @@ class EffectAndTriggerContinuationResumer(
     private val services: com.wingedsheep.engine.core.EngineServices,
     private val effectRunner: EffectContinuationRunner
 ) : ContinuationResumerModule {
+    private val amountEvaluator = services.dynamicAmountEvaluator
 
     override fun resumers(): List<ContinuationResumer<*>> = listOf(
-        resumer(EffectContinuation::class, ::resumeEffect),
         resumer(TriggeredAbilityContinuation::class, ::resumeTriggeredAbility),
         resumer(TriggerDamageDistributionContinuation::class, ::resumeTriggerDamageDistribution),
         resumer(ResolveSpellContinuation::class) { state, _, _, _ ->
@@ -38,38 +39,13 @@ class EffectAndTriggerContinuationResumer(
         resumer(MayRevealCardFromHandContinuation::class, ::resumeMayRevealCardFromHand),
         resumer(BeholdContinuation::class, ::resumeBehold),
         resumer(MayTriggerContinuation::class, ::resumeMayTrigger),
+        resumer(TriggerOpponentChooserContinuation::class, ::resumeTriggerOpponentChooser),
         resumer(BatchMayTriggerContinuation::class, ::resumeBatchMayTrigger),
         resumer(DelayedTriggerOccurrenceChoiceContinuation::class, ::resumeDelayedTriggerOccurrenceChoice),
         resumer(TriggerOrderingContinuation::class, ::resumeTriggerOrdering)
     )
 
-    private fun resumeEffect(
-        state: GameState,
-        continuation: EffectContinuation,
-        response: DecisionResponse,
-        checkForMore: CheckForMore
-    ): ExecutionResult {
-        val effectResult = effectRunner.executeRemainingEffects(state, continuation.remainingEffects, continuation.effectContext)
-        if (effectResult.isPaused) return effectResult.toExecutionResult()
-        // A drained composite hands its pipeline storage to the frame beneath — e.g. a DoAction
-        // gate scoring SuccessCriterion.CollectionNonEmpty, or a reflexive "when you do" reading a
-        // number the action stored. The full frame maps (not just this drain's accumulation) are
-        // what propagate: keys injected into this frame by an earlier select-resume are part of
-        // them. Numbers and chosen values ride along with collections so that pausing mid-composite
-        // preserves exactly what completing it synchronously would have.
-        val stateWithCollections = exposeCollectionsToNextFrame(
-            effectResult.state,
-            continuation.effectContext.pipeline.storedCollections + effectResult.updatedCollections,
-            continuation.effectContext.pipeline.storedNumbers + effectResult.updatedStoredNumbers,
-            continuation.effectContext.pipeline.chosenValues + effectResult.updatedChosenValues,
-        )
-        return continueWithDiagnostics(
-            effectResult,
-            checkForMore,
-            state = stateWithCollections,
-            events = effectResult.events.toList(),
-        )
-    }
+
 
     private fun resumeTriggeredAbility(
         state: GameState,
@@ -81,6 +57,76 @@ class EffectAndTriggerContinuationResumer(
             return ExecutionResult.error(state, "Expected target selection response for triggered ability")
         }
 
+        continuation.sequentialTargets?.let { prefix ->
+            val requirements = continuation.targetRequirements
+            val selected = response.selectedTargets[0].orEmpty()
+            // Declining an "up to one" slot ends the selection; `canStopAt` guarantees every
+            // later slot is optional too, so no later target shifts into its position.
+            if (selected.isEmpty() && !DependentTargetSelection.canStopAt(requirements, prefix.size)) {
+                return ExecutionResult.error(state, "Choose one target")
+            }
+            val chosen = if (selected.isEmpty()) prefix else prefix + listOf(selected)
+            if (selected.isNotEmpty() && chosen.size < requirements.size) {
+                val pipeline = continuation.carriedPipeline
+                val triggerContext = continuation.triggerContext
+                val context = com.wingedsheep.engine.handlers.PredicateContext(
+                    controllerId = continuation.controllerId,
+                    sourceId = continuation.sourceId,
+                    triggeringEntityId = triggerContext?.triggeringEntityId,
+                    triggeringPlayerId = triggerContext?.triggeringPlayerId,
+                    defendingPlayerId = triggerContext?.defendingPlayerId,
+                    damageSourceId = triggerContext?.damageSourceEntityId,
+                    damageRecipientId = triggerContext?.damageRecipientEntityId,
+                    damageRecipientKind = triggerContext?.damageRecipientKind ?: DamageRecipientKind.UNKNOWN,
+                    damageRecipientKinds = triggerContext?.effectiveDamageRecipientKinds
+                        ?: DamageRecipientKindSet.UNKNOWN,
+                    damageSourceLastKnownSnapshot = triggerContext?.damageSourceLastKnownSnapshot,
+                    damageRecipientLastKnownSnapshot = triggerContext?.damageRecipientLastKnownSnapshot,
+                    xValue = triggerContext?.xValue,
+                    storedCollections = pipeline?.storedCollections ?: emptyMap(),
+                    chosenValues = pipeline?.chosenValues ?: emptyMap(),
+                    storedStringLists = pipeline?.storedStringLists ?: emptyMap(),
+                    storedSubtypeGroups = pipeline?.storedSubtypeGroups ?: emptyMap(),
+                )
+                val legal = DependentTargetSelection.legalNext(state, requirements, chosen, context, targetFinder = services.targetFinder)
+                val next = requirements[chosen.size]
+                // An optional remaining slot with nothing to offer ends the selection without an empty prompt.
+                if (legal.isEmpty() && DependentTargetSelection.canStopAt(requirements, chosen.size)) {
+                    return resumeTriggeredAbility(
+                        state, continuation.copy(sequentialTargets = null),
+                        response.copy(selectedTargets = chosen.withIndex().associate { (index, ids) -> index to ids }),
+                        checkForMore,
+                    )
+                }
+                // Pending target metadata goes through the typed boundary like every other pending
+                // trigger target decision, so an unpublishable slot fails closed instead of exposing
+                // an incomplete structured domain.
+                val nextInfo = when (val result = TargetRequirementInfo.fromRequirement(
+                    index = 0,
+                    requirement = next,
+                    minTargets = if (DependentTargetSelection.canStopAt(requirements, chosen.size)) 0
+                        else maxOf(1, next.effectiveMinCount),
+                    // Only the last slot may take several (DependentTargetSelection).
+                    maxTargets = if (next.unlimited) legal.size else next.count,
+                )) {
+                    is TargetRequirementInfoResult.Supported -> result.info
+                    is TargetRequirementInfoResult.Unsupported -> return result.toExecutionError(state)
+                }
+                return com.wingedsheep.engine.handlers.DecisionHandler().createTargetDecision(
+                    state, continuation.controllerId, continuation.sourceId, continuation.sourceName,
+                    requirements = listOf(nextInfo),
+                    legalTargets = mapOf(0 to legal),
+                    effectHint = continuation.description,
+                    answer = continuation.copy(sequentialTargets = chosen),
+                )
+            }
+            return resumeTriggeredAbility(
+                state, continuation.copy(sequentialTargets = null),
+                response.copy(selectedTargets = chosen.withIndex().associate { (index, ids) -> index to ids }),
+                checkForMore,
+            )
+        }
+
         // Build the chosen-targets list in requirement-slot order, keeping it PARALLEL to the
         // requirements that actually received a target. A declined "up to one" slot (empty list)
         // drops out of BOTH lists together, so a later target never shifts forward into an earlier
@@ -88,7 +134,7 @@ class EffectAndTriggerContinuationResumer(
         // Solvers (declining the "up to one artifact" slot) validated the creature against the
         // artifact requirement at resolution and fizzled with "all targets invalid" (CR 608.2b).
         //
-        // Each kept requirement is also narrowed (`withCount`) to the number of targets actually
+        // Each kept requirement is also narrowed (a locked count) to the number of targets actually
         // chosen for its slot: the downstream index walks (StackResolver.getRequirementForTargetIndex,
         // EffectContext.buildNamedTargets) advance by `count`, so a partially filled "up to two"
         // slot left at its declared max would absorb the next slot's target into its own range and
@@ -121,126 +167,85 @@ class EffectAndTriggerContinuationResumer(
             val elseComponent = TriggeredAbilityOnStackComponent(
                 sourceId = continuation.sourceId,
                 sourceName = continuation.sourceName,
+                sourceBattlefieldTimestamp = continuation.sourceBattlefieldTimestamp,
+                objectReferences = continuation.objectReferences,
                 controllerId = continuation.controllerId,
                 effect = continuation.elseEffect,
                 description = continuation.description,
                 sourceEndpointAuthority = continuation.sourceEndpointAuthority,
                 sourceObjectIncarnationStamp = continuation.sourceObjectIncarnationStamp,
                 abilityIdentity = continuation.abilityIdentity,
-                triggerDamageAmount = continuation.triggerDamageAmount,
-                triggeringEntityId = continuation.triggeringEntityId,
-                triggeringEntityEntryTimestamp = continuation.triggeringEntityEntryTimestamp,
-                triggeringEntityName = continuation.triggeringEntityName,
-                triggeringEntityNameKnown = continuation.triggeringEntityNameKnown,
-                triggeringPlayerId = continuation.triggeringPlayerId,
-                defendingPlayerId = continuation.defendingPlayerId,
-                damageSourceEntityId = continuation.damageSourceEntityId,
-                damageRecipientEntityId = continuation.damageRecipientEntityId,
-                damageRecipientKind = continuation.damageRecipientKind,
-                damageRecipientKinds = continuation.effectiveDamageRecipientKinds,
-                damageSourceLastKnownSnapshot = continuation.damageSourceLastKnownSnapshot,
-                damageRecipientLastKnownSnapshot = continuation.damageRecipientLastKnownSnapshot,
-                triggerCounterCount = continuation.triggerCounterCount,
-                triggerTotalCounterCount = continuation.triggerTotalCounterCount,
-                triggerLastKnownCounters = continuation.triggerLastKnownCounters,
-                triggerLastKnownSubtypes = continuation.triggerLastKnownSubtypes,
-                triggerLastKnownCardTypes = continuation.triggerLastKnownCardTypes,
-                triggerLastKnownDamageDealtByPlayers = continuation.triggerLastKnownDamageDealtByPlayers,
-                triggerLastKnownBlockingOrBlockedByIds = continuation.triggerLastKnownBlockingOrBlockedByIds,
-                lastKnownPower = continuation.lastKnownPower,
-                lastKnownToughness = continuation.lastKnownToughness,
-                diedBatchTotalPower = continuation.diedBatchTotalPower,
-                triggerScryCount = continuation.triggerScryCount,
-                triggerDiscardCount = continuation.triggerDiscardCount,
-                triggerDiscoverValue = continuation.triggerDiscoverValue,
-                triggerExcessDamageAmount = continuation.triggerExcessDamageAmount,
-                triggerRecipientToughness = continuation.triggerRecipientToughness,
-                triggerManaSpentOnTriggeringSpell = continuation.triggerManaSpentOnTriggeringSpell,
-                triggerColorsSpentOnTriggeringSpell = continuation.triggerColorsSpentOnTriggeringSpell,
-                triggerManaValueOfTriggeringSpell = continuation.triggerManaValueOfTriggeringSpell,
-                triggerXValueOfTriggeringSpell = continuation.triggerXValueOfTriggeringSpell,
-                xValue = continuation.xValue,
+                triggerContext = continuation.triggerContext,
+                xValue = continuation.triggerContext?.xValue,
                 carriedPipeline = continuation.carriedPipeline,
-                interveningIf = continuation.interveningIf
+                interveningIf = continuation.interveningIf,
+                isBackup = continuation.isBackup
             )
             val stackResult = services.stackResolver.putTriggeredAbility(state, elseComponent, emptyList())
-            if (!stackResult.isSuccess) return stackResult
+            if (stackResult.outcome !is Outcome.Done) return stackResult
             return continueWithDiagnostics(stackResult, checkForMore)
         }
 
-        // Check if this is a DividedDamageEffect with multiple targets — need distribution.
-        // A dynamicTotal (e.g. Ureni — "X = lands you control") is evaluated now, as the ability
-        // goes on the stack, so the player divides the correct amount among the chosen targets.
-        val effect = continuation.effect
-        if (effect is DividedDamageEffect && selectedTargets.size > 1) {
-            val total = effect.dynamicTotal?.let {
-                com.wingedsheep.engine.handlers.DynamicAmountEvaluator().evaluate(
-                    state,
-                    it,
-                    com.wingedsheep.engine.handlers.EffectContext(
-                        sourceId = continuation.sourceId,
-                        controllerId = continuation.controllerId,
-                    )
+        // A divided effect with two or more targets announces its division now, as the ability goes
+        // on the stack (CR 603.3d applies CR 601.2d to triggered abilities). A dynamic total (Ureni —
+        // "X = lands you control") is evaluated here so the player divides the correct amount.
+        if (selectedTargets.size > 1) {
+            val division = announcedDivision(continuation.effect)
+            if (division != null) {
+                val amountContext = com.wingedsheep.engine.handlers.EffectContext(
+                    sourceId = continuation.sourceId,
+                    objectReferences = continuation.objectReferences,
+                    controllerId = continuation.controllerId,
                 )
-            } ?: effect.totalDamage
-            return createTriggerDamageDistributionDecision(
-                state, continuation, selectedTargets, alignedRequirements, total, checkForMore
-            )
+                val (total, prompt, minPerTarget) = when (division) {
+                    is DividedDamageEffect -> {
+                        val total = division.dynamicTotal?.let { amountEvaluator.evaluate(state, it, amountContext) }
+                            ?: division.totalDamage
+                        Triple(total, "Divide $total damage among ${selectedTargets.size} targets", 1)
+                    }
+                    is DistributeCountersAmongTargetsEffect -> {
+                        val total = amountEvaluator.evaluate(state, division.totalCounters, amountContext)
+                        Triple(
+                            total,
+                            "Distribute $total ${division.counterType.printed} " +
+                                "counter${if (total != 1) "s" else ""} among ${selectedTargets.size} targets",
+                            division.minPerTarget
+                        )
+                    }
+                    else -> error("announcedDivision returned ${division::class.simpleName}")
+                }
+                return createTriggerDistributionDecision(
+                    state, continuation, selectedTargets, alignedRequirements, total, prompt, minPerTarget
+                )
+            }
         }
 
         val abilityComponent = TriggeredAbilityOnStackComponent(
             sourceId = continuation.sourceId,
             sourceName = continuation.sourceName,
+            sourceBattlefieldTimestamp = continuation.sourceBattlefieldTimestamp,
+            objectReferences = continuation.objectReferences,
             controllerId = continuation.controllerId,
             effect = continuation.effect,
             description = continuation.description,
             sourceEndpointAuthority = continuation.sourceEndpointAuthority,
             sourceObjectIncarnationStamp = continuation.sourceObjectIncarnationStamp,
             abilityIdentity = continuation.abilityIdentity,
-            triggerDamageAmount = continuation.triggerDamageAmount,
-            triggeringEntityId = continuation.triggeringEntityId,
-            triggeringEntityEntryTimestamp = continuation.triggeringEntityEntryTimestamp,
-            triggeringEntityName = continuation.triggeringEntityName,
-            triggeringEntityNameKnown = continuation.triggeringEntityNameKnown,
-            triggeringPlayerId = continuation.triggeringPlayerId,
-            defendingPlayerId = continuation.defendingPlayerId,
-            damageSourceEntityId = continuation.damageSourceEntityId,
-            damageRecipientEntityId = continuation.damageRecipientEntityId,
-            damageRecipientKind = continuation.damageRecipientKind,
-            damageRecipientKinds = continuation.effectiveDamageRecipientKinds,
-            damageSourceLastKnownSnapshot = continuation.damageSourceLastKnownSnapshot,
-            damageRecipientLastKnownSnapshot = continuation.damageRecipientLastKnownSnapshot,
-            triggerCounterCount = continuation.triggerCounterCount,
-            triggerTotalCounterCount = continuation.triggerTotalCounterCount,
-            triggerLastKnownCounters = continuation.triggerLastKnownCounters,
-            triggerLastKnownSubtypes = continuation.triggerLastKnownSubtypes,
-            triggerLastKnownCardTypes = continuation.triggerLastKnownCardTypes,
-            triggerLastKnownDamageDealtByPlayers = continuation.triggerLastKnownDamageDealtByPlayers,
-            triggerLastKnownBlockingOrBlockedByIds = continuation.triggerLastKnownBlockingOrBlockedByIds,
-            lastKnownPower = continuation.lastKnownPower,
-            lastKnownToughness = continuation.lastKnownToughness,
-            diedBatchTotalPower = continuation.diedBatchTotalPower,
-            triggerModesChosenCount = continuation.triggerModesChosenCount,
-            enchantedCreatureLastKnownPower = continuation.enchantedCreatureLastKnownPower,
-            triggerScryCount = continuation.triggerScryCount,
-            triggerDiscardCount = continuation.triggerDiscardCount,
-            triggerDiscoverValue = continuation.triggerDiscoverValue,
-            triggerExcessDamageAmount = continuation.triggerExcessDamageAmount,
-            triggerRecipientToughness = continuation.triggerRecipientToughness,
-            triggerManaSpentOnTriggeringSpell = continuation.triggerManaSpentOnTriggeringSpell,
-            triggerColorsSpentOnTriggeringSpell = continuation.triggerColorsSpentOnTriggeringSpell,
-            triggerManaValueOfTriggeringSpell = continuation.triggerManaValueOfTriggeringSpell,
-            triggerXValueOfTriggeringSpell = continuation.triggerXValueOfTriggeringSpell,
-            xValue = continuation.xValue,
+            // The whole record survives the target-selection pause — including a batch trigger's
+            // captured objects, so a payoff that says "from among them" still finds them
+            // (CR 603.2c; Kaya, Spirits' Justice is a batch trigger that also targets).
+            triggerContext = continuation.triggerContext,
+            xValue = continuation.triggerContext?.xValue,
             carriedPipeline = continuation.carriedPipeline,
-            interveningIf = continuation.interveningIf
+            interveningIf = continuation.interveningIf,
+            isBackup = continuation.isBackup
         )
 
         val stackResult = services.stackResolver.putTriggeredAbility(
             state, abilityComponent, selectedTargets, alignedRequirements
         )
 
-        if (!stackResult.isSuccess) {
+        if (stackResult.outcome !is Outcome.Done) {
             return stackResult
         }
 
@@ -248,16 +253,32 @@ class EffectAndTriggerContinuationResumer(
     }
 
     /**
-     * After targets are selected for a triggered ability with DividedDamageEffect,
-     * pause to ask how to distribute damage among the chosen targets.
+     * The effect whose division a triggered ability announces as it goes on the stack: the ability's
+     * whole effect, or the one divided step of a sequence ("distribute three +1/+1 counters …, then
+     * you gain life …"). Null when there is none, or more than one to tell apart — those divide at
+     * resolution instead.
      */
-    private fun createTriggerDamageDistributionDecision(
+    private fun announcedDivision(effect: Effect): Effect? {
+        fun isDivided(e: Effect) = e is DividedDamageEffect || e is DistributeCountersAmongTargetsEffect
+        return when {
+            isDivided(effect) -> effect
+            effect is CompositeEffect -> effect.effects.filter(::isDivided).singleOrNull()
+            else -> null
+        }
+    }
+
+    /**
+     * After targets are selected for a triggered ability with a divided effect (damage or
+     * counters), pause to ask how to divide it among the chosen targets.
+     */
+    private fun createTriggerDistributionDecision(
         state: GameState,
         continuation: TriggeredAbilityContinuation,
         selectedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget>,
-        targetRequirements: List<TargetRequirement>,
-        totalDamage: Int,
-        checkForMore: CheckForMore
+        alignedRequirements: List<TargetRequirement>,
+        total: Int,
+        prompt: String,
+        minPerTarget: Int,
     ): ExecutionResult {
         val sourceName = continuation.sourceId.let { sourceId ->
             state.getEntity(sourceId)?.get<CardComponent>()?.name
@@ -271,75 +292,44 @@ class EffectAndTriggerContinuationResumer(
                 is com.wingedsheep.engine.state.components.stack.ChosenTarget.Spell -> target.spellEntityId
             }
         }
-        val decisionId = UUID.randomUUID().toString()
-        val decision = DistributeDecision(
+        val question = { decisionId: String -> DistributeDecision(
             id = decisionId,
             playerId = continuation.controllerId,
-            prompt = "Divide $totalDamage damage among ${selectedTargets.size} targets",
+            prompt = prompt,
             context = DecisionContext(
                 sourceId = continuation.sourceId,
                 sourceName = sourceName,
                 phase = DecisionPhase.CASTING
             ),
-            totalAmount = totalDamage,
+            totalAmount = total,
             targets = targetEntityIds,
-            minPerTarget = 1
-        )
+            minPerTarget = minPerTarget
+        ) }
 
         val distributionContinuation = TriggerDamageDistributionContinuation(
-            decisionId = decisionId,
             sourceId = continuation.sourceId,
             sourceName = continuation.sourceName,
+            sourceBattlefieldTimestamp = continuation.sourceBattlefieldTimestamp,
+            objectReferences = continuation.objectReferences,
             controllerId = continuation.controllerId,
             effect = continuation.effect,
             description = continuation.description,
             sourceEndpointAuthority = continuation.sourceEndpointAuthority,
             sourceObjectIncarnationStamp = continuation.sourceObjectIncarnationStamp,
             abilityIdentity = continuation.abilityIdentity,
-            triggerDamageAmount = continuation.triggerDamageAmount,
-            triggeringEntityId = continuation.triggeringEntityId,
-            triggeringEntityEntryTimestamp = continuation.triggeringEntityEntryTimestamp,
-            triggeringEntityName = continuation.triggeringEntityName,
-            triggeringEntityNameKnown = continuation.triggeringEntityNameKnown,
-            triggeringPlayerId = continuation.triggeringPlayerId,
-            defendingPlayerId = continuation.defendingPlayerId,
-            damageSourceEntityId = continuation.damageSourceEntityId,
-            damageRecipientEntityId = continuation.damageRecipientEntityId,
-            damageRecipientKind = continuation.damageRecipientKind,
-            damageRecipientKinds = continuation.effectiveDamageRecipientKinds,
-            damageSourceLastKnownSnapshot = continuation.damageSourceLastKnownSnapshot,
-            damageRecipientLastKnownSnapshot = continuation.damageRecipientLastKnownSnapshot,
-            triggerCounterCount = continuation.triggerCounterCount,
-            triggerTotalCounterCount = continuation.triggerTotalCounterCount,
-            triggerLastKnownCounters = continuation.triggerLastKnownCounters,
-            triggerLastKnownSubtypes = continuation.triggerLastKnownSubtypes,
-            triggerLastKnownCardTypes = continuation.triggerLastKnownCardTypes,
-            triggerLastKnownDamageDealtByPlayers = continuation.triggerLastKnownDamageDealtByPlayers,
-            triggerLastKnownBlockingOrBlockedByIds = continuation.triggerLastKnownBlockingOrBlockedByIds,
+            triggerContext = continuation.triggerContext,
             selectedTargets = selectedTargets,
-            targetRequirements = targetRequirements,
-            totalDamage = totalDamage,
-            interveningIf = continuation.interveningIf
+            targetRequirements = alignedRequirements,
+            totalDamage = total,
+            interveningIf = continuation.interveningIf,
+            isBackup = continuation.isBackup
         )
 
-        val newState = state
-            .withPendingDecision(decision)
-            .pushContinuation(distributionContinuation)
-
-        val events = listOf(
-            DecisionRequestedEvent(
-                decisionId = decisionId,
-                playerId = continuation.controllerId,
-                decisionType = "DISTRIBUTE",
-                prompt = decision.prompt
-            )
-        )
-
-        return ExecutionResult.paused(newState, decision, events)
+        return state.suspendForDecision(question, distributionContinuation, emptyList())
     }
 
     /**
-     * Resume after player distributes damage for a triggered ability's DividedDamageEffect.
+     * Resume after the player divides a triggered ability's damage or counters.
      * Put the ability on the stack with the distribution locked in.
      */
     private fun resumeTriggerDamageDistribution(
@@ -355,47 +345,66 @@ class EffectAndTriggerContinuationResumer(
         val abilityComponent = TriggeredAbilityOnStackComponent(
             sourceId = continuation.sourceId,
             sourceName = continuation.sourceName,
+            sourceBattlefieldTimestamp = continuation.sourceBattlefieldTimestamp,
+            objectReferences = continuation.objectReferences,
             controllerId = continuation.controllerId,
             effect = continuation.effect,
             description = continuation.description,
             sourceEndpointAuthority = continuation.sourceEndpointAuthority,
             sourceObjectIncarnationStamp = continuation.sourceObjectIncarnationStamp,
             abilityIdentity = continuation.abilityIdentity,
-            triggerDamageAmount = continuation.triggerDamageAmount,
-            triggeringEntityId = continuation.triggeringEntityId,
-            triggeringEntityEntryTimestamp = continuation.triggeringEntityEntryTimestamp,
-            triggeringEntityName = continuation.triggeringEntityName,
-            triggeringEntityNameKnown = continuation.triggeringEntityNameKnown,
-            triggeringPlayerId = continuation.triggeringPlayerId,
-            defendingPlayerId = continuation.defendingPlayerId,
-            damageSourceEntityId = continuation.damageSourceEntityId,
-            damageRecipientEntityId = continuation.damageRecipientEntityId,
-            damageRecipientKind = continuation.damageRecipientKind,
-            damageRecipientKinds = continuation.effectiveDamageRecipientKinds,
-            damageSourceLastKnownSnapshot = continuation.damageSourceLastKnownSnapshot,
-            damageRecipientLastKnownSnapshot = continuation.damageRecipientLastKnownSnapshot,
-            triggerCounterCount = continuation.triggerCounterCount,
-            triggerTotalCounterCount = continuation.triggerTotalCounterCount,
-            triggerLastKnownCounters = continuation.triggerLastKnownCounters,
-            triggerLastKnownSubtypes = continuation.triggerLastKnownSubtypes,
-            triggerLastKnownCardTypes = continuation.triggerLastKnownCardTypes,
-            triggerLastKnownDamageDealtByPlayers = continuation.triggerLastKnownDamageDealtByPlayers,
-            triggerLastKnownBlockingOrBlockedByIds = continuation.triggerLastKnownBlockingOrBlockedByIds,
-            lastKnownPower = continuation.lastKnownPower,
-            lastKnownToughness = continuation.lastKnownToughness,
+            triggerContext = continuation.triggerContext,
+            xValue = continuation.triggerContext?.xValue,
             damageDistribution = response.distribution,
-            interveningIf = continuation.interveningIf
+            interveningIf = continuation.interveningIf,
+            isBackup = continuation.isBackup
         )
 
         val stackResult = services.stackResolver.putTriggeredAbility(
             state, abilityComponent, continuation.selectedTargets, continuation.targetRequirements
         )
 
-        if (!stackResult.isSuccess) {
+        if (stackResult.outcome !is Outcome.Done) {
             return stackResult
         }
 
         return continueWithDiagnostics(stackResult, checkForMore)
+    }
+
+    /**
+     * Resume a trigger after its controller picked which opponent chooses its "… of an opponent's
+     * choice" target (Mausoleum Turnkey). Raised only with two or more opponents; with one, the
+     * processor pins the decider without asking.
+     *
+     * The answer is pinned onto the trigger and target selection is re-entered, so the target
+     * decision itself is built by the same `processTargetedTrigger` path a trigger with no chooser
+     * takes — the pin is the only difference. Cancelling drops the trigger rather than silently
+     * handing the choice back to the controller: nothing has been paid or moved, and the trigger
+     * has not yet reached the stack.
+     */
+    private fun resumeTriggerOpponentChooser(
+        state: GameState,
+        continuation: TriggerOpponentChooserContinuation,
+        response: DecisionResponse,
+        checkForMore: CheckForMore
+    ): ExecutionResult {
+        if (response is CancelDecisionResponse) {
+            return checkForMore(state, emptyList())
+        }
+        if (response !is OptionChosenResponse) {
+            return ExecutionResult.error(state, "Expected option response for trigger opponent chooser")
+        }
+        val deciderId = continuation.opponentIds.getOrNull(response.optionIndex)
+            ?: return ExecutionResult.error(state, "Invalid opponent choice for trigger target")
+
+        val result = services.triggerProcessor.processTargetedTrigger(
+            state,
+            continuation.trigger.copy(opponentTargetChooserId = deciderId),
+            continuation.targetRequirement
+        )
+
+        if (result.outcome is Outcome.Paused || result.outcome !is Outcome.Done) return result
+        return continueWithDiagnostics(result, checkForMore)
     }
 
     private fun resumeMayTrigger(
@@ -421,11 +430,11 @@ class EffectAndTriggerContinuationResumer(
 
         val result = services.triggerProcessor.processTargetedTrigger(state, unwrappedTrigger, continuation.targetRequirement)
 
-        if (result.isPaused) {
+        if (result.outcome is Outcome.Paused) {
             return result
         }
 
-        if (!result.isSuccess) {
+        if (result.outcome !is Outcome.Done) {
             return result
         }
 
@@ -452,10 +461,16 @@ class EffectAndTriggerContinuationResumer(
             listOf(selected) + continuation.remainingTriggers,
             preorderedTriggerCount = continuation.preorderedTriggerCount
         )
-        if (result.isPaused || !result.isSuccess) return result
+        if (result.outcome !is Outcome.Done) return result
         return continueWithDiagnostics(result, checkForMore)
     }
 
+    /**
+     * Resume the controller's CR 603.3b ordering of one same-controller trigger group. The answer
+     * names the decision's ordinal handles in the chosen order; the matching triggers become an
+     * already-ordered prefix ahead of the triggers that were still waiting behind the group, so
+     * no later pause (targets, may, batch) asks the same ordering question again.
+     */
     private fun resumeTriggerOrdering(
         state: GameState,
         continuation: TriggerOrderingContinuation,
@@ -482,7 +497,7 @@ class EffectAndTriggerContinuationResumer(
             orderedTriggers + continuation.remainingTriggers,
             preorderedTriggerCount = orderedTriggers.size
         )
-        return if (result.isPaused || !result.isSuccess) result
+        return if (result.outcome !is Outcome.Done) result
         else continueWithDiagnostics(result, checkForMore)
     }
 
@@ -523,7 +538,7 @@ class EffectAndTriggerContinuationResumer(
                 unwrapped,
                 preorderedTriggerCount = unwrapped.size
             )
-            if (result.isPaused || !result.isSuccess) return result
+            if (result.outcome is Outcome.Paused || result.outcome !is Outcome.Done) return result
             return continueWithDiagnostics(result, checkForMore)
         }
 
@@ -534,7 +549,6 @@ class EffectAndTriggerContinuationResumer(
         if (rest.isNotEmpty()) {
             workingState = workingState.pushContinuation(
                 PendingTriggersContinuation(
-                    decisionId = "batch-may-peel-${java.util.UUID.randomUUID()}",
                     remainingTriggers = rest,
                     preorderedTriggerCount = rest.size
                 )
@@ -553,7 +567,7 @@ class EffectAndTriggerContinuationResumer(
             listOf(unwrapped),
             preorderedTriggerCount = 1
         )
-        if (result.isPaused || !result.isSuccess) return result
+        if (result.outcome is Outcome.Paused || result.outcome !is Outcome.Done) return result
         return continueWithDiagnostics(result, checkForMore)
     }
 
@@ -592,7 +606,7 @@ class EffectAndTriggerContinuationResumer(
 
         val result = services.effectExecutorRegistry.execute(state, effectToExecute, context).toExecutionResult()
 
-        if (result.isPaused) {
+        if (result.outcome is Outcome.Paused) {
             return result
         }
 
@@ -644,7 +658,7 @@ class EffectAndTriggerContinuationResumer(
             .execute(state, effectToExecute, continuation.effectContext)
         val result = branchResult.toExecutionResult()
 
-        if (result.isPaused) {
+        if (result.outcome is Outcome.Paused) {
             return result
         }
 
@@ -662,15 +676,12 @@ class EffectAndTriggerContinuationResumer(
             continuation.effectContext.pipeline.chosenValues + branchResult.updatedChosenValues,
         )
 
-        // Preserve `triggersAlreadyProcessed` across the continuation drain: if the gated effect ran
-        // a nested cast that already stacked its cast-triggers (Vaan casting an opponent's card via
-        // MayEffect), SubmitDecisionHandler must not re-detect the same SpellCastEvent.
         return continueWithDiagnostics(
             result,
             checkForMore,
             state = stateWithCollections,
             events = result.events.toList(),
-        ).copy(triggersAlreadyProcessed = result.triggersAlreadyProcessed)
+        )
     }
 
     private fun resumeMayRevealCardFromHand(
@@ -692,7 +703,7 @@ class EffectAndTriggerContinuationResumer(
             val result = services.effectExecutorRegistry
                 .execute(state, otherwise, continuation.effectContext)
                 .toExecutionResult()
-            return if (result.isPaused) result
+            return if (result.outcome is Outcome.Paused) result
             else continueWithDiagnostics(result, checkForMore)
         }
 
@@ -717,8 +728,15 @@ class EffectAndTriggerContinuationResumer(
 
         val chosenId = response.selectedCards.firstOrNull()
         if (chosenId == null) {
-            // Player declined to behold — the "if you do" payoff doesn't run.
-            return checkForMore(state, emptyList())
+            // Player declined to behold — the "if you do" payoff doesn't run; the "if you don't"
+            // rider (Theorist's Sanctum entering tapped) does.
+            val otherwise = continuation.otherwise
+                ?: return checkForMore(state, emptyList())
+            val result = services.effectExecutorRegistry
+                .execute(state, otherwise, continuation.effectContext)
+                .toExecutionResult()
+            return if (result.outcome is Outcome.Paused) result
+            else continueWithDiagnostics(result, checkForMore)
         }
 
         // If the beheld object was a card in hand, reveal it publicly. Battlefield permanents
@@ -740,7 +758,7 @@ class EffectAndTriggerContinuationResumer(
         val result = services.effectExecutorRegistry
             .execute(currentState, ifBeheld, continuation.effectContext)
             .toExecutionResult()
-        if (result.isPaused) return result
+        if (result.outcome is Outcome.Paused) return result
         return continueWithDiagnostics(result, checkForMore, events = events + result.events.toList())
     }
 

@@ -28,7 +28,6 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.Deck
-import com.wingedsheep.sdk.scripting.effects.MayPayManaEffect
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -54,7 +53,8 @@ class PendingPaymentReplayV6Test : ScenarioTestBase() {
         manaCost = "{0}"
         typeLine = "Sorcery"
         spell {
-            effect = MayPayManaEffect(
+            // Optional mana payment: yes/no, then manual mana-source selection.
+            effect = Effects.MayPay(
                 ManaCost.parse("{1}"),
                 Effects.GainLife(1),
             )
@@ -198,7 +198,8 @@ class PendingPaymentReplayV6Test : ScenarioTestBase() {
             val snapshot = session.replayRecordingSnapshot().shouldNotBeNull()
             snapshot.version shouldBe CompactReplay.CURRENT_VERSION
             val replay = replayFrom(session, snapshot)
-            replay.version shouldBe 6
+            // v7 (upstream sync 05: shuffled deck ids + team seats) keeps the v6 pending-payment carrier.
+            replay.version shouldBe 7
             val decoded = ReplayCodec.decode(ReplayCodec.encode(replay))
             decoded shouldBe replay
             decoded.actions.filterIsInstance<SubmitDecision>()

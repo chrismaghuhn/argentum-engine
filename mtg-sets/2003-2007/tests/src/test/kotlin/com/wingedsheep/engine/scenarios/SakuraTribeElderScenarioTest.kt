@@ -14,6 +14,7 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Sakura-Tribe Elder (CHK #239)
@@ -50,7 +51,7 @@ class SakuraTribeElderScenarioTest : FunSpec({
                 sourceId = elder,
                 abilityId = abilityId
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.findPermanent(player, "Sakura-Tribe Elder") shouldBe null
         driver.state.getGraveyard(player) shouldContain elder
 
@@ -59,7 +60,7 @@ class SakuraTribeElderScenarioTest : FunSpec({
         val decision = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
         decision.options shouldContain matching
         decision.options shouldNotContain invalid
-        driver.submitCardSelection(player, listOf(matching)).isSuccess shouldBe true
+        driver.submitCardSelection(player, listOf(matching)).outcome shouldBe Outcome.Done
 
         val swamp = driver.findPermanent(player, "Swamp")
         swamp shouldNotBe null
@@ -86,7 +87,7 @@ class SakuraTribeElderScenarioTest : FunSpec({
                 sourceId = elder,
                 abilityId = abilityId
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.findPermanent(player, "Sakura-Tribe Elder") shouldBe null
         driver.bothPass()
 

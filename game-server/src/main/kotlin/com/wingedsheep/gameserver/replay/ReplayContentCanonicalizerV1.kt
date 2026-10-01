@@ -7,8 +7,8 @@ import com.wingedsheep.gym.contract.ReplayContentIdentityV1
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.CardEntry
 import com.wingedsheep.sdk.model.Deck
-import com.wingedsheep.sdk.serialization.CardExporter
-import com.wingedsheep.sdk.serialization.CardLoader
+import com.wingedsheep.sdk.tooling.CardExporter
+import com.wingedsheep.sdk.tooling.CardLoader
 import com.wingedsheep.sdk.serialization.CardSerialization
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -118,6 +118,7 @@ object ReplayContentCanonicalizerV1 {
         "TwoHeadedGiant" to setOf("startingLife", "startingHandSize", "poisonThreshold"),
         "TeamVsTeam" to setOf(
             "startingLife", "commanderDamageThreshold", "deckSize", "alwaysDivertToCommand",
+            "startingHandSize",
         ),
         "PassPriority" to setOf("playerId"),
         "CastSpell" to setOf(
@@ -128,6 +129,9 @@ object ReplayContentCanonicalizerV1 {
             "graveyardCastRider", "conspiredCreatures", "casualtyCreature", "faceIndex",
             "useWithoutPayingManaCost", "alternativeCostType", "preResolvedZoneChangeIds",
             "preResolvedSneakAttackDefenderId", "preResolvedWebSlingReturnedManaValue",
+            // Upstream-sync-05 audit: announced cost multiplicity and per-slot choices are the
+            // player's cast inputs, like declaredCostSlot.
+            "declaredCostTimes", "additionalCostChoices", "additionalManaForCounters",
         ),
         "ActivateAbility" to setOf(
             "playerId", "sourceId", "abilityId", "targets", "costPayment", "manaColorChoice", "xValue",
@@ -139,7 +143,8 @@ object ReplayContentCanonicalizerV1 {
         "ForetellCard" to setOf("playerId", "cardId", "paymentStrategy"),
         "SuspendCardFromHand" to setOf("playerId", "cardId", "paymentStrategy"),
         "TypecycleCard" to setOf("playerId", "cardId", "paymentStrategy"),
-        "PlayLand" to setOf("playerId", "cardId"),
+        // asBackFace (upstream-sync-05 audit): which face of a modal double-faced land is played.
+        "PlayLand" to setOf("playerId", "cardId", "asBackFace"),
         "DeclareAttackers" to setOf("playerId", "attackers", "bands"),
         "DeclareBlockers" to setOf("playerId", "blockers"),
         "OrderBlockers" to setOf("playerId", "attackerId", "orderedBlockers"),
@@ -155,7 +160,7 @@ object ReplayContentCanonicalizerV1 {
         "UnlockRoomDoor" to setOf("playerId", "roomId", "faceId", "paymentStrategy"),
         "AutoPay" to emptySet(),
         "FromPool" to emptySet(),
-        "Explicit" to setOf("manaAbilitiesToActivate", "paymentPlan"),
+        "Explicit" to setOf("manaAbilitiesToActivate", "paymentPlan", "phyrexianLifePayments"),
         "ExplicitV2" to setOf("manaAbilitiesToActivate", "paymentPlan"),
         "ExplicitV3" to setOf("paymentPlan"),
         "TargetsResponse" to setOf("decisionId", "selectedTargets"),
@@ -163,7 +168,7 @@ object ReplayContentCanonicalizerV1 {
         "YesNoResponse" to setOf("decisionId", "choice"),
         "BatchYesNoResponse" to setOf("decisionId", "choice", "applyToAll"),
         "ModesChosenResponse" to setOf("decisionId", "selectedModes"),
-        "ColorChosenResponse" to setOf("decisionId", "color"),
+        "ColorChosenResponse" to setOf("decisionId", "color", "colors"),
         "NumberChosenResponse" to setOf("decisionId", "number"),
         "DistributionResponse" to setOf("decisionId", "distribution"),
         "OrderedResponse" to setOf("decisionId", "orderedObjects"),
@@ -183,7 +188,7 @@ object ReplayContentCanonicalizerV1 {
             "name", "manaCost", "typeLine", "oracleText", "creatureStats", "keywords", "flags",
             "keywordAbilities", "script", "equipCost", "oracleId", "setCode", "backFace", "metadata",
             "startingLoyalty", "startingDefense", "legalFormats", "colorIdentityOverride", "colorIndicator",
-            "layout", "cardFaces", "hasNoManaCost", "meldResult",
+            "layout", "cardFaces", "hasNoManaCost", "meldResult", "flipSide",
         ),
         "CardFace" to setOf("name", "manaCost", "typeLine", "oracleText", "keywords", "script", "imageUri"),
         "ScryfallMetadata" to setOf(

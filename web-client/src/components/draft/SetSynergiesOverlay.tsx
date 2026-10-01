@@ -198,6 +198,195 @@ const SET_SYNERGIES: Record<string, SetSynergies> = {
       },
     ],
   },
+  MRD: {
+    setCode: 'MRD',
+    setName: 'Mirrodin',
+    archetypes: [
+      {
+        name: 'Affinity',
+        colors: ['U'],
+        keyCard: 'Somber Hoverguard',
+        description: 'Flood the board with cheap artifacts, then cast Frogmite, Myr Enforcer and Somber Hoverguard for a fraction of their printed cost. The format\'s defining deck — count artifacts, not lands.',
+      },
+      {
+        name: 'Equipment Aggro',
+        colors: ['W'],
+        creatureTypes: ['Cat'],
+        keyCard: 'Bonesplitter',
+        description: 'Cheap Leonin bodies plus Bonesplitter and Leonin Scimitar. Equipment survives removal and moves on to the next creature, so trades never cost you the beatdown.',
+      },
+      {
+        name: 'Skyhunter Skies',
+        colors: ['W', 'U'],
+        creatureTypes: ['Cat', 'Drone'],
+        keyCard: 'Leonin Skyhunter',
+        description: 'Evasive fliers wearing Equipment. Nothing on the ground matters once a Leonin Skyhunter is carrying a Bonesplitter and blue is holding the board back.',
+      },
+      {
+        name: 'Nim Sacrifice',
+        colors: ['B', 'R'],
+        creatureTypes: ['Zombie'],
+        keyCard: 'Disciple of the Vault',
+        description: 'Nim creatures grow with every artifact you control, and Disciple of the Vault turns each one you sacrifice into damage. Your own artifacts dying is the payoff, not the cost.',
+      },
+      {
+        name: 'Artifact Demolition',
+        colors: ['R', 'G'],
+        creatureTypes: ['Elf', 'Beast'],
+        keyCard: 'Electrostatic Bolt',
+        description: 'Shatter effects and Tel-Jilad hate punish a format built out of artifacts, while red removal clears the way for green\'s oversized bodies.',
+      },
+      {
+        name: 'Myr Ramp',
+        colors: ['G'],
+        creatureTypes: ['Myr'],
+        keyCard: 'Copper Myr',
+        description: 'Myr and Talismans accelerate you past the aggro decks and fix a splash, then dump the set\'s biggest artifacts a turn or two early.',
+      },
+    ],
+  },
+  CHK: {
+    setCode: 'CHK',
+    setName: 'Champions of Kamigawa',
+    archetypes: [
+      {
+        name: 'Bushido Samurai',
+        colors: ['R', 'W'],
+        creatureTypes: ['Samurai'],
+        keyCard: 'Takeno, Samurai General',
+        description: "Bushido Samurai and Kitsune clerics win combat on the attack, growing whenever they block or become blocked. Cheap removal like Yamabushi's Flame clears the way while Konda's Hatamoto and Samurai of the Pale Curtain hold the line.",
+      },
+      {
+        name: 'Soratami Skies',
+        colors: ['W', 'U'],
+        creatureTypes: ['Moonfolk'],
+        keyCard: 'Soratami Mirror-Guard',
+        description: "Moonfolk fliers return your own lands to hand to fuel their abilities, Mothrider Samurai joins them in the air and Kami of Ancient Law holds the ground. Tap down blockers, hold up Hisoka's Defiance and peck the opponent out of the sky.",
+      },
+      {
+        name: 'Arcane Splice',
+        colors: ['U', 'R'],
+        keyCard: 'Glacial Ray',
+        description: 'Splice Glacial Ray and other Arcane spells onto each other so every instant does double duty, and let spiritcraft creatures trigger off each one. Burn and bounce keep the board clear until the card advantage buries the opponent.',
+      },
+      {
+        name: 'Rats and Ogres',
+        colors: ['B', 'R'],
+        creatureTypes: ['Rat', 'Ogre'],
+        keyCard: 'Nezumi Cutthroat',
+        description: 'Fearsome Nezumi Rats and Akki Goblins attack early and trade freely, while hard-hitting Ogres and removal like Rend Flesh and Glacial Ray clear the way. A fast, aggressive deck that punishes slow starts.',
+      },
+      {
+        name: 'Soulshift Spirits',
+        colors: ['B', 'G'],
+        creatureTypes: ['Spirit'],
+        keyCard: 'Thousand-legged Kami',
+        description: 'Every Spirit that dies with soulshift returns a smaller Spirit from your graveyard to hand, so trades always come out ahead. Grind the opponent down with removal and a steady stream of recycled Kami.',
+      },
+      {
+        name: 'Snake Ramp',
+        colors: ['G'],
+        creatureTypes: ['Snake'],
+        keyCard: 'Sakura-Tribe Elder',
+        description: "Orochi Snakes and Kodama's Reach accelerate into huge Spirits, Hondens and Myojin. Pair with any color for removal while the big green threats take over the late game.",
+      },
+    ],
+  },
+  RAV: {
+    setCode: 'RAV',
+    setName: 'Ravnica: City of Guilds',
+    archetypes: [
+      {
+        name: 'Boros Radiance',
+        colors: ['R', 'W'],
+        creatureTypes: ['Soldier'],
+        keyCard: 'Boros Swiftblade',
+        description: 'Cheap double strikers, fliers and haste punish every stumble, while radiance spells like Lightning Helix and Galvanic Arc double as removal and reach. Curve out and never stop attacking.',
+      },
+      {
+        name: 'Selesnya Convoke',
+        colors: ['G', 'W'],
+        creatureTypes: ['Saproling'],
+        keyCard: 'Selesnya Guildmage',
+        description: 'Go wide with Saprolings and cheap creatures, then tap the team to convoke big spells out a turn early. Rally the Righteous and Glare of Subdual turn a board of 1/1s into a lock or a lethal alpha strike.',
+      },
+      {
+        name: 'Golgari Dredge',
+        colors: ['B', 'G'],
+        creatureTypes: ['Saproling'],
+        keyCard: 'Golgari Grave-Troll',
+        description: 'Dredge replaces draws with the best cards in your graveyard, so every trade feeds the engine. Removal and Saproling fodder grind the game long enough for Grave-Troll-sized threats to take over.',
+      },
+      {
+        name: 'Dimir Transmute',
+        colors: ['U', 'B'],
+        keyCard: 'Dimir Guildmage',
+        description: 'Transmute tutors for the exact answer or bomb you need while removal and card draw keep the board clear. Evasive threats and milling offer a second way to win the long game.',
+      },
+    ],
+  },
+  LRW: {
+    setCode: 'LRW',
+    setName: 'Lorwyn',
+    archetypes: [
+      {
+        name: 'Kithkin',
+        colors: ['G', 'W'],
+        creatureTypes: ['Kithkin'],
+        keyCard: 'Wizened Cenn',
+        description: 'Swarm the board with small Kithkin and pump them with lords. Cheap bodies and team buffs overwhelm opponents before the bigger tribes get going.',
+      },
+      {
+        name: 'Merfolk',
+        colors: ['W', 'U'],
+        creatureTypes: ['Merfolk'],
+        keyCard: 'Sygg, River Guide',
+        description: 'Merfolk tap and untap each other, dodge removal with protection, and slip through with islandwalk. A tempo deck that wins with lords and evasive pressure.',
+      },
+      {
+        name: 'Faeries',
+        colors: ['U', 'B'],
+        creatureTypes: ['Faerie'],
+        keyCard: 'Scion of Oona',
+        description: "Flash in fliers at the end of the opponent's turn and ambush attackers. Scion of Oona pumps and protects the flock while the Faeries peck the opponent out of the sky.",
+      },
+      {
+        name: 'Elves',
+        colors: ['B', 'G'],
+        creatureTypes: ['Elf'],
+        keyCard: "Wren's Run Vanquisher",
+        description: 'Elves reward you for revealing and controlling more Elves, with deathtouch and discard backing up a midrange curve. Changelings count as Elves too.',
+      },
+      {
+        name: 'Goblins',
+        colors: ['B', 'R'],
+        creatureTypes: ['Goblin'],
+        keyCard: 'Wort, Boggart Auntie',
+        description: 'Boggarts attack early, trade freely, and come back from the graveyard. Boggart Shenanigans pings the opponent whenever one dies, so every chump block still deals damage.',
+      },
+      {
+        name: 'Giants',
+        colors: ['R', 'W'],
+        creatureTypes: ['Giant'],
+        keyCard: 'Brion Stoutarm',
+        description: "Survive the early turns, then drop Giants that dominate the ground. Crush Underfoot and Thundercloud Shaman hit harder with Giants on the table, and Brion Stoutarm flings them at the opponent's face.",
+      },
+      {
+        name: 'Elementals',
+        colors: ['U', 'R'],
+        creatureTypes: ['Elemental'],
+        keyCard: 'Mulldrifter',
+        description: 'Evoke Elementals for a cheap one-shot effect or hardcast them for card advantage on a body. Flamekin reach and Mulldrifter card flow power a flexible tempo-value deck.',
+      },
+      {
+        name: 'Treefolk',
+        colors: ['G'],
+        creatureTypes: ['Treefolk'],
+        keyCard: 'Timber Protector',
+        description: 'Towering Treefolk with huge toughness wall up the ground while lords and Treefolk payoffs turn them into threats. Pair with any color for removal or tricks.',
+      },
+    ],
+  },
   DOM: {
     setCode: 'DOM',
     setName: 'Dominaria',
@@ -482,6 +671,83 @@ const SET_SYNERGIES: Record<string, SetSynergies> = {
       },
     ],
   },
+  MKM: {
+    setCode: 'MKM',
+    setName: 'Murders at Karlov Manor',
+    archetypes: [
+      {
+        name: 'Detectives',
+        colors: ['W', 'U'],
+        creatureTypes: ['Detective'],
+        keyCard: 'Private Eye',
+        description:
+          "Field a squad of Detectives, turn Clues into cards, and ride the format's best evasive bodies. A tempo-value deck that never runs out of gas.",
+      },
+      {
+        name: 'Surveil',
+        colors: ['U', 'B'],
+        keyCard: 'Curious Cadaver',
+        description:
+          'Surveil to fix your draws and stock your graveyard, then take over with cheap interaction and recursive threats. A grindy control deck that wins the long game.',
+      },
+      {
+        name: 'Sacrifice',
+        colors: ['B', 'R'],
+        keyCard: 'Rune-Brand Juggler',
+        description:
+          'Suspect your own creatures to push damage, then sacrifice them for value before the drawback bites. An aggressive deck that turns every body into reach.',
+      },
+      {
+        name: 'Disguise',
+        colors: ['R', 'G'],
+        keyCard: 'Tin Street Gossip',
+        description:
+          'Deploy face-down 2/2s early and flip them at the perfect moment for a blowout. A midrange deck that turns every attack into a guessing game.',
+      },
+      {
+        name: 'Face-Down Counters',
+        colors: ['G', 'W'],
+        keyCard: 'Sumala Sentry',
+        description:
+          'Cloak and disguise creatures, then cash in the turn-up triggers for +1/+1 counters. A go-tall midrange deck that snowballs off every flip.',
+      },
+      {
+        name: 'Small Creatures',
+        colors: ['W', 'B'],
+        keyCard: 'Wispdrinker Vampire',
+        description:
+          'Flood the board with cheap creatures with power 2 or less and drain the opponent with the payoffs that count them. A wide, incremental aggro deck.',
+      },
+      {
+        name: 'Artifacts',
+        colors: ['U', 'R'],
+        keyCard: 'Gleaming Geardrake',
+        description:
+          'Investigate for Clues, then sacrifice artifacts to trigger payoffs and refuel. An artifact-fueled tempo deck that converts leftovers into damage.',
+      },
+      {
+        name: 'Graveyard',
+        colors: ['B', 'G'],
+        keyCard: 'Insidious Roots',
+        description:
+          'Fill your graveyard and spend it — collect evidence, recur creature cards, and out-attrition the table. A resilient midrange deck with a deep back end.',
+      },
+      {
+        name: 'Go Wide Aggro',
+        colors: ['R', 'W'],
+        keyCard: 'Meddling Youths',
+        description:
+          "Attack with three or more creatures every turn to switch on the format's go-wide payoffs. The fastest deck in the format, backed by burn.",
+      },
+      {
+        name: 'Collect Evidence',
+        colors: ['G', 'U'],
+        keyCard: 'Evidence Examiner',
+        description:
+          'Bank cards in your graveyard, collect evidence to unlock discounted spells, and grow a threat with +1/+1 counters. A ramp-value deck that plays the biggest spells.',
+      },
+    ],
+  },
   OTJ: {
     setCode: 'OTJ',
     setName: 'Outlaws of Thunder Junction',
@@ -763,6 +1029,72 @@ const SET_SYNERGIES: Record<string, SetSynergies> = {
         colors: ['G', 'U'],
         keyCard: 'Quandrix, the Proof',
         description: 'Ramp into expensive instants and sorceries that cascade for free value, snowballing card advantage with Increment counters. A go-big spells-matter ramp deck.',
+      },
+    ],
+  },
+  FRA: {
+    setCode: 'FRA',
+    setName: 'Reality Fracture',
+    archetypes: [
+      {
+        name: 'Fatehold',
+        colors: ['W', 'U'],
+        keyCard: 'Denzilore Fatehold',
+        description: 'Scry and surveil every turn, turning each look at the library into +1/+1 counters, pump and loyalty for your Jace token. A card-selection tempo deck that grows its fliers while it filters its draws.',
+      },
+      {
+        name: 'Konstrari',
+        colors: ['R', 'G'],
+        keyCard: 'Aerid Konstrari',
+        description: 'Make Heartwood tokens to ramp and fix, then cash that mana in for trampling threats and big modal creatures. An artifact-ramp midrange deck that goes over the top.',
+      },
+      {
+        name: 'Stingerquill',
+        colors: ['B', 'R'],
+        keyCard: 'Ingris Stingerquill',
+        description: 'Flood the board with Cadet tokens and hasty attackers, pinging the opponent with every attack and every noncombat burn spell. A go-wide aggro deck that closes with reach.',
+      },
+      {
+        name: 'Theorix',
+        colors: ['U', 'B'],
+        keyCard: 'Uldaros Theorix',
+        description: 'Mill your own library to stock the graveyard, then recast spells with flashback and recursion as threshold payoffs come online. A graveyard-value control deck that out-grinds the opponent.',
+      },
+      {
+        name: 'Vigorbloom',
+        colors: ['G', 'W'],
+        keyCard: 'Kwia Vigorbloom',
+        description: 'Gain life every turn and spread +1/+1 counters across a sturdy board, drawing cards and turning lifegain into value. A counters-and-lifegain midrange deck that outlasts aggression.',
+      },
+      {
+        name: 'Dedicated',
+        colors: ['R', 'W'],
+        keyCard: 'Mabel, Valley Hero',
+        description: 'Curve out with small creatures that pile +1/+1 counters onto whatever just entered, then suit up with Equipment. A counters-matter aggro deck that snowballs early board presence.',
+      },
+      {
+        name: 'Meticulous',
+        colors: ['W', 'B'],
+        keyCard: 'Edgar, Ancient Bloodlord',
+        description: 'Sacrifice creatures and planeswalkers for value, drain life whenever your permanents die, and answer threats with hard removal. An aristocrats midrange deck that trades up.',
+      },
+      {
+        name: 'Innovative',
+        colors: ['U', 'R'],
+        keyCard: 'Saheeli, Jewel of Avishkar',
+        description: 'Cast noncreature spells to make Thopter tokens and trigger prowess, tempoing the opponent with bounce and burn. A spells-matter artifact tempo deck.',
+      },
+      {
+        name: 'Formidable',
+        colors: ['B', 'G'],
+        keyCard: 'Primal Witchstalker',
+        description: 'Mill to fill the graveyard with lands and creatures, then return them to the battlefield while -1/-1 counters and deathtouch handle blockers. A graveyard ramp midrange deck.',
+      },
+      {
+        name: 'Transformative',
+        colors: ['G', 'U'],
+        keyCard: 'Kiora of Salt and Sand',
+        description: 'Ramp with landfall and lean on planeswalkers, empowering Jace and using loyalty abilities to power unblockable attackers. A planeswalker-matters ramp deck.',
       },
     ],
   },

@@ -1,16 +1,22 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.AssignDamageDecision
+import com.wingedsheep.engine.core.DamageAssignmentContinuation
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.GameEndReason
+import com.wingedsheep.engine.core.MayAbilityContinuation
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
+import com.wingedsheep.engine.core.suspendForDecision
+import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.LossReason
@@ -104,6 +110,38 @@ class EpisodeClosureContractTest : FunSpec({
         context = DecisionContext(),
     )
 
+    // A pending decision exists only as an installed Suspension (question + answer continuation);
+    // its id is allocated from the state's routing-id counter, so callers read the installed
+    // decision back from the state instead of reusing the template's id. The answers are each
+    // decision's natural resumer and are never consumed by these tests.
+    fun GameState.suspendedOnUnsupportedDecision(playerId: EntityId): GameState =
+        suspendForDecision(
+            question = { id -> unsupportedDecision(playerId).copy(id = id) },
+            answer = DamageAssignmentContinuation(
+                attackerId = EntityId("attacker"),
+                defendingPlayerId = turnOrder.first { it != playerId },
+            ),
+        ).state
+
+    fun GameState.suspendedOnYesNoDecision(playerId: EntityId): GameState =
+        suspendForDecision(
+            question = { id -> yesNoDecision(playerId, id) },
+            answer = MayAbilityContinuation(
+                playerId = playerId,
+                sourceName = null,
+                effectIfYes = null,
+                effectIfNo = null,
+                effectContext = EffectContext(sourceId = null, controllerId = playerId),
+            ),
+        ).state
+
+    /** Removes the installed question, i.e. the old `copy(pendingDecision = null)`. */
+    fun GameState.withoutPendingDecision(): GameState {
+        val (top, rest) = popContinuation()
+        check(top is Suspension) { "Expected the installed Suspension on top of the continuation stack" }
+        return rest
+    }
+
     test("typed closure is versioned, serializable, and does not carry exception text") {
         EpisodeClosureV1.SCHEMA_VERSION shouldBe 1
         val closure = EpisodeClosureV1.Failed(
@@ -195,9 +233,7 @@ class EpisodeClosureContractTest : FunSpec({
         val environment = GameEnvironment.create(registry())
         environment.reset(config())
         environment.restore(
-            state = environment.state.copy(
-                pendingDecision = unsupportedDecision(environment.playerIds.first()),
-            ),
+            state = environment.state.suspendedOnUnsupportedDecision(environment.playerIds.first()),
             playerIds = environment.playerIds,
             stepCount = environment.stepCount,
         )
@@ -250,9 +286,10 @@ class EpisodeClosureContractTest : FunSpec({
     test("structured decision submitted by the wrong actor is a public-choice rejection") {
         val environment = GameEnvironment.create(registry())
         environment.reset(config())
-        val pending = yesNoDecision(environment.playerIds.first())
+        val paused = environment.state.suspendedOnYesNoDecision(environment.playerIds.first())
+        val pending = checkNotNull(paused.pendingDecision)
         environment.restore(
-            state = environment.state.copy(pendingDecision = pending),
+            state = paused,
             playerIds = environment.playerIds,
             stepCount = environment.stepCount,
         )
@@ -278,9 +315,10 @@ class EpisodeClosureContractTest : FunSpec({
     test("structured decision with a stale decision ID is a public-choice rejection") {
         val environment = GameEnvironment.create(registry())
         environment.reset(config())
-        val pending = yesNoDecision(environment.playerIds.first())
+        val paused = environment.state.suspendedOnYesNoDecision(environment.playerIds.first())
+        val pending = checkNotNull(paused.pendingDecision)
         environment.restore(
-            state = environment.state.copy(pendingDecision = pending),
+            state = paused,
             playerIds = environment.playerIds,
             stepCount = environment.stepCount,
         )
@@ -306,9 +344,9 @@ class EpisodeClosureContractTest : FunSpec({
     test("stale resolved decision with no pending decision is a public-choice rejection") {
         val environment = GameEnvironment.create(registry())
         environment.reset(config())
-        val pending = yesNoDecision(environment.playerIds.first())
+        val paused = environment.state.suspendedOnYesNoDecision(environment.playerIds.first())
         environment.restore(
-            state = environment.state.copy(pendingDecision = pending),
+            state = paused,
             playerIds = environment.playerIds,
             stepCount = environment.stepCount,
         )
@@ -320,7 +358,7 @@ class EpisodeClosureContractTest : FunSpec({
         val actionId = (gym.observe().observation as TrainingObservation).legalActions.first().actionId
 
         environment.restore(
-            state = environment.state.copy(pendingDecision = null),
+            state = environment.state.withoutPendingDecision(),
             playerIds = environment.playerIds,
             stepCount = environment.stepCount,
         )

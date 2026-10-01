@@ -3,7 +3,9 @@ package com.wingedsheep.mtg.sets.definitions.c17.cards
 import com.wingedsheep.sdk.model.Printing
 import com.wingedsheep.sdk.model.Rarity
 
-/** Swords to Plowshares reprint in Commander 2017. */
+/**
+ * Swords to Plowshares reprint in C17. Canonical CardDefinition lives in Alpha (lea).
+ */
 val SwordsToPlowsharesReprint = Printing(
     oracleId = "b1544f21-7e98-461b-aed5-e748b0168c52",
     name = "Swords to Plowshares",

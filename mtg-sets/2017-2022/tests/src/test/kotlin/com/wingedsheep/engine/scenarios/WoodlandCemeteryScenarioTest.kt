@@ -10,6 +10,7 @@ import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Woodland Cemetery (ISD #249)
@@ -34,7 +35,7 @@ class WoodlandCemeteryScenarioTest : FunSpec({
         val player = driver.activePlayer!!
         val cemetery = driver.putCardInHand(player, "Woodland Cemetery")
 
-        driver.playLand(player, cemetery).isSuccess shouldBe true
+        driver.playLand(player, cemetery).outcome shouldBe Outcome.Done
         val battlefieldCemetery = driver.findPermanent(player, "Woodland Cemetery")
         battlefieldCemetery shouldNotBe null
         driver.isTapped(battlefieldCemetery!!) shouldBe true
@@ -46,7 +47,7 @@ class WoodlandCemeteryScenarioTest : FunSpec({
         driver.putLandOnBattlefield(player, "Forest")
         val cemetery = driver.putCardInHand(player, "Woodland Cemetery")
 
-        driver.playLand(player, cemetery).isSuccess shouldBe true
+        driver.playLand(player, cemetery).outcome shouldBe Outcome.Done
         val battlefieldCemetery = driver.findPermanent(player, "Woodland Cemetery")
         battlefieldCemetery shouldNotBe null
         driver.isTapped(battlefieldCemetery!!) shouldBe false
@@ -57,11 +58,11 @@ class WoodlandCemeteryScenarioTest : FunSpec({
         val player = driver.activePlayer!!
         val cemetery = driver.putPermanentOnBattlefield(player, "Woodland Cemetery")
 
-        driver.submit(ActivateAbility(player, cemetery, blackAbilityId)).isSuccess shouldBe true
+        driver.submit(ActivateAbility(player, cemetery, blackAbilityId)).outcome shouldBe Outcome.Done
         driver.state.getEntity(player)?.get<ManaPoolComponent>()?.black shouldBe 1
 
         driver.untapPermanent(cemetery)
-        driver.submit(ActivateAbility(player, cemetery, greenAbilityId)).isSuccess shouldBe true
+        driver.submit(ActivateAbility(player, cemetery, greenAbilityId)).outcome shouldBe Outcome.Done
         driver.state.getEntity(player)?.get<ManaPoolComponent>()?.green shouldBe 1
     }
 })
