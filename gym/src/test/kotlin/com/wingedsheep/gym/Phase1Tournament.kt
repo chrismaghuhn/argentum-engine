@@ -179,6 +179,10 @@ internal object Phase1Tournament {
             if (sample) command += "--sample"
             val builder = ProcessBuilder(command).directory(mlRoot.toFile()).redirectError(ProcessBuilder.Redirect.INHERIT)
             builder.environment()["PYTHONPATH"] = mlRoot.resolve("src").toString()
+            // One thread and no spin-waiting per worker: on a 64-core ARM host, 56 idle workers with
+            // spinning OpenMP pools took ~90% of the CPU and made every game 5x slower.
+            for (name in listOf("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")) builder.environment()[name] = "1"
+            builder.environment()["OMP_WAIT_POLICY"] = "PASSIVE"
             Endpoint(builder.start())
         }
         private val free = java.util.concurrent.LinkedBlockingQueue(endpoints)
