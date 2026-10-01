@@ -9,6 +9,7 @@ import com.wingedsheep.ai.engine.budget.DecisionBudget
 import com.wingedsheep.ai.engine.budget.SearchAllowances
 import com.wingedsheep.ai.engine.knowledge.IntentCatalog
 import com.wingedsheep.ai.engine.knowledge.IntentTag
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.GameAction
@@ -20,6 +21,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.GameRng
+import com.wingedsheep.sdk.scripting.AbilityId
 import kotlin.math.exp
 
 /**
@@ -46,6 +48,7 @@ import kotlin.math.exp
  * 3. Land drop → always, if legal. There is no board on which skipping a land drop is the play, and
  *    making it a softmax entry would only add noise.
  * 4. Otherwise → softmax over a zero-simulation priority score, with passing as one of the options.
+ *    An activated ability this playout already used this turn is not an option again — see [decide].
  * 5. Targets → [TargetSelection]'s heuristic rank only.
  */
 class PlayoutPolicy(
@@ -67,14 +70,21 @@ class PlayoutPolicy(
     /**
      * The action [playerId] takes at this priority window, and the advanced generator.
      *
-     * @param legalActions the enumerated actions, or null when the caller has not enumerated yet —
-     *   which is the point: [decide] returns `PassPriority` without ever asking for them when the
-     *   state alone settles the window.
+     * @param enumerate the enumerated actions, asked for lazily — which is the point: [decide]
+     *   returns `PassPriority` without ever enumerating when the state alone settles the window.
+     * @param activatedThisTurn the activated abilities (source, ability) this playout has already
+     *   used this turn. They are not offered again. Passing competes with every candidate at once,
+     *   so a supply of free, repeatable activations swamps it: with Puresteel Paladin's equip {0}
+     *   and Leonin Shikari's instant-speed equip, each "both players pass" resolved one equip and the
+     *   next window put several more on the stack, so the step never ended and every playout burned
+     *   its whole action cap in one priority window. Once per turn is the sketch a two-turn playout
+     *   needs; the Strategist's own decision at the root is not limited by it.
      */
     fun decide(
         state: GameState,
         playerId: EntityId,
         rng: GameRng,
+        activatedThisTurn: Set<Pair<EntityId, AbilityId>> = emptySet(),
         enumerate: () -> List<LegalAction>,
     ): Pair<GameAction, GameRng> {
         if (MeaningfulActionFilter.canAutoPassWithoutEnumerating(state, playerId)) {
@@ -97,6 +107,10 @@ class PlayoutPolicy(
 
         val candidates = MeaningfulActionFilter.filterMeaningful(legalActions)
             .filter { it.affordable && !it.isManaAbility }
+            .filter { candidate ->
+                val activation = candidate.action as? ActivateAbility
+                activation == null || (activation.sourceId to activation.abilityId) !in activatedThisTurn
+            }
         if (candidates.isEmpty()) return PassPriority(playerId) to rng
 
         // Lands are free and never wrong.

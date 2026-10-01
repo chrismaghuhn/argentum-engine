@@ -2,6 +2,7 @@ package com.wingedsheep.ai.engine.rollout
 
 import com.wingedsheep.ai.engine.evaluation.BoardEvaluator
 import com.wingedsheep.engine.core.ActionProcessor
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.SubmitDecision
@@ -11,6 +12,7 @@ import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.GameRng
+import com.wingedsheep.sdk.scripting.AbilityId
 import kotlin.math.abs
 
 /**
@@ -26,6 +28,8 @@ fun interface Playouts {
      * @param baseline the raw evaluator score of the *decision's* root position. A playout that
      *   ends on a live board reports how far it moved from there, not where it landed — see
      *   [PlayoutEngine.run] for why the absolute score is unusable.
+     * @param deadlineNanos the decision's hard wall-clock stop (`DecisionBudget.deadlineNanos`);
+     *   `Long.MAX_VALUE` means none. Past it a playout stops where it is and scores that position.
      */
     fun run(
         start: GameState,
@@ -33,6 +37,7 @@ fun interface Playouts {
         seed: Long,
         horizonPlayerTurns: Int,
         baseline: Double,
+        deadlineNanos: Long,
     ): Double
 }
 
@@ -68,6 +73,10 @@ class PlayoutEngine(
     private val processor = ActionProcessor(services, computeUndo = false, trackKnownInformation = false)
     private val enumerator = services.legalActionEnumerator
 
+    /** [run] with no deadline: the playout ends only at its horizon, a decided game or the action cap. */
+    fun run(start: GameState, playerId: EntityId, seed: Long, horizonPlayerTurns: Int, baseline: Double): Double =
+        run(start, playerId, seed, horizonPlayerTurns, baseline, deadlineNanos = Long.MAX_VALUE)
+
     /**
      * Play [start] forward and return the win probability it reached, from [playerId]'s side.
      *
@@ -81,6 +90,11 @@ class PlayoutEngine(
      * @param baseline the raw score of the decision's root, subtracted before squashing. See
      *   [leafValue] — this is the difference between a working rollout evaluator and one that
      *   reports "certain loss" for every candidate.
+     * @param deadlineNanos the decision's hard stop, checked before every action. Like
+     *   `DecisionBudget.expired()` it is a safety stop a healthy playout never reaches, so it costs
+     *   nothing in reproducibility; what it buys is that [RolloutCandidateEvaluator]'s deadline
+     *   check between playouts cannot be starved by one playout of a board where every action is
+     *   slow. The truncated line is scored as a horizon leaf, the anytime contract's degraded move.
      */
     override fun run(
         start: GameState,
@@ -88,7 +102,21 @@ class PlayoutEngine(
         seed: Long,
         horizonPlayerTurns: Int,
         baseline: Double,
-    ): Double {
+        deadlineNanos: Long,
+    ): Double = playOut(start, playerId, seed, horizonPlayerTurns, baseline, deadlineNanos).value
+
+    /** Where a playout ended: its final position, the engine actions it took, and its value. */
+    internal class Playout(val state: GameState, val actions: Int, val value: Double)
+
+    /** [run], keeping the final position and the action count for tests that need to see them. */
+    internal fun playOut(
+        start: GameState,
+        playerId: EntityId,
+        seed: Long,
+        horizonPlayerTurns: Int,
+        baseline: Double,
+        deadlineNanos: Long = Long.MAX_VALUE,
+    ): Playout {
         // The engine's randomness and the policy's are separate streams off the same seed, so that
         // adding or removing a policy draw cannot perturb a shuffle and vice versa.
         val (policySeed, gameRng) = GameRng(seed).split()
@@ -96,9 +124,13 @@ class PlayoutEngine(
         var rng = policySeed
         val stopTurn = start.turnNumber + horizonPlayerTurns
         var actions = 0
+        // The activated abilities the policy has used this turn; see PlayoutPolicy.decide.
+        val activatedThisTurn = mutableSetOf<Pair<EntityId, AbilityId>>()
+        var activationTurn = start.turnNumber
 
         while (actions < settings.maxActionsPerPlayout) {
-            WinProbability.terminalValue(state, playerId)?.let { return it }
+            WinProbability.terminalValue(state, playerId)?.let { return Playout(state, actions, it) }
+            if (deadlineNanos != Long.MAX_VALUE && System.nanoTime() >= deadlineNanos) break
 
             // `turnNumber` first reaches `stopTurn` at that turn's untap step, so stopping here is
             // exactly "the end of the previous turn" — the crack-back has happened and been
@@ -107,7 +139,7 @@ class PlayoutEngine(
 
             settings.earlyCutoffMargin?.let { margin ->
                 val p = leafValue(state, playerId, baseline)
-                if (abs(p - WinProbability.DRAW) > margin) return p
+                if (abs(p - WinProbability.DRAW) > margin) return Playout(state, actions, p)
             }
 
             val decision = state.pendingDecision
@@ -121,7 +153,11 @@ class PlayoutEngine(
             }
 
             val priorityPlayer = state.priorityPlayerId ?: break
-            val (action, nextRng) = policy.decide(state, priorityPlayer, rng) {
+            if (state.turnNumber != activationTurn) {
+                activationTurn = state.turnNumber
+                activatedThisTurn.clear()
+            }
+            val (action, nextRng) = policy.decide(state, priorityPlayer, rng, activatedThisTurn) {
                 enumerator.enumerate(state, priorityPlayer, EnumerationMode.ACTIONS_ONLY)
             }
             rng = nextRng
@@ -133,6 +169,7 @@ class PlayoutEngine(
                 val fallback = processor.process(state, PassPriority(priorityPlayer)).result
                 if (fallback.error != null) break else fallback.state
             } else {
+                if (action is ActivateAbility) activatedThisTurn += action.sourceId to action.abilityId
                 result.state
             }
             // A no-op action would spin the loop to the cap without advancing the game.
@@ -141,7 +178,7 @@ class PlayoutEngine(
             actions++
         }
 
-        return WinProbability.terminalValue(state, playerId) ?: leafValue(state, playerId, baseline)
+        return Playout(state, actions, WinProbability.terminalValue(state, playerId) ?: leafValue(state, playerId, baseline))
     }
 
     /**

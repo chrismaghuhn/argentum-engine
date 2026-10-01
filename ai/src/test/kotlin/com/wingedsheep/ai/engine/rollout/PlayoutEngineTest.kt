@@ -14,6 +14,8 @@ import io.kotest.matchers.doubles.shouldBeGreaterThanOrEqual
 import io.kotest.matchers.doubles.shouldBeLessThan
 import io.kotest.matchers.doubles.shouldBeLessThanOrEqual
 import io.kotest.matchers.ints.shouldBeGreaterThan
+import io.kotest.assertions.withClue
+import io.kotest.matchers.ints.shouldBeLessThan
 import io.kotest.matchers.shouldBe
 
 /**
@@ -77,6 +79,58 @@ class PlayoutEngineTest : ScenarioTestBase() {
             // would mean the playout ran past its horizon to a decided game.
             value shouldBeGreaterThan WinProbability.LOSS
             value shouldBeLessThan WinProbability.WIN
+        }
+
+        test("a playout whose deadline has passed stops where it is and scores that position") {
+            val (state, playerId) = evenPosition()
+            val evaluator = EvaluationWeights.DEFAULT.toEvaluator()
+            val baseline = 1.5
+            val leaf = WinProbability.squash(
+                evaluator.evaluate(state, state.projectedState, playerId) - baseline,
+                WinProbability.SCALE,
+            )
+            // The safety stop a decision's wall-clock budget relies on: past the deadline a playout
+            // takes no further action, whatever its seed, and reports the static leaf of the position
+            // it was handed. Without it one playout of a pathological board ran for twenty minutes.
+            val expired = System.nanoTime() - 1
+            (1L..4L).forEach { seed ->
+                engineFor().run(state, playerId, seed, horizonPlayerTurns = 2, baseline = baseline, deadlineNanos = expired) shouldBe leaf
+            }
+            // And an open deadline still plays the game forward.
+            (1L..4L).map { engineFor().run(state, playerId, it, horizonPlayerTurns = 2, baseline = baseline) }
+                .any { it != leaf } shouldBe true
+        }
+
+        test("free instant-speed equips cannot freeze a playout inside one priority window") {
+            // Puresteel Paladin's metalcraft equip {0} plus Leonin Shikari's instant-speed equip: every
+            // Equipment can be moved for free in every window. Each "both players pass" resolves one
+            // stack object, and the softmax used to put several new equip activations on the stack in
+            // the window that followed, so the stack only grew, the step never ended and every playout
+            // spent its whole action cap there. Measured in a P1 PPO rollout game where it turned each
+            // engine decision into a wall-clock-budget timeout and the game into a twenty-minute stall.
+            val game = scenario()
+                .withPlayers()
+                .withRngSeed(20261001L)
+                .withLandsOnBattlefield(1, "Plains", 4)
+                .withCardOnBattlefield(1, "Puresteel Paladin")
+                .withCardOnBattlefield(1, "Leonin Shikari")
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardOnBattlefield(1, "Bonesplitter")
+                .withCardOnBattlefield(1, "Bonesplitter")
+                .withCardOnBattlefield(1, "Bonesplitter")
+                .withLandsOnBattlefield(2, "Mountain", 3)
+                .withCardOnBattlefield(2, "Grizzly Bears")
+                .withLibraries()
+                .build()
+            val engine = engineFor()
+            (1L..8L).forEach { seed ->
+                val playout = engine.playOut(game.state, game.player1Id, seed, horizonPlayerTurns = 2, baseline = 0.0)
+                withClue("seed $seed stopped at turn ${playout.state.turnNumber} ${playout.state.step} after ${playout.actions} actions, stack ${playout.state.stack.size}") {
+                    playout.actions shouldBeLessThan RolloutSettings.DEFAULT.maxActionsPerPlayout
+                    (playout.state.gameOver || playout.state.turnNumber >= game.state.turnNumber + 2) shouldBe true
+                }
+            }
         }
 
         test("the same seed replays the same playout") {

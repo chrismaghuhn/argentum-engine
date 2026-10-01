@@ -262,6 +262,15 @@ not. Countering shows a concrete gain inside the two-turn horizon; the cost of n
 later falls outside it. A longer horizon is not the fix. Knowing what a card is *for* is, which is
 `CardIntent`/`HoldPolicy` territory — `production`, which has both, keeps it.
 
+**5. Free repeatable activations swamp the pass.** Passing is one softmax option against *every*
+candidate at once, so its share shrinks as the candidate list grows. Puresteel Paladin's equip {0}
+plus Leonin Shikari's instant-speed equip made that a loop: each "both players pass" resolved one
+equip, the next window put several more on the stack, the step never ended and every playout spent
+its whole `maxActionsPerPlayout` in one priority window — measured as a stack of 36 equips in a
+PPO rollout game whose engine decisions all ran into their wall-clock budget. `PlayoutPolicy` now
+offers an activated ability (source and ability) at most once per turn inside a playout; the
+Strategist's own decision at the root is not limited by it.
+
 ### Reproducibility
 
 `ArenaHarnessTest` asserts identical outcomes at 8 threads and at 1, and `FrozenBaselineTest` hashes
@@ -270,6 +279,11 @@ counter**: every playout seed derives from the root state, and every allocation 
 `SearchAllowances.rolloutPlayouts`. `DecisionBudget.expired()` is consulted only as the hard safety
 stop it was designed to be. A rollout search that spent wall clock would produce a different move
 under load than idle, and every arena rerun would be a different game.
+
+The same deadline (`DecisionBudget.deadlineNanos`) is handed to every playout and checked before
+each of its actions, so a board on which every action is slow cannot hold one playout — and with it
+the whole decision — past the budget. A playout cut short is scored as a horizon leaf. A healthy
+playout never reaches it; a single slow engine `process()` call is still not interruptible.
 
 ---
 

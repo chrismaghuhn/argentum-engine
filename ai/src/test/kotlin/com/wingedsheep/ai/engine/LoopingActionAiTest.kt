@@ -282,6 +282,66 @@ class LoopingActionAiTest : FunSpec({
         }
     }
 
+    test("with instant-speed equip the per-turn cap holds across steps, where the per-step cap reopens") {
+        // Found in P1 PPO rollout games against the engine AI: Leonin Shikari lets equip abilities be
+        // activated any time an instant could be cast, so a per-step cap reopens in every step of
+        // both turns and each Equipment kept moving — about six times a turn in a replayed game,
+        // every move a full decision.
+        val freeEquipment = listOf("Test Free Equipment A", "Test Free Equipment B").map { name ->
+            com.wingedsheep.sdk.dsl.card(name) {
+                manaCost = "{0}"
+                typeLine = "Artifact — Equipment"
+                oracleText = "Equip {0}"
+                equipAbility("{0}")
+            }
+        }
+        val shikari = com.wingedsheep.mtg.sets.definitions.dst.cards.LeoninShikari
+        val registry = registry().apply { register(freeEquipment + shikari) }
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all + freeEquipment + shikari)
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true, startingPlayer = 0)
+        val ai = driver.player1
+        freeEquipment.forEach { driver.putPermanentOnBattlefield(ai, it.name) }
+        driver.putCreatureOnBattlefield(ai, "Leonin Shikari")
+        repeat(3) { driver.putCreatureOnBattlefield(ai, "Grizzly Bears") }
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val start = driver.state
+        val prefersEquipping = BoardEvaluator { state, _, _ ->
+            (state.getEntity(ai)?.get<EquipActivationsThisTurnComponent>()?.count ?: 0).toDouble()
+        }
+
+        /** Every Equipment move the AI makes from its precombat main phase through beginning of combat. */
+        fun movesThroughBeginningOfCombat(perTurn: Boolean): Map<EntityId, Int> {
+            val strategist = Strategist(
+                GameSimulator(registry), prefersEquipping,
+                budgetPolicy = LegacyBudgetPolicy, attachmentMovesPerTurn = perTurn,
+            )
+            val simulator = GameSimulator(registry)
+            var state = start
+            val moved = mutableListOf<EntityId>()
+            repeat(60) {
+                if (state.turnNumber != start.turnNumber || state.step !in setOf(Step.PRECOMBAT_MAIN, Step.BEGIN_COMBAT)) {
+                    return moved.groupingBy { it }.eachCount()
+                }
+                val actor = state.priorityPlayerId ?: return moved.groupingBy { it }.eachCount()
+                val action = if (actor == ai) chooseFor(strategist, registry, state, ai).action else PassPriority(actor)
+                if (action is ActivateAbility) moved += action.sourceId
+                state = simulator.simulate(state, action).state
+            }
+            return moved.groupingBy { it }.eachCount()
+        }
+
+        val perStep = movesThroughBeginningOfCombat(perTurn = false)
+        withClue("per step, beginning of combat reopens the cap: $perStep") {
+            perStep.values.any { it > 2 } shouldBe true
+        }
+        val perTurn = movesThroughBeginningOfCombat(perTurn = true)
+        withClue("per turn, each Equipment moves at most twice: $perTurn") {
+            perTurn.isEmpty() shouldBe false
+            perTurn.values.all { it <= 2 } shouldBe true
+        }
+    }
+
     test("the AI stops re-equipping the creature the Equipment is already attached to") {
         // Reported from an AI-vs-AI draft tournament: Well-Worn Spatula activated its Equip over
         // and over while already attached to Dwarven Mauler. Equip may legally target the creature
