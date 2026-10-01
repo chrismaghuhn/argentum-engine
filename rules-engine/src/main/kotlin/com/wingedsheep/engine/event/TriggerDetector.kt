@@ -102,6 +102,23 @@ class TriggerDetector(
      * - Damage observer trigger lists for specialized detection methods
      */
     private fun buildTriggerIndex(state: GameState): TriggerIndex {
+        // One step change runs detectTriggers, detectDelayedTriggers and detectPhaseStepTriggers
+        // against the same state; the index is a pure function of that immutable state (and the
+        // registries this detector was built with), so the second build is pure waste. The memo is
+        // one immutable (state, index) pair published through a volatile field: a racing reader
+        // sees either a complete pair or rebuilds, never a torn one.
+        lastTriggerIndex?.let { if (it.state === state) return it.index }
+        val index = buildTriggerIndexUncached(state)
+        lastTriggerIndex = MemoizedTriggerIndex(state, index)
+        return index
+    }
+
+    private class MemoizedTriggerIndex(val state: GameState, val index: TriggerIndex)
+
+    @Volatile
+    private var lastTriggerIndex: MemoizedTriggerIndex? = null
+
+    private fun buildTriggerIndexUncached(state: GameState): TriggerIndex {
         val projected = state.projectedState
 
         // Phase 1: One walk for every battlefield-wide fact the per-entity ability resolution below

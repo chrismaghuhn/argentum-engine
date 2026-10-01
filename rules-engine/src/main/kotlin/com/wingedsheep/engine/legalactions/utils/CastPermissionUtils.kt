@@ -962,6 +962,84 @@ class CastPermissionUtils(
     }
 
     /**
+     * The battlefield permanents whose printed statics can forbid an activation, gathered once per
+     * state. [isActivationPrevented] and [isActivationPreventedForPlayer] are asked once per
+     * ability source during legal-action enumeration, and each used to walk the whole battlefield
+     * resolving every permanent's card definition to find — on almost every board — nothing.
+     *
+     * Each entry keeps exactly what the walk derived per permanent (the controller whose
+     * perspective its filter reads, and its matching statics in printed order), and the entries
+     * keep battlefield order, so the per-source checks evaluate the same predicates in the same
+     * order as before.
+     */
+    private class ActivationPreventers(
+        val state: GameState,
+        val printed: List<PrintedPreventer>,
+        val playerScoped: List<PlayerScopedPreventer>,
+    )
+
+    private class PrintedPreventer(
+        val context: PredicateContext,
+        val abilities: List<PreventActivatedAbilities>,
+    )
+
+    private class PlayerScopedPreventer(
+        val permanentId: EntityId,
+        val controllerId: EntityId,
+        val abilities: List<PlayersCantActivateAbilities>,
+    )
+
+    /** Immutable (state, preventers) pair published through a volatile field; see [activationPreventers]. */
+    @Volatile
+    private var lastActivationPreventers: ActivationPreventers? = null
+
+    private fun activationPreventers(state: GameState): ActivationPreventers {
+        lastActivationPreventers?.let { if (it.state === state) return it }
+        val projected = state.projectedState
+        var printed: MutableList<PrintedPreventer>? = null
+        var playerScoped: MutableList<PlayerScopedPreventer>? = null
+        for (entityId in state.getBattlefield()) {
+            val container = state.getEntity(entityId) ?: continue
+            val card = container.get<CardComponent>() ?: continue
+            val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: continue
+            var prevents: MutableList<PreventActivatedAbilities>? = null
+            var playerPrevents: MutableList<PlayersCantActivateAbilities>? = null
+            for (ability in cardDef.script.staticAbilities) {
+                when (ability) {
+                    is PreventActivatedAbilities ->
+                        (prevents ?: mutableListOf<PreventActivatedAbilities>().also { prevents = it }).add(ability)
+                    is PlayersCantActivateAbilities ->
+                        (playerPrevents ?: mutableListOf<PlayersCantActivateAbilities>().also { playerPrevents = it })
+                            .add(ability)
+                    else -> {}
+                }
+            }
+            if (prevents == null && playerPrevents == null) continue
+            // Evaluate the filter from the *granting permanent's* controller's perspective, so a
+            // controller-relative predicate like `opponentControls()` ("lands your opponents
+            // control" on Sharkey) means opponents of the static's controller, not of the land.
+            // Face-down permanents are deliberately not skipped here (they never were).
+            val controller = projected.getController(entityId)
+                ?: container.get<ControllerComponent>()?.playerId
+                ?: continue
+            prevents?.let {
+                (printed ?: mutableListOf<PrintedPreventer>().also { printed = it }).add(
+                    PrintedPreventer(PredicateContext(controllerId = controller, sourceId = entityId), it)
+                )
+            }
+            // Face-down permanents (no abilities) are skipped as PlayersCantActivateAbilities granters.
+            if (container.has<FaceDownComponent>()) continue
+            playerPrevents?.let {
+                (playerScoped ?: mutableListOf<PlayerScopedPreventer>().also { playerScoped = it })
+                    .add(PlayerScopedPreventer(entityId, controller, it))
+            }
+        }
+        val result = ActivationPreventers(state, printed ?: emptyList(), playerScoped ?: emptyList())
+        lastActivationPreventers = result
+        return result
+    }
+
+    /**
      * True when any [PreventActivatedAbilities] static ability — printed on a battlefield
      * permanent (Cursed Totem, Damping Matrix, ...) or granted via
      * [com.wingedsheep.engine.event.GrantedStaticAbility] (Braided Net's durational
@@ -988,18 +1066,9 @@ class CastPermissionUtils(
         abilityIsManaAbility: Boolean = false
     ): Boolean {
         val projected = state.projectedState
-        for (entityId in state.getBattlefield()) {
-            val card = state.getEntity(entityId)?.get<CardComponent>() ?: continue
-            val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: continue
-            // Evaluate the filter from the *granting permanent's* controller's perspective, so a
-            // controller-relative predicate like `opponentControls()` ("lands your opponents
-            // control" on Sharkey) means opponents of the static's controller, not of the land.
-            val granterController = projected.getController(entityId)
-                ?: state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
-                ?: continue
-            val context = PredicateContext(controllerId = granterController, sourceId = entityId)
-            for (ability in cardDef.script.staticAbilities) {
-                val prevent = ability as? PreventActivatedAbilities ?: continue
+        for (preventer in activationPreventers(state).printed) {
+            val context = preventer.context
+            for (prevent in preventer.abilities) {
                 // "… can't be activated unless they're mana abilities" — exempt mana abilities.
                 if (prevent.nonManaAbilitiesOnly && abilityIsManaAbility) continue
                 if (predicateEvaluator.matches(state, projected, sourceId, prevent.filter, context)) {
@@ -1051,16 +1120,10 @@ class CastPermissionUtils(
         activatingPlayerId: EntityId
     ): Boolean {
         val projected = state.projectedState
-        for (permanentId in state.getBattlefield()) {
-            val container = state.getEntity(permanentId) ?: continue
-            if (container.has<FaceDownComponent>()) continue
-            val cardDef = container.get<CardComponent>()
-                ?.let { cardRegistry.getCard(it.cardDefinitionId) } ?: continue
-            for (sa in cardDef.script.staticAbilities) {
-                if (sa !is PlayersCantActivateAbilities) continue
-                val controller = projected.getController(permanentId)
-                    ?: container.get<ControllerComponent>()?.playerId
-                    ?: continue
+        for (preventer in activationPreventers(state).playerScoped) {
+            val permanentId = preventer.permanentId
+            val controller = preventer.controllerId
+            for (sa in preventer.abilities) {
                 if (!affectedPlayerMatches(sa.affected, controller, activatingPlayerId)) continue
                 val condition = sa.condition
                 if (condition != null) {
@@ -1141,6 +1204,82 @@ class CastPermissionUtils(
     }
 
     /**
+     * The battlefield permanents that can hand out activated abilities, gathered once per state.
+     * [getStaticGrantedAbilitiesWithGranter] runs once per permanent during legal-action
+     * enumeration, and each call used to walk the whole battlefield resolving every permanent's
+     * card definition; on a typical board almost none of them grant anything.
+     *
+     * A face-up permanent is a [GrantCandidate] when its active statics (class level and unlocked
+     * Room faces included) contain a [GrantActivatedAbility], [HasAllActivatedAbilitiesOfCards],
+     * [HasAbilitiesOfChosenLinkedExiledCard] or a [ConditionalStaticAbility] wrapping one of those —
+     * every other static falls through to `continue` in the per-entity loop, so a permanent without
+     * one contributes nothing there. [GainGranter]s are the face-up permanents bearing a
+     * [GainActivatedAbilitiesOfPermanents] (class-level effective statics, as before). Both keep
+     * battlefield order and the statics' own order.
+     */
+    private class ActivatedAbilityGranters(
+        val state: GameState,
+        val grantCandidates: List<GrantCandidate>,
+        val gainGranters: List<GainGranter>,
+    )
+
+    private class GrantCandidate(
+        val permanentId: EntityId,
+        val container: com.wingedsheep.engine.state.ComponentContainer,
+        val activeStatics: List<com.wingedsheep.sdk.scripting.StaticAbility>,
+    )
+
+    private class GainGranter(
+        val permanentId: EntityId,
+        val container: com.wingedsheep.engine.state.ComponentContainer,
+        val gains: List<com.wingedsheep.sdk.scripting.GainActivatedAbilitiesOfPermanents>,
+    )
+
+    /** Immutable (state, granters) pair published through a volatile field; see [activatedAbilityGranters]. */
+    @Volatile
+    private var lastActivatedAbilityGranters: ActivatedAbilityGranters? = null
+
+    private fun activatedAbilityGranters(state: GameState): ActivatedAbilityGranters {
+        lastActivatedAbilityGranters?.let { if (it.state === state) return it }
+        var candidates: MutableList<GrantCandidate>? = null
+        var gainGranters: MutableList<GainGranter>? = null
+        for (permanentId in state.getBattlefield()) {
+            val container = state.getEntity(permanentId) ?: continue
+            if (container.has<FaceDownComponent>()) continue
+            val card = container.get<CardComponent>() ?: continue
+            val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: continue
+
+            val activeStatics = com.wingedsheep.engine.state.components.identity.RoomFaceStatics
+                .activeStaticAbilities(container, cardDef)
+            if (activeStatics.any { grantsActivatedAbilities(it) || grantsActivatedAbilities((it as? com.wingedsheep.sdk.scripting.ConditionalStaticAbility)?.ability) }) {
+                (candidates ?: mutableListOf<GrantCandidate>().also { candidates = it })
+                    .add(GrantCandidate(permanentId, container, activeStatics))
+            }
+
+            val classLevel = container.get<com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent>()?.currentLevel
+            var gains: MutableList<com.wingedsheep.sdk.scripting.GainActivatedAbilitiesOfPermanents>? = null
+            for (ability in cardDef.script.effectiveStaticAbilities(classLevel)) {
+                if (ability is com.wingedsheep.sdk.scripting.GainActivatedAbilitiesOfPermanents) {
+                    (gains ?: mutableListOf<com.wingedsheep.sdk.scripting.GainActivatedAbilitiesOfPermanents>()
+                        .also { gains = it }).add(ability)
+                }
+            }
+            gains?.let {
+                (gainGranters ?: mutableListOf<GainGranter>().also { gainGranters = it })
+                    .add(GainGranter(permanentId, container, it))
+            }
+        }
+        val result = ActivatedAbilityGranters(state, candidates ?: emptyList(), gainGranters ?: emptyList())
+        lastActivatedAbilityGranters = result
+        return result
+    }
+
+    private fun grantsActivatedAbilities(ability: com.wingedsheep.sdk.scripting.StaticAbility?): Boolean =
+        ability is GrantActivatedAbility ||
+            ability is com.wingedsheep.sdk.scripting.HasAllActivatedAbilitiesOfCards ||
+            ability is com.wingedsheep.sdk.scripting.HasAbilitiesOfChosenLinkedExiledCard
+
+    /**
      * Get activated abilities granted to an entity by static abilities on battlefield permanents,
      * paired with the EntityId of the permanent that granted each ability.
      *
@@ -1156,15 +1295,14 @@ class CastPermissionUtils(
 
         val result = mutableListOf<StaticGrantedAbility>()
 
-        for (permanentId in state.getBattlefield()) {
-            val container = state.getEntity(permanentId) ?: continue
-            val card = container.get<CardComponent>() ?: continue
-            if (container.has<com.wingedsheep.engine.state.components.identity.FaceDownComponent>()) continue
-
-            val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: continue
+        // Only permanents with a static that can grant an activated ability are visited; see
+        // [activatedAbilityGranters] for why skipping the rest leaves the result unchanged.
+        for (granter in activatedAbilityGranters(state).grantCandidates) {
+            val permanentId = granter.permanentId
+            val container = granter.container
             // Include unlocked Room face statics (CR 709.5) so a Room that grants activated
             // abilities (e.g. Greenhouse) only hands them out once its door is unlocked.
-            for (rawAbility in com.wingedsheep.engine.state.components.identity.RoomFaceStatics.activeStaticAbilities(container, cardDef)) {
+            for (rawAbility in granter.activeStatics) {
                 // A grant can be gated by a ConditionalStaticAbility (Nature's Embrace: the land host
                 // gains "{T}: Add two mana of any one color" only while it is a land). Unwrap the
                 // condition against the granter here — otherwise the raw wrapper is not a
@@ -1362,14 +1500,10 @@ class CastPermissionUtils(
         val projected = state.projectedState
         val result = mutableListOf<StaticGrantedAbility>()
 
-        for (granterId in state.getBattlefield()) {
-            val granter = state.getEntity(granterId) ?: continue
-            if (granter.has<com.wingedsheep.engine.state.components.identity.FaceDownComponent>()) continue
-            val card = granter.get<CardComponent>() ?: continue
-            val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: continue
-            val classLevel = granter.get<com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent>()?.currentLevel
-            for (ability in cardDef.script.effectiveStaticAbilities(classLevel)) {
-                val gain = ability as? com.wingedsheep.sdk.scripting.GainActivatedAbilitiesOfPermanents ?: continue
+        for (gainGranter in activatedAbilityGranters(state).gainGranters) {
+            val granterId = gainGranter.permanentId
+            val granter = gainGranter.container
+            for (gain in gainGranter.gains) {
                 val granterController = projected.getController(granterId) ?: continue
 
                 // Does [entityId] match the grantedTo filter of this static?

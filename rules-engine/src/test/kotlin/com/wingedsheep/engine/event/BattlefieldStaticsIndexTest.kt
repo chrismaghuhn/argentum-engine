@@ -12,6 +12,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeSameInstanceAs
 
 /**
  * [BattlefieldStaticsIndex] replaced three per-entity battlefield scans inside
@@ -30,13 +31,18 @@ class BattlefieldStaticsIndexTest : FunSpec({
         return driver
     }
 
-    test("a board with no attachments and no ward statics indexes to EMPTY") {
+    test("a board with no attachments and no grant statics indexes every bucket empty") {
         val driver = mirrorMatch()
         driver.putPermanentOnBattlefield(driver.activePlayer!!, "Forest")
 
         val index = BattlefieldStaticsIndex.build(driver.state, driver.cardRegistry)
 
-        index shouldBe BattlefieldStaticsIndex.EMPTY
+        index.triggerGrantProviders shouldHaveSize 0
+        index.printedTriggerGrants shouldHaveSize 0
+        index.wardGrantProviders shouldHaveSize 0
+        index.wardSuppressors shouldHaveSize 0
+        index.attachmentsByTarget.size shouldBe 0
+        index.sourceState shouldBeSameInstanceAs driver.state
         index.attachmentsOn(driver.activePlayer!!) shouldHaveSize 0
     }
 
