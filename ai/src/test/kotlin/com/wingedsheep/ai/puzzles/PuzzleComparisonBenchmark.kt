@@ -106,6 +106,9 @@ class PuzzleComparisonBenchmark : ScenarioTestBase() {
                 // negative controls and must not.
                 AiProfile.PRODUCTION_EXPIRING,
                 AiProfile.PRODUCTION_CANDIDATE_EXPIRING,
+                // Attachment moves capped per turn instead of per step. No puzzle moves an
+                // attachment twice in a turn, so this column must match the one above it.
+                AiProfile.PRODUCTION_CANDIDATE_EQUIPTURN,
                 // Phase 7's rollout evaluator, isolated from Phases 4 and 6 so the column is
                 // attributable to the rollouts alone.
                 AiProfile.PHASE7,
