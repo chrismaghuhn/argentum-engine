@@ -29,7 +29,8 @@ function corpusKeys(): Set<string> {
   const keys = new Set<string>(BASICS.map(key))
   for (const entry of readdirSync(SETS_ROOT, { recursive: true, withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith('.kt')) continue
-    const dir = entry.parentPath ?? ''
+    // Normalised so the separator checks below also hold for Windows paths.
+    const dir = (entry.parentPath ?? '').split('\\').join('/')
     if (!dir.includes('/src/main/') || !dir.includes('/definitions/') || !dir.includes('/cards')) continue
     keys.add(key(entry.name.replace(/\.kt$/, '').replace(/Reprint$/, '')))
   }
@@ -42,7 +43,8 @@ describe('the missions', () => {
     expect(known.size).toBeGreaterThan(1000)
     const unknown = missionCardNames().filter((n) => !known.has(key(n)))
     expect(unknown).toEqual([])
-  })
+    // Walking the whole mtg-sets tree, local build output included, can outlast the 5 s default.
+  }, 60_000)
 
   it('are numbered 1..n in order, with unique ids and a win objective each', () => {
     expect(MISSIONS.map((m) => m.number)).toEqual(MISSIONS.map((_, i) => i + 1))
