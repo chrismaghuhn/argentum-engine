@@ -103,6 +103,34 @@ class CeremonialKnifeScenarioTest : ScenarioTestBase() {
                 }
             }
 
+            test("a creature that trades in combat still creates its Blood token") {
+                // The 3/2 Bears and the 3/3 Courser deal their combat damage simultaneously and only
+                // die to state-based actions afterwards, which also unattach the Knife. The Bears
+                // still had the granted trigger when their damage was dealt.
+                val game = scenario()
+                    .withPlayers("Player1", "Player2")
+                    .withCardOnBattlefield(1, "Grizzly Bears", summoningSickness = false)
+                    .withCardAttachedTo(1, "Ceremonial Knife", "Grizzly Bears")
+                    .withCardOnBattlefield(2, "Centaur Courser", summoningSickness = false)
+                    .withLifeTotal(2, 20)
+                    .withActivePlayer(1)
+                    .inPhase(Phase.COMBAT, Step.DECLARE_ATTACKERS)
+                    .build()
+
+                game.declareAttackers(mapOf("Grizzly Bears" to 2)).error shouldBe null
+                game.passUntilPhase(Phase.COMBAT, Step.DECLARE_BLOCKERS)
+                game.declareBlockers(mapOf("Centaur Courser" to listOf("Grizzly Bears"))).error shouldBe null
+                advanceThroughCombatDamage(game)
+
+                withClue("the 3/2 Bears and the 3/3 Courser traded") {
+                    game.findPermanent("Grizzly Bears") shouldBe null
+                    game.findPermanent("Centaur Courser") shouldBe null
+                }
+                withClue("the Bears had the Knife's granted trigger when they dealt the damage") {
+                    bloodTokens(game, 1) shouldBe 1
+                }
+            }
+
             test("an unequipped creature has no trigger") {
                 val game = scenario()
                     .withPlayers("Player1", "Player2")

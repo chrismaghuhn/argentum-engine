@@ -298,9 +298,9 @@ class DamageTriggerDetector(
         // A live stamped object still has dynamic abilities granted by the current projected state
         // (for example The Ring's abilities on its current Ring-bearer). Use the normal resolver
         // only for that proven incarnation. A departed/replaced object uses only what its
-        // damage-time snapshot captured (a creature that died to this damage still had its
-        // "until end of turn" grants when the trigger condition was met) and can never switch to
-        // the newer same-id object's abilities.
+        // damage-time snapshot captured (a creature that died to this damage still had its grants
+        // when the trigger condition was met) and can never switch to the newer same-id object's
+        // abilities.
         if (!state.isCapturedBattlefieldObjectLive(entityId, snapshot)) {
             if (snapshot.cardDefinitionId != null) {
                 return abilityResolver.getTriggeredAbilitiesFromSnapshot(entityId, snapshot)

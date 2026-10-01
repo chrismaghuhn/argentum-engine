@@ -1,8 +1,10 @@
 package com.wingedsheep.engine.triggers
 
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.DamageRecipientKindSet
+import com.wingedsheep.engine.core.Outcome
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.event.AbilityRegistry
 import com.wingedsheep.engine.event.BattlefieldStaticsIndex
@@ -18,18 +20,23 @@ import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
+import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.Filters
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.dsl.grantedTriggeredAbility
@@ -40,14 +47,17 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.Duration
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.GrantTriggeredAbility
 import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 import com.wingedsheep.sdk.scripting.events.Recipient
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import io.kotest.assertions.withClue
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldNotContain
@@ -56,14 +66,17 @@ import kotlinx.serialization.json.Json
 /**
  * A triggered ability *granted* to a permanent — "target creature gains 'Whenever this creature
  * deals damage to a creature, destroy that creature' until end of turn" (Cruel Deceiver, Commando
- * Raid) — is still one of its abilities when the permanent dies to the very damage that triggers it.
+ * Raid), or "equipped/enchanted creature has '…'" (Ceremonial Knife, Curious Inquiry) — is still one
+ * of its abilities when the permanent dies to the very damage that triggers it.
  *
  * A damage trigger is checked against the objects as they exist immediately after the damage event
  * (CR 603.10). Combat damage is dealt simultaneously (CR 510.2), and the lethal-damage state-based
  * action only runs when a player would next receive priority (CR 704.3), so at that instant the
- * creature is still on the battlefield with its grants. The engine detects triggers after the
- * state-based actions, so it reads a departed object's abilities from the snapshot captured when the
- * damage was dealt — never from the live entity, whose id may already name a newer object (CR 400.7).
+ * creature is still on the battlefield with its grants — and still equipped or enchanted: the same
+ * state-based actions unattach its Equipment (CR 704.5n) and bury its Auras (CR 704.5m) only
+ * afterwards. The engine detects triggers after the state-based actions, so it reads a departed
+ * object's abilities from the snapshot captured when the damage was dealt — never from the live
+ * entity, whose id may already name a newer object (CR 400.7).
  */
 class DamageTimeGrantedTriggersTest : FunSpec({
 
@@ -123,6 +136,38 @@ class DamageTimeGrantedTriggersTest : FunSpec({
         }
     }
 
+    // "Equipped creature has 'Whenever this creature deals combat damage, you gain 3 life.' Equip {0}"
+    val blade = card("Lifebond Blade") {
+        manaCost = "{0}"
+        typeLine = "Artifact — Equipment"
+        staticAbility {
+            ability = GrantTriggeredAbility(
+                ability = TriggeredAbility.create(
+                    trigger = Triggers.self.dealsCombatDamage(),
+                    effect = Effects.GainLife(3),
+                ),
+                filter = Filters.EquippedCreature,
+            )
+        }
+        equipAbility("{0}")
+    }
+
+    // "Enchant creature. Enchanted creature has 'Whenever this creature is dealt damage, you gain 3 life.'"
+    val mantle = card("Martyr's Mantle") {
+        manaCost = "{0}"
+        typeLine = "Enchantment — Aura"
+        auraTarget = TargetObject(filter = TargetFilter.Creature)
+        staticAbility {
+            ability = GrantTriggeredAbility(
+                ability = TriggeredAbility.create(
+                    trigger = Triggers.self.isDealtDamage(),
+                    effect = Effects.GainLife(3),
+                ),
+                filter = Filters.EnchantedCreature,
+            )
+        }
+    }
+
     val striker = card("Frail Striker") {
         manaCost = "{0}"
         typeLine = "Creature — Spirit"
@@ -139,7 +184,7 @@ class DamageTimeGrantedTriggersTest : FunSpec({
 
     fun driver(): GameTestDriver {
         val d = GameTestDriver()
-        d.registerCards(TestCards.all + listOf(venom, martyrdom, pummel, scald, striker, wall))
+        d.registerCards(TestCards.all + listOf(venom, martyrdom, pummel, scald, blade, mantle, striker, wall))
         d.initMirrorMatch(deck = Deck.of("Plains" to 40), startingPlayer = 0)
         d.passPriorityUntil(Step.PRECOMBAT_MAIN)
         return d
@@ -149,6 +194,18 @@ class DamageTimeGrantedTriggersTest : FunSpec({
         castSpell(player1, putCardInHand(player1, name), targets).error shouldBe null
         var guard = 0
         while (state.stack.isNotEmpty() && guard++ < 10) bothPass()
+    }
+
+    fun GameTestDriver.equip(equipment: EntityId, creature: EntityId) {
+        submit(
+            ActivateAbility(
+                playerId = player1,
+                sourceId = equipment,
+                abilityId = blade.activatedAbilities.first().id,
+                targets = listOf(ChosenTarget.Permanent(creature)),
+            )
+        ).outcome shouldBe Outcome.Done
+        bothPass()
     }
 
     fun GameTestDriver.attackInto(attacker: EntityId, blocker: EntityId) {
@@ -250,6 +307,48 @@ class DamageTimeGrantedTriggersTest : FunSpec({
         }
     }
 
+    context("granted by an Equipment or an Aura") {
+
+        test("an equipped creature that dies to the combat damage exchange still fires its granted trigger") {
+            val d = driver()
+            val frail = d.putCreatureOnBattlefield(d.player1, "Frail Striker")
+            d.removeSummoningSickness(frail)
+            val courser = d.putCreatureOnBattlefield(d.player2, "Centaur Courser")
+            val lifebondBlade = d.putPermanentOnBattlefield(d.player1, "Lifebond Blade")
+            d.equip(lifebondBlade, frail)
+            val lifeBefore = d.getLifeTotal(d.player1)
+
+            d.attackInto(frail, courser)
+
+            withClue("the 2/1 died to the Courser's 3 damage, and the Blade stayed behind unattached") {
+                d.getGraveyard(d.player1).contains(frail) shouldBe true
+                d.findPermanent(d.player1, "Lifebond Blade") shouldBe lifebondBlade
+            }
+            withClue("the creature was still equipped when it dealt its combat damage") {
+                d.getLifeTotal(d.player1) shouldBe lifeBefore + 3
+            }
+        }
+
+        test("an enchanted creature that dies to combat damage still fires its granted trigger") {
+            val d = driver()
+            val frail = d.putCreatureOnBattlefield(d.player1, "Frail Striker")
+            d.removeSummoningSickness(frail)
+            val courser = d.putCreatureOnBattlefield(d.player2, "Centaur Courser")
+            d.castAndResolve("Martyr's Mantle", listOf(frail))
+            val lifeBefore = d.getLifeTotal(d.player1)
+
+            d.attackInto(frail, courser)
+
+            withClue("the 2/1 died, and its Aura went to the graveyard with it") {
+                d.getGraveyard(d.player1).contains(frail) shouldBe true
+                d.getGraveyardCardNames(d.player1).contains("Martyr's Mantle") shouldBe true
+            }
+            withClue("the creature was still enchanted when it was dealt the damage") {
+                d.getLifeTotal(d.player1) shouldBe lifeBefore + 3
+            }
+        }
+    }
+
     context("from the damage-time snapshot") {
         // Pure data below: one registry-less evaluator graph serves every matcher and detector.
         val predicateEvaluator = PredicateEvaluator(cardRegistry = null)
@@ -276,6 +375,16 @@ class DamageTimeGrantedTriggersTest : FunSpec({
             manaCost = ManaCost.ZERO,
             typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
             baseStats = CreatureStats(2, 1),
+        )
+
+        // The inline "Lifebond Blade" Equipment, as a card on the battlefield.
+        val bladeRegistry = CardRegistry().apply { register(blade) }
+        val bladeGrant = (blade.staticAbilities.single() as GrantTriggeredAbility).ability
+        fun bladeCard() = CardComponent(
+            cardDefinitionId = "Lifebond Blade",
+            name = "Lifebond Blade",
+            manaCost = ManaCost.ZERO,
+            typeLine = TypeLine(cardTypes = setOf(CardType.ARTIFACT), subtypes = setOf(Subtype("Equipment"))),
         )
 
         fun sourceAtDamage(stamp: Long, grants: List<TriggeredAbility>) = EntitySnapshot(
@@ -320,10 +429,14 @@ class DamageTimeGrantedTriggersTest : FunSpec({
 
         test("the capture freezes the object's own in-duration grants and nobody else's") {
             val bystanderId = EntityId("granted-damage-bystander")
+            val bladeId = EntityId("granted-damage-blade")
+            val strayBladeId = EntityId("granted-damage-stray-blade")
             val bystanderGrant = ability("bystander-grant", dealsDamage)
             val endedGrant = ability("ended-grant", dealsDamage)
             val state = GameState(
-                zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(sourceId, bystanderId)),
+                zones = mapOf(
+                    ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(sourceId, bystanderId, bladeId, strayBladeId),
+                ),
                 turnOrder = listOf(controllerId),
                 grantedTriggeredAbilities = listOf(
                     GrantedTriggeredAbility(sourceId, grantedVenom, Duration.EndOfTurn),
@@ -343,6 +456,8 @@ class DamageTimeGrantedTriggersTest : FunSpec({
                         creatureCard("granted-damage-source", "Granted Source"),
                         ControllerComponent(controllerId),
                         BattlefieldEntryTimestampComponent(10L),
+                        // The second id is a stray reverse-index entry: that Blade is attached elsewhere.
+                        AttachmentsComponent(listOf(bladeId, strayBladeId)),
                     ),
                 )
                 .withEntity(
@@ -353,10 +468,33 @@ class DamageTimeGrantedTriggersTest : FunSpec({
                         BattlefieldEntryTimestampComponent(11L),
                     ),
                 )
+                .withEntity(
+                    bladeId,
+                    ComponentContainer.of(
+                        bladeCard(),
+                        ControllerComponent(controllerId),
+                        BattlefieldEntryTimestampComponent(12L),
+                        AttachedToComponent(sourceId),
+                    ),
+                )
+                .withEntity(
+                    strayBladeId,
+                    ComponentContainer.of(
+                        bladeCard(),
+                        ControllerComponent(controllerId),
+                        BattlefieldEntryTimestampComponent(13L),
+                        AttachedToComponent(bystanderId),
+                    ),
+                )
 
-            val snapshot = DamageUtils.captureDamageRoleSnapshot(state, sourceId)
+            val snapshot = DamageUtils.captureDamageRoleSnapshot(state, sourceId, bladeRegistry, conditionEvaluator)
 
-            snapshot?.grantedTriggeredAbilities shouldBe listOf(grantedVenom)
+            withClue("its own in-duration effect grant, then the grant of the Blade attached to it") {
+                snapshot?.grantedTriggeredAbilities shouldBe listOf(grantedVenom, bladeGrant)
+            }
+            withClue("the identity snapshot other callers take carries no grants") {
+                DamageUtils.captureDamageEntitySnapshot(state, sourceId)?.grantedTriggeredAbilities shouldBe emptyList()
+            }
         }
 
         test("a departed source fires the grants on its damage-time snapshot") {
@@ -429,6 +567,48 @@ class DamageTimeGrantedTriggersTest : FunSpec({
                 )
                 triggers.map { it.ability } shouldContainExactly listOf(grantedVenom)
                 triggers.single().controllerId shouldBe controllerId
+            }
+        }
+
+        test("a newer object's Equipment never contributes its grant either") {
+            val replacementControllerId = EntityId("granted-damage-replacement-controller")
+            val bladeId = EntityId("granted-damage-replacement-blade")
+            // The id now names a newer object that is equipped with the Blade right now.
+            val state = GameState(
+                zones = mapOf(ZoneKey(replacementControllerId, Zone.BATTLEFIELD) to listOf(sourceId, bladeId)),
+                turnOrder = listOf(controllerId, replacementControllerId),
+            )
+                .withEntity(
+                    sourceId,
+                    ComponentContainer.of(
+                        creatureCard("granted-damage-replacement", "Replacement"),
+                        ControllerComponent(replacementControllerId),
+                        BattlefieldEntryTimestampComponent(31L),
+                        AttachmentsComponent(listOf(bladeId)),
+                    ),
+                )
+                .withEntity(
+                    bladeId,
+                    ComponentContainer.of(
+                        bladeCard(),
+                        ControllerComponent(replacementControllerId),
+                        BattlefieldEntryTimestampComponent(32L),
+                        AttachedToComponent(sourceId),
+                    ),
+                )
+
+            withClue("the newer object does have the Blade's grant right now") {
+                TriggerAbilityResolver(bladeRegistry, AbilityRegistry(), predicateEvaluator)
+                    .getTriggeredAbilities(sourceId, "granted-damage-replacement", state)
+                    .shouldContain(bladeGrant)
+            }
+            withClue("but the departed object had no grant when it dealt the damage, so nothing fires") {
+                TriggerDetector(bladeRegistry, AbilityRegistry(), predicateEvaluator, conditionEvaluator)
+                    .detectTriggers(
+                        state,
+                        listOf(damageEvent(source = sourceAtDamage(stamp = 30L, grants = emptyList()))),
+                    )
+                    .shouldBeEmpty()
             }
         }
 

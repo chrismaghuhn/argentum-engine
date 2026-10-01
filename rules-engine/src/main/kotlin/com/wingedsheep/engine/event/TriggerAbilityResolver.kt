@@ -542,48 +542,8 @@ class TriggerAbilityResolver(
         entityId: EntityId,
         state: GameState,
         statics: BattlefieldStaticsIndex
-    ): List<TriggeredAbility> {
-        val result = mutableListOf<TriggeredAbility>()
-
-        for (permanentId in statics.attachmentsOn(entityId)) {
-            val container = state.getEntity(permanentId) ?: continue
-
-            val card = container.get<CardComponent>() ?: continue
-            if (container.has<FaceDownComponent>()) continue
-
-            val sourceDef = cardRegistry.getCard(card.cardDefinitionId) ?: continue
-            val classLevel = container.get<ClassLevelComponent>()?.currentLevel
-            val allStaticAbilities = sourceDef.script.effectiveStaticAbilities(classLevel)
-
-            for (ability in allStaticAbilities) {
-                when (ability) {
-                    is GrantTriggeredAbility ->
-                        if (ability.filter.scope is Scope.AttachedTo) result.add(ability.ability)
-
-                    // "As long as enchanted permanent is X, it has '<triggered ability>'" —
-                    // a conditional grant (e.g. Essence Leak). Only contribute the granted ability
-                    // while the gating condition holds, evaluated with the Aura as the source so
-                    // EnchantedPermanentMatches resolves the attached permanent.
-                    is ConditionalStaticAbility -> {
-                        val grant = ability.ability as? GrantTriggeredAbility ?: continue
-                        if (grant.filter.scope !is Scope.AttachedTo) continue
-                        val controllerId = state.projectedState.getController(permanentId) ?: continue
-                        val context = EffectContext(
-                            sourceId = permanentId,
-                            controllerId = controllerId,
-                        )
-                        if (conditionEvaluator.evaluate(state, ability.condition, context)) {
-                            result.add(grant.ability)
-                        }
-                    }
-
-                    else -> {}
-                }
-            }
-        }
-
-        return result
-    }
+    ): List<TriggeredAbility> =
+        AttachedTriggerGrants.active(state, statics.attachmentsOn(entityId), cardRegistry, conditionEvaluator)
 
     /**
      * Triggered abilities a permanent grants to *itself* through a [Scope.Self]
