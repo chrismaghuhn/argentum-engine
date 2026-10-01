@@ -16,9 +16,8 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class HandSizeDiscardContinuation(
-    override val decisionId: String,
     val playerId: EntityId
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume after a player selects a card to discard for "each player discards or lose life" effects.
@@ -39,15 +38,15 @@ data class HandSizeDiscardContinuation(
  */
 @Serializable
 data class EachPlayerDiscardsOrLoseLifeContinuation(
-    override val decisionId: String,
     val sourceId: EntityId?,
     val sourceName: String?,
     val controllerId: EntityId,
     val currentPlayerId: EntityId,
     val remainingPlayers: List<EntityId>,
     val discardedCreature: Map<EntityId, Boolean>,
-    val lifeLoss: Int
-) : ContinuationFrame
+    val lifeLoss: Int,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after a player chooses how many cards to draw for DrawUpToEffect.
@@ -59,14 +58,14 @@ data class EachPlayerDiscardsOrLoseLifeContinuation(
  */
 @Serializable
 data class DrawUpToContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
     val maxCards: Int,
     val originalMaxCards: Int = 0,
-    val storeNotDrawnAs: String? = null
-) : ContinuationFrame
+    val storeNotDrawnAs: String? = null,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume remaining card draws after a bounce pipeline completes.
@@ -91,12 +90,11 @@ data class DrawUpToContinuation(
  */
 @Serializable
 data class DrawReplacementRemainingDrawsContinuation(
-    override val decisionId: String = "remaining-draws",
     val drawingPlayerId: EntityId,
     val remainingDraws: Int,
     val isDrawStep: Boolean,
     val announcementApplied: Boolean = false
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Resume after the player answers yes/no for an optional static draw replacement effect
@@ -115,7 +113,6 @@ data class DrawReplacementRemainingDrawsContinuation(
  */
 @Serializable
 data class StaticDrawReplacementContinuation(
-    override val decisionId: String,
     val drawingPlayerId: EntityId,
     val sourceId: EntityId,
     val sourceName: String,
@@ -123,23 +120,25 @@ data class StaticDrawReplacementContinuation(
     val drawCount: Int,
     val isDrawStep: Boolean,
     val drawnCardsSoFar: List<EntityId> = emptyList(),
-    val declinedIdentity: ReplacementEffectIdentity? = null
-) : ContinuationFrame
+    val declinedIdentity: ReplacementEffectIdentity? = null,
+    /** Prior applications and declines for this individual draw, retained across pauses. */
+    val alreadyApplied: Set<ReplacementEffectIdentity> = emptySet(),
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume the draw step of a cycling action after cycling triggers have resolved.
  *
- * When cycling triggers (e.g., Choking Tethers' "you may tap target creature") pause
- * for player input, the CycleCardHandler returns early before reaching the draw step.
- * This continuation ensures the draw happens after triggers resolve.
+ * Nothing pushes this frame any more: cycling triggers wait in the settle boundary's queue, so
+ * the cycling draw happens inline. It stays registered so a saved game that paused with the frame
+ * on its stack still resumes.
  *
  * @property playerId The player who cycled and needs to draw
  */
 @Serializable
 data class CycleDrawContinuation(
-    override val decisionId: String = "cycle-draw",
     val playerId: EntityId
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Resume a cycling action after the player announces X for an `{X}` cycling cost (CR 107.3a) —
@@ -155,15 +154,14 @@ data class CycleDrawContinuation(
  */
 @Serializable
 data class CycleCardChooseXContinuation(
-    override val decisionId: String,
     val action: CycleCard
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume the search step of a typecycling action after cycling triggers have resolved.
  *
- * Same issue as CycleDrawContinuation but for typecycling, which searches the library
- * instead of drawing.
+ * Like [CycleDrawContinuation], nothing pushes this frame any more; it stays registered so a
+ * saved game that paused with it on its stack still resumes.
  *
  * @property playerId The player who typecycled
  * @property cardId The card that was typecycled (source for search effect)
@@ -174,10 +172,9 @@ data class CycleCardChooseXContinuation(
  */
 @Serializable
 data class TypecycleSearchContinuation(
-    override val decisionId: String = "typecycle-search",
     val playerId: EntityId,
     val cardId: EntityId,
     val searchFilter: GameObjectFilter,
     val abilityDescription: String
-) : ContinuationFrame
+) : AutomaticContinuation
 

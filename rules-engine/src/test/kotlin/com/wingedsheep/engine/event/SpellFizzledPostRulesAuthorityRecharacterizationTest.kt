@@ -1,10 +1,10 @@
 package com.wingedsheep.engine.event
 
+import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
-import com.wingedsheep.engine.mechanics.StateBasedActionChecker
-import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -137,9 +137,10 @@ class SpellFizzledPostRulesAuthorityRecharacterizationTest : FunSpec({
         val zoneChange = result.events.filterIsInstance<ZoneChangeEvent>().single()
         fizzle.spellEntityId shouldBe fixture.spellId
         zoneChange.entityId shouldBe fixture.spellId
-        // The existing event schema leaves fromZone null for stack disposition; the committed
-        // before-state stack membership is the authority for the pre-disposition subject.
-        zoneChange.fromZone shouldBe null
+        // Stack disposition names its origin zone (upstream object-identity lifecycle, ff8ecb85d2:
+        // the event leaves the STACK); the committed before-state stack membership remains the
+        // authority for the pre-disposition subject.
+        zoneChange.fromZone shouldBe Zone.STACK
         zoneChange.toZone shouldBe destination
         result.events.indexOf(fizzle) shouldBe 0
         result.events.indexOf(zoneChange) shouldBe 1
@@ -153,21 +154,21 @@ class SpellFizzledPostRulesAuthorityRecharacterizationTest : FunSpec({
 
     test("ordinary all-illegal-target fizzle precedes destination incarnation") {
         val fixture = fixture(copy = false)
-        val result = StackResolver(CardRegistry()).resolveTop(fixture.state)
+        val result = EngineServices(CardRegistry()).stackResolver.resolveTop(fixture.state)
 
         assertPreDispositionSubject(result, fixture, Zone.GRAVEYARD)
     }
 
     test("copied all-illegal-target fizzle uses the same before subject then SBA cleanup") {
         val fixture = fixture(copy = true)
-        val result = StackResolver(CardRegistry()).resolveTop(fixture.state)
+        val result = EngineServices(CardRegistry()).stackResolver.resolveTop(fixture.state)
 
         assertPreDispositionSubject(result, fixture, Zone.GRAVEYARD)
         result.state.hasEntity(fixture.spellId) shouldBe true
         result.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe true
         result.state.getEntity(fixture.spellId)?.has<CopyOfComponent>() shouldBe true
 
-        val afterSba = StateBasedActionChecker(cardRegistry = CardRegistry()).checkAndApply(result.state)
+        val afterSba = EngineServices(CardRegistry()).sbaChecker.checkAndApply(result.state)
         afterSba.error shouldBe null
         afterSba.state.hasEntity(fixture.spellId) shouldBe false
         afterSba.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe false
@@ -182,9 +183,10 @@ class SpellFizzledPostRulesAuthorityRecharacterizationTest : FunSpec({
             entityId = fixture.spellId,
             fromZone = Zone.STACK,
             toZone = Zone.GRAVEYARD,
+            predicateEvaluator = PredicateEvaluator(cardRegistry = null),
         ).destinationZone shouldBe Zone.EXILE
 
-        val result = StackResolver(CardRegistry()).resolveTop(state)
+        val result = EngineServices(CardRegistry()).stackResolver.resolveTop(state)
         assertPreDispositionSubject(result, fixture, Zone.EXILE)
     }
 })

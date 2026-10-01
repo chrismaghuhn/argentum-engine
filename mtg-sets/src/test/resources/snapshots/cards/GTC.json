@@ -50,7 +50,7 @@
             "type": "MoveToZone",
             "target": {
                 "type": "BoundVariable",
-                "name": "target"
+                "name": "t0"
             },
             "destination": "Exile"
         },
@@ -60,7 +60,7 @@
                 "filter": {
                     "baseFilter": "creature|enchantment"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -93,7 +93,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Aurelia, the Warleader:1",
                 "trigger": {
                     "type": "AttackEvent",
                     "requires": [
@@ -113,7 +113,7 @@
                             },
                             "body": {
                                 "type": "TapUntap",
-                                "target": "Self",
+                                "target": "IterationEntity",
                                 "tap": false
                             }
                         },
@@ -155,13 +155,13 @@
                         },
                         "target": {
                             "type": "BoundVariable",
-                            "name": "target"
+                            "name": "t0"
                         }
                     },
                     "targetRequirements": [
                         {
                             "type": "TargetPlayerOrPlaneswalker",
-                            "id": "target"
+                            "id": "t0"
                         }
                     ],
                     "description": "Boros Charm deals 4 damage to target player or planeswalker"
@@ -178,7 +178,7 @@
                         "body": {
                             "type": "GrantKeyword",
                             "keyword": "INDESTRUCTIBLE",
-                            "target": "Self"
+                            "target": "IterationEntity"
                         }
                     },
                     "description": "Permanents you control gain indestructible until end of turn"
@@ -189,7 +189,7 @@
                         "keyword": "DOUBLE_STRIKE",
                         "target": {
                             "type": "BoundVariable",
-                            "name": "target"
+                            "name": "t1"
                         }
                     },
                     "targetRequirements": [
@@ -198,7 +198,7 @@
                             "filter": {
                                 "baseFilter": "creature"
                             },
-                            "id": "target"
+                            "id": "t1"
                         }
                     ],
                     "description": "Target creature gains double strike until end of turn"
@@ -228,7 +228,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Boros Guildgate:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -238,7 +238,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Boros Guildgate:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -291,7 +291,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Consuming Aberration:1",
                 "trigger": "SpellCastEvent",
                 "binding": "ANY",
                 "effect": {
@@ -306,16 +306,16 @@
                             {
                                 "type": "GatherUntilMatch",
                                 "filter": "land",
-                                "storeMatch": "revealedLand",
-                                "storeRevealed": "allRevealed"
+                                "storeMatch": "matched0",
+                                "storeRevealed": "revealed0"
                             },
                             {
                                 "type": "RevealCollection",
-                                "from": "allRevealed"
+                                "from": "revealed0"
                             },
                             {
                                 "type": "MoveCollection",
-                                "from": "allRevealed",
+                                "from": "revealed0",
                                 "destination": {
                                     "type": "ToZone",
                                     "zone": "Graveyard"
@@ -353,7 +353,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Court Street Denizen:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "filter": "creature white ctrl:you",
@@ -364,7 +364,7 @@
                     "type": "TapUntap",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirement": {
@@ -372,7 +372,7 @@
                     "filter": {
                         "baseFilter": "creature ctrl:opponent"
                     },
-                    "id": "target"
+                    "id": "t0"
                 }
             }
         ]
@@ -397,7 +397,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Dimir Guildgate:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -407,7 +407,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Dimir Guildgate:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -433,6 +433,53 @@
     ]
 }
 
+// Foundry Street Denizen
+{
+    "name": "Foundry Street Denizen",
+    "manaCost": "{R}",
+    "typeLine": "Creature — Goblin Warrior",
+    "oracleText": "Whenever another red creature you control enters, this creature gets +1/+0 until end of turn.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 1
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Foundry Street Denizen:1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "filter": "creature red ctrl:you",
+                    "to": "Battlefield"
+                },
+                "binding": "OTHER",
+                "effect": {
+                    "type": "ModifyStats",
+                    "powerModifier": {
+                        "type": "Fixed",
+                        "amount": 1
+                    },
+                    "toughnessModifier": {
+                        "type": "Fixed",
+                        "amount": 0
+                    },
+                    "target": "Self"
+                },
+                "descriptionOverride": "Whenever another red creature you control enters, this creature gets +1/+0 until end of turn."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "92",
+        "artist": "Raoul Vitale",
+        "flavorText": "After the Foundry Street riot, Arrester Hulbein tried to ban bludgeons. Which, inevitably, resulted in another riot.",
+        "imageUri": "https://cards.scryfall.io/normal/front/0/b/0befed63-07ba-4728-9078-57bbccbeeeb1.jpg?1783940125"
+    },
+    "colorIdentityOverride": [
+        "RED"
+    ]
+}
+
 // Gruul Guildgate
 {
     "name": "Gruul Guildgate",
@@ -442,7 +489,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Gruul Guildgate:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -452,7 +499,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Gruul Guildgate:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -498,6 +545,58 @@
     ]
 }
 
+// High Priest of Penance
+{
+    "name": "High Priest of Penance",
+    "manaCost": "{W}{B}",
+    "typeLine": "Creature — Human Cleric",
+    "oracleText": "Whenever this creature is dealt damage, you may destroy target nonland permanent.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 1
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "High Priest of Penance:1",
+                "trigger": "DamageReceivedEvent",
+                "effect": {
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "MoveToZone",
+                        "target": {
+                            "type": "BoundVariable",
+                            "name": "t0"
+                        },
+                        "destination": "Graveyard",
+                        "byDestruction": true
+                    }
+                },
+                "targetRequirement": {
+                    "type": "TargetObject",
+                    "filter": {
+                        "baseFilter": "nonland permanent"
+                    },
+                    "id": "t0"
+                },
+                "descriptionOverride": "Whenever this creature is dealt damage, you may destroy target nonland permanent."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "171",
+        "rarity": "RARE",
+        "artist": "Mark Zug",
+        "flavorText": "\"All I require is faith, loyalty, obedience, trust, and complete and utter devotion.\"",
+        "imageUri": "https://cards.scryfall.io/normal/front/8/4/84a3ff8d-6d7e-49f0-8d30-7f8c23db568b.jpg?1783940106"
+    },
+    "colorIdentityOverride": [
+        "BLACK",
+        "WHITE"
+    ]
+}
+
 // Ivy Lane Denizen
 {
     "name": "Ivy Lane Denizen",
@@ -511,7 +610,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ivy Lane Denizen:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "filter": "creature green ctrl:you",
@@ -520,11 +619,11 @@
                 "binding": "OTHER",
                 "effect": {
                     "type": "AddCounters",
-                    "counterType": "+1/+1",
+                    "counterType": "PLUS_ONE_PLUS_ONE",
                     "count": 1,
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirement": {
@@ -532,7 +631,7 @@
                     "filter": {
                         "baseFilter": "creature"
                     },
-                    "id": "target"
+                    "id": "t0"
                 }
             }
         ]
@@ -557,7 +656,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Orzhov Guildgate:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -567,7 +666,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Orzhov Guildgate:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -606,7 +705,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Prime Speaker Zegana:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -615,7 +714,7 @@
                     "type": "DrawCards",
                     "count": {
                         "type": "EntityProperty",
-                        "entity": "Source",
+                        "entity": "Self",
                         "numericProperty": "Power"
                     }
                 },
@@ -717,7 +816,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Simic Guildgate:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -727,7 +826,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Simic Guildgate:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -749,6 +848,94 @@
     },
     "colorIdentityOverride": [
         "BLUE",
+        "GREEN"
+    ]
+}
+
+// Totally Lost
+{
+    "name": "Totally Lost",
+    "manaCost": "{4}{U}",
+    "typeLine": "Instant",
+    "oracleText": "Put target nonland permanent on top of its owner's library.",
+    "script": {
+        "spellEffect": {
+            "type": "MoveToZone",
+            "target": {
+                "type": "BoundVariable",
+                "name": "t0"
+            },
+            "destination": "Library",
+            "placement": "Top"
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "nonland permanent"
+                },
+                "id": "t0"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "54",
+        "artist": "David Palumbo",
+        "flavorText": "Fblthp had always hated crowds.",
+        "imageUri": "https://cards.scryfall.io/normal/front/e/c/ec8e4142-7c46-4d2f-aaa6-6410f323d9f0.jpg"
+    },
+    "colorIdentityOverride": [
+        "BLUE"
+    ]
+}
+
+// Tower Defense
+{
+    "name": "Tower Defense",
+    "manaCost": "{1}{G}",
+    "typeLine": "Instant",
+    "oracleText": "Creatures you control get +0/+5 and gain reach until end of turn.",
+    "script": {
+        "spellEffect": {
+            "type": "ForEach",
+            "space": {
+                "type": "IterationSpace.Group",
+                "filter": {
+                    "baseFilter": "creature ctrl:you"
+                }
+            },
+            "body": {
+                "type": "Composite",
+                "effects": [
+                    {
+                        "type": "ModifyStats",
+                        "powerModifier": {
+                            "type": "Fixed",
+                            "amount": 0
+                        },
+                        "toughnessModifier": {
+                            "type": "Fixed",
+                            "amount": 5
+                        },
+                        "target": "IterationEntity"
+                    },
+                    {
+                        "type": "GrantKeyword",
+                        "keyword": "REACH",
+                        "target": "IterationEntity"
+                    }
+                ]
+            }
+        }
+    },
+    "metadata": {
+        "collectorNumber": "137",
+        "rarity": "UNCOMMON",
+        "artist": "Seb McKinnon",
+        "flavorText": "\"The drakes are practice. We may one day need to bring down a sky swallower, or maybe even Rakdos himself.\"\n—Korun Nar, Rubblebelt hunter",
+        "imageUri": "https://cards.scryfall.io/normal/front/8/5/857e1eb2-f3f2-4c7f-9965-da9d7e385223.jpg"
+    },
+    "colorIdentityOverride": [
         "GREEN"
     ]
 }

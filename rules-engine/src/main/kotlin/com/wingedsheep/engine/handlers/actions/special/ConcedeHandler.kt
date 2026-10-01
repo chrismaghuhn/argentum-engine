@@ -10,6 +10,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.LossReason
 import com.wingedsheep.engine.state.components.player.PlayerLostComponent
 import kotlin.reflect.KClass
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Handler for the Concede action.
@@ -40,10 +41,9 @@ class ConcedeHandler(
         val lostEvent = PlayerLostEvent(action.playerId, GameEndReason.CONCESSION)
 
         val sbaResult = sbaChecker.checkAndApply(marked)
-        if (sbaResult.isPaused) {
-            return ExecutionResult.paused(
+        if (sbaResult.outcome is Outcome.Paused) {
+            return ExecutionResult.propagatePause(
                 sbaResult.state,
-                sbaResult.pendingDecision!!,
                 listOf(lostEvent) + sbaResult.events
             )
         }

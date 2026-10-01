@@ -5,6 +5,8 @@ import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
 import com.wingedsheep.engine.core.effectiveRecipientKind
 import com.wingedsheep.engine.core.effectiveRecipientKinds
+import com.wingedsheep.engine.handlers.PredicateContext
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -13,21 +15,55 @@ import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
 import com.wingedsheep.engine.state.components.stack.stampedFor
-import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
+import com.wingedsheep.sdk.scripting.TriggeredAbility
 import com.wingedsheep.sdk.scripting.events.DamageType
-import com.wingedsheep.sdk.scripting.events.RecipientFilter
-import com.wingedsheep.sdk.scripting.events.SourceFilter
+import com.wingedsheep.sdk.scripting.events.Recipient
 
 /**
  * Handles all damage-related triggers.
  */
 class DamageTriggerDetector(
     private val abilityResolver: TriggerAbilityResolver,
-    private val matcher: TriggerMatcher
+    private val matcher: TriggerMatcher,
+    private val predicateEvaluator: PredicateEvaluator
 ) {
+
+
+    companion object {
+        /**
+         * Whether [ability] is the SELF-bound "whenever a source deals damage to this creature"
+         * shape ([GameObjectFilter.Any]) — the one whose triggering entity is the **damage source**
+         * rather than the creature that was dealt the damage.
+         *
+         * "That source's controller mills that many cards" (Belltower Sphinx) has nothing to name
+         * otherwise: the damaged creature is the trigger's own `sourceId`, and its controller is
+         * already `controllerId`, so binding it carried no information. This matches what the
+         * source-filtered variants have always done (`detectDamagedBySourceTriggers`) and what
+         * `TriggerContext.fromEvent` does for `DamagePreventedEvent`.
+         *
+         * Shared because this trigger is detected in **two** places — the main battlefield scan in
+         * `TriggerDetector` while the creature is still alive, and
+         * [detectDamageReceivedTriggers] once it has died to that same damage. They must agree, or
+         * a card would behave differently depending on whether the damage happened to be lethal.
+         */
+        fun bindsDamageSource(ability: TriggeredAbility): Boolean {
+            val trigger = ability.trigger
+            return ability.binding == TriggerBinding.SELF &&
+                trigger is EventPattern.DamageReceivedEvent &&
+                trigger.source == GameObjectFilter.Any
+        }
+
+        /**
+         * The trigger context for [bindsDamageSource] abilities, built off the damage event: the
+         * damage source is the triggering entity, and the event's damage roles, snapshots, amount,
+         * excess and recipient toughness ride along.
+         */
+        fun damageReceivedContext(event: DamageDealtEvent): TriggerContext =
+            TriggerContext.fromDamageEvent(event, triggeringEntityId = event.sourceId)
+    }
 
     /**
      * Detect "whenever this creature is dealt damage" triggers on creatures that
@@ -81,19 +117,18 @@ class DamageTriggerDetector(
             val trigger = ability.trigger
             // Only match generic (source=Any) DamageReceivedEvent triggers here.
             // Source-filtered triggers (DamagedByCreature, DamagedBySpell) are handled
-            // exclusively by detectDamagedBySourceTriggers to avoid firing with a wrong
-            // triggeringEntityId (fromEvent uses targetId, not sourceId).
-            if (trigger is EventPattern.DamageReceivedEvent &&
-                ability.binding == TriggerBinding.SELF &&
-                trigger.source == SourceFilter.Any
-            ) {
+            // exclusively by detectDamagedBySourceTriggers.
+            if (trigger is EventPattern.DamageReceivedEvent && bindsDamageSource(ability)) {
                 triggers.add(
                     PendingTrigger(
                         ability = ability,
                         sourceId = entityId,
                         sourceName = sourceName,
                         controllerId = controllerId,
-                        triggerContext = TriggerContext.fromEvent(event)
+                        // Binds the damage *source*, not the creature that was dealt the damage —
+                        // see [bindsDamageSource]. The main battlefield scan in TriggerDetector
+                        // applies the same rule for the case where the creature survived.
+                        triggerContext = damageReceivedContext(event)
                     )
                 )
             }
@@ -143,9 +178,9 @@ class DamageTriggerDetector(
         for (ability in abilities) {
             val trigger = ability.trigger
             if (trigger is EventPattern.DealsDamageEvent && ability.binding == TriggerBinding.SELF) {
-                // Pass the ability's controller so RecipientFilter.Matching can evaluate
-                // controller-relative recipient filters (e.g. "a creature an opponent controls").
-                if (matcher.matchesDealsDamageTrigger(trigger, event, state, controllerId)) {
+                // Pass the ability's controller and source so the recipient's relative readings
+                // ("a creature an opponent controls", "enchanted player") resolve against them.
+                if (matcher.matchesDealsDamageTrigger(trigger, event, state, controllerId, sourceId)) {
                     triggers.add(
                         PendingTrigger(
                             ability = ability,
@@ -167,13 +202,15 @@ class DamageTriggerDetector(
     }
 
     /**
-     * Detect "whenever a creature/spell deals damage to this" triggers.
-     * For DamageReceivedEvent(source=Creature): source must be a creature on the battlefield.
-     * For DamageReceivedEvent(source=Spell): source must be an instant or sorcery.
-     * TriggeringEntityId is set to the damage SOURCE for retaliation effects.
+     * Detect source-filtered "whenever [a source matching X] deals damage to this" triggers
+     * (Tephraderm: "a creature", "a spell"). The triggering entity is the damage SOURCE, for
+     * retaliation effects.
      *
-     * Handles both on-battlefield and off-battlefield cases (e.g., creature
-     * dies from lethal damage but trigger still fires per Rule 603.10).
+     * Neither end has to still be on the battlefield: the damaged permanent may have died to the
+     * damage, and combat damage is dealt simultaneously, so the attacker may have died to the same
+     * exchange (CR 603.10). The source filter is evaluated against the source as it was when it
+     * dealt the damage — the event's stamped source snapshot — so a same-id object that replaced the
+     * source can never stand in for it; an unstamped source fails closed.
      */
     fun detectDamagedBySourceTriggers(
         state: GameState,
@@ -184,8 +221,10 @@ class DamageTriggerDetector(
         if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.CREATURE)) return
         val sourceId = event.sourceId ?: return
         val damagedEntityId = event.targetId
-        val sourceSnapshot = event.damageSourceLastKnownSnapshot.stampedFor(sourceId)
-            ?: return
+        // Both ends need their stamped damage-time identity: the source filter reads the source
+        // snapshot (TriggerMatcher.matchesDamageReceivedSource), the abilities come from the
+        // recipient's.
+        event.damageSourceLastKnownSnapshot.stampedFor(sourceId) ?: return
         val recipientSnapshot = event.damageRecipientLastKnownSnapshot.stampedFor(damagedEntityId)
             ?: return
 
@@ -218,45 +257,26 @@ class DamageTriggerDetector(
             ?: cardComponent?.name?.takeIf { currentIsEventObject }
             ?: return
 
-        // Determine source type from the event-time snapshot only. Direct damage-received source
-        // dispatch is a look-back query: a live id is not enough to prove that the current printed
-        // object is the source that dealt this damage, and a missing/unstamped snapshot cannot
-        // answer the question safely. In particular, do not classify a same-id replacement from
-        // its current CardComponent (or treat a missing snapshot as the original source).
-        val sourceTypeLine = sourceSnapshot.typeLine ?: return
-        // Do NOT require the source to still be on the battlefield: combat damage is dealt
-        // simultaneously, so the attacker may have died from Tephraderm's damage in the same
-        // combat step (Rule 603.10 look-back). We check the card's type line instead of
-        // current zone to determine what it was when it dealt the damage.
-        val isCreatureSource = sourceTypeLine.isCreature && !sourceSnapshot.wasFaceDown
-        val isSpellSource =
-            (sourceTypeLine.isInstant || sourceTypeLine.isSorcery) &&
-                !sourceSnapshot.wasFaceDown
-
         for (ability in abilities) {
             val trigger = ability.trigger
-            val matches = when {
-                trigger is EventPattern.DamageReceivedEvent && ability.binding == TriggerBinding.SELF &&
-                    trigger.source == SourceFilter.Creature && isCreatureSource -> true
-                trigger is EventPattern.DamageReceivedEvent && ability.binding == TriggerBinding.SELF &&
-                    trigger.source == SourceFilter.Spell && isSpellSource -> true
-                else -> false
-            }
-
-            if (matches) {
-                triggers.add(
-                    PendingTrigger(
-                        ability = ability,
-                        sourceId = damagedEntityId,
-                        sourceName = recipientName,
-                        controllerId = controllerId,
-                        triggerContext = TriggerContext.fromDamageEvent(
-                            event,
-                            triggeringEntityId = sourceId
-                        )
+            if (trigger !is EventPattern.DamageReceivedEvent || ability.binding != TriggerBinding.SELF) continue
+            if (trigger.source == GameObjectFilter.Any) continue
+            // The source filter is read from the source as it was when it dealt the damage — its
+            // stamped event-time snapshot — never from a same-id object that replaced it. Neither end
+            // has to still be on the battlefield (CR 603.10).
+            if (!matcher.matchesDamageReceivedSource(trigger.source, event, state, controllerId, damagedEntityId)) continue
+            triggers.add(
+                PendingTrigger(
+                    ability = ability,
+                    sourceId = damagedEntityId,
+                    sourceName = recipientName,
+                    controllerId = controllerId,
+                    triggerContext = TriggerContext.fromDamageEvent(
+                        event,
+                        triggeringEntityId = sourceId
                     )
                 )
-            }
+            )
         }
     }
 
@@ -315,14 +335,19 @@ class DamageTriggerDetector(
             for (ability in entry.abilities) {
                 val trigger = ability.trigger
                 if (trigger is EventPattern.DealsDamageEvent &&
-                    trigger.recipient == RecipientFilter.You &&
+                    trigger.recipient == Recipient.You &&
                     ability.binding == TriggerBinding.ANY &&
                     matchesDamageType(trigger.damageType, event) &&
                     matcher.matchesDamageSourceFilter(
                         trigger.sourceFilter, event, state, entry.controllerId
                     )) {
+                    // This path binds the damage *source* as the triggering entity ("…exile it",
+                    // Farsight Mask). A source filter needs the stamped source (fail closed); a
+                    // source-blind observer ("whenever you're dealt damage", Sun Droplet) also accepts
+                    // an unknown source and then names the damaged player instead. Both carry the
+                    // event's damage roles and snapshots.
                     val triggerContext = if (trigger.sourceFilter == null) {
-                        TriggerContext.fromEvent(event)
+                        TriggerContext.fromDamageEvent(event, triggeringEntityId = event.sourceId ?: event.targetId)
                     } else {
                         TriggerContext.fromSourceFilteredDamageEvent(event)
                     } ?: continue
@@ -360,6 +385,7 @@ class DamageTriggerDetector(
     ) {
         for (entry in index.damageObservers) {
             for (ability in entry.abilities) {
+                if (!isGeneralDamageObserver(ability)) continue
                 matchDamageObserver(
                     state = state,
                     event = event,
@@ -410,7 +436,7 @@ class DamageTriggerDetector(
         // Batch ("one or more") observers fire once per event batch, not once per
         // damage event — handled by detectDamageObserverBatchTriggers.
         if (trigger.batch) return
-        if (!matcher.matchesDealsDamageTrigger(trigger, event, state, controllerId)) return
+        if (!matcher.matchesDealsDamageTrigger(trigger, event, state, controllerId, sourceId)) return
         // When the trigger has a sourceFilter (e.g., "creature you control deals
         // combat damage"), the triggering entity is the damage SOURCE (the creature),
         // not the damage recipient. This allows effects like "exile it" to reference
@@ -474,9 +500,10 @@ class DamageTriggerDetector(
                 val trigger = ability.trigger
                 if (trigger !is EventPattern.DealsDamageEvent || !trigger.batch) continue
                 if (ability.binding != TriggerBinding.ANY) continue
+                if (!isGeneralDamageObserver(ability)) continue
 
                 val firstMatching = damageEvents.firstOrNull { event ->
-                    matcher.matchesDealsDamageTrigger(trigger, event, state, entry.controllerId)
+                    matcher.matchesDealsDamageTrigger(trigger, event, state, entry.controllerId, entry.entityId)
                 }
                 if (firstMatching != null) {
                     val triggerContext = if (trigger.sourceFilter != null) {
@@ -522,7 +549,7 @@ class DamageTriggerDetector(
                 val trigger = ability.trigger
                 if (trigger is EventPattern.DealsDamageEvent &&
                     trigger.damageType == DamageType.Combat &&
-                    trigger.recipient == RecipientFilter.AnyPlayer &&
+                    trigger.recipient == Recipient.AnyPlayer &&
                     trigger.sourceFilter != null) {
                     // Check if the sourceFilter has a subtype requirement
                     val filter = trigger.sourceFilter
@@ -545,4 +572,31 @@ class DamageTriggerDetector(
             }
         }
     }
+}
+
+/** Which detector owns an ANY-bound [EventPattern.DealsDamageEvent] observer. */
+internal enum class DamageObserverBucket { ToYou, SubtypeToPlayer, General }
+
+/**
+ * Every "… deals damage to you" observer goes to the damage-to-you bucket, with or without a
+ * sourceFilter, and only there: that path binds the damage *source* as the triggering entity
+ * ("…exile it", Farsight Mask), and routing it to the general observers as well would fire it twice.
+ */
+internal fun damageObserverBucket(trigger: EventPattern.DealsDamageEvent): DamageObserverBucket {
+    if (trigger.recipient == Recipient.You) return DamageObserverBucket.ToYou
+    val filter = trigger.sourceFilter
+    val subtypeCombatToPlayer = trigger.damageType == DamageType.Combat &&
+        trigger.recipient == Recipient.AnyPlayer &&
+        filter is GameObjectFilter &&
+        filter.cardPredicates.any { it is com.wingedsheep.sdk.scripting.predicates.CardPredicate.HasSubtype }
+    return if (subtypeCombatToPlayer) DamageObserverBucket.SubtypeToPlayer else DamageObserverBucket.General
+}
+
+/**
+ * A permanent is filed under each bucket it has an observer for, so the general walk must skip the
+ * abilities that belong to the You / subtype buckets or they would fire once per bucket.
+ */
+private fun isGeneralDamageObserver(ability: TriggeredAbility): Boolean {
+    val trigger = ability.trigger
+    return trigger is EventPattern.DealsDamageEvent && damageObserverBucket(trigger) == DamageObserverBucket.General
 }

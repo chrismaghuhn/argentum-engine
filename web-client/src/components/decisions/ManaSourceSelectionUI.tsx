@@ -34,7 +34,9 @@ export function ManaSourceSelectionUI({
   const decisionSelectionState = useGameStore((s) => s.decisionSelectionState)
   const cancelDecisionSelection = useGameStore((s) => s.cancelDecisionSelection)
   const submitManaSourcesDecision = useGameStore((s) => s.submitManaSourcesDecision)
-  const manaPool = usePlayer(decision.playerId)?.manaPool ?? null
+  const player = usePlayer(decision.playerId)
+  const manaPool = player?.manaPool ?? null
+  const acceptedColors = player?.manaPaymentColors
 
   const waterbendPermanents = decision.waterbendPermanents ?? []
   const waterbendIds = useMemo(
@@ -67,7 +69,7 @@ export function ManaSourceSelectionUI({
     startDecisionSelection(selectionState)
 
     return () => {
-      cancelDecisionSelection()
+      cancelDecisionSelection(decision.id)
     }
   }, [decision.id, suggestionKey])
 
@@ -103,28 +105,29 @@ export function ManaSourceSelectionUI({
         selectedManaSources,
         decision.availableSources,
         selectedWaterbend.length,
+        acceptedColors,
       ),
-    [costSymbols, manaPool, selectedManaSources, selectedWaterbend, decision.availableSources],
+    [costSymbols, manaPool, selectedManaSources, selectedWaterbend, decision.availableSources, acceptedColors],
   )
   const isCostCovered = coverage.every(isCovered)
   const floatingCoversAll = coverage.every((pip) => pip.floating || pip.symbol === 'X')
 
   const handleAutoPay = () => {
-    submitManaSourcesDecision([], true)
-    cancelDecisionSelection()
+    submitManaSourcesDecision(decision.id, [], true)
+    cancelDecisionSelection(decision.id)
   }
 
   const handleConfirm = () => {
     if (!isCostCovered) return
     // A payment made entirely from mana the player floated themselves submits no sources; the
     // server distinguishes it from a refusal by the absence of the `declined` flag.
-    submitManaSourcesDecision(selectedManaSources, false, selectedWaterbend)
-    cancelDecisionSelection()
+    submitManaSourcesDecision(decision.id, selectedManaSources, false, selectedWaterbend)
+    cancelDecisionSelection(decision.id)
   }
 
   const handleDecline = () => {
-    submitManaSourcesDecision([], false, [], true)
-    cancelDecisionSelection()
+    submitManaSourcesDecision(decision.id, [], false, [], true)
+    cancelDecisionSelection(decision.id)
   }
 
   const payLabel = floatingCoversAll && selectedManaSources.length === 0 ? 'Pay' : `Pay (${selectedManaSources.length})`

@@ -16,7 +16,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Annoyed Altisaur:1",
                 "trigger": "CastThisSpellEvent",
                 "effect": "Cascade",
                 "descriptionOverride": "Cascade"
@@ -71,7 +71,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ardenn, Intrepid Archaeologist:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "BEGIN_COMBAT"
@@ -122,11 +122,11 @@
                             {
                                 "type": "FilterCollection",
                                 "from": "ardenn_candidates",
-                                "filter": {
+                                "collectionFilter": {
                                     "type": "AttachableTo",
                                     "target": {
-                                        "type": "ContextTarget",
-                                        "index": 0
+                                        "type": "BoundVariable",
+                                        "name": "t0"
                                     }
                                 },
                                 "storeMatching": "ardenn_legal"
@@ -141,12 +141,19 @@
                             },
                             {
                                 "type": "AttachCollectionToTarget",
-                                "from": "ardenn_selected"
+                                "from": "ardenn_selected",
+                                "target": {
+                                    "type": "BoundVariable",
+                                    "name": "t0"
+                                }
                             }
                         ]
                     }
                 },
-                "targetRequirement": "TargetPermanentOrPlayer"
+                "targetRequirement": {
+                    "type": "TargetPermanentOrPlayer",
+                    "id": "t0"
+                }
             }
         ]
     },
@@ -178,7 +185,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Armored Skyhunter:1",
                 "trigger": "AttackEvent",
                 "effect": {
                     "type": "Composite",
@@ -356,7 +363,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Elvish Doomsayer:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "from": "Battlefield",
@@ -430,7 +437,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ghen, Arcanum Weaver:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -455,7 +462,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "destination": "Battlefield",
                     "fromZone": "Graveyard"
@@ -467,7 +474,7 @@
                             "baseFilter": "enchantment own:you",
                             "zone": "Graveyard"
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
@@ -499,7 +506,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ingenuity Engine:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -524,7 +531,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "destination": "Hand"
                 },
@@ -534,7 +541,7 @@
                         "filter": {
                             "baseFilter": "artifact ctrl:you"
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
@@ -566,7 +573,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Kangee, Sky Warden:1",
                 "trigger": "AttackEvent",
                 "effect": {
                     "type": "ForEach",
@@ -586,12 +593,12 @@
                             "type": "Fixed",
                             "amount": 0
                         },
-                        "target": "Self"
+                        "target": "IterationEntity"
                     }
                 }
             },
             {
-                "id": "ability_2",
+                "id": "Kangee, Sky Warden:2",
                 "trigger": "BlockEvent",
                 "effect": {
                     "type": "ForEach",
@@ -611,7 +618,7 @@
                             "type": "Fixed",
                             "amount": 2
                         },
-                        "target": "Self"
+                        "target": "IterationEntity"
                     }
                 }
             }
@@ -665,7 +672,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Magus of the Order:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -702,7 +709,8 @@
                                 "zone": "Library",
                                 "filter": "creature green"
                             },
-                            "storeAs": "searchable"
+                            "storeAs": "searchable",
+                            "search": true
                         },
                         {
                             "type": "SelectFromCollection",
@@ -755,7 +763,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Meteoric Mace:2",
                 "trigger": "CastThisSpellEvent",
                 "effect": "Cascade",
                 "descriptionOverride": "Cascade"
@@ -763,7 +771,7 @@
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Meteoric Mace:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -841,6 +849,53 @@
     ]
 }
 
+// Natural Reclamation
+{
+    "name": "Natural Reclamation",
+    "manaCost": "{4}{G}",
+    "typeLine": "Instant",
+    "oracleText": "Cascade (When you cast this spell, exile cards from the top of your library until you exile a nonland card that costs less. You may cast it without paying its mana cost. Put the exiled cards on the bottom in a random order.)\nDestroy target artifact or enchantment.",
+    "keywords": [
+        "CASCADE"
+    ],
+    "script": {
+        "spellEffect": {
+            "type": "MoveToZone",
+            "target": {
+                "type": "BoundVariable",
+                "name": "t0"
+            },
+            "destination": "Graveyard",
+            "byDestruction": true
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "artifact|enchantment"
+                },
+                "id": "t0"
+            }
+        ],
+        "triggeredAbilities": [
+            {
+                "id": "Natural Reclamation:1",
+                "trigger": "CastThisSpellEvent",
+                "effect": "Cascade",
+                "descriptionOverride": "Cascade"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "245",
+        "artist": "Alayna Danner",
+        "imageUri": "https://cards.scryfall.io/normal/front/3/e/3e98fb7c-6962-4b57-b7b7-c71899564002.jpg?1783928787"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
 // Pride of the Perfect
 {
     "name": "Pride of the Perfect",
@@ -888,7 +943,8 @@
                         "zone": "Library",
                         "filter": "land"
                     },
-                    "storeAs": "searchable"
+                    "storeAs": "searchable",
+                    "search": true
                 },
                 {
                     "type": "SelectFromCollection",
@@ -941,7 +997,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Reyav, Master Smith:1",
                 "trigger": {
                     "type": "AttackEvent",
                     "filter": {
@@ -992,7 +1048,7 @@
             },
             "body": {
                 "type": "MoveToZone",
-                "target": "Self",
+                "target": "IterationEntity",
                 "destination": "Graveyard",
                 "byDestruction": true
             }
@@ -1019,7 +1075,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "War Room:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -1032,7 +1088,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "War Room:2",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -1089,13 +1145,13 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Wyleth, Soul of Steel:1",
                 "trigger": "AttackEvent",
                 "effect": {
                     "type": "DrawCards",
                     "count": {
                         "type": "EntityProperty",
-                        "entity": "Source",
+                        "entity": "Self",
                         "numericProperty": "AttachmentCount"
                     }
                 }

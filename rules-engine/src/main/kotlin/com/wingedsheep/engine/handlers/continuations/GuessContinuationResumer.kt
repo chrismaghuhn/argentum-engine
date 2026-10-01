@@ -1,17 +1,19 @@
 package com.wingedsheep.engine.handlers.continuations
 
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.ChooseGuessKindContinuation
 import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
-import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.core.GuessConditionContinuation
 import com.wingedsheep.engine.core.GuessTopCardKindContinuation
 import com.wingedsheep.engine.core.OptionChosenResponse
+import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -19,7 +21,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.effects.CardKind
 import com.wingedsheep.sdk.scripting.effects.Effect
-import java.util.UUID
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Resumes the two-step opponent-guess flow for
@@ -35,6 +37,7 @@ import java.util.UUID
 class GuessContinuationResumer(
     private val services: EngineServices
 ) : ContinuationResumerModule {
+    private val conditionEvaluator = services.conditionEvaluator
 
     private val effectRunner: EffectContinuationRunner by lazy {
         EffectContinuationRunner(services.effectExecutorRegistry)
@@ -43,7 +46,46 @@ class GuessContinuationResumer(
     override fun resumers(): List<ContinuationResumer<*>> = listOf(
         resumer(ChooseGuessKindContinuation::class, ::resumeChooseKind),
         resumer(GuessTopCardKindContinuation::class, ::resumeGuess),
+        resumer(GuessConditionContinuation::class, ::resumeGuessCondition),
     )
+
+    /**
+     * Resume a [com.wingedsheep.sdk.scripting.effects.PlayerGuessesConditionEffect]: the guesser has
+     * answered, so evaluate the condition for the first time, score the guess, and publish 1 (right)
+     * or 0 (wrong) for the siblings beneath to gate on.
+     *
+     * The condition is evaluated against the *captured* effect context, which is what makes a guess
+     * about an earlier choice work — a condition reading `chosenValues` (Liar's Pendulum's chosen card
+     * name) would match nothing under a freshly built context and every guess would score as wrong.
+     *
+     * The result goes out through [exposeCollectionsToNextFrame] rather than this resumer's return
+     * value, because the consumer is the sibling effect beneath in the same composite and that frame
+     * is where a pipeline number has to land to survive the round trip through the decision.
+     */
+    private fun resumeGuessCondition(
+        state: GameState,
+        continuation: GuessConditionContinuation,
+        response: DecisionResponse,
+        checkForMore: CheckForMore
+    ): ExecutionResult {
+        if (response !is YesNoResponse) {
+            return ExecutionResult.error(state, "Expected yes/no response for condition guess")
+        }
+
+        val truth = conditionEvaluator.evaluate(
+            state,
+            continuation.condition,
+            continuation.effectContext
+        )
+        val guessedRight = response.choice == truth
+
+        val published = exposeCollectionsToNextFrame(
+            state,
+            collections = emptyMap(),
+            numbers = mapOf(continuation.storeGuessedRightAs to if (guessedRight) 1 else 0)
+        )
+        return checkForMore(published, emptyList())
+    }
 
     /** Step 1 resume: the chooser picked land/nonland. Present the guess to the guesser. */
     private fun resumeChooseKind(
@@ -62,8 +104,7 @@ class GuessContinuationResumer(
             state.getEntity(it)?.get<CardComponent>()?.name
         }
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = ChooseOptionDecision(
+        val question = { decisionId: String -> ChooseOptionDecision(
             id = decisionId,
             playerId = continuation.guesserId,
             prompt = "Guess whether the top card of the library is land or nonland",
@@ -73,10 +114,9 @@ class GuessContinuationResumer(
                 phase = DecisionPhase.RESOLUTION
             ),
             options = listOf("Land", "Nonland")
-        )
+        ) }
 
         val nextContinuation = GuessTopCardKindContinuation(
-            decisionId = decisionId,
             controllerLibraryOwnerId = continuation.controllerLibraryOwnerId,
             guesserId = continuation.guesserId,
             onGuessedRight = continuation.onGuessedRight,
@@ -84,20 +124,10 @@ class GuessContinuationResumer(
             effectContext = continuation.effectContext
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(nextContinuation)
-
-        return ExecutionResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = continuation.guesserId,
-                    decisionType = "CHOOSE_OPTION",
-                    prompt = decision.prompt
-                )
-            )
+        return state.suspendForDecision(
+            question = question,
+            answer = nextContinuation,
+            events = emptyList(),
         )
     }
 
@@ -159,13 +189,8 @@ class GuessContinuationResumer(
             continuation.effectContext
         )
 
-        if (result.isPaused) {
-            return ExecutionResult.paused(
-                result.state,
-                result.pendingDecision!!,
-                events + result.events,
-                diagnostics = result.diagnostics,
-            )
+        if (result.outcome is Outcome.Paused) {
+            return ExecutionResult.propagatePause(result.state, events + result.events, result.diagnostics)
         }
         return checkForMore(result.state, events + result.events.toList())
             .withDiagnosticsFrom(result.diagnostics)

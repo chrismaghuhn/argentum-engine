@@ -44,6 +44,7 @@ fun spellPaymentContextFor(
     isLegendary = cardComponent.typeLine.isLegendary,
     manaValue = cardComponent.manaCost.cmc,
     hasXInCost = cardComponent.manaCost.hasX,
+    isColorless = cardComponent.colors.isEmpty(),
     subtypes = paymentSubtypesOf(cardComponent),
     isFromExile = isFromExile,
     isFromHand = isFromHand,

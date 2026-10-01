@@ -12,9 +12,7 @@ class ContinuationDiagnosticsPropagationTest : FunSpec({
 
     test("a resumed unsupported continuation reaches ActionProcessor exactly once") {
         val playerId = EntityId("continuation-player")
-        val decisionId = "unsupported-continuation"
         val continuation = AnyPlayerMayPayContinuation(
-            decisionId = decisionId,
             currentPlayerId = playerId,
             remainingPlayers = emptyList(),
             sourceId = EntityId("continuation-source"),
@@ -24,16 +22,20 @@ class ContinuationDiagnosticsPropagationTest : FunSpec({
             requiredCount = 0,
             filter = GameObjectFilter(),
         )
-        val state = GameState(
-            turnOrder = listOf(playerId),
-            pendingDecision = YesNoDecision(
-                id = decisionId,
-                playerId = playerId,
-                prompt = "Synthetic unsupported continuation",
-                context = DecisionContext(),
-            ),
-            continuationStack = listOf(continuation),
-        )
+        // The question and the continuation that answers it are installed together as one
+        // suspension; the decision id is the routing id it allocates.
+        val state = GameState(turnOrder = listOf(playerId)).suspendForDecision(
+            question = { id ->
+                YesNoDecision(
+                    id = id,
+                    playerId = playerId,
+                    prompt = "Synthetic unsupported continuation",
+                    context = DecisionContext(),
+                )
+            },
+            answer = continuation,
+        ).state
+        val decisionId = checkNotNull(state.pendingDecision).id
 
         val result = ActionProcessor(CardRegistry()).process(
             state,

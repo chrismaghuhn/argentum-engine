@@ -8,6 +8,7 @@ import com.wingedsheep.sdk.model.Deck
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /** Go for the Throat (MBS #43): destroy target nonartifact creature. */
 class GoForTheThroatScenarioTest : io.kotest.core.spec.style.FunSpec({
@@ -28,7 +29,7 @@ class GoForTheThroatScenarioTest : io.kotest.core.spec.style.FunSpec({
         val spell = driver.putCardInHand(caster, "Go for the Throat")
         driver.giveMana(caster, Color.BLACK, 2)
 
-        driver.castSpell(caster, spell, listOf(creature)).isSuccess shouldBe true
+        driver.castSpell(caster, spell, listOf(creature)).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.findPermanent(opponent, "Grizzly Bears") shouldBe null
@@ -43,7 +44,7 @@ class GoForTheThroatScenarioTest : io.kotest.core.spec.style.FunSpec({
         val spell = driver.putCardInHand(caster, "Go for the Throat")
         driver.giveMana(caster, Color.BLACK, 2)
 
-        driver.castSpell(caster, spell, listOf(creature)).isSuccess shouldBe false
+        driver.castSpell(caster, spell, listOf(creature)).outcome shouldNotBe Outcome.Done
         driver.findPermanent(opponent, "Artifact Creature") shouldNotBe null
     }
 })

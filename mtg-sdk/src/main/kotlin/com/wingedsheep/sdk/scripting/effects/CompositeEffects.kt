@@ -42,12 +42,18 @@ data class CompositeEffect(
     override val description: String =
         descriptionOverride ?: effects.joinToString(". ") { it.description }
 
-    override fun runtimeDescription(resolver: (DynamicAmount) -> Int): String {
+    /** No override, no early stop: a sequence [Effect.then] may extend in place. */
+    internal fun isPlainSequence(): Boolean =
+        !stopOnError && descriptionOverride == null && descriptionAmounts.isEmpty()
+
+    override fun runtimeDescription(resolver: (DynamicAmount) -> Int?): String {
         val template = descriptionOverride
             ?: return effects.joinToString(". ") { it.runtimeDescription(resolver) }
         var rendered = template
         descriptionAmounts.forEachIndexed { index, amount ->
-            rendered = rendered.replace("{$index}", resolver(amount).toString())
+            // Undeterminable slot: substitute the amount's own wording rather than a bogus "0".
+            val value = resolver(amount)?.toString() ?: amount.description
+            rendered = rendered.replace("{$index}", value)
         }
         return rendered
     }
@@ -112,8 +118,8 @@ data class Mode(
  * ```kotlin
  * ModalEffect(
  *     modes = listOf(
- *         Mode.withTarget(CounterSpellEffect, TargetSpell(), "Counter target spell"),
- *         Mode.withTarget(MoveToZoneEffect(EffectTarget.ContextTarget(0), Zone.Hand), TargetPermanent(), "Return target permanent to its owner's hand"),
+ *         Mode.withTarget(CounterSpellEffect, TargetObject(filter = TargetFilter.SpellOnStack), "Counter target spell"),
+ *         Mode.withTarget(MoveToZoneEffect(EffectTarget.ContextTarget(0), Zone.Hand), TargetObject(filter = TargetFilter.Permanent), "Return target permanent to its owner's hand"),
  *         Mode.noTarget(TapAllCreaturesEffect(CreatureGroupFilter.OpponentsControl), "Tap all creatures your opponents control"),
  *         Mode.noTarget(DrawCardsEffect(1), "Draw a card")
  *     ),
@@ -160,8 +166,8 @@ data class ModalEffect(
      * result as the effective maximum, clamped to `modes.size`. Two evaluation sites with
      * different floor semantics:
      *
-     * - **Put-on-stack / resolution-time** (modal abilities): [minChooseCount] is treated as `0`
-     *   (always "choose up to"); [chooseCount] is ignored. A modal *triggered* ability evaluates it
+     * - **Put-on-stack / resolution-time** (modal abilities): [dynamicMinChooseCount] supplies the
+     *   floor when present; otherwise it is `0` ("choose up to"). [chooseCount] is ignored. A modal *triggered* ability evaluates it
      *   as the ability goes onto the stack (CR 603.3c, `TriggerProcessor`) and the result is then
      *   fixed; a modal *activated* ability evaluates it on resolution (`ModalEffectExecutor`). Used
      *   for "choose up to X" where X depends on game state rather than the cast (Riku of Many
@@ -177,7 +183,7 @@ data class ModalEffect(
     val dynamicChooseCount: com.wingedsheep.sdk.scripting.values.DynamicAmount? = null,
     /**
      * Optional runtime-evaluated *lower* bound, the mandatory sibling of [dynamicChooseCount].
-     * Evaluated the same way, at the same cast-time site, and clamped the same way.
+     * Evaluated alongside the upper bound at cast time, trigger stacking, or effect resolution.
      *
      * The two exist because the printed wording splits: "you **may** choose two instead" leaves the
      * floor at one (Flame of Anor — set [dynamicChooseCount] alone), while "choose both **instead**"
@@ -185,7 +191,7 @@ data class ModalEffect(
      * `teamworkModal { }` does). With only a ceiling, a player who paid the extra cost could still
      * take a single mode, which no printed card allows.
      *
-     * Ignored at the resolution-time site, where [minChooseCount] is already treated as 0.
+     * For modal abilities, omitting this preserves the default floor of 0 ("choose up to").
      */
     val dynamicMinChooseCount: com.wingedsheep.sdk.scripting.values.DynamicAmount? = null,
     /**
@@ -354,61 +360,19 @@ data class ModalEffect(
 }
 
 /**
- * "[action]. If you do, [ifYouDo]." — conditional execution gated on whether [action] actually
- * accomplished its work, not on a yes/no decision. The classic case: "You may discard a card. If
- * you do, draw a card" — when the player declines or the hand is empty, no discard happens, so no
- * draw happens.
- *
- * Backwards-compatible facade preserved for the cards (and the `Effects.IfYouDo` facade) that
- * authored against the former `IfYouDoEffect` data class. It now lowers to a [GatedEffect] with a
- * [Gate.DoAction] gate — one frame, one executor, one resumer — so there is no bespoke `IfYouDo`
- * executor or continuation type of its own. Card source is unchanged; only the compiled/serialized
- * representation moved to `Gated`.
- *
- * Differences from related gates:
- * - [MayEffect] / [Gate.MayDecide] gates on the *decision* (yes/no), not the *outcome*. A "yes"
- *   with nothing to discard still passes through. Wrap with `MayEffect` for "You may [action]. If
- *   you do, [effect]": `MayEffect(IfYouDoEffect(action, then))`.
- * - [OptionalCostEffect] / [Gate.MayPay] gates on *paying a recognized cost primitive* (mana /
- *   life) via a payability check before prompting; it does not handle discard / sacrifice / mill /
- *   etc. where success is data-driven.
- * - [CompositeEffect].`stopOnError` aborts on raised errors only — silent zero-progress actions
- *   (empty hand, no legal sacrifice) still let downstream effects run.
- *
- * @param action The action whose outcome gates [ifYouDo] (becomes [Gate.DoAction.action]).
- * @param ifYouDo Effect that runs only if [action] performed its work (becomes [GatedEffect.then]).
- * @param ifYouDont Optional effect that runs if [action] did nothing (becomes [GatedEffect.otherwise]).
- * @param successCriterion How to determine "did it happen". Defaults to [SuccessCriterion.Auto],
- *   which infers from the action shape (pipeline ending in a move → destination zone grew).
- */
-@Suppress("FunctionName")
-fun IfYouDoEffect(
-    action: Effect,
-    ifYouDo: Effect,
-    ifYouDont: Effect? = null,
-    successCriterion: SuccessCriterion = SuccessCriterion.Auto,
-    descriptionOverride: String? = null
-): GatedEffect = GatedEffect(
-    gate = Gate.DoAction(action, successCriterion),
-    then = ifYouDo,
-    otherwise = ifYouDont,
-    descriptionOverride = descriptionOverride
-)
-
-/**
- * How to determine whether an [IfYouDoEffect] action accomplished its work.
+ * How to determine whether an [Effects.IfYouDo] action accomplished its work.
  */
 @Serializable
 sealed interface SuccessCriterion {
     /**
-     * Infer success from the action's shape. The executor walks [IfYouDoEffect.action]
+     * Infer success from the action's shape. The executor walks [Effects.IfYouDo.action]
      * for a terminal zone move — either a pipeline [MoveCollectionEffect] or a
      * single-target `MoveToZoneEffect` whose target is the source itself; if found, the
      * destination zone is snapshot pre-execution and counted as "succeeded" iff it grew
      * by at least one entry.
      *
      * Auto is only legal on actions whose shape it can actually infer ([canInfer]) —
-     * card-load validation ([com.wingedsheep.sdk.serialization.CardValidator]) rejects
+     * card-load validation ([com.wingedsheep.sdk.tooling.CardValidator]) rejects
      * everything else. An action whose outcome isn't a zone-size delta (deal damage,
      * gain/lose life, …) must state its criterion explicitly ([Always] when performing
      * the action can't fail, [CollectionNonEmpty] to gate on a pipeline result) instead
@@ -537,6 +501,27 @@ sealed interface SuccessCriterion {
     @SerialName("SuccessCriterion.PermanentsSacrificed")
     @Serializable
     data object PermanentsSacrificed : SuccessCriterion
+
+    /**
+     * Action succeeded iff the gated action actually *turned a permanent face up* — a
+     * `TurnFaceUpEvent` was emitted during the action. Turning face up is not a zone move, so
+     * [Auto] can't infer it, and [Always] would wrongly report success for the cases the rules
+     * single out as failures.
+     *
+     * A `TurnFaceUpEffect` deliberately produces no such event when it can't do its work:
+     * a manifested or cloaked permanent represented by an instant or sorcery card is revealed and
+     * left face down (CR 701.40g / 701.58g), and a permanent that is already face up has nothing
+     * to turn. Both are exactly the "you can't" the gate must catch.
+     *
+     * Etrata, Deadly Fugitive grants face-down creatures "{2}{U}{B}: Turn this creature face up.
+     * **If you can't**, exile it, then you may cast the exiled card without paying its mana cost."
+     * — the fallback lives in [GatedEffect.otherwise], so the primary instruction stays the gated
+     * action rather than being re-encoded as a condition that would have to re-derive the engine's
+     * own turn-up legality.
+     */
+    @SerialName("SuccessCriterion.TurnedFaceUp")
+    @Serializable
+    data object TurnedFaceUp : SuccessCriterion
 }
 
 /**
@@ -568,25 +553,31 @@ enum class DamageRecipient {
  *
  * @property filter Which permanents/cards qualify to be beheld
  * @property ifBeheld Effect that runs only if the player successfully beholds
+ * @property otherwise Effect that runs only if the player doesn't behold — declined, or had
+ *   nothing to behold ("you may behold a Jace. If you don't, this land enters tapped." —
+ *   Theorist's Sanctum, wrapped in `OnEnterRunEffect`)
  */
 @SerialName("Behold")
 @Serializable
 data class BeholdEffect(
     val filter: GameObjectFilter = GameObjectFilter.Any,
-    val ifBeheld: Effect? = null
+    val ifBeheld: Effect? = null,
+    val otherwise: Effect? = null
 ) : Effect {
     override val description: String = buildString {
         val filterDesc = filter.description
         val article = if (filterDesc.firstOrNull()?.lowercase() in listOf("a", "e", "i", "o", "u")) "an" else "a"
         append("You may behold $article $filterDesc")
         if (ifBeheld != null) append(". If you do, ${ifBeheld.description.replaceFirstChar { it.lowercase() }}")
+        if (otherwise != null) append(". If you don't, ${otherwise.description.replaceFirstChar { it.lowercase() }}")
     }
 
     override fun applyTextReplacement(replacer: TextReplacer): Effect {
         val newFilter = filter.applyTextReplacement(replacer)
         val newIfBeheld = ifBeheld?.applyTextReplacement(replacer)
-        return if (newFilter !== filter || newIfBeheld !== ifBeheld)
-            copy(filter = newFilter, ifBeheld = newIfBeheld) else this
+        val newOtherwise = otherwise?.applyTextReplacement(replacer)
+        return if (newFilter !== filter || newIfBeheld !== ifBeheld || newOtherwise !== otherwise)
+            copy(filter = newFilter, ifBeheld = newIfBeheld, otherwise = newOtherwise) else this
     }
 }
 
@@ -647,13 +638,31 @@ data class ReflexiveTriggerEffect(
  * @property cost The cost that can be paid to avoid the consequence
  * @property suffer The consequence if the cost is not paid
  * @property player Who must make the choice (defaults to controller)
+ * @property consequenceDescription The prompt's words for what happens if the cost isn't paid
  */
 @SerialName("PayOrSuffer")
 @Serializable
 data class PayOrSufferEffect(
     val cost: PayCost,
     val suffer: Effect,
-    val player: EffectTarget = EffectTarget.Controller
+    val player: EffectTarget = EffectTarget.Controller,
+    /**
+     * The consequence clause of the player-facing prompt ("Pay {2} or **…**?"), in the card's own
+     * words. Null generates it from [suffer], which is right for the common case where the payer is
+     * the ability's controller.
+     *
+     * It stops being right as soon as [player] routes the question elsewhere. An effect description
+     * is an imperative fragment addressed to the ability's controller — [GainControlEffect] renders
+     * "gain control of target" — so asking an *opponent* that question inverts who does what:
+     * Scarwood Bandits asked its victim "Pay {2} or gain control of target for as long as this
+     * creature remains on the battlefield?", offering them the theft they were the subject of.
+     * The unresolved "target" and "this creature" are the same fragment's other half — placeholders
+     * that read as the card's text, not as this game's board.
+     *
+     * Write this out whenever [player] is not the controller, and whenever the generated text would
+     * name a placeholder the player can't resolve.
+     */
+    val consequenceDescription: String? = null
 ) : Effect {
     override val description: String = "${suffer.description} unless you ${cost.description}"
 
@@ -752,6 +761,13 @@ data class CreateDelayedTriggerEffect(
      * The trigger only fires for events sourced from this entity. Context
      * references (e.g. ContextTarget(0)) are baked into a concrete entity id
      * at creation time by CreateDelayedTriggerExecutor.
+     *
+     * For step-based delayed triggers (no [trigger]) there is no event to scope, so the baked
+     * entity instead becomes the fired trigger's *triggering entity* — reachable from the effect
+     * as `EffectTarget.TriggeringEntity`, in an effect and in a filter alike. That is
+     * how "at end of combat, destroy all creatures that blocked or were blocked by **it** this
+     * turn" (Gaze of the Gorgon) remembers which creature "it" was. Ignored when [fireOnPlayer]
+     * is set, which already names the triggering player.
      */
     val watchedTarget: EffectTarget? = null,
     /**
@@ -820,7 +836,16 @@ data class CreateDelayedTriggerEffect(
      *  - `PlayerRef(Player.TriggeringPlayer)` — on the triggering/damaged player's turn ("at
      *    the beginning of *their* next draw step"; Nafs Asp).
      */
-    val fireOnPlayer: EffectTarget? = null
+    val fireOnPlayer: EffectTarget? = null,
+    /**
+     * Names of the creating pipeline's stored collections the delayed ability remembers — "return
+     * **those cards**", "return **that card** … attached to **that creature**" (Flickerform). A
+     * delayed triggered ability still refers to the particular objects its creating effect named
+     * (CR 603.7c), but the creating pipeline is gone by the time it fires; each named collection's
+     * entity ids are copied onto the delayed trigger when it is created and seeded back into the
+     * pipeline its effect resolves in, under the same names. Empty by default: nothing is carried.
+     */
+    val carryCollections: List<String> = emptyList()
 ) : Effect {
     override val description: String = when {
         trigger != null -> "create a delayed trigger that fires on ${trigger.event::class.simpleName}"
@@ -870,50 +895,23 @@ sealed interface DelayedTriggerExpiry {
     @SerialName("DelayedTriggerExpiry.UntilControllersNextTurn")
     @Serializable
     data object UntilControllersNextTurn : DelayedTriggerExpiry
+
+    /**
+     * Remove the delayed trigger when the current combat phase ends — the scope of a "this combat"
+     * rider, which [EndOfTurn] is too coarse for once a turn has more than one combat phase.
+     *
+     * Goblin Flotilla (FEM) installs one per combat: "At the beginning of each combat, unless you
+     * pay {R}, whenever this creature blocks or becomes blocked by a creature *this combat*, that
+     * creature gains first strike until end of turn." Paying in the second combat must not leave
+     * the first combat's unpaid watcher running.
+     *
+     * Expired alongside the removal of creatures from combat, on entry to the postcombat main
+     * phase — the same moment the engine considers the combat phase over.
+     */
+    @SerialName("DelayedTriggerExpiry.EndOfCombat")
+    @Serializable
+    data object EndOfCombat : DelayedTriggerExpiry
 }
-
-/**
- * "You may pay [cost]. If you do, [effect]."
- *
- * Optional mana payment offered to the controller. Backwards-compatible facade preserved for the
- * cards that authored against the former `MayPayManaEffect` data class. It now lowers to a
- * [GatedEffect] with a [Gate.MayPay] over a [PayManaCostEffect], so there is no bespoke MayPayMana
- * executor or continuation type — the gated frame owns the resolution order. Card source is
- * unchanged; only the compiled/serialized representation moved to `Gated`.
- *
- * The engine recognizes this exact shape — a flat mana [Gate.MayPay] with no `otherwise` and the
- * default decision-maker — to keep the optional-mana-payment UX the wrapper used to own: manual
- * mana-source selection at resolution, and, for a triggered ability that *also* requires a target
- * (the Onslaught "Words of ..." cycle, Lightning Rift), the deliberate pay-then-choose-target
- * order. Composite / life-gated / `otherwise`-bearing MayPay gates intentionally fall through to
- * the generic gated yes/no instead.
- *
- * Example: Lightning Rift — "you may pay {1}. If you do, Lightning Rift deals 2 damage to any target."
- */
-@Suppress("FunctionName")
-fun MayPayManaEffect(cost: ManaCost, effect: Effect): GatedEffect =
-    GatedEffect(gate = Gate.MayPay(PayManaCostEffect(cost)), then = effect)
-
-/**
- * "You may pay {X}. If you do, [effect]."
- *
- * Presents the player with a number chooser (0 to max affordable mana). If X > 0, pays X mana
- * (auto-tapping lands) and executes the inner effect with the chosen X value set in the effect
- * context (read via `DynamicAmount.XValue`).
- *
- * Backwards-compatible facade preserved for the cards that authored against the former
- * `MayPayXForEffect` data class. It now lowers to a [GatedEffect] with a [Gate.MayPayX] gate — one
- * frame, one executor — so there is no bespoke MayPayX executor. Card source is unchanged; only the
- * compiled/serialized representation moved to `Gated`.
- *
- * Example: Decree of Justice cycling trigger — "you may pay {X}. If you do, create X 1/1 white
- * Soldier creature tokens."
- *
- * @param effect The effect that happens if the player pays (uses `DynamicAmount.XValue`).
- */
-@Suppress("FunctionName")
-fun MayPayXForEffect(effect: Effect): GatedEffect =
-    GatedEffect(gate = Gate.MayPayX, then = effect)
 
 /**
  * "Any player may [cost]." with branching outcomes based on whether anyone paid.
@@ -1073,6 +1071,40 @@ data class FlipCoinsEffect(
     override val description: String = "Flip $count coins"
 }
 
+/**
+ * Flip coins one at a time until the flipper *loses* a flip or chooses to stop, then store how many
+ * flips they won under [storeWinsAs] in pipeline `storedNumbers`.
+ *
+ * The open-ended sibling of [FlipCoinsEffect]: there the count is known up front and every coin is
+ * flipped, here the count is discovered as you go and a lost flip ends the run immediately. That
+ * asymmetry is the whole reason this is its own primitive rather than a `RepeatWhileEffect` over
+ * [FlipCoinEffect] — a repeat condition is asked unconditionally after each body, so it cannot express
+ * "stop *because* the flip was lost", and the repeat loop deliberately restarts each iteration from the
+ * pristine pre-loop context, so a running tally could not survive the prompt between flips.
+ *
+ * The order within one iteration is flip → check → ask, which is what "after each flip, you choose
+ * whether to continue flipping" means: the choice is only ever offered after a *won* flip, because a
+ * lost flip has already ended the run.
+ *
+ * Losing the very first flip stores 0. Because an unread [storeWinsAs] resolves to 0
+ * (`DynamicAmount.VariableReference` reads a missing key as zero), a card that gates its payoffs on
+ * "if you win one or more flips" needs no separate "if you lose a flip, this has no effect" branch —
+ * that sentence is the absence of every payoff.
+ *
+ * Used by Fiery Gambit ("Flip a coin until you lose a flip or choose to stop flipping"), whose three
+ * payoff tiers are then plain `Compare(VariableReference(storeWinsAs), GTE, Fixed(n))` gates over the
+ * one tally.
+ *
+ * @property storeWinsAs Pipeline `storedNumbers` key the won-flip tally is written to.
+ */
+@SerialName("FlipCoinsUntilLoss")
+@Serializable
+data class FlipCoinsUntilLossEffect(
+    val storeWinsAs: String = "wins"
+) : Effect {
+    override val description: String = "Flip a coin until you lose a flip or choose to stop flipping"
+}
+
 // =============================================================================
 // Budget Modal (Pawprint / Season Cycle)
 // =============================================================================
@@ -1212,14 +1244,24 @@ sealed interface RepeatCondition {
  * )
  * ```
  *
+ * Each iteration's body starts from the pristine pre-loop context, so nothing a pass stores
+ * survives into the next pass — except through [collectCollections], the loop's twin of
+ * [ForEachEffect.collectCollections]: "repeat this process until …; then return the cards
+ * exiled this way" (Struggle for Sanity) needs every pass's picks after the loop ends.
+ *
  * @property body The effect to execute each iteration
  * @property repeatCondition Determines whether to repeat after each body execution
+ * @property collectCollections Per-iteration collection outputs to append across passes. The key
+ *   is the collection written by [body]; the value is the aggregate published to the effects
+ *   after the loop once it stops (an aggregate no pass wrote to is published empty). The repeat
+ *   condition still reads only the pass just run, never the aggregate.
  */
 @SerialName("RepeatWhile")
 @Serializable
 data class RepeatWhileEffect(
     val body: Effect,
-    val repeatCondition: RepeatCondition
+    val repeatCondition: RepeatCondition,
+    val collectCollections: Map<String, String> = emptyMap()
 ) : Effect {
     override val description: String = buildString {
         append(body.description)
@@ -1250,7 +1292,7 @@ data class RepeatWhileEffect(
  * Example (Rottenmouth Viper - for each blight counter):
  * ```kotlin
  * RepeatDynamicTimesEffect(
- *     amount = DynamicAmounts.countersOnSelf(CounterTypeFilter.Named("blight")),
+ *     amount = DynamicAmounts.countersOnSelf(CounterType.BLIGHT),
  *     body = ForEachPlayerEffect(
  *         players = Player.EachOpponent,
  *         effects = listOf(chooseAction)

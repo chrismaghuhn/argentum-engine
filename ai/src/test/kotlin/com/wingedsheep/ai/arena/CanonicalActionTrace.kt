@@ -159,6 +159,13 @@ internal fun canonicalActionTrace(action: GameAction): String = when (action) {
         "faceId=${action.faceId}",
         "paymentStrategy=${canonicalPaymentStrategy(action.paymentStrategy)}",
     )
+    // The permission id is the only field naming which granted special action the player takes
+    // (a reproducible routing id, allocated when the permission was granted).
+    is TakePlayerAction -> fields(
+        "TakePlayerAction",
+        "playerId=${action.playerId}",
+        "permissionId=${action.permissionId}",
+    )
 }
 
 private fun fields(type: String, vararg fields: String): String =

@@ -8,6 +8,8 @@ import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.core.ActionParameterizer
+import com.wingedsheep.engine.core.ActionParams
 import com.wingedsheep.gym.contract.ActionRegistry
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.AttackDeclarationDomainSubmission
@@ -62,7 +64,7 @@ import kotlinx.serialization.json.jsonObject
 class GameGymEnv(
     val environment: GameEnvironment,
     perspectivePlayerIndex: Int,
-    private val observationBuilder: ObservationBuilder,
+    private val observationBuilder: ObservationBuilder = ObservationBuilder(environment.cardRegistry),
     private val committedHistoryEnabled: Boolean = true,
     /** Optional operational diagnostics owned by this authoritative Gym environment. */
     private val diagnosticsRecorder: DiagnosticsRecorder? = null,
@@ -114,7 +116,18 @@ class GameGymEnv(
 
     override fun observe(): ObservationResult = build()
 
-    override fun step(actionId: Int): ObservationResult = classifyExternalFailure {
+    /**
+     * Observe the current state from one named seat. A seat that is not the one to act receives
+     * no pending decision and no legal actions (see [ObservationBuilder.build]), so observing it
+     * also clears the action registry: a later [step] must follow an observation of the acting
+     * seat, exactly as for [observe].
+     */
+    fun observeForPlayer(playerId: EntityId): ObservationResult = classifyExternalFailure {
+        require(playerId in environment.playerIds) { "Player $playerId is not seated in this env" }
+        build(requestedPerspective = playerId)
+    }
+
+    fun step(actionId: Int): ObservationResult = classifyExternalFailure {
         val resolved = registry.resolve(actionId)
         if (resolved is ResolvedAction.Legal) {
             ActionPayloadRequirements.requireTargetDomainSupported(resolved.legalAction)
@@ -170,6 +183,39 @@ class GameGymEnv(
             environment.stepFromCandidateStrict(legal.legalAction, submitted)
         }
         build()
+    }
+
+    /**
+     * [GymEnv] entry point for clients that complete an action template with [ActionParams]
+     * (attackers, blockers, targets, X) instead of a structured JSON payload. Empty params are an
+     * action-ID-only step. Non-empty params are folded in by [ActionParameterizer] and then pass the
+     * same strict validation as a structured payload — registered target, combat, mana-colour and
+     * payment domains — before one Rules transition is committed. A folded decision response takes
+     * no params.
+     */
+    override fun step(actionId: Int, params: ActionParams): ObservationResult {
+        if (params.isEmpty) return step(actionId)
+        return classifyExternalFailure {
+            val legal = registry.resolve(actionId) as? ResolvedAction.Legal
+                ?: throw IllegalArgumentException(
+                    "Action ID $actionId does not resolve to a legal game-action candidate; " +
+                        "step params apply only to game actions"
+                )
+            ActionPayloadRequirements.requireTargetDomainSupported(legal.legalAction)
+            AttackDeclarationDomainSubmission.requireSupported(legal.legalAction)
+            BlockerDeclarationDomainSubmission.requireSupported(legal.legalAction)
+            ManaColorDomainSubmission.requireSupported(legal.legalAction)
+            val submitted = ActionParameterizer.apply(legal.action, params, environment.state)
+            AttackDeclarationDomainSubmission.requireWithinRegisteredDomain(legal.legalAction, submitted)
+            BlockerDeclarationDomainSubmission.requireWithinRegisteredDomain(legal.legalAction, submitted)
+            ManaColorDomainSubmission.requireWithinRegisteredDomain(legal.legalAction, submitted)
+            ActionPayloadRequirements.requireTargetPayloadPartition(legal.legalAction, submitted)
+            requireActionPaymentPlan(legal, submitted, actionId)
+            commitStrict {
+                environment.stepFromCandidateStrict(legal.legalAction, submitted)
+            }
+            build()
+        }
     }
 
     override fun fork(): GymEnv =
@@ -522,9 +568,9 @@ class GameGymEnv(
         }
     }
 
-    private fun build(): ObservationResult =
+    private fun build(requestedPerspective: EntityId? = null): ObservationResult =
         try {
-            buildObservation()
+            buildObservation(requestedPerspective)
         } catch (failure: UnsupportedPathFailure) {
             environment.recordFailure(EpisodeFailureReason.UNSUPPORTED_DIAGNOSTIC)
             throw failure
@@ -533,8 +579,8 @@ class GameGymEnv(
             throw failure
         }
 
-    private fun buildObservation(): ObservationResult {
-        val perspective = ObservationPerspective.resolve(
+    private fun buildObservation(requestedPerspective: EntityId? = null): ObservationResult {
+        val perspective = requestedPerspective ?: ObservationPerspective.resolve(
             state = environment.state,
             playerIds = environment.playerIds,
             fallbackPerspectivePlayerIndex = fallbackPerspectivePlayerIndex,

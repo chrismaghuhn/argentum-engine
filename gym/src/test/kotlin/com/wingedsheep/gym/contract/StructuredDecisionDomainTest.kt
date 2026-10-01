@@ -1,5 +1,7 @@
 package com.wingedsheep.gym.contract
 
+import com.wingedsheep.engine.core.AnswerContinuation
+import com.wingedsheep.engine.core.CombatResolutionContinuation
 import com.wingedsheep.engine.core.CombatResolutionDecision
 import com.wingedsheep.engine.core.CombatResolutionResponse
 import com.wingedsheep.engine.core.CounterUnlessPaysManaSelectionContinuation
@@ -18,6 +20,7 @@ import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.ManaSourceOption
 import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.core.ModeOption
+import com.wingedsheep.engine.core.MoveCollectionOrderContinuation
 import com.wingedsheep.engine.core.OptionMetadata
 import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.PlayerConfig
@@ -29,16 +32,23 @@ import com.wingedsheep.engine.core.ResolutionTargetKind
 import com.wingedsheep.engine.core.SearchCardInfo
 import com.wingedsheep.engine.core.SearchLibraryDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
+import com.wingedsheep.engine.core.SelectFromCollectionContinuation
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
+import com.wingedsheep.engine.core.SelectTargetPipelineContinuation
 import com.wingedsheep.engine.core.SplitPilesDecision
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.TargetRequirementInfoResult
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.WaterbendPermanentChoice
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.OrderedResponse
+import com.wingedsheep.engine.core.PendingDecision
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.handlers.effects.library.SelectTargetPipelineExecutor
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.gym.GameGymEnv
 import com.wingedsheep.gym.service.SnapshotCodec
@@ -94,18 +104,47 @@ class StructuredDecisionDomainTest : FunSpec({
         return env
     }
 
+    // Pure projection checks present the decision through ObservationBuilder's
+    // pendingDecisionOverride: the engine only holds a question inside a Suspension (question +
+    // answer continuation), and the override is the builder's seam for showing one directly. It
+    // keeps the template's id, so routing-id assertions (e.g. the digest test) stay meaningful.
     fun observation(
         env: GameEnvironment,
         decision: com.wingedsheep.engine.core.PendingDecision,
         perspective: EntityId = env.playerIds.first()
     ): TrainingObservation = ObservationBuilder(cardRegistry = registry())
-        .build(env.state.copy(pendingDecision = decision), perspective, emptyList())
+        .build(env.state, perspective, emptyList(), pendingDecisionOverride = decision)
         .observation as TrainingObservation
 
-    fun gameWithPendingDecision(decision: com.wingedsheep.engine.core.PendingDecision): GameGymEnv {
+    /** Re-address a decision template to the routing id its Suspension allocates. */
+    fun PendingDecision.withRoutingId(id: String): PendingDecision = when (this) {
+        is ChooseTargetsDecision -> copy(id = id)
+        is SelectCardsDecision -> copy(id = id)
+        is OrderObjectsDecision -> copy(id = id)
+        is SearchLibraryDecision -> copy(id = id)
+        is ReorderLibraryDecision -> copy(id = id)
+        is CombatResolutionDecision -> copy(id = id)
+        is SelectManaSourcesDecision -> copy(id = id)
+        else -> error("withRoutingId does not cover ${this::class.simpleName}")
+    }
+
+    /**
+     * Install [decision] the way the engine does: one Suspension holding the question (re-addressed
+     * to its allocated routing id) and the [answer] continuation that consumes the response. The
+     * fork's version stored the question alone; a merged-engine question always carries its answer.
+     * The acceptance tests below pick answers whose resumers only record the response (or no-op on
+     * these synthetic ids), so an accepted response still leaves no pending decision behind.
+     */
+    fun gameWithPendingDecision(
+        decision: com.wingedsheep.engine.core.PendingDecision,
+        answer: AnswerContinuation,
+    ): GameGymEnv {
         val env = environment()
         env.restore(
-            env.state.copy(pendingDecision = decision),
+            env.state.suspendForDecision(
+                question = { id -> decision.withRoutingId(id) },
+                answer = answer,
+            ).state,
             env.playerIds,
             env.stepCount,
             env.maxSteps
@@ -510,10 +549,15 @@ class StructuredDecisionDomainTest : FunSpec({
                 CardPredicate.IsLand,
             )
         )
+        // Upstream made SelectTargetEffect single-target by construction (its executor offers one
+        // slot and rejects a requirement asking for more — upstream 71ff23b76c), so the real
+        // producer is fed an "up to one" requirement: min 0 / max 1 keeps the two bounds distinct.
+        // The aggregate flags below are no-ops for a single target, but the shared atom must still
+        // carry every one of them from the producer to the TargetsDomain.
         val resolvedRequirement = TargetOther(
             baseRequirement = TargetObject(
-                count = 2,
-                minCount = 1,
+                count = 1,
+                minCount = 0,
                 filter = TargetFilter(
                     baseFilter = GameObjectFilter(cardPredicates = listOf(xAwareTarget)),
                     zone = Zone.GRAVEYARD,
@@ -526,7 +570,9 @@ class StructuredDecisionDomainTest : FunSpec({
                 differentNames = true,
             )
         )
-        val executor = SelectTargetPipelineExecutor()
+        val executor = SelectTargetPipelineExecutor(
+            targetFinder = TargetFinder(PredicateEvaluator(producerEnvironment.cardRegistry)),
+        )
         val context = EffectContext(sourceId = null, controllerId = owner, xValue = 0)
         val produced = executor.execute(
             state = state,
@@ -543,8 +589,8 @@ class StructuredDecisionDomainTest : FunSpec({
         val requirement = domain.requirements.single()
 
         domain.version shouldBe TARGETS_DOMAIN_VERSION
-        requirement.minTargets shouldBe 1
-        requirement.maxTargets shouldBe 2
+        requirement.minTargets shouldBe 0
+        requirement.maxTargets shouldBe 1
         requirement.targetZone shouldBe "Graveyard"
         requirement.mustDifferFromEarlier shouldBe true
         requirement.sameController shouldBe true
@@ -652,7 +698,14 @@ class StructuredDecisionDomainTest : FunSpec({
                     )
                 ),
                 legalTargets = mapOf(0 to listOf(candidate))
-            )
+            ),
+            // A pipeline SelectTarget answer only stores the chosen targets.
+            SelectTargetPipelineContinuation(
+                playerId = owner,
+                sourceId = null,
+                sourceName = null,
+                storeAs = "chosen",
+            ),
         )
         val view = pendingView(gym)
         val domain = view.structuredDomain.shouldBeInstanceOf<TargetsDomain>()
@@ -679,7 +732,16 @@ class StructuredDecisionDomainTest : FunSpec({
                 minSelections = 1,
                 maxSelections = 2,
                 ordered = true
-            )
+            ),
+            // A pipeline SelectFromCollection answer only stores the selection.
+            SelectFromCollectionContinuation(
+                playerId = owner,
+                sourceId = null,
+                sourceName = null,
+                allCards = listOf(EntityId("card-a"), EntityId("card-b")),
+                storeSelected = "selected",
+                storeRemainder = null,
+            ),
         )
         val view = pendingView(gym)
         val domain = view.structuredDomain.shouldBeInstanceOf<CardSelectionDomain>()
@@ -699,7 +761,19 @@ class StructuredDecisionDomainTest : FunSpec({
                 prompt = "Choose an order",
                 context = DecisionContext(phase = DecisionPhase.TRIGGER),
                 objects = listOf(EntityId("object-a"), EntityId("object-b"))
-            )
+            ),
+            // The engine's own OrderObjects answers (trigger / attachment ordering) need real
+            // triggers or attachments. This answer only has to consume an OrderedResponse over
+            // the same objects: moving objects that are in no zone is a no-op, and a graveyard
+            // destination records no library knowledge.
+            MoveCollectionOrderContinuation(
+                playerId = owner,
+                sourceId = null,
+                sourceName = null,
+                cards = listOf(EntityId("object-a"), EntityId("object-b")),
+                destinationZone = Zone.GRAVEYARD,
+                destinationPlayerId = owner,
+            ),
         )
         val view = pendingView(gym)
         val domain = view.structuredDomain.shouldBeInstanceOf<OrderingDomain>()
@@ -721,7 +795,15 @@ class StructuredDecisionDomainTest : FunSpec({
                 maxSelections = 1,
                 cards = mapOf(candidate to cardInfo("Candidate")),
                 filterDescription = "a card"
-            )
+            ),
+            SelectFromCollectionContinuation(
+                playerId = owner,
+                sourceId = null,
+                sourceName = null,
+                allCards = listOf(candidate),
+                storeSelected = "found",
+                storeRemainder = null,
+            ),
         )
         val view = pendingView(gym)
         val domain = view.structuredDomain.shouldBeInstanceOf<SearchLibraryDomain>()
@@ -742,7 +824,17 @@ class StructuredDecisionDomainTest : FunSpec({
                 context = DecisionContext(phase = DecisionPhase.RESOLUTION),
                 cards = listOf(EntityId("top"), EntityId("bottom")),
                 cardInfo = emptyMap()
-            )
+            ),
+            // ReorderLibraryDecision's engine answer. The synthetic ids are in no zone, so the
+            // physical move is a no-op and only the reorder bookkeeping runs.
+            MoveCollectionOrderContinuation(
+                playerId = owner,
+                sourceId = null,
+                sourceName = null,
+                cards = listOf(EntityId("top"), EntityId("bottom")),
+                destinationZone = Zone.LIBRARY,
+                destinationPlayerId = owner,
+            ),
         )
         val view = pendingView(gym)
         val domain = view.structuredDomain.shouldBeInstanceOf<ReorderLibraryDomain>()
@@ -806,7 +898,9 @@ class StructuredDecisionDomainTest : FunSpec({
                 ),
                 defenders = listOf(ResolutionDefender(defender, ResolutionTargetKind.PLAYER, "Defender", 20)),
                 edges = listOf(edge)
-            )
+            ),
+            // CombatResolutionDecision's engine answer, with the owner as the only chooser.
+            CombatResolutionContinuation(firstStrike = false, pendingChoosers = listOf(owner)),
         )
         val view = pendingView(gym)
         val domain = view.structuredDomain.shouldBeInstanceOf<CombatResolutionDomain>()
@@ -835,7 +929,15 @@ class StructuredDecisionDomainTest : FunSpec({
                 requiredCost = "{1}",
                 autoPaySuggestion = listOf(source),
                 canDecline = true,
-            )
+            ),
+            // A counter-unless-pays window with no remaining Ward parts (never consumed here).
+            CounterUnlessPaysManaSelectionContinuation(
+                payingPlayerId = owner,
+                spellEntityId = EntityId("mana-acceptance-spell"),
+                manaCost = ManaCost.parse("{1}"),
+                availableSources = listOf(ManaSourceOption(source, "Mountain", setOf(Color.RED), false)),
+                autoPaySuggestion = listOf(source),
+            ),
         )
         val observation = gym.observe().observation.shouldBeInstanceOf<TrainingObservation>()
         val view = observation.pendingDecision ?: error("Missing pending mana decision")
@@ -879,17 +981,19 @@ class StructuredDecisionDomainTest : FunSpec({
             autoPaySuggestion = emptyList(),
             canDecline = true,
         )
-        val state = env.state.copy(pendingDecision = decision).pushContinuation(
-            CounterUnlessPaysManaSelectionContinuation(
-                decisionId = decision.id,
+        // The remaining Ward part lives on the answer paired with this exact question, so this
+        // test needs the real Suspension rather than a presented decision.
+        val state = env.state.suspendForDecision(
+            question = { id -> decision.copy(id = id) },
+            answer = CounterUnlessPaysManaSelectionContinuation(
                 payingPlayerId = owner,
                 spellEntityId = EntityId("warded-spell"),
                 manaCost = ManaCost.parse("{1}"),
                 availableSources = emptyList(),
                 autoPaySuggestion = emptyList(),
                 remainingWardParts = listOf(WardCost.Life(2)),
-            )
-        )
+            ),
+        ).state
 
         ObservationBuilder(cardRegistry = registry())
             .build(state, owner, emptyList())
@@ -913,7 +1017,15 @@ class StructuredDecisionDomainTest : FunSpec({
                 maxSelections = 1,
                 cards = mapOf(candidate to cardInfo("Candidate")),
                 filterDescription = "a card"
-            )
+            ),
+            SelectFromCollectionContinuation(
+                playerId = owner,
+                sourceId = null,
+                sourceName = null,
+                allCards = listOf(candidate),
+                storeSelected = "found",
+                storeRemainder = null,
+            ),
         )
         val view = pendingView(gym)
 
@@ -955,7 +1067,13 @@ class StructuredDecisionDomainTest : FunSpec({
                     )
                 ),
                 legalTargets = mapOf(0 to listOf(firstCandidate, secondCandidate))
-            )
+            ),
+            SelectTargetPipelineContinuation(
+                playerId = owner,
+                sourceId = null,
+                sourceName = null,
+                storeAs = "chosen",
+            ),
         )
         val view = pendingView(gym)
         val domain = view.structuredDomain.shouldBeInstanceOf<TargetsDomain>()
@@ -1276,7 +1394,17 @@ class StructuredDecisionDomainTest : FunSpec({
             cards = mapOf(candidate to cardInfo("Snapshot Candidate")),
             filterDescription = "a card"
         )
-        val pendingState = environment.state.copy(pendingDecision = decision)
+        val pendingState = environment.state.suspendForDecision(
+            question = { id -> decision.copy(id = id) },
+            answer = SelectFromCollectionContinuation(
+                playerId = owner,
+                sourceId = null,
+                sourceName = null,
+                allCards = listOf(candidate),
+                storeSelected = "found",
+                storeRemainder = null,
+            ),
+        ).state
         environment.restore(pendingState, environment.playerIds, environment.stepCount, environment.maxSteps)
 
         val gym = GameGymEnv(
@@ -1292,8 +1420,11 @@ class StructuredDecisionDomainTest : FunSpec({
 
         val codec = SnapshotCodec()
         val handle = gym.snapshot(codec)
+        // The old `copy(pendingDecision = null)`: drop the installed Suspension frame.
+        val (suspension, unpausedState) = pendingState.popContinuation()
+        check(suspension is Suspension) { "Expected the installed Suspension on top of the stack" }
         environment.restore(
-            pendingState.copy(pendingDecision = null),
+            unpausedState,
             environment.playerIds,
             environment.stepCount,
             environment.maxSteps

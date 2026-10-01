@@ -4,9 +4,9 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.DecisionHandler
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
-import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.BattlefieldFilterUtils
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.mechanics.cost.CostPaymentContext
 import com.wingedsheep.engine.mechanics.cost.CostPaymentService
 import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
@@ -25,7 +25,6 @@ import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.PayOrSufferEffect
 import com.wingedsheep.sdk.scripting.effects.SacrificeEffect
 import com.wingedsheep.sdk.scripting.effects.SacrificeSelfEffect
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -43,15 +42,18 @@ import kotlin.reflect.KClass
  * If they select 0 (or don't have enough), the suffer effect is executed.
  */
 class PayOrSufferExecutor(
+    private val zones: ZoneTransitionService,
     private val cardRegistry: com.wingedsheep.engine.registry.CardRegistry,
     private val decisionHandler: DecisionHandler = DecisionHandler(),
-    private val executeEffect: ((GameState, Effect, EffectContext) -> EffectResult)? = null
+    private val executeEffect: ((GameState, Effect, EffectContext) -> EffectResult)? = null,
+    /** The engine's cost-payment service; a provider, since it is built from the whole engine graph. */
+    private val costPaymentService: () -> CostPaymentService
 ) : EffectExecutor<PayOrSufferEffect> {
+    private val predicateEvaluator = zones.predicateEvaluator
+    private val dynamicAmountEvaluator = predicateEvaluator.amounts
 
     override val effectType: KClass<PayOrSufferEffect> = PayOrSufferEffect::class
 
-    private val predicateEvaluator = PredicateEvaluator()
-    private val costPaymentService by lazy { CostPaymentService(EngineServices(cardRegistry)) }
 
     override fun execute(
         state: GameState,
@@ -62,7 +64,13 @@ class PayOrSufferExecutor(
             ?: return EffectResult.error(state, "No source for pay or suffer effect")
 
         // Resolve who must pay — defaults to controller but can be the opponent (e.g., "target opponent loses 3 life unless they sacrifice")
-        val payingPlayerId = context.resolvePlayerTarget(effect.player)
+        //
+        // The state-aware overload is required, not a nicety: the stateless one answers only the
+        // references it can read off the context (You, the target slots, TriggeringPlayer) and
+        // returns null for everything else, and null here falls back to the *controller*. So
+        // "unless an opponent pays" (Player.AnOpponent, which needs the turn order to resolve) had
+        // been billing the ability's own controller — who then bought their own permanent back.
+        val payingPlayerId = context.resolvePlayerTarget(effect.player, state)
             ?: context.controllerId
 
         // Find source card info
@@ -78,24 +86,66 @@ class PayOrSufferExecutor(
             // and is trivially payable, so such a permanent is always kept.
             is PayCost.OwnManaCost ->
                 handleManaCost(state, effect, context, CostAtom.Mana(sourceCard.manaCost), sourceId, sourceCard.name, payingPlayerId)
+            // "...pay life equal to <rule>": the amount is computed here, where the EffectContext
+            // is in hand, then handed to the ordinary life-payment path as a concrete number. This
+            // is the only place that can do it — a pipeline-scoped amount (Wand of Ith reads the
+            // mana value of the card it just revealed) is unreadable outside the resolution.
+            // Floored at 0 so a negative or missing amount is a free "payment" rather than a
+            // nonsensical prompt.
+            is PayCost.DynamicLife -> {
+                val amount = maxOf(0, dynamicAmountEvaluator.evaluate(state, cost.amount, context, state.projectedState))
+                handlePayLifeCost(
+                    state, effect, context, CostAtom.PayLife(amount), sourceId, sourceCard.name, payingPlayerId
+                )
+            }
             is PayCost.Atom -> when (val atom = cost.atom) {
                 is CostAtom.Discard -> handleDiscardCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
+                // Perplex — "counter target spell unless its controller discards their hand".
+                // Nothing is selected, so this is a yes/no like the random-discard variant.
+                is CostAtom.DiscardHand ->
+                    handleDiscardHandCost(state, effect, context, sourceId, sourceCard.name, payingPlayerId)
                 is CostAtom.Sacrifice -> handleSacrificeCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
                 is CostAtom.PayLife -> handlePayLifeCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
                 is CostAtom.Mana -> handleManaCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
                 is CostAtom.ExileFrom -> handleExileCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
                 is CostAtom.TapPermanents -> handleTapCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
-                is CostAtom.ReturnToHand -> EffectResult.error(state, "ReturnToHand payment for PayOrSuffer not yet implemented")
+                // Drake Familiar — "sacrifice it unless you return an enchantment to its owner's
+                // hand". The atom's `youControl` axis decides whether the pool is the payer's own
+                // permanents or the whole battlefield.
+                is CostAtom.ReturnToHand ->
+                    handleReturnToHandCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
                 is CostAtom.RevealFromHand -> EffectResult.error(state, "RevealCard payment for PayOrSuffer not yet implemented")
+                // No printed punisher asks for it; fails closed (and canPay below reports it unpayable).
+                is CostAtom.PutFromHandOnTopOfLibrary -> EffectResult.error(state, "PutFromHandOnTopOfLibrary payment for PayOrSuffer not yet implemented")
                 is CostAtom.PutCountersOnSelf -> EffectResult.error(state, "PutCountersOnSelf is an activated-ability cost, not a PayOrSuffer cost")
-                is CostAtom.Mill -> EffectResult.error(state, "Mill payment for PayOrSuffer not yet implemented")
+                // Tourach's Chant / Thelon's Chant — "unless they put a -1/-1 counter on a creature
+                // they control". The payer picks which of their permanents takes it.
+                is CostAtom.PutCountersOnPermanent ->
+                    handlePutCountersCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
+                is CostAtom.RevealNotedCreatureType ->
+                    EffectResult.error(state, "RevealNotedCreatureType is an activated-ability cost, not a PayOrSuffer cost")
+                // No printed "unless you sacrifice all …" exists; fails closed (canPay reports it unpayable).
+                is CostAtom.SacrificeAll ->
+                    EffectResult.error(state, "SacrificeAll payment for PayOrSuffer not yet implemented")
+                is CostAtom.Unattach ->
+                    EffectResult.error(state, "Unattach is an activated-ability cost, not a PayOrSuffer cost")
+                // Deep Spawn — "sacrifice this creature unless you mill two cards".
+                is CostAtom.Mill ->
+                    handleMillCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
+                is CostAtom.ExileTopOfLibrary ->
+                    EffectResult.error(state, "ExileTopOfLibrary is an activated-ability cost, not a PayOrSuffer cost")
                 // No printed "unless you collect evidence" exists — Axebane Ferox's
                 // "Ward—Collect evidence 4" runs through WardCost, not PayOrSuffer. Reported
                 // unpayable below rather than handled here, so nothing silently succeeds.
                 is CostAtom.CollectEvidence ->
                     EffectResult.error(state, "CollectEvidence is not a PayOrSuffer cost")
+                // Same reasoning as CollectEvidence, whose shape it generalizes: no printed
+                // "unless you exile cards totalling N" exists, so it is reported unpayable rather
+                // than prompting into a half-built payment.
+                is CostAtom.ExileFromGraveyardForTotal ->
+                    EffectResult.error(state, "ExileFromGraveyardForTotal is not a PayOrSuffer cost")
                 is CostAtom.VariablePermanents -> EffectResult.error(state, "VariablePermanents payment for PayOrSuffer not supported")
-                is CostAtom.RemoveCounters -> handleRemoveCountersCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
+                is CostAtom.PayPlayerCounters, is CostAtom.RemoveCounters -> handleSharedCounterCost(state, effect, context, atom, sourceId, sourceCard.name, payingPlayerId)
             }
         }
     }
@@ -118,7 +168,7 @@ class PayOrSufferExecutor(
         }
 
         // Find all valid cards in hand that match the filter
-        val validCards = findValidCardsInHand(state, controllerId, cost.filter)
+        val validCards = findValidCardsInHand(state, controllerId, cost.filter, sourceId)
 
         // If the player doesn't have enough matching cards, automatically execute suffer effect
         if (validCards.size < cost.count) {
@@ -126,7 +176,25 @@ class PayOrSufferExecutor(
         }
 
         // Player has at least enough valid cards - present the decision
-        val prompt = buildDiscardPrompt(cost, sourceName, effect.suffer)
+        val prompt = buildDiscardPrompt(cost, sourceName, effect)
+
+        val continuation = PayOrSufferContinuation(
+            playerId = controllerId,
+            sourceId = sourceId,
+            objectReferences = context.objectReferences,
+            sourceName = sourceName,
+            costType = PayOrSufferCostType.DISCARD,
+            sufferEffect = effect.suffer,
+            requiredCount = cost.count,
+            filter = cost.filter,
+            random = false,
+            targets = context.targets,
+            namedTargets = context.pipeline.namedTargets,
+            triggeringEntityId = context.triggeringEntityId,
+            triggeringPlayerId = context.triggeringPlayerId,
+            abilityControllerId = context.controllerId,
+            storedCollections = context.pipeline.storedCollections,
+        )
 
         val decisionResult = decisionHandler.createCardSelectionDecision(
             state = state,
@@ -138,32 +206,15 @@ class PayOrSufferExecutor(
             minSelections = 0,
             maxSelections = cost.count,
             ordered = false,
-            phase = DecisionPhase.RESOLUTION
+            phase = DecisionPhase.RESOLUTION,
+            answer = continuation
         )
 
         // Push continuation to handle the response
-        val continuation = PayOrSufferContinuation(
-            decisionId = decisionResult.pendingDecision!!.id,
-            playerId = controllerId,
-            sourceId = sourceId,
-            sourceName = sourceName,
-            costType = PayOrSufferCostType.DISCARD,
-            sufferEffect = effect.suffer,
-            requiredCount = cost.count,
-            filter = cost.filter,
-            random = false,
-            targets = context.targets,
-            namedTargets = context.pipeline.namedTargets,
-            triggeringEntityId = context.triggeringEntityId,
-            triggeringPlayerId = context.triggeringPlayerId,
-            abilityControllerId = context.controllerId
-        )
 
-        val stateWithContinuation = decisionResult.state.pushContinuation(continuation)
 
-        return EffectResult.paused(
-            stateWithContinuation,
-            decisionResult.pendingDecision,
+        return EffectResult.propagatePause(
+            decisionResult.state,
             decisionResult.events
         )
     }
@@ -181,7 +232,7 @@ class PayOrSufferExecutor(
         sourceName: String,
         controllerId: EntityId
     ): EffectResult {
-        val validCards = findValidCardsInHand(state, controllerId, cost.filter)
+        val validCards = findValidCardsInHand(state, controllerId, cost.filter, sourceId)
 
         // If no valid cards, execute suffer effect automatically
         if (validCards.size < cost.count) {
@@ -189,10 +240,9 @@ class PayOrSufferExecutor(
         }
 
         // Create a yes/no decision
-        val decisionId = UUID.randomUUID().toString()
         val prompt = "Discard ${if (cost.count == 1) "a card" else "${cost.count} cards"} at random to keep $sourceName?"
 
-        val decision = YesNoDecision(
+        val decision = { decisionId: String -> YesNoDecision(
             id = decisionId,
             playerId = controllerId,
             prompt = prompt,
@@ -203,12 +253,12 @@ class PayOrSufferExecutor(
             ),
             yesText = "Discard",
             noText = "Accept consequence"
-        )
+        ) }
 
         val continuation = PayOrSufferContinuation(
-            decisionId = decisionId,
             playerId = controllerId,
             sourceId = sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             costType = PayOrSufferCostType.DISCARD,
             sufferEffect = effect.suffer,
@@ -219,24 +269,65 @@ class PayOrSufferExecutor(
             namedTargets = context.pipeline.namedTargets,
             triggeringEntityId = context.triggeringEntityId,
             triggeringPlayerId = context.triggeringPlayerId,
-            abilityControllerId = context.controllerId
+            abilityControllerId = context.controllerId,
+            storedCollections = context.pipeline.storedCollections,
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
+    }
 
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = controllerId,
-                    decisionType = "YES_NO",
-                    prompt = prompt
-                )
+    /**
+     * Handle "unless you discard your hand" (Perplex).
+     *
+     * There is nothing to select — every card in hand goes — so the payer answers a yes/no rather
+     * than a card selection. Unlike the counted [CostAtom.Discard] path there is no "not enough
+     * cards" shortcut into the suffer effect: an empty hand pays this cost for free (CR 118.3), so
+     * the choice is always offered and declining is always possible.
+     */
+    private fun handleDiscardHandCost(
+        state: GameState,
+        effect: PayOrSufferEffect,
+        context: EffectContext,
+        sourceId: EntityId,
+        sourceName: String,
+        controllerId: EntityId
+    ): EffectResult {
+        val prompt = "Discard your hand or ${describeConsequence(effect, sourceName)}"
+
+        val decision = { decisionId: String ->
+            YesNoDecision(
+                id = decisionId,
+                playerId = controllerId,
+                prompt = prompt,
+                context = DecisionContext(
+                    sourceId = sourceId,
+                    sourceName = sourceName,
+                    phase = DecisionPhase.RESOLUTION
+                ),
+                yesText = "Discard hand",
+                noText = "Accept consequence"
             )
+        }
+
+        val continuation = PayOrSufferContinuation(
+            playerId = controllerId,
+            sourceId = sourceId,
+            objectReferences = context.objectReferences,
+            sourceName = sourceName,
+            costType = PayOrSufferCostType.DISCARD_HAND,
+            sufferEffect = effect.suffer,
+            requiredCount = 0,
+            filter = GameObjectFilter.Any,
+            random = false,
+            targets = context.targets,
+            namedTargets = context.pipeline.namedTargets,
+            triggeringEntityId = context.triggeringEntityId,
+            triggeringPlayerId = context.triggeringPlayerId,
+            abilityControllerId = context.controllerId,
+            storedCollections = context.pipeline.storedCollections,
         )
+
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 
     /**
@@ -253,7 +344,7 @@ class PayOrSufferExecutor(
     ): EffectResult {
         // Find all valid permanents on the battlefield that the player controls
         val validPermanents = findValidPermanentsOnBattlefield(
-            state, controllerId, cost.filter, selfExclusion(cost.excludeSelf, sourceId)
+            state, controllerId, cost.filter, selfExclusion(cost.excludeSelf, sourceId), sourceId
         )
 
         // If the player doesn't have enough permanents, automatically execute suffer effect
@@ -262,7 +353,25 @@ class PayOrSufferExecutor(
         }
 
         // Player has enough - present the decision
-        val prompt = buildSacrificePrompt(cost, sourceName, effect.suffer)
+        val prompt = buildSacrificePrompt(cost, sourceName, effect)
+
+        val continuation = PayOrSufferContinuation(
+            playerId = controllerId,
+            sourceId = sourceId,
+            objectReferences = context.objectReferences,
+            sourceName = sourceName,
+            costType = PayOrSufferCostType.SACRIFICE,
+            sufferEffect = effect.suffer,
+            requiredCount = cost.count,
+            filter = cost.filter,
+            random = false,
+            targets = context.targets,
+            namedTargets = context.pipeline.namedTargets,
+            triggeringEntityId = context.triggeringEntityId,
+            triggeringPlayerId = context.triggeringPlayerId,
+            abilityControllerId = context.controllerId,
+            storedCollections = context.pipeline.storedCollections,
+        )
 
         val decisionResult = decisionHandler.createCardSelectionDecision(
             state = state,
@@ -275,32 +384,75 @@ class PayOrSufferExecutor(
             maxSelections = cost.count,
             ordered = false,
             phase = DecisionPhase.RESOLUTION,
-            useTargetingUI = true  // Use battlefield targeting UI instead of modal
+            useTargetingUI = true,  // Use battlefield targeting UI instead of modal
+            answer = continuation
         )
 
         // Push continuation to handle the response
+
+
+        return EffectResult.propagatePause(
+            decisionResult.state,
+            decisionResult.events
+        )
+    }
+
+    /**
+     * Handle a put-counters cost — the player picks one permanent they control to take the
+     * counters, or declines and suffers. A player with no matching permanent can't pay at all, so
+     * the suffer effect runs without a prompt.
+     */
+    private fun handlePutCountersCost(
+        state: GameState,
+        effect: PayOrSufferEffect,
+        context: EffectContext,
+        cost: CostAtom.PutCountersOnPermanent,
+        sourceId: EntityId,
+        sourceName: String,
+        controllerId: EntityId
+    ): EffectResult {
+        val validPermanents = findValidPermanentsOnBattlefield(state, controllerId, cost.filter, null, sourceId)
+        if (validPermanents.isEmpty()) {
+            return executeSufferEffect(state, effect.suffer, context)
+        }
+
+        val consequence = effect.consequenceDescription ?: effect.suffer.description
         val continuation = PayOrSufferContinuation(
-            decisionId = decisionResult.pendingDecision!!.id,
             playerId = controllerId,
             sourceId = sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
-            costType = PayOrSufferCostType.SACRIFICE,
+            costType = PayOrSufferCostType.PUT_COUNTERS,
             sufferEffect = effect.suffer,
-            requiredCount = cost.count,
+            requiredCount = 1,
             filter = cost.filter,
-            random = false,
+            counterType = cost.counterType,
+            requiredCounters = cost.count,
             targets = context.targets,
             namedTargets = context.pipeline.namedTargets,
             triggeringEntityId = context.triggeringEntityId,
             triggeringPlayerId = context.triggeringPlayerId,
-            abilityControllerId = context.controllerId
+            abilityControllerId = context.controllerId,
+            storedCollections = context.pipeline.storedCollections,
         )
 
-        val stateWithContinuation = decisionResult.state.pushContinuation(continuation)
+        val decisionResult = decisionHandler.createCardSelectionDecision(
+            state = state,
+            playerId = controllerId,
+            sourceId = sourceId,
+            sourceName = sourceName,
+            prompt = "${cost.description.replaceFirstChar { it.uppercase() }}, or $consequence?",
+            options = validPermanents,
+            minSelections = 0,
+            maxSelections = 1,
+            ordered = false,
+            phase = DecisionPhase.RESOLUTION,
+            useTargetingUI = true,
+            answer = continuation
+        )
 
-        return EffectResult.paused(
-            stateWithContinuation,
-            decisionResult.pendingDecision,
+        return EffectResult.propagatePause(
+            decisionResult.state,
             decisionResult.events
         )
     }
@@ -323,7 +475,7 @@ class PayOrSufferExecutor(
     ): EffectResult {
         // Untapped permanents the player controls that match the filter.
         val validPermanents = findValidUntappedPermanentsOnBattlefield(
-            state, controllerId, cost.filter, selfExclusion(cost.excludeSelf, sourceId)
+            state, controllerId, cost.filter, selfExclusion(cost.excludeSelf, sourceId), sourceId
         )
 
         // If the player doesn't have enough untapped permanents, automatically suffer.
@@ -331,7 +483,25 @@ class PayOrSufferExecutor(
             return executeSufferEffect(state, effect.suffer, context)
         }
 
-        val prompt = buildTapPrompt(cost, sourceName, effect.suffer)
+        val prompt = buildTapPrompt(cost, sourceName, effect)
+
+        val continuation = PayOrSufferContinuation(
+            playerId = controllerId,
+            sourceId = sourceId,
+            objectReferences = context.objectReferences,
+            sourceName = sourceName,
+            costType = PayOrSufferCostType.TAP,
+            sufferEffect = effect.suffer,
+            requiredCount = cost.count,
+            filter = cost.filter,
+            random = false,
+            targets = context.targets,
+            namedTargets = context.pipeline.namedTargets,
+            triggeringEntityId = context.triggeringEntityId,
+            triggeringPlayerId = context.triggeringPlayerId,
+            abilityControllerId = context.controllerId,
+            storedCollections = context.pipeline.storedCollections,
+        )
 
         val decisionResult = decisionHandler.createCardSelectionDecision(
             state = state,
@@ -344,15 +514,54 @@ class PayOrSufferExecutor(
             maxSelections = cost.count,
             ordered = false,
             phase = DecisionPhase.RESOLUTION,
-            useTargetingUI = true  // Click an untapped permanent in play to tap it
+            useTargetingUI = true,  // Click an untapped permanent in play to tap it
+            answer = continuation
         )
 
+        return EffectResult.propagatePause(
+            decisionResult.state,
+            decisionResult.events
+        )
+    }
+
+    /**
+     * The bounce payment: "sacrifice it unless you return a [filter] to its owner's hand"
+     * (Drake Familiar).
+     *
+     * Structurally the tap payment with a different verb, with one axis of its own:
+     * [CostAtom.ReturnToHand.youControl]. Drake Familiar's ruling is explicit that *any*
+     * enchantment on the battlefield may be returned, an opponent's included, and that because the
+     * ability doesn't target, an untargetable one qualifies too — so the pool for the
+     * control-agnostic case is the whole battlefield and the selection deliberately isn't run
+     * through targeting legality.
+     *
+     * Selecting nothing is a decline, exactly as it is for the sacrifice and tap payments, which is
+     * the other half of that ruling: "if you choose not to return one, you must sacrifice it".
+     */
+    private fun handleReturnToHandCost(
+        state: GameState,
+        effect: PayOrSufferEffect,
+        context: EffectContext,
+        cost: CostAtom.ReturnToHand,
+        sourceId: EntityId,
+        sourceName: String,
+        controllerId: EntityId
+    ): EffectResult {
+        val validPermanents = findBounceCandidates(state, controllerId, cost, sourceId)
+
+        // Nothing legal to return — the suffer half happens with no prompt.
+        if (validPermanents.size < cost.count) {
+            return executeSufferEffect(state, effect.suffer, context)
+        }
+
+        val prompt = buildReturnToHandPrompt(cost, sourceName, effect)
+
         val continuation = PayOrSufferContinuation(
-            decisionId = decisionResult.pendingDecision!!.id,
             playerId = controllerId,
             sourceId = sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
-            costType = PayOrSufferCostType.TAP,
+            costType = PayOrSufferCostType.RETURN_TO_HAND,
             sufferEffect = effect.suffer,
             requiredCount = cost.count,
             filter = cost.filter,
@@ -361,21 +570,127 @@ class PayOrSufferExecutor(
             namedTargets = context.pipeline.namedTargets,
             triggeringEntityId = context.triggeringEntityId,
             triggeringPlayerId = context.triggeringPlayerId,
-            abilityControllerId = context.controllerId
+            abilityControllerId = context.controllerId,
+            storedCollections = context.pipeline.storedCollections,
         )
 
-        val stateWithContinuation = decisionResult.state.pushContinuation(continuation)
+        val decisionResult = decisionHandler.createCardSelectionDecision(
+            state = state,
+            playerId = controllerId,
+            sourceId = sourceId,
+            sourceName = sourceName,
+            prompt = prompt,
+            options = validPermanents,
+            minSelections = 0,
+            maxSelections = cost.count,
+            ordered = false,
+            phase = DecisionPhase.RESOLUTION,
+            useTargetingUI = true,  // Click the permanent in play to return it
+            answer = continuation
+        )
 
-        return EffectResult.paused(
-            stateWithContinuation,
-            decisionResult.pendingDecision,
+        return EffectResult.propagatePause(
+            decisionResult.state,
             decisionResult.events
         )
     }
 
     /**
+     * The permanents a [CostAtom.ReturnToHand] payment may choose from — the payer's own by
+     * default, the whole battlefield when the atom is control-agnostic. The source itself is
+     * excluded either way, matching [CostPaymentService]'s pool for the same atom: a card that
+     * bounces itself to avoid being sacrificed isn't a printed shape, and letting it would make
+     * "sacrifice it unless…" self-defeating.
+     */
+    private fun findBounceCandidates(
+        state: GameState,
+        playerId: EntityId,
+        cost: CostAtom.ReturnToHand,
+        sourceId: EntityId
+    ): List<EntityId> =
+        if (cost.youControl) {
+            findValidPermanentsOnBattlefield(state, playerId, cost.filter, sourceId, sourceId)
+        } else {
+            BattlefieldFilterUtils.findMatchingOnBattlefield(
+                state, cost.filter,
+                PredicateContext(controllerId = playerId, sourceId = sourceId),
+                excludeSelfId = sourceId,
+                predicateEvaluator = predicateEvaluator
+            )
+        }
+
+    private fun buildReturnToHandPrompt(
+        cost: CostAtom.ReturnToHand,
+        sourceName: String,
+        effect: PayOrSufferEffect
+    ): String {
+        val desc = cost.filter.description
+        val article = if (desc.first().lowercaseChar() in "aeiou") "an" else "a"
+        val scope = if (cost.youControl) " you control" else ""
+        val typeText = if (cost.count == 1) "$article $desc$scope" else "${cost.count} ${desc}s$scope"
+        return "Return $typeText to its owner's hand or ${describeConsequence(effect, sourceName)}"
+    }
+
+    /**
      * Handle a pay life cost - player must pay life to avoid suffer effect.
      */
+    /**
+     * The [CostAtom.Mill] payment: a yes/no, since milling from the top selects nothing.
+     *
+     * CR 701.17b — a player can't pay a cost that includes milling more cards than are in their
+     * library, so a library shallower than [cost] goes straight to the suffer half without asking.
+     * The count announced here is the unmodified one; mill *replacement* effects apply when the
+     * payment is actually made, via [CostPaymentService].
+     */
+    private fun handleMillCost(
+        state: GameState,
+        effect: PayOrSufferEffect,
+        context: EffectContext,
+        cost: CostAtom.Mill,
+        sourceId: EntityId,
+        sourceName: String,
+        controllerId: EntityId
+    ): EffectResult {
+        if (state.getZone(ZoneKey(controllerId, Zone.LIBRARY)).size < cost.count) {
+            return executeSufferEffect(state, effect.suffer, context)
+        }
+
+        val cards = if (cost.count == 1) "card" else "cards"
+
+        val decision = { decisionId: String -> YesNoDecision(
+            id = decisionId,
+            playerId = controllerId,
+            prompt = "Mill ${cost.count} $cards to avoid ${describeConsequence(effect, sourceName)}?",
+            context = DecisionContext(
+                sourceId = sourceId,
+                sourceName = sourceName,
+                phase = DecisionPhase.RESOLUTION
+            ),
+            yesText = "Mill ${cost.count} $cards",
+            noText = "Accept consequence"
+        ) }
+
+        val continuation = PayOrSufferContinuation(
+            playerId = controllerId,
+            sourceId = sourceId,
+            objectReferences = context.objectReferences,
+            sourceName = sourceName,
+            costType = PayOrSufferCostType.MILL,
+            sufferEffect = effect.suffer,
+            requiredCount = cost.count,
+            filter = GameObjectFilter.Any, // Not used: milling from the top selects nothing.
+            random = false,
+            targets = context.targets,
+            namedTargets = context.pipeline.namedTargets,
+            triggeringEntityId = context.triggeringEntityId,
+            triggeringPlayerId = context.triggeringPlayerId,
+            abilityControllerId = context.controllerId,
+            storedCollections = context.pipeline.storedCollections,
+        )
+
+        return EffectResult.from(state.suspendForDecision(decision, continuation, events = listOf()))
+    }
+
     private fun handlePayLifeCost(
         state: GameState,
         effect: PayOrSufferEffect,
@@ -397,15 +712,15 @@ class PayOrSufferExecutor(
 
         // If player doesn't have enough life to pay, execute suffer effect. CR 119.4 permits
         // paying exactly the player's current life total; state-based actions handle the result.
-        if (playerLife < amount) {
+        // CR 119.8 — a player who can't lose life can't pay it, so they suffer.
+        if (playerLife < amount || state.isLifeLossLocked(controllerId)) {
             return executeSufferEffect(state, effect.suffer, context)
         }
 
         // Create a yes/no decision
-        val decisionId = UUID.randomUUID().toString()
-        val prompt = "Pay $amount life to avoid ${effect.suffer.description}?"
+        val prompt = "Pay $amount life to avoid ${describeConsequence(effect, sourceName)}?"
 
-        val decision = YesNoDecision(
+        val decision = { decisionId: String -> YesNoDecision(
             id = decisionId,
             playerId = controllerId,
             prompt = prompt,
@@ -416,12 +731,12 @@ class PayOrSufferExecutor(
             ),
             yesText = "Pay life",
             noText = "Accept consequence"
-        )
+        ) }
 
         val continuation = PayOrSufferContinuation(
-            decisionId = decisionId,
             playerId = controllerId,
             sourceId = sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             costType = PayOrSufferCostType.PAY_LIFE,
             sufferEffect = effect.suffer,
@@ -432,24 +747,11 @@ class PayOrSufferExecutor(
             namedTargets = context.pipeline.namedTargets,
             triggeringEntityId = context.triggeringEntityId,
             triggeringPlayerId = context.triggeringPlayerId,
-            abilityControllerId = context.controllerId
+            abilityControllerId = context.controllerId,
+            storedCollections = context.pipeline.storedCollections,
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = controllerId,
-                    decisionType = "YES_NO",
-                    prompt = prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 
     /**
@@ -464,31 +766,18 @@ class PayOrSufferExecutor(
         sourceName: String,
         controllerId: EntityId
     ): EffectResult {
-        val validCards = findValidCardsInZone(state, controllerId, cost.filter, cost.zone)
+        val validCards = findValidCardsInZone(state, controllerId, cost.filter, cost.zone, sourceId)
 
         if (validCards.size < cost.count) {
             return executeSufferEffect(state, effect.suffer, context)
         }
 
-        val prompt = buildExilePrompt(cost, sourceName, effect.suffer)
-
-        val decisionResult = decisionHandler.createCardSelectionDecision(
-            state = state,
-            playerId = controllerId,
-            sourceId = sourceId,
-            sourceName = sourceName,
-            prompt = prompt,
-            options = validCards,
-            minSelections = 0,
-            maxSelections = cost.count,
-            ordered = false,
-            phase = DecisionPhase.RESOLUTION
-        )
+        val prompt = buildExilePrompt(cost, sourceName, effect)
 
         val continuation = PayOrSufferContinuation(
-            decisionId = decisionResult.pendingDecision!!.id,
             playerId = controllerId,
             sourceId = sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             costType = PayOrSufferCostType.EXILE,
             sufferEffect = effect.suffer,
@@ -503,11 +792,22 @@ class PayOrSufferExecutor(
             zone = cost.zone
         )
 
-        val stateWithContinuation = decisionResult.state.pushContinuation(continuation)
+        val decisionResult = decisionHandler.createCardSelectionDecision(
+            state = state,
+            playerId = controllerId,
+            sourceId = sourceId,
+            sourceName = sourceName,
+            prompt = prompt,
+            options = validCards,
+            minSelections = 0,
+            maxSelections = cost.count,
+            ordered = false,
+            phase = DecisionPhase.RESOLUTION,
+            answer = continuation
+        )
 
-        return EffectResult.paused(
-            stateWithContinuation,
-            decisionResult.pendingDecision,
+        return EffectResult.propagatePause(
+            decisionResult.state,
             decisionResult.events
         )
     }
@@ -525,17 +825,16 @@ class PayOrSufferExecutor(
         controllerId: EntityId
     ): EffectResult {
         // Check if the player can pay the mana cost
-        val manaSolver = ManaSolver(cardRegistry)
+        val manaSolver = ManaSolver(cardRegistry, predicateEvaluator)
         if (!manaSolver.canPay(state, controllerId, cost.cost)) {
             return executeSufferEffect(state, effect.suffer, context)
         }
 
         // Create a yes/no decision
-        val decisionId = UUID.randomUUID().toString()
-        val consequence = describeConsequence(effect.suffer, sourceName)
+        val consequence = describeConsequence(effect, sourceName)
         val prompt = "Pay ${cost.cost} or $consequence?"
 
-        val decision = YesNoDecision(
+        val decision = { decisionId: String -> YesNoDecision(
             id = decisionId,
             playerId = controllerId,
             prompt = prompt,
@@ -546,12 +845,12 @@ class PayOrSufferExecutor(
             ),
             yesText = "Pay ${cost.cost}",
             noText = "Accept consequence"
-        )
+        ) }
 
         val continuation = PayOrSufferContinuation(
-            decisionId = decisionId,
             playerId = controllerId,
             sourceId = sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             costType = PayOrSufferCostType.MANA,
             sufferEffect = effect.suffer,
@@ -566,21 +865,7 @@ class PayOrSufferExecutor(
             manaCost = cost.cost
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = controllerId,
-                    decisionType = "YES_NO",
-                    prompt = prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 
     /**
@@ -603,8 +888,10 @@ class PayOrSufferExecutor(
             }
         }
 
-        // Always add the suffer option
-        val sufferDescription = effect.suffer.description.replaceFirstChar { it.uppercase() }
+        // Always add the suffer option. Routed through describeConsequence so the authored
+        // consequenceDescription wins here too — this list is the *first* thing the payer reads,
+        // and an effect description written from the controller's side reads backwards to them.
+        val sufferDescription = describeConsequence(effect, sourceName).replaceFirstChar { it.uppercase() }
 
         val optionLabels = availableOptions.map { it.second } + sufferDescription
 
@@ -613,10 +900,9 @@ class PayOrSufferExecutor(
             return executeSufferEffect(state, effect.suffer, context)
         }
 
-        val decisionId = UUID.randomUUID().toString()
         val prompt = "Choose one:"
 
-        val decision = ChooseOptionDecision(
+        val decision = { decisionId: String -> ChooseOptionDecision(
             id = decisionId,
             playerId = payingPlayerId,
             prompt = prompt,
@@ -626,12 +912,12 @@ class PayOrSufferExecutor(
                 phase = DecisionPhase.RESOLUTION
             ),
             options = optionLabels
-        )
+        ) }
 
         val continuation = PayOrSufferChoiceContinuation(
-            decisionId = decisionId,
             playerId = payingPlayerId,
             sourceId = sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             options = availableOptions.map { cost.options[it.first] },
             sufferEffect = effect.suffer,
@@ -639,56 +925,47 @@ class PayOrSufferExecutor(
             namedTargets = context.pipeline.namedTargets,
             triggeringEntityId = context.triggeringEntityId,
             triggeringPlayerId = context.triggeringPlayerId,
-            abilityControllerId = context.controllerId
+            abilityControllerId = context.controllerId,
+            // Carried so the follow-up prompt for the chosen cost asks in the same words as this
+            // one. Dropping it here is invisible until a card routes `player` elsewhere, and then
+            // the second question silently reverts to the controller's-side phrasing.
+            consequenceDescription = effect.consequenceDescription,
+            storedCollections = context.pipeline.storedCollections
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = payingPlayerId,
-                    decisionType = "CHOOSE_OPTION",
-                    prompt = prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 
 
     /**
      * Handles a remove counters cost - player must remove the specified number of counters from the specified entities.
      */
-    private fun handleRemoveCountersCost(
+    private fun handleSharedCounterCost(
         state: GameState,
         effect: PayOrSufferEffect,
         context: EffectContext,
-        cost: CostAtom.RemoveCounters,
+        cost: CostAtom,
         sourceId: EntityId,
         sourceName: String,
         controllerId: EntityId
     ): EffectResult {
-        val payment = costPaymentService.pay(
+        val payment = costPaymentService().pay(
             state = state,
             payerId = controllerId,
             cost = PayCost.Atom(cost),
             sourceId = sourceId,
             ctx = CostPaymentContext(
+                effectContext = context,
+                objectReferences = context.objectReferences,
                 onDeclined = effect.suffer,
                 targets = context.targets,
                 namedTargets = context.pipeline.namedTargets,
                 storedCollections = context.pipeline.storedCollections
-            ),
-            // "Remove counters from among creatures you control" does not say "another".
-            excludeSource = false
+            )
         )
         return when (payment) {
             is PaymentResult.Pending ->
-                EffectResult.paused(payment.state, payment.pendingDecision, payment.events)
+                EffectResult.propagatePause(payment.state, payment.events)
             is PaymentResult.Unaffordable ->
                 executeSufferEffect(state, effect.suffer, context)
             is PaymentResult.Paid ->
@@ -712,44 +989,66 @@ class PayOrSufferExecutor(
                 // Null only when the source entity/CardComponent is missing; an empty mana cost
                 // (lands, tokens) is {0} and always payable — see the execute branch above.
                 val ownCost = state.getEntity(sourceId)?.get<CardComponent>()?.manaCost
-                ownCost != null && ManaSolver(cardRegistry).canPay(state, playerId, ownCost)
+                ownCost != null && ManaSolver(cardRegistry, predicateEvaluator).canPay(state, playerId, ownCost)
             }
+            // Offered rather than filtered out: the amount can only be evaluated in the
+            // resolving context, and handlePayLifeCost re-checks affordability for real before
+            // charging anyone. Filtering here would silently hide a payable option.
+            is PayCost.DynamicLife -> true
             is PayCost.Choice -> cost.options.any { canPayCost(state, playerId, it, sourceId) }
             is PayCost.Atom -> when (val atom = cost.atom) {
-                is CostAtom.Discard -> findValidCardsInHand(state, playerId, atom.filter).size >= atom.count
+                is CostAtom.Discard -> findValidCardsInHand(state, playerId, atom.filter, sourceId).size >= atom.count
+                // Always payable: an empty hand discards nothing, and a cost of nothing is a cost
+                // you can pay (CR 118.3). Never filtered out, so the choice is always offered.
+                is CostAtom.DiscardHand -> true
                 is CostAtom.Sacrifice -> findValidPermanentsOnBattlefield(
-                    state, playerId, atom.filter, selfExclusion(atom.excludeSelf, sourceId)
+                    state, playerId, atom.filter, selfExclusion(atom.excludeSelf, sourceId), sourceId
                 ).size >= atom.count
                 is CostAtom.PayLife -> {
                     val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
                     CostAmountResolver.resolve(state, atom.amount, sourceId, playerId, cardRegistry)
                     ?.let { it >= 0 && life >= it } == true
                 }
-                is CostAtom.Mana -> ManaSolver(cardRegistry).canPay(state, playerId, atom.cost)
-                is CostAtom.ExileFrom -> findValidCardsInZone(state, playerId, atom.filter, atom.zone).size >= atom.count
+                is CostAtom.Mana -> ManaSolver(cardRegistry, predicateEvaluator).canPay(state, playerId, atom.cost)
+                is CostAtom.ExileFrom -> findValidCardsInZone(state, playerId, atom.filter, atom.zone, sourceId).size >= atom.count
                 is CostAtom.TapPermanents -> findValidUntappedPermanentsOnBattlefield(
-                    state, playerId, atom.filter, selfExclusion(atom.excludeSelf, sourceId)
+                    state, playerId, atom.filter, selfExclusion(atom.excludeSelf, sourceId), sourceId
                 ).size >= atom.count
-                is CostAtom.ReturnToHand -> false
+                is CostAtom.ReturnToHand ->
+                    findBounceCandidates(state, playerId, atom, sourceId).size >= atom.count
                 is CostAtom.RevealFromHand -> false
+                is CostAtom.PutFromHandOnTopOfLibrary -> false
                 is CostAtom.PutCountersOnSelf -> false
+                // Unpayable with nothing to put the counter on — which is exactly the punisher
+                // clause's teeth: a player with no creatures takes the damage.
+                is CostAtom.PutCountersOnPermanent ->
+                    findValidPermanentsOnBattlefield(state, playerId, atom.filter, null, sourceId).isNotEmpty()
+                is CostAtom.RevealNotedCreatureType -> false
+                is CostAtom.Unattach -> false
+                is CostAtom.SacrificeAll -> false
                 is CostAtom.VariablePermanents -> false
-                // No printed PayOrSuffer cost mills, and the execute branch above has no handler,
-                // so report it unpayable rather than offering a prompt that would error out.
-                is CostAtom.Mill -> false
+                // CR 701.17b — a player can't pay a cost that includes milling more cards than
+                // their library holds, so a library shallower than the cost makes this unpayable
+                // and the suffer half happens. Deep Spawn's own rules text depends on that.
+                is CostAtom.Mill -> state.getZone(ZoneKey(playerId, Zone.LIBRARY)).size >= atom.count
+                // See the execute branch: no printed "unless you exile the top N" exists, so this
+                // is reported unpayable rather than prompting into an error.
+                is CostAtom.ExileTopOfLibrary -> false
                 // See the execute branch: unpayable rather than prompting into an error.
                 is CostAtom.CollectEvidence -> false
+                is CostAtom.ExileFromGraveyardForTotal -> false
+                is CostAtom.PayPlayerCounters -> costPaymentService().canAfford(state, playerId, cost, sourceId)
                 is CostAtom.RemoveCounters -> {
                     // Can pay if there are permanents matching the filter with enough counters.
                     // Don't exclude the source — removing counters from the source itself is a
-                    // legitimate payment, matching the logic in handleRemoveCountersCost.
+                    // legitimate payment, matching the logic in handleSharedCounterCost.
                     val candidates = if (atom.self) listOf(sourceId)
                     else BattlefieldFilterUtils.findMatchingOnBattlefield(
-                        state, atom.filter.youControl(), PredicateContext(controllerId = playerId)
+                        state, atom.filter.youControl(),
+                        PredicateContext(controllerId = playerId, sourceId = sourceId),
+                        predicateEvaluator = predicateEvaluator
                     )
-                    val counterType = atom.counterType?.let {
-                        com.wingedsheep.engine.handlers.effects.permanent.counters.resolveCounterType(it)
-                    }
+                    val counterType = atom.counterType
                     val required = (atom.count as? com.wingedsheep.sdk.scripting.values.DynamicAmount.Fixed)?.amount ?: 0
                     val total = candidates.sumOf { permId ->
                         val counters = state.getEntity(permId)?.get<CountersComponent>() ?: return@sumOf 0
@@ -768,11 +1067,12 @@ class PayOrSufferExecutor(
     private fun findValidCardsInHand(
         state: GameState,
         playerId: EntityId,
-        filter: GameObjectFilter
+        filter: GameObjectFilter,
+        sourceId: EntityId?
     ): List<EntityId> {
         val handZone = ZoneKey(playerId, Zone.HAND)
         val hand = state.getZone(handZone)
-        val context = PredicateContext(controllerId = playerId)
+        val context = PredicateContext(controllerId = playerId, sourceId = sourceId)
 
         return hand.filter { cardId ->
             predicateEvaluator.matches(state, state.projectedState, cardId, filter, context)
@@ -786,16 +1086,18 @@ class PayOrSufferExecutor(
         state: GameState,
         playerId: EntityId,
         filter: GameObjectFilter,
-        zone: Zone
+        zone: Zone,
+        sourceId: EntityId?
     ): List<EntityId> {
         if (zone == Zone.BATTLEFIELD) {
             return BattlefieldFilterUtils.findMatchingOnBattlefield(
-                state, filter.youControl(), PredicateContext(controllerId = playerId)
+                state, filter.youControl(), PredicateContext(controllerId = playerId, sourceId = sourceId),
+                predicateEvaluator = predicateEvaluator
             )
         }
         val zoneKey = ZoneKey(playerId, zone)
         val cards = state.getZone(zoneKey)
-        val context = PredicateContext(controllerId = playerId)
+        val context = PredicateContext(controllerId = playerId, sourceId = sourceId)
         return cards.filter { cardId ->
             predicateEvaluator.matches(state, state.projectedState, cardId, filter, context)
         }
@@ -825,15 +1127,26 @@ class PayOrSufferExecutor(
      *
      * [excludeSelfId] is the source only when the cost atom asks for it — see
      * [selfExclusion] for why this can't be hardcoded.
+     *
+     * [sourceId] goes into the [PredicateContext] because a cost filter may be *source-relative*:
+     * `attachedToBySource()` (Curse Artifact's "sacrifice **that** artifact"), `ExiledWithSource`,
+     * `NotOfSourceChosenType`. Those predicates return `false` outright with no source in context,
+     * so leaving it out doesn't merely widen the candidate set — it empties it, the cost reads as
+     * unpayable, and the executor runs the suffer effect **without ever prompting**. The player
+     * silently loses a choice the card gives them, which is the worst shape this bug can take.
      */
     private fun findValidPermanentsOnBattlefield(
         state: GameState,
         playerId: EntityId,
         filter: GameObjectFilter,
-        excludeSelfId: EntityId?
+        excludeSelfId: EntityId?,
+        sourceId: EntityId?
     ): List<EntityId> {
         return BattlefieldFilterUtils.findMatchingOnBattlefield(
-            state, filter.youControl(), PredicateContext(controllerId = playerId), excludeSelfId = excludeSelfId
+            state, filter.youControl(),
+            PredicateContext(controllerId = playerId, sourceId = sourceId),
+            excludeSelfId = excludeSelfId,
+            predicateEvaluator = predicateEvaluator
         )
     }
 
@@ -846,12 +1159,14 @@ class PayOrSufferExecutor(
         state: GameState,
         playerId: EntityId,
         filter: GameObjectFilter,
-        excludeSelfId: EntityId?
+        excludeSelfId: EntityId?,
+        sourceId: EntityId?
     ): List<EntityId> {
         return BattlefieldFilterUtils.findMatchingOnBattlefield(
             state, filter.youControl().untapped(),
-            PredicateContext(controllerId = playerId),
-            excludeSelfId = excludeSelfId
+            PredicateContext(controllerId = playerId, sourceId = sourceId),
+            excludeSelfId = excludeSelfId,
+            predicateEvaluator = predicateEvaluator
         )
     }
 
@@ -926,7 +1241,9 @@ class PayOrSufferExecutor(
                 entityName = permanentName,
                 fromZone = Zone.BATTLEFIELD,
                 toZone = Zone.GRAVEYARD,
-                ownerId = playerId
+                ownerId = playerId,
+                oldObject = state.objectRef(permanentId),
+                newObject = newState.objectRef(permanentId)
             )
         )
 
@@ -936,7 +1253,7 @@ class PayOrSufferExecutor(
     /**
      * Build prompt for discard cost.
      */
-    private fun buildDiscardPrompt(cost: CostAtom.Discard, sourceName: String, sufferEffect: Effect): String {
+    private fun buildDiscardPrompt(cost: CostAtom.Discard, sourceName: String, effect: PayOrSufferEffect): String {
         val desc = cost.filter.description
         val typeText = if (cost.count == 1) {
             val article = if (desc == "card") "a" else if (desc.first().lowercaseChar() in "aeiou") "an" else "a"
@@ -944,28 +1261,28 @@ class PayOrSufferExecutor(
         } else {
             "${cost.count} ${desc}s"
         }
-        val consequence = describeConsequence(sufferEffect, sourceName)
+        val consequence = describeConsequence(effect, sourceName)
         return "Discard $typeText or $consequence"
     }
 
     /**
      * Build prompt for sacrifice cost.
      */
-    private fun buildSacrificePrompt(cost: CostAtom.Sacrifice, sourceName: String, sufferEffect: Effect): String {
+    private fun buildSacrificePrompt(cost: CostAtom.Sacrifice, sourceName: String, effect: PayOrSufferEffect): String {
         val desc = cost.filter.description
         val typeText = if (cost.count == 1) {
             "${if (desc.first().lowercaseChar() in "aeiou") "an" else "a"} $desc"
         } else {
             "${cost.count} ${desc}s"
         }
-        val consequence = describeConsequence(sufferEffect, sourceName)
+        val consequence = describeConsequence(effect, sourceName)
         return "Sacrifice $typeText or $consequence"
     }
 
     /**
      * Build prompt for tap cost.
      */
-    private fun buildTapPrompt(cost: CostAtom.TapPermanents, sourceName: String, sufferEffect: Effect): String {
+    private fun buildTapPrompt(cost: CostAtom.TapPermanents, sourceName: String, effect: PayOrSufferEffect): String {
         val desc = cost.filter.description
         val typeText = if (cost.count == 1) {
             // The article always precedes "untapped", so it is always "an".
@@ -973,14 +1290,14 @@ class PayOrSufferExecutor(
         } else {
             "${cost.count} untapped ${desc}s you control"
         }
-        val consequence = describeConsequence(sufferEffect, sourceName)
+        val consequence = describeConsequence(effect, sourceName)
         return "Tap $typeText or $consequence"
     }
 
     /**
      * Build prompt for exile cost.
      */
-    private fun buildExilePrompt(cost: CostAtom.ExileFrom, sourceName: String, sufferEffect: Effect): String {
+    private fun buildExilePrompt(cost: CostAtom.ExileFrom, sourceName: String, effect: PayOrSufferEffect): String {
         val desc = cost.filter.description
         val typeText = if (cost.count == 1) {
             "${if (desc.first().lowercaseChar() in "aeiou") "an" else "a"} $desc"
@@ -988,15 +1305,16 @@ class PayOrSufferExecutor(
             "${cost.count} ${desc}s"
         }
         val zoneName = cost.zone.name.lowercase()
-        val consequence = describeConsequence(sufferEffect, sourceName)
+        val consequence = describeConsequence(effect, sourceName)
         return "Exile $typeText from your $zoneName or $consequence"
     }
 
     /**
      * Describe the consequence of not paying the cost.
      */
-    private fun describeConsequence(sufferEffect: Effect, sourceName: String): String {
-        return when (sufferEffect) {
+    private fun describeConsequence(effect: PayOrSufferEffect, sourceName: String): String {
+        effect.consequenceDescription?.let { return it }
+        return when (val sufferEffect = effect.suffer) {
             is SacrificeSelfEffect,
             is SacrificeEffect -> "sacrifice $sourceName"
             else -> sufferEffect.description
@@ -1004,24 +1322,25 @@ class PayOrSufferExecutor(
     }
 
     companion object {
-        private val predicateEvaluatorStatic = PredicateEvaluator()
 
         /**
          * Execute the random discard after player confirmed.
          */
         fun executeRandomDiscard(
+            zones: ZoneTransitionService,
             state: GameState,
             playerId: EntityId,
             filter: GameObjectFilter,
-            count: Int
+            count: Int,
+            sourceId: EntityId?
         ): EffectResult {
             val handZone = ZoneKey(playerId, Zone.HAND)
             val hand = state.getZone(handZone)
-            val context = PredicateContext(controllerId = playerId)
+            val context = PredicateContext(controllerId = playerId, sourceId = sourceId)
 
             // Filter valid cards
             val validCards = hand.filter { cardId ->
-                predicateEvaluatorStatic.matches(state, state.projectedState, cardId, filter, context)
+                zones.predicateEvaluator.matches(state, state.projectedState, cardId, filter, context)
             }
 
             if (validCards.isEmpty()) {
@@ -1034,8 +1353,21 @@ class PayOrSufferExecutor(
 
             // Shared discard path so a card-intrinsic discard replacement (madness, CR 702.35a)
             // applies to a randomly discarded card too.
-            val result = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                .discardCards(stateAfterShuffle, playerId, cardsToDiscard)
+            val result = zones.discardCards(stateAfterShuffle, playerId, cardsToDiscard)
+
+            return EffectResult.success(result.state, result.events)
+        }
+
+        /**
+         * Pay [CostAtom.DiscardHand]: every card in [playerId]'s hand goes at once, through the
+         * shared discard path so a card-intrinsic discard replacement (madness, CR 702.35a) still
+         * applies. An empty hand is a no-op payment, not a failure.
+         */
+        fun executeDiscardHand(zones: ZoneTransitionService, state: GameState, playerId: EntityId): EffectResult {
+            val hand = state.getZone(ZoneKey(playerId, Zone.HAND))
+            if (hand.isEmpty()) return EffectResult.success(state)
+
+            val result = zones.discardCards(state, playerId, hand.toList())
 
             return EffectResult.success(result.state, result.events)
         }

@@ -1,12 +1,13 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.GameInitializer
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.handlers.EffectContext
-import com.wingedsheep.engine.handlers.effects.EffectExecutorRegistry
+import com.wingedsheep.engine.handlers.ObjectReferenceEnvironment
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -32,6 +33,7 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Gift mechanic: "You may promise AN OPPONENT a gift as you cast this spell."
@@ -110,11 +112,14 @@ class GiftChosenOpponentTest : FunSpec({
             .addToZone(ZoneKey(players[0], Zone.BATTLEFIELD), sourceId)
 
         // Executing the choose-opponent effect pauses with one option per opponent.
-        val registry2 = EffectExecutorRegistry(cardRegistry = registry)
-        val context = EffectContext(sourceId = sourceId, controllerId = players[0])
+        val registry2 = EngineServices(registry).effectExecutorRegistry
+        val sourceRef = withSource.objectRef(sourceId)!!
+        val context = EffectContext(sourceId = sourceId, controllerId = players[0],
+            objectReferences = ObjectReferenceEnvironment(captured = true,
+                origin = sourceRef, source = sourceRef, resolutionKey = "gift-recipient-fixture"))
         val execResult = registry2.execute(withSource, ChooseOpponentForSourceEffect(), context)
 
-        execResult.isPaused shouldBe true
+        (execResult.outcome is Outcome.Paused) shouldBe true
         val decision = execResult.state.pendingDecision
         decision.shouldNotBeNull()
         decision.shouldBeInstanceOf<ChooseOptionDecision>()
@@ -132,7 +137,7 @@ class GiftChosenOpponentTest : FunSpec({
             )
         ).result
 
-        afterChoice.isSuccess shouldBe true
+        afterChoice.outcome shouldBe Outcome.Done
         fun chosen(s: GameState) = s.getEntity(sourceId)?.chosenOpponent()
         chosen(afterChoice.newState) shouldBe players[2]
     }

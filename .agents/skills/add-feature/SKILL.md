@@ -69,7 +69,7 @@ filters/amounts, name-the-mechanic), then put it in the right place —
 every kind of vocabulary, plus the five layers a counter type spans.
 
 **Before adding a `Condition` subtype, answer three placement questions** — the hierarchy re-bloats with
-one-offs otherwise (`backlog/sdk-analysis-2026-06-revised.md` §2.3):
+one-offs otherwise:
 
 1. **"Does X match a filter?"** → that's `Conditions.EntityMatches(entity, filter)` or one of its
    `SourceMatches` / `EnchantedPermanentMatches` / `TargetMatchesFilter` / `TriggeringSpellMatches`
@@ -93,7 +93,7 @@ Hard rules while writing it — these are the engine's recurring bug classes:
   projection. No separate `*ProjectionCondition` types; use `ConditionEvaluationContext`.
 - **Continuations carry targets** — any frame wrapping `EffectTarget.ContextTarget(n)` must propagate
   `targets` / `namedTargets` / `outerTargets` into the rebuilt `EffectContext`.
-- **Last-known information** — dies/leaves triggers read `triggerLastKnownPower`,
+- **Last-known information** — dies/leaves triggers read `triggerContext.lastKnownPower`,
   `lastKnownCardDefinitionId`, `lastKnownCounters` off the `ZoneChangeEvent`; the entity is gone by the
   time the trigger resolves.
 - **Layer 613.8 dependency** — new continuous-effect families sort by trial application before timestamp.
@@ -109,13 +109,13 @@ resolution, empty/zero input, simultaneous instances, replacement interaction):
 |---|---|
 | **SDK (data)** | Pure, serializable, fully parameterized. Round-trips through serialization |
 | **Engine handler/executor** | Right executor picks it up, emits the right `GameEvent`s, returns the right `GameState`, registered in the right registry |
-| **TriggerDetector** | Detected from emitted events, registered in `TriggerIndex`, on the correct path — battlefield `detectTriggers` vs `detectPhaseStepTriggers` vs `detectLeavesBattlefieldTriggers` |
+| **TriggerDetector** | Detected from emitted events, on the correct path — battlefield `detectTriggers` vs `detectPhaseStepTriggers` vs `detectLeavesBattlefieldTriggers`. `TriggerIndex`'s two category maps and `TriggerMatcher.matchesTrigger` are exhaustive, so a new `EventPattern` or `GameEvent` won't compile until you place it. The compiler can't tell you *which* branch is right: an event the per-event loop should see needs a real category, not the `emptyList()` group. Only the settle boundary (`Settler`) detects; a handler or resumer just emits the events, including across a pause |
 | **StateProjector** | Applied in the correct Rule 613 layer, reflected in projected state, dependency ordering holds |
-| **Continuations** | Player-input features pause with a `PendingDecision` and resume carrying targets/collections |
+| **Continuations** | Player-input features pause with a `PendingDecision` and resume carrying targets/collections. `ContinuationResumerCoverageTest` fails on a frame with no registered resumer |
 | **Cleanup** | Duration-bounded state removed at the right time (end of turn/combat, source leaves) |
 | **Server DTO / masking** | New `GameEvent` → branch in `ClientEvent.kt`'s exhaustive `when`; new client-visible state → `ClientStateTransformer`; private info masked by `StateMasker` |
 | **Legal actions** | New player action enumerated by an `ActionEnumerator` — never computed client-side |
-| **Frontend** | New decision/UX → component in `web-client/src/components/decisions/`; new keyword/icon → `enums.ts`, display names, icon index |
+| **Frontend** | New decision/UX → component in `web-client/src/components/decisions/`; new keyword/icon → `enums.ts`, display names, icon index. `KeywordClientMirrorTest` / `CounterTypeClientMirrorTest` fail on an unmirrored `Keyword` / `CounterType` |
 
 Write a short trace per scenario and fix every gap before proceeding.
 
@@ -192,11 +192,30 @@ details (`ScenarioTestBase` vs `GameTestDriver`, inline test cards) and which co
 - Any other doc the feature contradicts: `engine-server-interface.md`, `data-contracts.md`,
   `player-input.md`, `web-client-architecture.md`, `continuous-effect-dependency-system.md`.
 
+## Step 8a: Keep Argentum Assay compiling and honest
+
+[Argentum Assay](../../../oracle-assay/README.md) — our first-party Oracle-text parser — reads printed
+text into the very SDK types you just touched, so it is a compile-time consumer of `mtg-sdk` and the
+closest thing the SDK has to an outside reader.
+
+- **You changed or renamed an existing type** (new required parameter, moved constant, reshaped effect):
+  fix the grammar rules that construct it **in this change**, and run `just assay-gate --limit 2000` so
+  the touchstone still round-trips. Skipping this breaks the `:oracle-assay` build for everyone.
+- **You added a new type**: nothing is owed here. An Assay rule is bidirectional and ships as a measured
+  *band* — its own probe, ranking and PR (see [`docs/oracle-assay.md`](../../../docs/oracle-assay.md)) —
+  so don't grow this PR into one. Name the new vocabulary in the PR body instead:
+  `just assay-report --rank tail` is the ranked backlog of what the grammar still can't read, and new
+  vocabulary is how a row on it becomes reachable.
+- **Your feature changed how existing cards behave**: run `just assay-differential` over the affected
+  set. A new `DIVERGENT` row means Assay and the corpus now disagree about a card you moved — classify it
+  before committing rather than leaving it for the next set sweep.
+
 ## Step 8b: Teach the mtgish generator your new capability
 
-A new SDK primitive should also become something the generator can *predict and draft* corpus-wide — one
-bridge/emitter entry typically unlocks coverage and auto-draft for many cards sharing the mechanic.
-Mechanics: [`add-card/new-sdk-types.md`](../add-card/new-sdk-types.md) → "Teach the mtgish generator".
+A new SDK primitive should also become something the mtgish generator can *predict and draft*
+corpus-wide — one bridge/emitter entry typically unlocks coverage and auto-draft for many cards sharing
+the mechanic. Mechanics: [`add-card/new-sdk-types.md`](../add-card/new-sdk-types.md) → "Teach the mtgish
+generator". Unlike an Assay band, this really is a one-line entry, which is why it stays in-PR.
 
 **Gate this on the right axis.** It applies when the feature introduces a new SDK effect/primitive
 mapping to an mtgish IR tag. It does **not** apply to pure composition of effects the emitter already

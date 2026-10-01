@@ -4,7 +4,6 @@ import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.support.ScenarioTestBase
-import com.wingedsheep.sdk.core.Counters
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Phase
@@ -20,10 +19,10 @@ import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.values.EntityNumericProperty
-import com.wingedsheep.sdk.scripting.values.EntityReference
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
  * End-to-end rules coverage for the Station keyword ability (CR 702.184) and the `{N+}` station
@@ -54,8 +53,8 @@ class StationMechanicTest : ScenarioTestBase() {
         activatedAbility {
             cost = Costs.TapPermanents(count = 1, filter = GameObjectFilter.Creature, excludeSelf = true)
             effect = Effects.AddDynamicCounters(
-                counterType = Counters.CHARGE,
-                amount = DynamicAmount.EntityProperty(EntityReference.TappedAsCost(), EntityNumericProperty.Power),
+                counterType = CounterType.CHARGE,
+                amount = DynamicAmount.EntityProperty(EffectTarget.TappedAsCost(), EntityNumericProperty.Power),
                 target = EffectTarget.Self
             )
             timing = TimingRule.SorcerySpeed
@@ -63,12 +62,12 @@ class StationMechanicTest : ScenarioTestBase() {
     }
 
     // A minimal "destroy target creature" instant, to remove the tapped creature in response and
-    // exercise the last-known-information path (CR 112.7a).
+    // exercise the last-known-information path (CR 113.7a).
     private val doomBlade = card("Test Doom Blade") {
         manaCost = "{1}{B}"
         typeLine = "Instant"
         spell {
-            val t = target("target creature", com.wingedsheep.sdk.scripting.targets.TargetCreature())
+            val t = target(TargetFilter.Creature)
             effect = Effects.Destroy(t)
         }
     }
@@ -278,7 +277,7 @@ class StationMechanicTest : ScenarioTestBase() {
                 withClue("a sorcery-speed ability can't be activated on the opponent's turn") { result.error shouldNotBe null }
             }
 
-            test("last-known information: charge equals the tapped creature's power even if it leaves first (112.7a)") {
+            test("last-known information: charge equals the tapped creature's power even if it leaves first (113.7a)") {
                 val game = scenario()
                     .withPlayers()
                     .withCardOnBattlefield(1, "Wedgelight Rammer", summoningSickness = false)

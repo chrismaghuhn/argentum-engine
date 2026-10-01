@@ -82,6 +82,8 @@ class Step3522HistoryAFirstBlockerCharacterizationTest : FunSpec({
             startingPlayerIndex = 0,
             format = Format.Commander(),
             seed = 0L,
+            // The pinned trajectory predates upstream-sync-05's shuffled deck ids.
+            shuffledDeckIds = false,
         )
         val environment = GameEnvironment.create(
             cardRegistry = registry,
@@ -153,9 +155,15 @@ class Step3522HistoryAFirstBlockerCharacterizationTest : FunSpec({
         step3522Reached shouldBe true
         successfulChoices shouldBe 3_522
         environment.stepCount shouldBe 3_522
+        // Since upstream-sync-05 every tap for mana goes through one seam that also reports the land
+        // tap and the mana ability's activation, so each land paid with adds two events.
         eventsAtCrossing.map { it::class.simpleName ?: "UnknownGameEvent" } shouldBe listOf(
             "TappedEvent",
+            "LandTappedForManaEvent",
+            "AbilityActivatedEvent",
             "TappedEvent",
+            "LandTappedForManaEvent",
+            "AbilityActivatedEvent",
             "ManaSpentEvent",
             "TappedEvent",
             "PermanentsSacrificedEvent",
@@ -171,8 +179,32 @@ class Step3522HistoryAFirstBlockerCharacterizationTest : FunSpec({
                 reason = null,
             ),
             Step3522ProjectionFact(
+                rawEventType = "LandTappedForManaEvent",
+                family = PerspectiveEventFamily.LAND_TAPPED_FOR_MANA,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            Step3522ProjectionFact(
+                rawEventType = "AbilityActivatedEvent",
+                family = PerspectiveEventFamily.ABILITY_ACTIVATED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            Step3522ProjectionFact(
                 rawEventType = "TappedEvent",
                 family = PerspectiveEventFamily.TAPPED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            Step3522ProjectionFact(
+                rawEventType = "LandTappedForManaEvent",
+                family = PerspectiveEventFamily.LAND_TAPPED_FOR_MANA,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            Step3522ProjectionFact(
+                rawEventType = "AbilityActivatedEvent",
+                family = PerspectiveEventFamily.ABILITY_ACTIVATED,
                 disposition = PerspectiveEventDisposition.EMITTED,
                 reason = null,
             ),

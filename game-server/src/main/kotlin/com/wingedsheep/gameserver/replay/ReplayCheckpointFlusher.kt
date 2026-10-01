@@ -34,8 +34,9 @@ class ReplayCheckpointFlusher(
     private val logger = LoggerFactory.getLogger(ReplayCheckpointFlusher::class.java)
 
     /**
-     * sessionId -> recording cursor at last flush, so an idle game isn't rewritten every sweep.
-     * Yields are replay inputs too, even though they are intentionally kept outside the action log.
+     * sessionId -> recording cursor at last flush ([FlushCursor]), so an idle game isn't rewritten
+     * every sweep. Yields are replay inputs too, even though they are intentionally kept outside the
+     * action log.
      */
     private val flushed = ConcurrentHashMap<String, FlushCursor>()
 
@@ -90,6 +91,7 @@ class ReplayCheckpointFlusher(
                     // A persisted replay predates this in-memory identity. Force the recovered
                     // session through one coherent write before count-based skipping is possible.
                     recordingRevision = null,
+                    truncated = record.replay.truncated,
                 )
             } else {
                 runCatching { replayService.finalizePartial(gameId) }
@@ -136,15 +138,18 @@ class ReplayCheckpointFlusher(
                 pinnedCards = session.getPinnedCards(),
                 // The tail is a persistence-only view of this coherent snapshot. Do not append it
                 // to GameSession.recordedCheckpoints, or every sweep would accumulate duplicates.
+                // It proves the recorded prefix's end ([ReplayRecordingSnapshot.tailFingerprint]),
+                // which a frozen recording's live position has moved past.
                 checkpoints = if (ReplayCheckpointPolicy.requiresTailCheckpoint(snapshot.version)) {
                     ReplayCheckpointPolicy.withV3Tail(
                         checkpoints = snapshot.checkpoints,
                         actionCount = snapshot.actions.size,
-                        fingerprint = snapshot.fingerprint,
+                        fingerprint = snapshot.tailFingerprint,
                     )
                 } else {
                     snapshot.checkpoints
                 },
+                truncated = snapshot.truncated,
             ),
             resumeFingerprint = snapshot.fingerprint,
         )
@@ -155,12 +160,20 @@ class ReplayCheckpointFlusher(
         actionCount = actions.size,
         yieldCount = yields.size,
         recordingRevision = recordingRevision,
+        truncated = truncated,
     )
 
+    /**
+     * What the last flush wrote. The action count is what normally moves. [truncated] is here
+     * because it can flip *without* the count moving — a recording frozen by the size cap stops
+     * appending, so a game that was flushed at exactly the cap would otherwise keep a stored record
+     * that claims to be the whole game right up until game over.
+     */
     private data class FlushCursor(
         val actionCount: Int,
         val yieldCount: Int,
         val recordingRevision: Long?,
+        val truncated: Boolean,
     )
 
     private companion object {

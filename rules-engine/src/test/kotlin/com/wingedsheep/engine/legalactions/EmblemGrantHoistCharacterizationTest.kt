@@ -1,10 +1,7 @@
 package com.wingedsheep.engine.legalactions
 
 import com.wingedsheep.engine.core.ActivateAbility
-import com.wingedsheep.engine.core.TurnManager
-import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.PredicateContext
-import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.enumerators.ActivatedAbilityEnumerator
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
@@ -262,7 +259,7 @@ class EmblemGrantSemanticCharacterizationTest : ScenarioTestBase() {
     private fun referenceEmblemCandidates(state: GameState, playerId: EntityId): List<Candidate> {
         val descriptors = collectDescriptors(state)
         val projected = state.projectedState
-        val evaluator = PredicateEvaluator()
+        val evaluator = services.predicateEvaluator
         val hosts = projected.getBattlefieldControlledBy(playerId)
         return hosts.flatMapIndexed { hostIndex, hostId ->
             descriptors.flatMap { descriptor ->
@@ -347,11 +344,11 @@ class EmblemGrantHoistStructuralTest : ScenarioTestBase() {
                 state = state,
                 playerId = game.player1Id,
                 cardRegistry = cardRegistry,
-                manaSolver = ManaSolver(cardRegistry),
-                costCalculator = CostCalculator(cardRegistry),
-                predicateEvaluator = PredicateEvaluator(),
-                conditionEvaluator = ConditionEvaluator(),
-                turnManager = TurnManager(cardRegistry),
+                manaSolver = ManaSolver(cardRegistry, services.predicateEvaluator),
+                costCalculator = CostCalculator(cardRegistry, services.predicateEvaluator),
+                predicateEvaluator = services.predicateEvaluator,
+                conditionEvaluator = services.conditionEvaluator,
+                turnManager = services.turnManager,
                 mode = EnumerationMode.ACTIONS_ONLY,
             )
 
@@ -361,7 +358,7 @@ class EmblemGrantHoistStructuralTest : ScenarioTestBase() {
             context.availableManaSources
             counted.resetCounters()
 
-            ActivatedAbilityEnumerator().enumerate(context)
+            ActivatedAbilityEnumerator(services.predicateEvaluator).enumerate(context)
 
             counted.scanCount shouldBe 1
         }

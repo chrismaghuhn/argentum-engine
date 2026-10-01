@@ -1,18 +1,24 @@
 package com.wingedsheep.gameserver.session
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.view.ClientEvent
 import com.wingedsheep.engine.view.ClientEventTransformer
 import com.wingedsheep.engine.view.ClientGameState
 import com.wingedsheep.engine.view.ClientStateTransformer
 import com.wingedsheep.engine.view.StateDiffCalculator
 import com.wingedsheep.engine.view.LegalActionEnricher
+import com.wingedsheep.gameserver.ai.AiReplayHistory
+import com.wingedsheep.gameserver.ai.AiRuntimeSnapshot
 import com.wingedsheep.gameserver.protocol.GameOverReason
 import com.wingedsheep.engine.view.LegalActionInfo
+import com.wingedsheep.engine.view.Visibility
+import com.wingedsheep.gameserver.persistence.dto.PersistentSeatNames
 import com.wingedsheep.gameserver.protocol.ServerMessage
 import com.wingedsheep.gameserver.priority.AutoPassManager
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.MulliganHandler
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.mechanics.combat.CombatDeclarationControl
 import com.wingedsheep.engine.legalactions.LegalActionEnumerator
 import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
 import com.wingedsheep.engine.registry.CardRegistry
@@ -44,6 +50,8 @@ import com.wingedsheep.gameserver.policy.PolicySeatFailure
 import com.wingedsheep.gameserver.policy.PolicySeatFailureCode
 import com.wingedsheep.gameserver.policy.PolicySeatInferenceCapture
 import com.wingedsheep.gameserver.policy.PolicySeatStateV1
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.builtins.ListSerializer
 import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.util.UUID
@@ -61,7 +69,7 @@ private val logger = LoggerFactory.getLogger(GameSession::class.java)
 class GameSession(
     val sessionId: String = UUID.randomUUID().toString(),
     private val services: EngineServices,
-    private val stateTransformer: ClientStateTransformer = ClientStateTransformer(services.cardRegistry),
+    private val stateTransformer: ClientStateTransformer = ClientStateTransformer(services.cardRegistry, predicateEvaluator = PredicateEvaluator(cardRegistry = null)),
     private val useHandSmoother: Boolean = false,
     /**
      * Number of seats this session fills before it is [isReady] to start. Defaults to 2 (the
@@ -74,17 +82,27 @@ class GameSession(
     constructor(
         sessionId: String = UUID.randomUUID().toString(),
         cardRegistry: CardRegistry,
-        stateTransformer: ClientStateTransformer = ClientStateTransformer(cardRegistry),
+        stateTransformer: ClientStateTransformer = ClientStateTransformer(cardRegistry, predicateEvaluator = PredicateEvaluator(cardRegistry = null)),
         useHandSmoother: Boolean = false,
         debugMode: Boolean = false,
         printingRegistry: com.wingedsheep.engine.registry.PrintingRegistry? = null,
         maxPlayers: Int = 2,
         tokenArtRegistry: com.wingedsheep.engine.registry.TokenArtRegistry? = null,
-    ) : this(sessionId, EngineServices(cardRegistry, printingRegistry, tokenArtRegistry), if (debugMode) ClientStateTransformer(cardRegistry, debugMode = true) else stateTransformer, useHandSmoother, maxPlayers)
+    ) : this(sessionId, EngineServices(cardRegistry, printingRegistry, tokenArtRegistry), if (debugMode) ClientStateTransformer(cardRegistry, debugMode = true, predicateEvaluator = PredicateEvaluator(cardRegistry = null)) else stateTransformer, useHandSmoother, maxPlayers)
 
     private val cardRegistry: CardRegistry get() = services.cardRegistry
     // Lock for synchronizing state modifications to prevent lost updates
     private val stateLock = Any()
+
+    /**
+     * Live response freshness, separate from replayable engine routing. Undo starts a new
+     * generation even when it restores an identical engine counter. A recovered session gets
+     * a fresh epoch too; reconnecting to this instance keeps outstanding responses valid.
+     * Read and changed only under [stateLock]. Never stored in engine state or replay inputs.
+     */
+    private var liveInteractionEpoch = UUID.randomUUID().toString()
+
+    private fun liveDecisionId(engineId: String): String = "$liveInteractionEpoch:$engineId"
 
     @Volatile
     private var gameState: GameState? = null
@@ -248,6 +266,17 @@ class GameSession(
         val policySeatState: PolicySeatStateV1? = null,
     )
 
+    /**
+     * Runaway/wedge backstop for this game — see [GameStallGuard]. Lives on the session because
+     * every applied action funnels through [recordAction], which is the only place that can see
+     * "the game moved" for every path at once.
+     */
+    private var stallGuard = GameStallGuard()
+
+    /** Where [appendToReplayLog] stops recording. Mutable only for the test seam below. */
+    private var replayActionCap =
+        com.wingedsheep.gameserver.replay.ReplayRecordingPolicy.MAX_RECORDED_ACTIONS
+
     private val actionProcessor = ActionProcessor(services)
     private val gameInitializer = GameInitializer(cardRegistry, services.printingRegistry)
     private val autoPassManager = AutoPassManager(cardRegistry)
@@ -295,6 +324,23 @@ class GameSession(
      */
     private var recordingRevision = 0L
     private val recordedActions = CopyOnWriteArrayList<GameAction>()
+    // Set once the recording has hit [ReplayRecordingPolicy.MAX_RECORDED_ACTIONS] and been frozen.
+    // Sticky, and stored with the record — see [recordAction].
+    @Volatile
+    private var replayTruncated = false
+    /**
+     * The position the recorded inputs (actions and yields) lead to — what a persisted tail
+     * checkpoint proves ([com.wingedsheep.gameserver.replay.ReplayRecordingSnapshot.tailFingerprint]).
+     * The same object as [gameState] while every applied input is recorded; it stays behind once the
+     * live game moves past the recording: frozen by [replayActionCap] ([replayTruncated]), or ended
+     * by [enforceProgress]'s out-of-band draw. Null when unknown — a frozen record resumed after a
+     * restart — in which case [restoredTailFingerprint] carries the stored proof instead. Changed
+     * only under [stateLock] (or before the game is shared, in [startGame]).
+     */
+    @Volatile
+    private var recordedTailState: GameState? = null
+    @Volatile
+    private var restoredTailFingerprint: String? = null
     // Persistent-yield mutations applied out-of-band of [recordedActions]. Captured in turn order so
     // the reconstructor can re-apply each at the action position it was set (see [CompactReplay.yields]).
     private val recordedYields = CopyOnWriteArrayList<com.wingedsheep.gameserver.replay.ReplayYieldEntry>()
@@ -310,6 +356,13 @@ class GameSession(
 
     /** Per-player cache of last sent ClientGameState for delta computation */
     private val lastSentState = java.util.concurrent.ConcurrentHashMap<EntityId, ClientGameState>()
+
+    /**
+     * The card names each browser seat knows, so a card it loses track of can't be followed by its
+     * id ([SeatIdentities]). In-process AI seats read raw engine state and keep engine ids.
+     */
+    private val seatIdentities = java.util.concurrent.ConcurrentHashMap<EntityId, SeatIdentities>()
+    private val visibility by lazy { Visibility(services.cardRegistry, conditionEvaluator = services.conditionEvaluator) }
 
     /** Monotonically increasing version counter, included in every state update so clients can detect missed messages */
     private val stateVersions = java.util.concurrent.ConcurrentHashMap<EntityId, Long>()
@@ -430,6 +483,14 @@ class GameSession(
     }
 
     /**
+     * Every *other* seat at the table — opponents and teammates alike. For table-wide notices
+     * (a seat dropped, a seat came back) that a partner needs at least as much as an opponent
+     * does; [getOpponentIds] is for anything that must stop at the team boundary.
+     */
+    fun getOtherPlayerIds(playerId: EntityId): List<EntityId> =
+        players.keys.filter { it != playerId }
+
+    /**
      * Get the player session for a player ID.
      */
     fun getPlayerSession(playerId: EntityId): PlayerSession? = players[playerId]
@@ -540,6 +601,7 @@ class GameSession(
                 // Prefer the running game's format (set for scenario/hotseat pods too), falling back
                 // to the configured format before the game state exists.
                 teamSharedLife = (state?.format ?: engineFormat).sharesTeamLife,
+                teamSharedTurns = (state?.format ?: engineFormat).sharesTeamTurns,
             )
         }.sortedBy { it.seatIndex }
     }
@@ -621,6 +683,8 @@ class GameSession(
             },
             seatRoster = seatInfos(),
         )
+        recordedTailState = result.state
+        restoredTailFingerprint = null
         return result.state
     }
 
@@ -829,8 +893,10 @@ class GameSession(
             }
         }
         val state = gameState ?: return MulliganActionResult.Failure("Game not started")
+        val engineIds = fromSeat(playerId, cardIds, ListSerializer(EntityId.serializer()))
+            ?: return MulliganActionResult.Failure(STALE_CARD_NAME)
 
-        val action = BottomCards(playerId, cardIds)
+        val action = BottomCards(playerId, engineIds)
         val result = actionProcessor.process(state, action).result
 
         val error = result.error
@@ -857,13 +923,13 @@ class GameSession(
         // mulligan correctly shows "bottom 0".
         val cardsToPutOnBottom = state?.getEntity(playerId)
             ?.get<MulliganStateComponent>()?.cardsToBottom ?: count
-        return ServerMessage.MulliganDecision(
+        return toSeat(playerId, ServerMessage.MulliganDecision(
             hand = hand,
             mulliganCount = count,
             cardsToPutOnBottom = cardsToPutOnBottom,
             cards = cards,
             isOnThePlay = isOnThePlay
-        )
+        ), ServerMessage.MulliganDecision.serializer())
     }
 
     /**
@@ -874,11 +940,11 @@ class GameSession(
         if (count == 0) return null
         val hand = getHand(playerId)
         val state = gameState
-        return ServerMessage.ChooseBottomCards(
+        return toSeat(playerId, ServerMessage.ChooseBottomCards(
             hand = hand,
             cardsToPutOnBottom = count,
             cards = mulliganCardInfo(state, hand)
-        )
+        ), ServerMessage.ChooseBottomCards.serializer())
     }
 
     /**
@@ -920,7 +986,87 @@ class GameSession(
     }
 
     /**
-     * Execute a game action.
+     * Decode the browser's transport envelope. Legacy decision replies carry their origin in
+     * the prefixed ID; ordinary actions must carry an explicit origin. Neither path may borrow
+     * this session's current epoch to authorize a choice made on an unknown timeline.
+     */
+    fun executeClientAction(
+        playerId: EntityId,
+        seatAction: GameAction,
+        messageId: String? = null,
+        interactionEpoch: String? = null,
+    ): ActionResult {
+        val action = fromSeat(playerId, seatAction, GameAction.serializer())
+            ?: return ActionResult.Failure(STALE_CARD_NAME)
+        val submission = if (action is SubmitDecision) {
+            val wireId = action.response.decisionId
+            val separator = wireId.indexOf(':')
+            if (separator <= 0 || separator == wireId.lastIndex) {
+                return ActionResult.Failure("Decision has no originating interaction")
+            }
+            val embeddedEpoch = wireId.substring(0, separator)
+            if (interactionEpoch != null && interactionEpoch != embeddedEpoch) {
+                return ActionResult.Failure("Decision origin does not match its envelope")
+            }
+            LiveActionSubmission(
+                action.copy(response = action.response.withDecisionId(wireId.substring(separator + 1))),
+                embeddedEpoch,
+                messageId,
+            )
+        } else {
+            LiveActionSubmission(
+                action,
+                interactionEpoch ?: return ActionResult.Failure("Action has no originating interaction"),
+                messageId,
+            )
+        }
+        return executeLiveAction(playerId, submission)
+            ?: ActionResult.Failure("Action is no longer current")
+    }
+
+    /**
+     * Decode the asynchronous AI envelope without replacing its captured origin. The action then
+     * passes the AI controller gate ([executeActionFromAiController]), so an AI callback can never
+     * act for a human or ML-policy seat.
+     */
+    fun executeAiAction(
+        playerId: EntityId,
+        action: GameAction,
+        interactionEpoch: String?,
+    ): ActionResult? {
+        val origin = interactionEpoch ?: return null
+        return executeLiveAction(playerId, LiveActionSubmission(action, origin), fromAiController = true)
+    }
+
+    /**
+     * Shared live ingress for both transports and AI recovery actions. Validate the origin and
+     * current decision before checkpoints, replay, or idempotency bookkeeping can change.
+     * Null is obsolete delivery, not an invalid action: asynchronous callers must discard it
+     * without fallbacks, rejection accounting, or a broadcast. [fromAiController] selects the AI
+     * controller gate instead of the human one for the mutation itself.
+     */
+    fun executeLiveAction(
+        playerId: EntityId,
+        submission: LiveActionSubmission,
+        fromAiController: Boolean = false,
+    ): ActionResult? = synchronized(stateLock) {
+        if (!isCurrentInteraction(submission.interactionEpoch)) return null
+        val action = submission.action
+        if (action is SubmitDecision && action.response.decisionId != gameState?.pendingDecision?.id) return null
+        if (fromAiController) {
+            executeActionFromAiController(playerId, action, submission.messageId)
+        } else {
+            executeAction(playerId, action, submission.messageId)
+        }
+    }
+
+    /** Must be checked under [stateLock], alongside the mutation it authorizes. */
+    private fun isCurrentInteraction(interactionEpoch: String?): Boolean =
+        interactionEpoch != null && interactionEpoch == liveInteractionEpoch
+
+    /**
+     * Execute an immediate engine action. Browser submissions use [executeClientAction];
+     * asynchronous AI callbacks use [executeAiAction] to validate their originating generation.
      *
      * Routes the action through the engine's ActionProcessor.
      * Synchronized to prevent lost updates when multiple players act simultaneously.
@@ -946,6 +1092,7 @@ class GameSession(
             expectedControllerKind = controllerKind,
             controlledPlayerId = action.playerId,
             state = gameState,
+            action = action,
         )?.let { return@synchronized ActionResult.Failure(it) }
         executeActionLocked(playerId, action, messageId)
     }
@@ -965,6 +1112,7 @@ class GameSession(
             expectedControllerKind = controllerKind,
             controlledPlayerId = action.playerId,
             state = gameState,
+            action = action,
         )?.let { return@synchronized ActionResult.Failure(it) }
         executeActionLocked(playerId, action, messageId)
     }
@@ -983,7 +1131,16 @@ class GameSession(
         // device. Concede is excluded — the affected player can always concede regardless
         // of who's controlling them.
         val actionPlayerId = action.playerId
-        if (action !is Concede && playerId != actionPlayerId && state.actorFor(actionPlayerId) != playerId) {
+        // Master Warcraft: while another player has taken over a combat declaration, only they may
+        // submit it — not even the seat that owes it.
+        val combatDeclarer = if (action is DeclareAttackers || action is DeclareBlockers) {
+            CombatDeclarationControl.declarerFor(state, actionPlayerId)
+        } else null
+        if (combatDeclarer != null) {
+            if (combatDeclarer != playerId) {
+                return ActionResult.Failure("Another player chooses this combat declaration")
+            }
+        } else if (action !is Concede && playerId != actionPlayerId && state.actorFor(actionPlayerId) != playerId) {
             return ActionResult.Failure("Not authorized to submit actions for player $actionPlayerId")
         }
 
@@ -1010,22 +1167,31 @@ class GameSession(
 
         val (result, undoPolicy) = actionProcessor.process(state, action)
 
-        val error = result.error
-        if (error != null) {
-            return ActionResult.Failure(error)
+        fun accept() {
+            applyUndoPolicy(undoPolicy, action, state, playerId)
+            gameState = result.state
+            recordAction(action)
+            if (messageId != null) lastProcessedMessageId[playerId] = messageId
         }
 
-        // Apply the engine's undo policy
-        applyUndoPolicy(undoPolicy, action, state, playerId)
-
-        gameState = result.state
-        recordAction(action)
-        if (messageId != null) lastProcessedMessageId[playerId] = messageId
-        val pendingDecision = result.pendingDecision
-        return if (pendingDecision != null) {
-            ActionResult.PausedForDecision(result.state, pendingDecision, result.events)
-        } else {
-            ActionResult.Success(result.state, result.events)
+        return when (val outcome = result.outcome) {
+            is Outcome.Rejected -> {
+                // An illegal action is routine (a stale or wrong client request). A failure during
+                // execution means validation let through something the engine could not carry
+                // out, which is worth a look.
+                if (outcome.reason is Rejection.ExecutionFailed) {
+                    logger.warn("Action ${action::class.simpleName} by $playerId failed during execution: ${outcome.reason.message}")
+                }
+                ActionResult.Failure(outcome.reason.message)
+            }
+            is Outcome.Paused -> {
+                accept()
+                ActionResult.PausedForDecision(result.state, outcome.decision, result.events)
+            }
+            Outcome.Done -> {
+                accept()
+                ActionResult.Success(result.state, result.events)
+            }
         }
     }
 
@@ -1056,7 +1222,11 @@ class GameSession(
         val state = gameState ?: return emptyList()
 
         val actions = enumerateLegalActions(state, playerId)
-        val enrichmentViewer = ManaPaymentWindow.openFor(state, playerId)?.playerId ?: playerId
+        // Enrich for the seat the actions belong to: the payer of an open mana-payment window, or
+        // the acting seat (whose mana, cards and turn they are).
+        val enrichmentViewer = ManaPaymentWindow.openFor(state, playerId)?.playerId
+            ?: actingSeatFor(state, playerId)
+            ?: playerId
         return legalActionEnricher.enrich(actions, state, enrichmentViewer)
     }
 
@@ -1072,13 +1242,29 @@ class GameSession(
             return legalActionEnumerator.enumerateManaAbilities(state, window.playerId)
         }
 
-        val priorityPlayer = state.priorityPlayerId ?: return emptyList()
-        // Allow either the priority player or, when their turn is hijacked, the controller
-        // currently driving them. Legal actions are still enumerated for the affected
-        // player (whose mana, cards, and turn this is).
-        if (state.actorFor(priorityPlayer) != playerId) return emptyList()
+        val actingSeat = actingSeatFor(state, playerId) ?: return emptyList()
         if (state.pendingDecision != null) return emptyList()
-        return legalActionEnumerator.enumerate(state, priorityPlayer)
+        return legalActionEnumerator.enumerate(state, actingSeat)
+    }
+
+    /**
+     * The seat this connection may act as right now. Normally the priority player, or — when
+     * their turn is hijacked — whoever this connection is the actor for. Legal actions are
+     * enumerated for the *acting* seat, since it is that seat's mana, cards and turn.
+     *
+     * CR 805.5: under shared team turns the whole of the baton holder's team may act, so a
+     * teammate's connection gets its own actions instead of nothing — that is what lets you
+     * answer what your partner just did without first waiting for the baton to reach you.
+     * The baton holder is tried first so a hotseat client (the actor for every seat) keeps
+     * driving exactly the seat the UI is focused on. Outside a shared-turns format
+     * [GameState.priorityTeam] is the singleton baton holder and this is the old expression.
+     * A combat declaration taken over by Master Warcraft routes to its new declarer (and away
+     * from the seat's usual actor) — CombatDeclarationControl.inputActorFor.
+     */
+    private fun actingSeatFor(state: GameState, playerId: EntityId): EntityId? {
+        val priorityPlayer = state.priorityPlayerId ?: return null
+        return (listOf(priorityPlayer) + state.priorityTeam.filter { it != priorityPlayer })
+            .firstOrNull { CombatDeclarationControl.inputActorFor(state, it) == playerId }
     }
 
     /** Capture one C1_07A source snapshot and its persisted policy RNG under the session lock. */
@@ -1330,15 +1516,24 @@ class GameSession(
      * treated as the historical human default for test/scenario sessions, while every explicit
      * authority must match the caller's origin. For action submissions, [state] resolves the
      * effective input controller through [GameState.actorFor] before checking that controller's
-     * persisted authority; resource ownership remains with [controlledPlayerId].
+     * persisted authority; resource ownership remains with [controlledPlayerId]. An owed combat
+     * declaration ([action]) that another player took over (Master Warcraft) is input from that
+     * player instead — [CombatDeclarationControl.inputActorFor], the routing [executeActionLocked]
+     * authorizes it by.
      */
     private fun controllerAuthorityFailureLocked(
         controllerId: EntityId,
         expectedControllerKind: ControllerKindV1,
         controlledPlayerId: EntityId = controllerId,
         state: GameState? = null,
+        action: GameAction? = null,
     ): String? {
-        val effectiveControllerId = state?.actorFor(controlledPlayerId) ?: controlledPlayerId
+        val effectiveControllerId = when {
+            state == null -> controlledPlayerId
+            action is DeclareAttackers || action is DeclareBlockers ->
+                CombatDeclarationControl.inputActorFor(state, controlledPlayerId)
+            else -> state.actorFor(controlledPlayerId)
+        }
         if (effectiveControllerId != controllerId) {
             return "Controller ${controllerId.value} is not the current actor for seat ${controlledPlayerId.value}"
         }
@@ -1389,33 +1584,58 @@ class GameSession(
      * Returns either a full [ServerMessage.StateUpdate] (first update or after reconnect)
      * or a [ServerMessage.StateDeltaUpdate] (subsequent updates with only changes).
      */
-    fun createStateUpdate(playerId: EntityId, events: List<GameEvent>): ServerMessage? {
+    fun createStateUpdate(
+        playerId: EntityId,
+        events: List<GameEvent>,
+        useEngineDecisionIds: Boolean = false,
+    ): ServerMessage? = synchronized(stateLock) {
         val state = gameState ?: return null
-        val clientState = getClientState(playerId) ?: return null
-        val legalActions = getLegalActions(playerId)
+        val names = if (useEngineDecisionIds) null else seatIdentities.getOrPut(playerId) { SeatIdentities() }
+        names?.forgetUntrackable(state, playerId, visibility)
+        val engineClientState = getClientState(playerId) ?: return null
+        val engineLegalActions = getLegalActions(playerId)
 
         // Transform raw engine events to client events
-        val clientEvents = ClientEventTransformer.transform(events, playerId)
+        val engineClientEvents = ClientEventTransformer.transform(events, playerId, state)
+
+        // Include pending decision only for the player who needs to make it — i.e. the
+        // actor for the affected player. During a hijacked turn this routes the
+        // decision to the controller, not the affected player.
+        // Enrich with imageUri from card registry since engine doesn't have access to metadata
+        val enginePendingDecision = state.pendingDecision?.takeIf { state.actorFor(it.playerId) == playerId }?.let {
+            val enriched = decisionEnricher.enrich(it, state, playerId)
+            // In-process AI simulates against raw engine state; browser clients echo a live ID.
+            if (useEngineDecisionIds) enriched else enriched.withClientRoutingId(liveDecisionId(it.id))
+        }
+
+        // A browser seat gets everything in its own card names.
+        // A card the seat renamed is in this message only if the seat can see it again, and then it
+        // is among these cards, zones, events or decision; if none is, nothing needs renaming.
+        var renaming: SeatIdentities? = null
+        if (names != null) {
+            val sent = engineClientState.cards.keys + engineClientState.zones.flatMap { it.cardIds } +
+                names.idsIn(engineClientEvents, clientEventsSerializer) +
+                (enginePendingDecision?.let { names.idsIn(it, PendingDecision.serializer()) } ?: emptySet())
+            names.noteSeen(state, playerId, visibility, sent)
+            if (names.renamesAny(sent)) renaming = names
+        }
+        val clientState = renaming?.toSeat(engineClientState, ClientGameState.serializer()) ?: engineClientState
+        val legalActions = renaming?.toSeat(engineLegalActions, legalActionsSerializer) ?: engineLegalActions
+        val clientEvents = renaming?.toSeat(engineClientEvents, clientEventsSerializer) ?: engineClientEvents
+        val pendingDecision = enginePendingDecision?.let { renaming?.toSeat(it, PendingDecision.serializer()) ?: it }
 
         // Accumulate into persistent game log (filter noisy events)
         val logEntries = clientEvents.filter { it !is ClientEvent.PermanentTapped && it !is ClientEvent.PermanentUntapped && it !is ClientEvent.ManaAdded }
         val playerLog = gameLogs.getOrPut(playerId) { mutableListOf() }
         playerLog.addAll(logEntries)
 
-        // Include pending decision only for the player who needs to make it — i.e. the
-        // actor for the affected player. During a hijacked turn this routes the
-        // decision to the controller, not the affected player.
-        // Enrich with imageUri from card registry since engine doesn't have access to metadata
-        val pendingDecision = state.pendingDecision?.takeIf { state.actorFor(it.playerId) == playerId }?.let {
-            decisionEnricher.enrich(it, state, playerId)
-        }
-
         // Calculate next stop point for the Pass button (only if player has priority,
         // or is the actor for whoever has priority during a hijacked turn).
         val playerOverrides = getStopOverrides(playerId)
         val playerMode = getPriorityMode(playerId)
-        val priorityHolder = state.priorityPlayerId
-        val isActorForPriority = priorityHolder != null && state.actorFor(priorityHolder) == playerId
+        // "Can this connection act in the current priority window?" — the baton holder's seat, or
+        // (CR 805.5) any seat on the baton holder's team under shared team turns.
+        val isActorForPriority = state.priorityTeam.any { CombatDeclarationControl.inputActorFor(state, it) == playerId }
         val nextStopPoint = if (isActorForPriority && playerMode != PriorityMode.FULL_CONTROL) {
             // The same notion of "meaningful" the stop decision itself uses — otherwise the
             // button can promise a stop (say, at the opponent's end step for a spell we can't
@@ -1449,14 +1669,29 @@ class GameSession(
         lastSentState[playerId] = stateWithLog
         val version = stateVersions.merge(playerId, 1L) { old, inc -> old + inc }!!
 
+        val interactionEpoch = liveInteractionEpoch
         if (previous != null) {
             // Compute delta and send smaller message
             val delta = StateDiffCalculator.computeDelta(previous, stateWithLog)
-            return ServerMessage.StateDeltaUpdate(delta, clientEvents, legalActions, pendingDecision, nextStopPoint, opponentDecisionStatus, stopOverrideInfo, isUndoAvailable(playerId), priorityModeStr, version)
+            return ServerMessage.StateDeltaUpdate(delta, clientEvents, legalActions, pendingDecision, nextStopPoint, opponentDecisionStatus, stopOverrideInfo, isUndoAvailable(playerId), priorityModeStr, version, interactionEpoch)
         }
 
         // First update — send full state
-        return ServerMessage.StateUpdate(stateWithLog, clientEvents, legalActions, pendingDecision, nextStopPoint, opponentDecisionStatus, stopOverrideInfo, isUndoAvailable(playerId), priorityModeStr, version)
+        return ServerMessage.StateUpdate(stateWithLog, clientEvents, legalActions, pendingDecision, nextStopPoint, opponentDecisionStatus, stopOverrideInfo, isUndoAvailable(playerId), priorityModeStr, version, interactionEpoch)
+    }
+
+    /** [value] with every card id in [playerId]'s own names; unchanged for a seat that has none. */
+    fun <T> toSeat(playerId: EntityId, value: T, serializer: KSerializer<T>): T = synchronized(stateLock) {
+        seatIdentities[playerId]?.toSeat(value, serializer) ?: value
+    }
+
+    /**
+     * [value], sent by [playerId]'s browser, with its card names turned back into engine ids; null
+     * if it names a card by a name the seat no longer has.
+     */
+    fun <T> fromSeat(playerId: EntityId, value: T, serializer: KSerializer<T>): T? = synchronized(stateLock) {
+        val names = seatIdentities[playerId] ?: return value
+        names.fromSeat(value, serializer)
     }
 
     /**
@@ -1598,7 +1833,7 @@ class GameSession(
         // The actor is whoever is actually clicking — normally the priority player, or
         // the controller during a hijacked turn. Auto-pass settings track per-seat,
         // so consult the actor's preferences and the actor's legal-actions view.
-        val actorPlayer = state.actorFor(priorityPlayer)
+        val actorPlayer = CombatDeclarationControl.inputActorFor(state, priorityPlayer)
 
         // Check if player has full control enabled - never auto-pass
         val playerMode = getPriorityMode(actorPlayer)
@@ -1624,7 +1859,7 @@ class GameSession(
         }
 
         val effectiveOverrides = if (hasNonBattlefieldAbility) {
-            val isMyTurn = state.activePlayerId == priorityPlayer
+            val isMyTurn = state.isActiveTurnFor(priorityPlayer)
             if (isMyTurn) {
                 overrides.copy(myTurnStops = overrides.myTurnStops + state.step)
             } else {
@@ -1665,14 +1900,20 @@ class GameSession(
         }
 
         gameState = checkpoint
+        liveInteractionEpoch = UUID.randomUUID().toString()
         // Roll the replay log back to the actions that produced the restored state, so a later
         // reconstruction replays exactly this history. Yields recorded after the rollback point are
         // dropped too — they were set against actions that no longer exist.
         undoCheckpointActionCount?.let { target ->
+            val withinRecording = target <= recordedActions.size
             while (recordedActions.size > target) recordedActions.removeAt(recordedActions.size - 1)
             recordedYields.removeIf { it.afterActionCount > target }
             recordedCheckpoints.removeIf { it.afterActionCount > target }
             if (replaySetup != null) recordingRevision++
+            if (withinRecording) {
+                recordedTailState = checkpoint
+                restoredTailFingerprint = null
+            }
         }
         clearCheckpoint()
         logger.info("Player $playerId undid their last action")
@@ -1756,12 +1997,15 @@ class GameSession(
 
         // During combat declaration steps, submit an empty declaration instead of PassPriority.
         // The engine requires declarations before allowing priority to pass.
+        // Turn ownership is team-wide in a shared team turn (CR 805.10a) — the same gate the
+        // engine's PassPriorityHandler / DeclareBlockersHandler use — so the active player's
+        // teammate isn't handed a DeclareBlockers (or a bare pass) the engine will refuse.
         val action: GameAction = when {
-            state.step == Step.DECLARE_ATTACKERS && playerId == state.activePlayerId &&
+            state.step == Step.DECLARE_ATTACKERS && state.isActiveTurnFor(playerId) &&
                 state.getEntity(playerId)?.get<AttackersDeclaredThisCombatComponent>() == null ->
                 DeclareAttackers(playerId, emptyMap())
 
-            state.step == Step.DECLARE_BLOCKERS && playerId != state.activePlayerId &&
+            state.step == Step.DECLARE_BLOCKERS && !state.isActiveTurnFor(playerId) &&
                 state.getEntity(playerId)?.get<BlockersDeclaredThisCombatComponent>() == null ->
                 DeclareBlockers(playerId, emptyMap())
 
@@ -1802,9 +2046,25 @@ class GameSession(
     fun isGameOver(): Boolean = gameState?.gameOver == true
 
     /**
-     * Get the winner ID if the game is over.
+     * Get the winner ID if the game is over. In a team game this is a *representative* of the
+     * winning team (the engine records one seat); use [getWinnerIds] for everyone who won.
      */
     fun getWinnerId(): EntityId? = gameState?.winnerId
+
+    /**
+     * Every seat that won: the winner's whole still-in team (CR 810.8a — a team wins together), or
+     * just the winner outside a team game. Empty for a draw or an unfinished game. Anything that
+     * labels a seat as having won or lost — the GameOver message, match history, standings — has
+     * to read this rather than compare against the single [getWinnerId], or the winning team's
+     * other head is told they lost.
+     */
+    fun getWinnerIds(): List<EntityId> {
+        val state = gameState ?: return emptyList()
+        val winner = state.winnerId ?: return emptyList()
+        return state.teamOf(winner).filter {
+            state.getEntity(it)?.has<com.wingedsheep.engine.state.components.player.PlayerLostComponent>() != true
+        }
+    }
 
     /**
      * Determine the reason for game over.
@@ -1861,11 +2121,99 @@ class GameSession(
     // Replay Recording
     // =========================================================================
 
-    /** Append an applied, state-advancing action to the compact replay log. */
+    /**
+     * The one thing every applied action passes through: append it to the compact replay log, and
+     * ask the [stallGuard] whether this game is still going anywhere.
+     *
+     * Both halves are bounded on purpose, and for different reasons — see [appendToReplayLog] and
+     * [enforceProgress].
+     */
     private fun recordAction(action: GameAction) {
+        appendToReplayLog(action)
+        enforceProgress()
+    }
+
+    /**
+     * Append to the replay log, up to [ReplayRecordingPolicy.MAX_RECORDED_ACTIONS] actions.
+     *
+     * A replay costs ~7 stored bytes per action, so length is not what makes a runaway game
+     * expensive — this list is. It is a [CopyOnWriteArrayList] (read by the flusher off the game
+     * thread, appended under the state lock), so every append copies the whole array: the recording
+     * costs O(n²) element copies over a game, which is nothing at the few hundred actions a real
+     * game takes and ruinous at six figures. On top of that the flusher re-encodes the entire log
+     * every few seconds for as long as the game lasts.
+     *
+     * So the recording gives up rather than the game: past the cap the log is frozen and marked
+     * [replayTruncated], which is the same "keep the honest shorter prefix" outcome a lost flush
+     * already produces (see [restoreReplayRecording]) and which the viewer reports as a partial
+     * recording. Freezing is permanent for the session — an undo may shorten the log afterwards
+     * (leaving a valid, shorter prefix) but nothing may extend it again, or the record would have a
+     * hole in the middle and reconstruct a game nobody played.
+     */
+    private fun appendToReplayLog(action: GameAction) {
+        if (replayTruncated) return
+        if (recordedActions.size >= replayActionCap) {
+            replayTruncated = true
+            logger.warn(
+                "Replay recording for $sessionId hit $replayActionCap actions — freezing the log; " +
+                    "the game continues but its replay stops here"
+            )
+            return
+        }
         recordedActions.add(action)
+        recordedTailState = gameState
         recordingRevision++
         stampCheckpointIfDue()
+    }
+
+    /**
+     * End the game as a draw when it has stopped making progress — see [GameStallGuard] for the two
+     * shapes this catches and CR 104.4b for why a draw is the right verdict.
+     *
+     * The draw is expressed the way the engine expresses one (`gameOver` with no winner), so every
+     * caller's existing `isGameOver()` check finalizes the match through the normal game-over path:
+     * players and spectators are notified, the replay is saved, the lobby callback fires, the
+     * session is cleaned up. Nothing needs to know this particular game over was our idea except
+     * [stallMessage], which explains it to the players.
+     */
+    private fun enforceProgress() {
+        val state = gameState ?: return
+        if (state.gameOver) return
+        val stall = stallGuard.onActionApplied(state) ?: return
+        logger.error(
+            "Game $sessionId is not making progress (${stall.code}) — ending it as a draw. " +
+                "This is a backstop for a loop the AI's own guard missed; the replay is worth reading."
+        )
+        gameState = state.copy(gameOver = true, winnerId = null)
+    }
+
+    /**
+     * Why this game was abandoned, for the game-over overlay, or null for a game that ended on its
+     * own terms. Preferred over the engine's stock reason text because "Draw" alone reads like a
+     * rules outcome the players caused.
+     */
+    fun stallMessage(): String? = stallGuard.stall?.playerMessage
+
+    /**
+     * Record that [playerId]'s action was rejected and no fallback could be applied either, and
+     * report whether that seat has run out of moves it will make — see
+     * [GameStallGuard.onActionRejected]. Nothing reached the engine, so this is invisible to
+     * [recordAction] and has to be reported by the caller that saw the rejection.
+     */
+    fun noteActionRejected(playerId: EntityId): Boolean = synchronized(stateLock) {
+        stallGuard.onActionRejected(playerId)
+    }
+
+    /**
+     * Finish AI rejection recovery only on its originating timeline. The rejection count and any
+     * resulting concession are atomic with the epoch check; undo may have occurred since the last
+     * failed fallback. Null tells the caller to discard the obsolete recovery without broadcasting.
+     */
+    fun noteAiActionRejected(playerId: EntityId, interactionEpoch: String?): Boolean? = synchronized(stateLock) {
+        if (!isCurrentInteraction(interactionEpoch)) return null
+        val conceded = noteActionRejected(playerId)
+        if (conceded) playerConcedes(playerId)
+        conceded
     }
 
     /**
@@ -1902,7 +2250,7 @@ class GameSession(
         identity: com.wingedsheep.sdk.scripting.AbilityIdentity?,
         kind: com.wingedsheep.engine.state.YieldKind?,
     ) {
-        if (replaySetup == null) return
+        if (replaySetup == null || replayTruncated) return
         recordedYields.add(
             com.wingedsheep.gameserver.replay.ReplayYieldEntry(
                 afterActionCount = recordedActions.size,
@@ -1912,6 +2260,7 @@ class GameSession(
                 kind = kind,
             )
         )
+        recordedTailState = gameState
         recordingRevision++
         refreshCadenceCheckpointIfDue()
     }
@@ -1945,8 +2294,34 @@ class GameSession(
     /** The ordered input stream applied to this game. */
     fun getRecordedActions(): List<GameAction> = recordedActions.toList()
 
+    /**
+     * Capture the current authoritative state and its replay history under one lock.
+     *
+     * External controllers use this instead of composing the public accessors independently; that
+     * composition can observe different game instants. A recording that reached its cap is exposed
+     * as a typed prefix rather than being mistaken for inputs that reproduce the live state, and a
+     * session that records nothing at all still hands back its live state — the history is what is
+     * missing there, not the position. Null only before [startGame].
+     */
+    fun getAiRuntimeSnapshot(): AiRuntimeSnapshot? {
+        val sample = sampleUnderLock() ?: return null
+        val setup = sample.setup
+        val history = when {
+            setup == null -> AiReplayHistory.Unavailable
+            sample.truncated -> AiReplayHistory.TruncatedPrefix(setup, sample.actions, sample.yields)
+            else -> AiReplayHistory.Complete(setup, sample.actions, sample.yields)
+        }
+        return AiRuntimeSnapshot(sample.state, history)
+    }
+
     /** The persistent-yield mutations applied to this game, in order, for replay reconstruction. */
     fun getReplayYields(): List<com.wingedsheep.gameserver.replay.ReplayYieldEntry> = recordedYields.toList()
+
+    /**
+     * Whether this game's recording was frozen before the game ended (see [appendToReplayLog]), so
+     * the stored record is an honest prefix rather than the whole game.
+     */
+    fun isReplayTruncated(): Boolean = replayTruncated
 
     /** Sparse position fingerprints taken while this game was played. */
     fun getReplayCheckpoints(): List<com.wingedsheep.gameserver.replay.ReplayCheckpoint> =
@@ -1978,25 +2353,76 @@ class GameSession(
      * fingerprint it stores describe the *same* position — see
      * [com.wingedsheep.gameserver.replay.ReplayRecordingSnapshot] for why sampling them separately
      * is unsound. Null for sessions that aren't being recorded, or aren't started yet.
+     *
+     * The fingerprint is computed outside the lock: [LockedSample.state] is an immutable snapshot,
+     * so hashing it later gives the same answer, and hashing a whole position is long enough that
+     * holding the game's lock for it would stall play.
      */
-    internal fun replayRecordingSnapshot(): com.wingedsheep.gameserver.replay.ReplayRecordingSnapshot? =
-        synchronized(stateLock) {
-            val setup = replaySetup ?: return null
-            val state = gameState ?: return null
-            com.wingedsheep.gameserver.replay.ReplayRecordingSnapshot(
-                version = replayVersion,
-                setup = setup,
-                actions = recordedActions.toList(),
-                yields = recordedYields.toList(),
-                recordingRevision = recordingRevision,
-                checkpoints = recordedCheckpoints.toList(),
-                fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(
-                    state, replayVersion,
-                ),
-                startedAt = replayStartedAt,
-                gameOver = state.gameOver,
-            )
+    internal fun replayRecordingSnapshot(): com.wingedsheep.gameserver.replay.ReplayRecordingSnapshot? {
+        val sample = sampleUnderLock() ?: return null
+        val setup = sample.setup ?: return null
+        val fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(sample.state, sample.version)
+        val tailState = sample.tailState
+        val tailFingerprint = when {
+            tailState === sample.state -> fingerprint
+            tailState != null -> com.wingedsheep.gameserver.replay.ReplayFingerprint.of(tailState, sample.version)
+            else -> sample.restoredTailFingerprint ?: fingerprint
         }
+        return com.wingedsheep.gameserver.replay.ReplayRecordingSnapshot(
+            version = sample.version,
+            setup = setup,
+            actions = sample.actions,
+            yields = sample.yields,
+            recordingRevision = sample.recordingRevision,
+            checkpoints = sample.checkpoints,
+            fingerprint = fingerprint,
+            tailFingerprint = tailFingerprint,
+            startedAt = sample.startedAt,
+            gameOver = sample.state.gameOver,
+            truncated = sample.truncated,
+        )
+    }
+
+    /**
+     * Everything sampled under [stateLock] in one read: the live state plus the whole replay
+     * recording. [replayRecordingSnapshot] and [getAiRuntimeSnapshot] both derive from this rather
+     * than repeating the lock-and-copy, so a field added to the recording cannot reach one caller
+     * and silently miss the other. [setup] is null for injected sessions (dev scenarios, hotseat),
+     * which have a live state but no reproducible inputs.
+     */
+    private class LockedSample(
+        val state: GameState,
+        val setup: com.wingedsheep.gameserver.replay.ReplaySetup?,
+        /** Replay semantics of the recording ([replayVersion]); legacy resumes keep their own. */
+        val version: Int,
+        val actions: List<GameAction>,
+        val yields: List<com.wingedsheep.gameserver.replay.ReplayYieldEntry>,
+        val recordingRevision: Long,
+        val checkpoints: List<com.wingedsheep.gameserver.replay.ReplayCheckpoint>,
+        val truncated: Boolean,
+        val startedAt: Instant?,
+        /** See [recordedTailState]; [restoredTailFingerprint] stands in when it is unknown. */
+        val tailState: GameState?,
+        val restoredTailFingerprint: String?,
+    )
+
+    /** Null before [startGame]; see [LockedSample]. */
+    private fun sampleUnderLock(): LockedSample? = synchronized(stateLock) {
+        val state = gameState ?: return null
+        LockedSample(
+            state = state,
+            setup = replaySetup,
+            version = replayVersion,
+            actions = recordedActions.toList(),
+            yields = recordedYields.toList(),
+            recordingRevision = recordingRevision,
+            checkpoints = recordedCheckpoints.toList(),
+            truncated = replayTruncated,
+            startedAt = replayStartedAt,
+            tailState = recordedTailState,
+            restoredTailFingerprint = restoredTailFingerprint,
+        )
+    }
 
     /**
      * Total number of replay frames: the initial state plus one per recorded action. Zero until the
@@ -2007,6 +2433,20 @@ class GameSession(
     // =========================================================================
     // Test Support (for scenario-based testing)
     // =========================================================================
+
+    /**
+     * Replace the runaway backstops with tighter ones.
+     *
+     * **Testing only.** The shipped thresholds are set so that only a game that has already gone
+     * wrong can reach them, which also puts them out of reach of a test that would have to play
+     * tens of thousands of actions to get there. Must be called before the game starts — the guard
+     * carries the counters, so swapping it mid-game resets them.
+     */
+    internal fun tightenBackstopsForTesting(guard: GameStallGuard, replayCap: Int) {
+        stallGuard = guard
+        replayActionCap = replayCap
+    }
+
 
     /**
      * Inject a pre-built game state for testing purposes.
@@ -2041,7 +2481,7 @@ class GameSession(
      */
     fun injectStateForDevScenario(state: GameState) {
         synchronized(stateLock) {
-            gameState = state
+            gameState = state.initializeObjectIdentities()
             players.clear()
         }
     }
@@ -2077,7 +2517,7 @@ class GameSession(
      */
     fun resetStateForDevScenario(state: GameState) {
         synchronized(stateLock) {
-            gameState = state
+            gameState = state.initializeObjectIdentities()
             undoCheckpoint = null
             gameLogs.clear()
             lastProcessedMessageId.clear()
@@ -2153,6 +2593,11 @@ class GameSession(
     internal fun getLogsForPersistence(): Map<EntityId, List<ClientEvent>> =
         gameLogs.mapValues { it.value.toList() }
 
+    /** Each browser seat's card names, for persistence. */
+    internal fun getSeatNamesForPersistence(): Map<EntityId, PersistentSeatNames> = synchronized(stateLock) {
+        seatIdentities.mapValues { it.value.toPersistent() }
+    }
+
     /**
      * Get the last processed message IDs for persistence.
      */
@@ -2171,10 +2616,11 @@ class GameSession(
         decks: Map<EntityId, List<String>>,
         logs: Map<EntityId, MutableList<ClientEvent>>,
         lastIds: Map<EntityId, String>,
-        sideboardLists: Map<EntityId, List<String>> = emptyMap()
+        sideboardLists: Map<EntityId, List<String>> = emptyMap(),
+        seatNames: Map<EntityId, PersistentSeatNames> = emptyMap(),
     ) {
         synchronized(stateLock) {
-            gameState = state
+            gameState = state?.initializeObjectIdentities()
             deckLists.clear()
             deckLists.putAll(decks)
             sideboards.clear()
@@ -2183,6 +2629,8 @@ class GameSession(
             gameLogs.putAll(logs)
             lastProcessedMessageId.clear()
             lastProcessedMessageId.putAll(lastIds)
+            seatIdentities.clear()
+            seatNames.forEach { (seat, names) -> seatIdentities[seat] = SeatIdentities.fromPersistent(names) }
             lastSentState.clear()
         }
     }
@@ -2249,6 +2697,22 @@ class GameSession(
                 record.checkpoints
             }
         )
+        // A record frozen by the size cap before the restart stays frozen: the actions played
+        // between the cap and now were never recorded, so appending from here would splice a hole
+        // into the log exactly as extending a stale prefix would.
+        replayTruncated = record.truncated
+        // The gate above showed the recovered state is where an unfrozen recording ends. A frozen
+        // one ended earlier, at a position no longer held in memory: its stored tail checkpoint is
+        // the only proof of it, so carry that forward for the next flush instead.
+        if (record.truncated) {
+            recordedTailState = null
+            restoredTailFingerprint = record.checkpoints
+                .lastOrNull { it.afterActionCount == record.actions.size }
+                ?.fingerprint
+        } else {
+            recordedTailState = live
+            restoredTailFingerprint = null
+        }
         replayStartedAt = runCatching { Instant.parse(record.startedAt) }.getOrNull()
         // The durable replay does not carry this in-memory cursor. Mark the restore as a fresh
         // mutation; the flusher's restart adoption still forces one write before it can skip.
@@ -2387,3 +2851,7 @@ class GameSession(
         }
     }
 }
+
+private val clientEventsSerializer = ListSerializer(ClientEvent.serializer())
+private val legalActionsSerializer = ListSerializer(LegalActionInfo.serializer())
+private const val STALE_CARD_NAME = "Refers to a card by a name you no longer have"

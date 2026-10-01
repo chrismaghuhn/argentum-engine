@@ -1,10 +1,11 @@
 package com.wingedsheep.engine.handlers.continuations
 
 import com.wingedsheep.engine.core.*
-import com.wingedsheep.engine.handlers.effects.mana.AdditionalManaOnSourceTapMirror
+import com.wingedsheep.engine.handlers.effects.mana.ManaAbilityResolutionPipeline
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.ChoiceValue
 import com.wingedsheep.engine.state.components.battlefield.withCastChoice
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.scripting.ChoiceSlot
 
 class ColorChoiceContinuationResumer(
@@ -13,7 +14,16 @@ class ColorChoiceContinuationResumer(
 ) : ContinuationResumerModule {
 
     private val tappedForManaBonusResolver =
-        com.wingedsheep.engine.handlers.effects.mana.TappedForManaBonusResolver(services.cardRegistry)
+        com.wingedsheep.engine.handlers.effects.mana.TappedForManaBonusResolver(services.cardRegistry, dynamicAmountEvaluator = services.dynamicAmountEvaluator)
+
+    /** Shared with `ActivateAbilityHandler` so a paused mana ability finishes the same way. */
+    private val manaPipeline = ManaAbilityResolutionPipeline(
+        cardRegistry = services.cardRegistry,
+        conditionEvaluator = services.conditionEvaluator,
+        effectExecutorRegistry = services.effectExecutorRegistry,
+        predicateEvaluator = services.predicateEvaluator,
+        dynamicAmountEvaluator = services.dynamicAmountEvaluator
+    )
 
     override fun resumers(): List<ContinuationResumer<*>> = listOf(
         resumer(ChooseColorThenContinuation::class, ::resumeChooseColorThen),
@@ -44,14 +54,19 @@ class ColorChoiceContinuationResumer(
             return ExecutionResult.error(state, "Expected color choice response for ChooseColorThen effect")
         }
 
-        val contextWithColor = continuation.baseContext.copy(chosenColor = response.color)
+        // A multi-color answer ("the color or colors of your choice") also exposes the whole set;
+        // a single-color answer leaves `chosenColors` empty so single-color atoms are unaffected.
+        val contextWithColor = continuation.baseContext.copy(
+            chosenColor = response.color,
+            chosenColors = if (response.colors.isEmpty()) emptySet() else response.allColors
+        )
         val effectResult = effectRunner.executeRemainingEffects(
             state,
             listOf(continuation.then),
             contextWithColor
         )
 
-        if (effectResult.isPaused) return effectResult.toExecutionResult()
+        if (effectResult.outcome is Outcome.Paused) return effectResult.toExecutionResult()
         return checkForMore(effectResult.state, effectResult.events.toList())
             .withDiagnosticsFrom(effectResult.diagnostics)
     }
@@ -74,7 +89,7 @@ class ColorChoiceContinuationResumer(
             contextWithNumber
         )
 
-        if (effectResult.isPaused) return effectResult.toExecutionResult()
+        if (effectResult.outcome is Outcome.Paused) return effectResult.toExecutionResult()
         return checkForMore(effectResult.state, effectResult.events.toList())
             .withDiagnosticsFrom(effectResult.diagnostics)
     }
@@ -90,7 +105,8 @@ class ColorChoiceContinuationResumer(
         }
         // Record the chosen number durably on the source permanent (replacing any prior value
         // for the slot), so the source's characteristic-defining ability reads the latest choice.
-        if (state.getEntity(continuation.sourceId) == null) {
+        if (state.getEntity(continuation.sourceId) == null ||
+            !continuation.objectReferences.isCurrent(continuation.objectReferences.source, state)) {
             return checkForMore(state, emptyList())
         }
         val newState = state.updateEntity(continuation.sourceId) { container ->
@@ -110,15 +126,16 @@ class ColorChoiceContinuationResumer(
         }
         val chosen = continuation.opponentIds.getOrNull(response.optionIndex)
             ?: return ExecutionResult.error(state, "Opponent choice index ${response.optionIndex} out of range")
-        // Record the chosen opponent durably on the source (spell or permanent) so
-        // Player.ChosenOpponent reads it for the rest of the resolution and beyond.
-        if (state.getEntity(continuation.sourceId) == null) {
-            return checkForMore(state, emptyList())
-        }
-        val newState = state.updateEntity(continuation.sourceId) { container ->
-            container.withCastChoice(ChoiceSlot.OPPONENT, ChoiceValue.EntityChoice(chosen))
-        }
-        return checkForMore(newState, emptyList())
+        val newState = if (state.getEntity(continuation.sourceId) != null &&
+            continuation.objectReferences.isCurrent(continuation.objectReferences.source, state)) {
+            state.updateEntity(continuation.sourceId) { container ->
+                container.withCastChoice(ChoiceSlot.OPPONENT, ChoiceValue.EntityChoice(chosen))
+            }
+        } else state
+        val withChoice = exposeCollectionsToNextFrame(newState, mapOf(
+            com.wingedsheep.engine.handlers.RESOLUTION_CHOSEN_OPPONENT to listOf(chosen),
+        ))
+        return checkForMore(withChoice, emptyList())
     }
 
     fun resumeChooseCardTypeForSource(
@@ -134,7 +151,8 @@ class ColorChoiceContinuationResumer(
             ?: return ExecutionResult.error(state, "Card type choice index ${response.optionIndex} out of range")
         // Record the chosen card type durably on the source permanent so
         // CardPredicate.CardTypeEqualsChosenComponent reads it at cost-calculation / projection time.
-        if (state.getEntity(continuation.sourceId) == null) {
+        if (state.getEntity(continuation.sourceId) == null ||
+            !continuation.objectReferences.isCurrent(continuation.objectReferences.source, state)) {
             return checkForMore(state, emptyList())
         }
         val newState = state.updateEntity(continuation.sourceId) { container ->
@@ -168,7 +186,7 @@ class ColorChoiceContinuationResumer(
             contextWithDecider
         )
 
-        if (effectResult.isPaused) return effectResult.toExecutionResult()
+        if (effectResult.outcome is Outcome.Paused) return effectResult.toExecutionResult()
         // The re-run finished without pausing (nothing left to decide). Publish whatever it
         // stored so the composite's remaining steps still see it.
         val published = exposeCollectionsToNextFrame(effectResult.state, effectResult.updatedCollections)
@@ -193,21 +211,44 @@ class ColorChoiceContinuationResumer(
             contextWithColor
         )
 
-        if (effectResult.isPaused) return effectResult.toExecutionResult()
+        if (effectResult.outcome is Outcome.Paused) return effectResult.toExecutionResult()
 
-        // CR 605 mirror bonus: if the just-chosen mana came from tapping a permanent for mana
-        // (the continuation's source) and a battlefield `AdditionalManaOnSourceTap` mirror static
-        // (color = null) applies to that source for this tapper, add one mana of the chosen type.
-        // This is the any-color analogue of `ActivateAbilityHandler.resolveAdditionalManaOnSourceTap`
-        // — that path runs only for fixed/non-pausing producers (Lavaleaper's basic lands); an
-        // any-color producer (Roxanne's Meteorite, "{T}: Add one mana of any color") pauses for the
-        // color choice and resumes here, so the mirror must fire after the choice is known.
-        val mirrored = AdditionalManaOnSourceTapMirror.applyForResolvedTap(
-            services, effectResult.state, continuation.sourceId, continuation.controllerId, response.color
+        // The mana ability itself is now done, but only its *effect* ran — `ActivateAbilityHandler`
+        // returned at the pause, before the rest of the tap pipeline. Everything downstream of the
+        // produced mana (Damping Sphere, Elvish Guidance, Badgermole Cub / Roxanne / Overabundance,
+        // the land-tapped event, Fertile Ground) therefore has to run here instead, through the
+        // same [ManaAbilityResolutionPipeline] the synchronous path uses. The two are mutually
+        // exclusive — the inline pass runs only when the effect did not pause — so nothing is
+        // applied twice.
+        val sourceId = continuation.sourceId
+            ?: return checkForMore(effectResult.state, effectResult.events.toList())
+                .withDiagnosticsFrom(effectResult.diagnostics)
+        val tapperId = continuation.controllerId
+        val sourceCard = effectResult.state.getEntity(sourceId)?.get<CardComponent>()
+
+        var events = effectResult.events.toList()
+        var producedMana = events.filterIsInstance<ManaAddedEvent>().lastOrNull { it.sourceId == sourceId }
+
+        // Damping Sphere: a land tapped for two or more mana produces {C} instead. `state` is the
+        // pool as it stood before the chosen mana was added, which is the delta this reads.
+        val dampening = manaPipeline.applyLandManaDampening(state, effectResult.state, sourceCard, tapperId)
+        if (dampening.dampened) {
+            val replacement = ManaAddedEvent(
+                playerId = tapperId,
+                sourceId = sourceId,
+                sourceName = sourceCard?.name ?: continuation.sourceName,
+                colorless = 1
+            )
+            events = events.filterNot { it === producedMana } + replacement
+            producedMana = replacement
+        }
+
+        val finished = manaPipeline.finishTapBonuses(
+            dampening.state, sourceId, sourceCard, tapperId, producedMana, events
         )
-        if (mirrored.isPaused) return mirrored
-        return checkForMore(mirrored.newState, effectResult.events.toList() + mirrored.events)
-            .withDiagnosticsFrom(effectResult.diagnostics + mirrored.diagnostics)
+        if (finished.outcome is Outcome.Paused) return finished.withDiagnosticsFrom(effectResult.diagnostics)
+        return checkForMore(finished.newState, finished.events.toList())
+            .withDiagnosticsFrom(effectResult.diagnostics + finished.diagnostics)
     }
 
     fun resumeChooseColorForTarget(

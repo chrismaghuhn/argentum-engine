@@ -1,10 +1,8 @@
 package com.wingedsheep.sdk.scripting.filters.unified
 
-import com.wingedsheep.sdk.core.Color
-import com.wingedsheep.sdk.core.Keyword
-import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.ObjectFilterBuilder
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.text.TextReplaceable
 import com.wingedsheep.sdk.scripting.text.TextReplacer
@@ -62,7 +60,7 @@ data class TargetFilter(
      * can't express because each zone needs its own predicate.
      */
     val alternatives: List<TargetFilter> = emptyList()
-) : TextReplaceable<TargetFilter> {
+) : TextReplaceable<TargetFilter>, ObjectFilterBuilder<TargetFilter> {
     val description: String
         get() = buildDescription()
 
@@ -82,18 +80,14 @@ data class TargetFilter(
     /** Union this filter with [other] — adds [other] as an alternative clause. */
     fun or(other: TargetFilter): TargetFilter = copy(alternatives = alternatives + other)
 
-    private fun buildDescription(): String =
-        if (alternatives.isEmpty()) describeClause()
-        else clauses().joinToString(" or ") { it.describeClause() }
+    /**
+     * The object noun phrase this filter names, in Oracle word order — "creature you control",
+     * "creature card in your graveyard", "noncreature spell" — without the "other" of [excludeSelf],
+     * which belongs to the quantifier ("another target …"). The targeting prompt is built from it.
+     */
+    fun targetPhrase(plural: Boolean = false): String = TargetPhrase.describe(this, plural)
 
-    private fun describeClause(): String = buildString {
-        if (excludeSelf) append("other ")
-        append(baseFilter.description)
-        if (zone != Zone.BATTLEFIELD) {
-            append(" in ")
-            append(zone.displayName)
-        }
-    }
+    private fun buildDescription(): String = (if (excludeSelf) "other " else "") + targetPhrase()
 
     // =============================================================================
     // Pre-built Creature Targets (Battlefield)
@@ -135,6 +129,9 @@ data class TargetFilter(
         /** Target blocking creature */
         val BlockingCreature = TargetFilter(GameObjectFilter.Companion.Creature.blocking())
 
+        /** Target blocked creature — an attacker that has become blocked (CR 509.1h) */
+        val BlockedCreature = TargetFilter(GameObjectFilter.Companion.Creature.blocked())
+
         /** Target attacking or blocking creature */
         val AttackingOrBlockingCreature = TargetFilter(GameObjectFilter.Companion.Creature.attackingOrBlocking())
 
@@ -156,6 +153,13 @@ data class TargetFilter(
 
         /** Target permanent you control */
         val PermanentYouControl = TargetFilter(GameObjectFilter.Companion.Permanent.youControl())
+
+        /**
+         * Target token you control — any token permanent, not just a creature one. "Target token
+         * you control becomes a copy of it" (Kaya, Spirits' Justice) is deliberately wide enough to
+         * turn a Clue or a Treasure into a creature.
+         */
+        val TokenYouControl = TargetFilter(GameObjectFilter.Companion.Permanent.token().youControl())
 
         /** Target nonland permanent an opponent controls */
         val NonlandPermanentOpponentControls = TargetFilter(GameObjectFilter.Companion.NonlandPermanent.opponentControls())
@@ -199,6 +203,12 @@ data class TargetFilter(
         /** Target planeswalker */
         val Planeswalker = TargetFilter(GameObjectFilter.Companion.Planeswalker)
 
+        /** Target battle (CR 310). */
+        val Battle = TargetFilter(GameObjectFilter.Companion.Battle)
+
+        /** Target creature, planeswalker, or battle (Volcanic Spite, Shatter the Source). */
+        val CreaturePlaneswalkerOrBattle = TargetFilter(GameObjectFilter.Companion.CreaturePlaneswalkerOrBattle)
+
         // =============================================================================
         // Pre-built Graveyard Targets
         // =============================================================================
@@ -213,13 +223,37 @@ data class TargetFilter(
         val CreatureInYourGraveyard = TargetFilter(GameObjectFilter.Companion.Creature.ownedByYou(), zone = Zone.GRAVEYARD)
 
         /**
-         * Target permanent card in your graveyard — what a **bare** tribal noun names.
+         * Target permanent card in your graveyard — for wordings that print the word "permanent".
          *
-         * "Return target **Zombie card** from your graveyard" names any permanent card with the
-         * subtype, not only a creature card with it; [CreatureInYourGraveyard] is the counterpart
-         * for the adjectival "target Zombie creature card".
+         * **Not what a bare tribal noun names.** "Return target **Zombie card** from your graveyard"
+         * names any card with the subtype, and a card with a creature type need not be a permanent
+         * card: Kindred (formerly Tribal) carries creature types onto instants and sorceries, so
+         * Tarfire and Boggart Birth Rite are Goblin cards, Murderous Rider is a Zombie card, and the
+         * corpus holds 31 non-permanent Dragon cards, 12 Elf and 10 Cleric. An earlier version of
+         * this KDoc asserted the opposite and nine hand-written cards were built on it; the
+         * differential caught them once Argentum Assay learned to read card position correctly.
+         *
+         * For a bare tribal noun use `CardInGraveyard.withSubtype(…).ownedByYou()`.
+         * [CreatureInYourGraveyard] is the counterpart for the adjectival "target Zombie creature
+         * card", which *does* narrow to creature cards.
          */
         val PermanentInYourGraveyard = TargetFilter(GameObjectFilter.Companion.Permanent.ownedByYou(), zone = Zone.GRAVEYARD)
+
+        /**
+         * Target artifact card in your graveyard — the "return target artifact card from your
+         * graveyard" family (Ritual of Restoration, Myr Retriever, Refurbish, Fortuitous Find).
+         *
+         * `GameObjectFilter.Artifact` is a lone `IsArtifact` predicate, so this is **inclusive**, not
+         * exclusive: an artifact creature card in your graveyard satisfies this filter *and*
+         * [CreatureInYourGraveyard]. A card printing both as separate modes still can't recur one
+         * such card twice — the two targets are chosen at the same time and must be different
+         * objects — but either mode alone will happily take it.
+         *
+         * Ownership, not control, is the axis: a card in a graveyard represents neither a permanent
+         * nor a spell and so has no controller, only the owner whose graveyard it sits in. Use
+         * `TargetFilter.Artifact` (battlefield, `youControl()`) when the wording means a permanent.
+         */
+        val ArtifactInYourGraveyard = TargetFilter(GameObjectFilter.Companion.Artifact.ownedByYou(), zone = Zone.GRAVEYARD)
 
         /** Target instant or sorcery card in a graveyard */
         val InstantOrSorceryInGraveyard = TargetFilter(GameObjectFilter.Companion.InstantOrSorcery, zone = Zone.GRAVEYARD)
@@ -334,147 +368,11 @@ data class TargetFilter(
     }
 
     // =============================================================================
-    // Fluent Builder Methods (delegates to GameObjectFilter)
+    // Builders — the predicate builders come from [ObjectFilterBuilder]; these are TargetFilter's own
     // =============================================================================
 
-    /** Add color requirement */
-    fun withColor(color: Color) = copy(baseFilter = baseFilter.withColor(color))
-
-    /** Match any of the specified colors (OR logic), e.g. "target white or black creature". */
-    fun withAnyColor(vararg colors: Color) = copy(baseFilter = baseFilter.withAnyColor(*colors))
-
-    /** Exclude color */
-    fun notColor(color: Color) = copy(baseFilter = baseFilter.notColor(color))
-
-    /** Restrict to nonartifact objects ("nonartifact creature", the Terror template). */
-    fun nonartifact() = copy(baseFilter = baseFilter.nonartifact())
-
-    /** Add subtype requirement */
-    fun withSubtype(subtype: Subtype) = copy(baseFilter = baseFilter.withSubtype(subtype))
-
-    /** Add subtype by string */
-    fun withSubtype(subtype: String) = copy(baseFilter = baseFilter.withSubtype(subtype))
-
-    /** Add keyword requirement */
-    fun withKeyword(keyword: Keyword) = copy(baseFilter = baseFilter.withKeyword(keyword))
-
-    /** Exclude keyword */
-    fun withoutKeyword(keyword: Keyword) = copy(baseFilter = baseFilter.withoutKeyword(keyword))
-
-    /** Mana value equals */
-    fun manaValue(value: Int) = copy(baseFilter = baseFilter.manaValue(value))
-
-    /** Mana value at most */
-    fun manaValueAtMost(max: Int) = copy(baseFilter = baseFilter.manaValueAtMost(max))
-
-    /** Mana value at most the X chosen for the source spell/ability */
-    fun manaValueAtMostX() = copy(baseFilter = baseFilter.manaValueAtMostX())
-
-    /** Mana value exactly equal to the X chosen for the source spell/ability (Repeal, Spell Blast). */
-    fun manaValueEqualsX() = copy(baseFilter = baseFilter.manaValueEqualsX())
-
-    /** Mana value at least */
-    fun manaValueAtLeast(min: Int) = copy(baseFilter = baseFilter.manaValueAtLeast(min))
-
-    /** Power exactly equal to the X chosen for the source spell/ability (Ent-Draught Basin). */
-    fun powerEqualsX() = copy(baseFilter = baseFilter.powerEqualsX())
-
-    /** Power at most */
-    fun powerAtMost(max: Int) = copy(baseFilter = baseFilter.powerAtMost(max))
-
-    /** Power at least */
-    fun powerAtLeast(min: Int) = copy(baseFilter = baseFilter.powerAtLeast(min))
-
-    /** Power strictly greater than the projected power of a referenced entity (source, triggering, etc.) */
-    fun powerGreaterThanEntity(reference: com.wingedsheep.sdk.scripting.values.EntityReference) =
-        copy(baseFilter = baseFilter.powerGreaterThanEntity(reference))
-
-    /** Power strictly less than the projected power of a referenced entity (source, triggering, etc.) */
-    fun powerLessThanEntity(reference: com.wingedsheep.sdk.scripting.values.EntityReference) =
-        copy(baseFilter = baseFilter.powerLessThanEntity(reference))
-
-    /** Projected power strictly greater than the object's own base (printed) power. */
-    fun powerGreaterThanBase() = copy(baseFilter = baseFilter.powerGreaterThanBase())
-
-    /** Power less than or equal to the projected power of a referenced entity (source, triggering, etc.) */
-    fun powerAtMostEntity(reference: com.wingedsheep.sdk.scripting.values.EntityReference) =
-        copy(baseFilter = baseFilter.powerAtMostEntity(reference))
-
-    /** Toughness at most */
-    fun toughnessAtMost(max: Int) = copy(baseFilter = baseFilter.toughnessAtMost(max))
-
-    /** Toughness at least */
-    fun toughnessAtLeast(min: Int) = copy(baseFilter = baseFilter.toughnessAtLeast(min))
-
-    /** Power or toughness at least */
-    fun powerOrToughnessAtLeast(min: Int) = copy(baseFilter = baseFilter.powerOrToughnessAtLeast(min))
-
-    /** Must have no counters of any type ("with no counters on it" — Heartless Act). */
-    fun withoutCounters() = copy(baseFilter = baseFilter.withoutCounters())
-
-    /** Must be tapped */
-    fun tapped() = copy(baseFilter = baseFilter.tapped())
-
-    /** Must be untapped */
-    fun untapped() = copy(baseFilter = baseFilter.untapped())
-
-    /** Must be a Room with at least one locked door (CR 709.5c). */
-    fun hasLockedDoor() = copy(baseFilter = baseFilter.hasLockedDoor())
-
-    /** Must be attacking */
-    fun attacking() = copy(baseFilter = baseFilter.attacking())
-
-    /** Attacking, with no other creature attacking (CR 506.5) — Crowd of True Believers. */
-    fun attackingAlone() = copy(baseFilter = baseFilter.attackingAlone())
-
-    /** Spell on the stack cast from [zone] (reads `SpellOnStackComponent.castFromZone`). */
-    fun castFromZone(zone: Zone) = copy(baseFilter = baseFilter.castFromZone(zone))
-
-    /**
-     * Spell on the stack that was *not* cast from [zone] — Wash Away's "counter target spell that
-     * wasn't cast from its owner's hand" (`Zone.HAND`).
-     */
-    fun notCastFromZone(zone: Zone) = copy(baseFilter = baseFilter.notCastFromZone(zone))
-
-    /** Must have been dealt damage this turn — passive ("...that was dealt damage this turn"). */
-    fun wasDealtDamageThisTurn() = copy(baseFilter = baseFilter.wasDealtDamageThisTurn())
-
-    /** Must have dealt damage this turn — active ("...that dealt damage this turn"). */
-    fun hasDealtDamageThisTurn() = copy(baseFilter = baseFilter.hasDealtDamageThisTurn())
-
-    /** Must be controlled by you */
-    fun youControl() = copy(baseFilter = baseFilter.youControl())
-
-    /**
-     * Narrow a stack-ability target by its *source* (CR 113.7): "…from a creature source",
-     * "…from an artifact source". See [CardPredicate.AbilitySourceMatches].
-     */
-    fun abilitySourceMatches(subfilter: GameObjectFilter) =
-        copy(baseFilter = baseFilter.abilitySourceMatches(subfilter))
-
-    /** Must not be legendary */
-    fun nonlegendary() = copy(baseFilter = baseFilter.nonlegendary())
-
-    /** Must not be a basic land ("nonbasic land"). */
-    fun nonbasic() = copy(baseFilter = baseFilter.nonbasic())
-
-    /** Must be legendary */
-    fun legendary() = copy(baseFilter = baseFilter.legendary())
-
-    /** Must be controlled by opponent */
-    fun opponentControls() = copy(baseFilter = baseFilter.opponentControls())
-
-    /** Must have an Aura attached ("target enchanted creature", Graceful Takedown). */
-    fun enchanted() = copy(baseFilter = baseFilter.enchanted())
-
-    /** Must be owned by you (for cards in graveyards/exile) */
-    fun ownedByYou() = copy(baseFilter = baseFilter.ownedByYou())
-
-    /** Must be owned by opponent (for cards in graveyards/exile) */
-    fun ownedByOpponent() = copy(baseFilter = baseFilter.ownedByOpponent())
-
-    /** Must have the greatest power among creatures its controller controls */
-    fun hasGreatestPower() = copy(baseFilter = baseFilter.hasGreatestPower())
+    override fun mapObjectFilter(transform: (GameObjectFilter) -> GameObjectFilter) =
+        copy(baseFilter = transform(baseFilter))
 
     /** Exclude the source permanent */
     fun other() = copy(excludeSelf = true)

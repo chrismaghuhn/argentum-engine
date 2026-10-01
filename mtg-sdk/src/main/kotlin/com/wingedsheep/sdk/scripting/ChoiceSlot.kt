@@ -107,6 +107,14 @@ enum class ChoiceSlot {
     TEAMWORK,
 
     /**
+     * Whether the spell's **replicate** cost was paid at least once (CR 702.56a). The number of
+     * payments rides on the cast itself (`CastSpell.declaredCostTimes`), because only the cast
+     * trigger that copies the spell reads it. Distinct from [KICKED] so a replicated spell never
+     * reads as kicked to "whenever you cast a kicked spell" payoffs.
+     */
+    REPLICATED,
+
+    /**
      * Whether the spell's sneak cost was paid when cast (CR 702.190, e.g. Leonardo, Leader
      * in Blue). A present value means "cast for its sneak cost". Read back through
      * [com.wingedsheep.sdk.scripting.conditions.SneakCostWasPaid].
@@ -142,8 +150,32 @@ enum class ChoiceSlot {
      */
     MAYHEM_CAST,
 
+    /**
+     * Whether the object escaped (CR 702.138b) — it was cast from a graveyard through its
+     * [Escape][com.wingedsheep.sdk.scripting.KeywordAbility.Escape] ability. A present value means
+     * "escaped". Stamped on the resolving permanent by the engine and read back through
+     * [com.wingedsheep.sdk.scripting.conditions.Escaped] for "sacrifice it unless it escaped"
+     * (Phlage) and "escapes with …" riders (CR 702.138c–d).
+     */
+    ESCAPED,
+
     /** The X declared for a `blight X` additional cost when cast (e.g. Soul Immolation). */
     BLIGHT_AMOUNT,
+
+    /**
+     * The creatures that **convoked** the spell (CR 702.51c — "a creature tapped to pay for mana in
+     * a spell's total cost this way is said to have 'convoked' that spell"), recorded as the convoke
+     * taps are paid and carried onto the resolving permanent. Stored as an entity list together with
+     * each creature's battlefield-entry stamp, so a creature that left and returned since is a new
+     * object (CR 400.7) that didn't convoke anything. Absent when nothing convoked the spell.
+     *
+     * Read two ways: [com.wingedsheep.sdk.scripting.values.DynamicAmount.CastChoice] counts the
+     * recorded creatures — "where X is the number of creatures that convoked it" (Knight-Errant of
+     * Eos, Ancient Imperiosaur), which keeps counting a creature that has since left — and
+     * [com.wingedsheep.sdk.scripting.predicates.CardPredicate.ConvokedSource] matches the ones that
+     * are still that same object, for "each creature that convoked it" (Zephyr Singer).
+     */
+    CONVOKED_CREATURES,
 
     /**
      * Whether the spell's optional **waterbend** additional cost was paid when cast (Avatar: The
@@ -186,4 +218,7 @@ enum class ChoiceSlot {
      * that is not tied to casting.
      */
     CHOSEN_NUMBER,
+
+    /** Zero-based branch of a declared additional-cost choice. */
+    ADDITIONAL_COST_BRANCH,
 }

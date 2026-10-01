@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.actions.ability
 
+import com.wingedsheep.engine.mechanics.mana.withSpendingColors
 import com.wingedsheep.engine.core.CountersAddedEvent
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
@@ -15,7 +16,6 @@ import com.wingedsheep.engine.mechanics.layers.Layer
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.mechanics.layers.addFloatingEffect
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
-import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.toManaPool
@@ -28,7 +28,6 @@ import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.Color
-import com.wingedsheep.sdk.core.Counters
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Zone
@@ -80,7 +79,7 @@ class SuspendCardFromHandHandler(
         if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             return "PaymentStrategy.ExplicitV2 is not supported for suspend"
         }
-        if (state.priorityPlayerId != action.playerId) {
+        if (!state.hasPriority(action.playerId)) {
             return "You don't have priority"
         }
         if (action.cardId !in state.getZone(ZoneKey(action.playerId, Zone.HAND))) {
@@ -133,7 +132,7 @@ class SuspendCardFromHandHandler(
             // validate without ever actually paying the cost.
             val poolComponent = state.getEntity(action.playerId)?.get<ManaPoolComponent>()
                 ?: ManaPoolComponent()
-            val pool = poolComponent.toManaPool()
+            val pool = poolComponent.toManaPool().withSpendingColors(state, action.playerId)
             val remainingCost = pool.payPartial(suspend.cost).remainingCost
             if (!remainingCost.isEmpty()) {
                 val chosenSet = chosenSources.toSet()
@@ -171,7 +170,7 @@ class SuspendCardFromHandHandler(
         // Pay the suspend cost — drain mana pool first, then tap lands for the remainder.
         val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
             ?: ManaPoolComponent()
-        val pool = poolComponent.toManaPool()
+        val pool = poolComponent.toManaPool().withSpendingColors(state, action.playerId)
         val partialResult = pool.payPartial(suspend.cost)
         val poolAfterPayment = partialResult.newPool
         val remainingCost = partialResult.remainingCost
@@ -241,6 +240,7 @@ class SuspendCardFromHandHandler(
         val fromZoneKey = ZoneKey(action.playerId, Zone.HAND)
         val exileZone = ZoneKey(ownerId, Zone.EXILE)
         currentState = currentState.removeFromZone(fromZoneKey, action.cardId)
+        val oldObjectRef = currentState.objectRef(action.cardId)
         currentState = currentState.addToZone(exileZone, action.cardId)
         events.add(
             ZoneChangeEvent(
@@ -248,7 +248,9 @@ class SuspendCardFromHandHandler(
                 entityName = cardComponent.name,
                 fromZone = Zone.HAND,
                 toZone = Zone.EXILE,
-                ownerId = ownerId
+                ownerId = ownerId,
+                oldObject = oldObjectRef,
+                newObject = currentState.objectRef(action.cardId)
             )
         )
 
@@ -261,7 +263,7 @@ class SuspendCardFromHandHandler(
         events.add(
             CountersAddedEvent(
                 entityId = action.cardId,
-                counterType = Counters.TIME,
+                counterType = CounterType.TIME,
                 amount = suspend.timeCounters,
                 entityName = cardComponent.name,
                 firstThisTurn = false,

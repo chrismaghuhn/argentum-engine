@@ -6,14 +6,13 @@ import com.wingedsheep.engine.core.CrewOrSaddleKind
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.tap
-import com.wingedsheep.engine.event.TriggerDetector
-import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.handlers.actions.ActionHandler
 import com.wingedsheep.engine.mechanics.EffectiveKeywordAbilityResolver
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.CrewSaddleContributorsComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -34,13 +33,12 @@ import kotlin.reflect.KClass
 class CrewVehicleHandler(
     private val cardRegistry: CardRegistry,
     private val stackResolver: StackResolver,
-    private val triggerDetector: TriggerDetector,
-    private val triggerProcessor: TriggerProcessor
+    private val castPermissionUtils: com.wingedsheep.engine.legalactions.utils.CastPermissionUtils? = null,
 ) : ActionHandler<CrewVehicle> {
     override val actionType: KClass<CrewVehicle> = CrewVehicle::class
 
     override fun validate(state: GameState, action: CrewVehicle): String? {
-        if (state.priorityPlayerId != action.playerId) {
+        if (!state.hasPriority(action.playerId)) {
             return "You don't have priority"
         }
 
@@ -60,6 +58,12 @@ class CrewVehicleHandler(
         val vehicleController = projected.getController(action.vehicleId)
         if (vehicleController != action.playerId) {
             return "You don't control this vehicle"
+        }
+
+        // Crew is an activated ability of the Vehicle (CR 702.122a), so a "players can't activate
+        // abilities" static (Yuriko, Blade of the Mighty; Grand Abolisher on an artifact) forbids it.
+        if (castPermissionUtils?.isActivationPreventedForPlayer(state, action.vehicleId, action.playerId) == true) {
+            return "An effect prevents you from activating that ability right now"
         }
 
         // Resolve the same effective printed/runtime/static grant instances as CrewEnumerator.
@@ -180,7 +184,9 @@ class CrewVehicleHandler(
         // (e.g. Luxurious Locomotive). Union across activations within the turn.
         currentState = currentState.updateEntity(action.vehicleId) { c ->
             val existing = c.get<CrewSaddleContributorsComponent>()
-            c.with(
+            // Crew and saddle are activated abilities too — "was activated this turn".
+            val activated = c.get<AbilityActivatedThisTurnComponent>() ?: AbilityActivatedThisTurnComponent()
+            c.with(activated.withAnyActivated()).with(
                 CrewSaddleContributorsComponent(
                     creatureIds = (existing?.creatureIds ?: emptySet()) + action.crewCreatures,
                     crewActivations = (existing?.crewActivations ?: 0) + 1
@@ -203,6 +209,7 @@ class CrewVehicleHandler(
         // Put the crew ability on the stack
         val abilityOnStack = ActivatedAbilityOnStackComponent(
             sourceId = action.vehicleId,
+            objectReferences = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(captured = true, origin = state.objectRef(action.vehicleId), source = state.objectRef(action.vehicleId)),
             sourceName = vehicleCard.name,
             controllerId = action.playerId,
             effect = crewEffect
@@ -216,26 +223,6 @@ class CrewVehicleHandler(
 
         // Detect and process triggers from tapping creatures
         val allEvents = events.toList()
-        val triggers = triggerDetector.detectTriggers(currentState, allEvents)
-        if (triggers.isNotEmpty()) {
-            val triggerResult = triggerProcessor.processTriggers(currentState, triggers)
-
-            if (triggerResult.isPaused) {
-                return ExecutionResult.paused(
-                    triggerResult.state.withPriority(action.playerId),
-                    triggerResult.pendingDecision!!,
-                    allEvents + triggerResult.events,
-                    diagnostics = stackResult.diagnostics + triggerResult.diagnostics,
-                )
-            }
-
-            return ExecutionResult.success(
-                triggerResult.newState.withPriority(action.playerId),
-                allEvents + triggerResult.events,
-                stackResult.diagnostics + triggerResult.diagnostics,
-            )
-        }
-
         return ExecutionResult.success(
             currentState.withPriority(action.playerId),
             allEvents,
@@ -248,8 +235,7 @@ class CrewVehicleHandler(
             return CrewVehicleHandler(
                 services.cardRegistry,
                 services.stackResolver,
-                services.triggerDetector,
-                services.triggerProcessor
+                services.castPermissionUtils,
             )
         }
     }

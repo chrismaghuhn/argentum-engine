@@ -31,7 +31,7 @@ val StoneforgeMystic = card("Stoneforge Mystic") {
     val equipment = GameObjectFilter.Artifact.withSubtype("Equipment")
 
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
+        trigger = Triggers.self.enters()
         optional = true
         effect = Patterns.Library.searchLibrary(
             filter = equipment,

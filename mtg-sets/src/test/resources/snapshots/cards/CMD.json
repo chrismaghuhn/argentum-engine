@@ -12,7 +12,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "permanent"
+                        "name": "t0"
                     },
                     "destination": "Library",
                     "placement": "Shuffled"
@@ -30,19 +30,19 @@
                             "targetDescription": "target permanent"
                         }
                     },
-                    "storeAs": "revealed",
+                    "storeAs": "gathered1",
                     "revealed": true
                 },
                 {
                     "type": "SelectFromCollection",
-                    "from": "revealed",
+                    "from": "gathered1",
                     "selection": "SelectAll",
                     "filter": "permanent",
-                    "storeSelected": "permanentCard"
+                    "storeSelected": "selected2"
                 },
                 {
                     "type": "MoveCollection",
-                    "from": "permanentCard",
+                    "from": "selected2",
                     "destination": {
                         "type": "ToZone",
                         "zone": "Battlefield"
@@ -57,7 +57,7 @@
                 "filter": {
                     "baseFilter": "permanent"
                 },
-                "id": "permanent"
+                "id": "t0"
             }
         ]
     },
@@ -81,7 +81,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Command Tower:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddManaOfChoice",
@@ -115,6 +115,62 @@
     "colorIdentityOverride": []
 }
 
+// Hornet Queen
+{
+    "name": "Hornet Queen",
+    "manaCost": "{4}{G}{G}{G}",
+    "typeLine": "Creature — Insect",
+    "oracleText": "Flying, deathtouch\nWhen this creature enters, create four 1/1 green Insect creature tokens with flying and deathtouch.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "keywords": [
+        "FLYING",
+        "DEATHTOUCH"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Hornet Queen:1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "to": "Battlefield"
+                },
+                "effect": {
+                    "type": "CreateToken",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 4
+                    },
+                    "power": 1,
+                    "toughness": 1,
+                    "colors": [
+                        "GREEN"
+                    ],
+                    "creatureTypes": [
+                        "Insect"
+                    ],
+                    "keywords": [
+                        "FLYING",
+                        "DEATHTOUCH"
+                    ]
+                },
+                "descriptionOverride": "When this creature enters, create four 1/1 green Insect creature tokens with flying and deathtouch."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "159",
+        "rarity": "RARE",
+        "artist": "Martina Pilcerova",
+        "imageUri": "https://cards.scryfall.io/normal/front/7/1/714cd47b-88f6-448d-9242-481935565250.jpg?1783941193"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
 // Kaalia of the Vast
 {
     "name": "Kaalia of the Vast",
@@ -131,7 +187,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Kaalia of the Vast:1",
                 "trigger": {
                     "type": "AttackEvent",
                     "requires": [
@@ -225,7 +281,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Scavenging Ooze:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -240,7 +296,7 @@
                             "type": "MoveToZone",
                             "target": {
                                 "type": "BoundVariable",
-                                "name": "target card in a graveyard"
+                                "name": "t0"
                             },
                             "destination": "Exile"
                         },
@@ -255,7 +311,7 @@
                                 "effects": [
                                     {
                                         "type": "AddCounters",
-                                        "counterType": "+1/+1",
+                                        "counterType": "PLUS_ONE_PLUS_ONE",
                                         "count": 1,
                                         "target": "Self"
                                     },
@@ -278,7 +334,7 @@
                             "baseFilter": {},
                             "zone": "Graveyard"
                         },
-                        "id": "target card in a graveyard"
+                        "id": "t0"
                     }
                 ],
                 "descriptionOverride": "{G}: Exile target card from a graveyard. If it was a creature card, put a +1/+1 counter on this creature and you gain 1 life."

@@ -50,7 +50,7 @@ import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.CommanderZoneReplacement
 import com.wingedsheep.sdk.scripting.RedirectZoneChange
-import com.wingedsheep.sdk.scripting.RedirectZoneChangeWithEffect
+import com.wingedsheep.sdk.scripting.RedirectZoneChangeWith
 import com.wingedsheep.sdk.scripting.effects.GainLifeEffect
 import com.wingedsheep.sdk.scripting.effects.CardOrder
 import com.wingedsheep.sdk.scripting.effects.MoveToZoneEffect
@@ -66,6 +66,10 @@ import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
+import io.kotest.matchers.types.shouldNotBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import com.wingedsheep.engine.core.Suspension
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 
 /**
  * Red conformance tests for CR 903.9b. The pending zone-change decision must
@@ -80,7 +84,13 @@ class CommanderZoneReplacementTest : FunSpec({
     val secondLibraryCardId = EntityId.generate()
     val normalAId = EntityId.generate()
     val normalBId = EntityId.generate()
-    val executor = MoveToZoneEffectExecutor(CardRegistry())
+    val executorServices = EngineServices(CardRegistry())
+    val executor = MoveToZoneEffectExecutor(
+        executorServices.zones,
+        executorServices.cardRegistry,
+        executorServices.targetFinder,
+        executorServices.effectExecutorRegistry::execute,
+    )
 
     fun stateWithCommanderIn(
         zone: Zone,
@@ -145,9 +155,10 @@ class CommanderZoneReplacementTest : FunSpec({
     )
 
     fun moveThroughReplacementPipeline(
+        services: EngineServices,
         state: GameState,
         destination: Zone,
-    ): EffectResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+    ): EffectResult = services.zones
         .moveToZoneWithReplacements(
             state = state,
             entityId = commanderId,
@@ -159,7 +170,7 @@ class CommanderZoneReplacementTest : FunSpec({
     fun resumeYesNo(services: EngineServices, initial: EffectResult, choice: Boolean): ExecutionResult {
         val decision = initial.pendingDecision as YesNoDecision
         return services.continuationHandler.resume(
-            initial.state.clearPendingDecision(),
+            initial.state,
             YesNoResponse(decision.id, choice),
         )
     }
@@ -167,7 +178,7 @@ class CommanderZoneReplacementTest : FunSpec({
     fun resumeExecutionYesNo(services: EngineServices, initial: ExecutionResult, choice: Boolean): ExecutionResult {
         val decision = initial.pendingDecision as YesNoDecision
         return services.continuationHandler.resume(
-            initial.state.clearPendingDecision(),
+            initial.state,
             YesNoResponse(decision.id, choice),
         )
     }
@@ -219,9 +230,9 @@ class CommanderZoneReplacementTest : FunSpec({
 
     test("RC-01: a Progenitus-shaped Commander redirect to COMMAND still shuffles the library") {
         val services = EngineServices(CardRegistry())
-        val initial = moveThroughReplacementPipeline(stateWithProgenitusLikeCommander(), Zone.GRAVEYARD)
+        val initial = moveThroughReplacementPipeline(services, stateWithProgenitusLikeCommander(), Zone.GRAVEYARD)
 
-        initial.isPaused shouldBe true
+        initial.outcome.shouldBeInstanceOf<Outcome.Paused>()
         val resumed = resumeYesNo(services, initial, choice = true)
 
         resumed.error shouldBe null
@@ -234,7 +245,7 @@ class CommanderZoneReplacementTest : FunSpec({
 
     test("RC-02: a Progenitus-shaped Commander redirect declined to library shuffles normally") {
         val services = EngineServices(CardRegistry())
-        val initial = moveThroughReplacementPipeline(stateWithProgenitusLikeCommander(), Zone.GRAVEYARD)
+        val initial = moveThroughReplacementPipeline(services, stateWithProgenitusLikeCommander(), Zone.GRAVEYARD)
 
         val resumed = resumeYesNo(services, initial, choice = false)
 
@@ -283,7 +294,7 @@ class CommanderZoneReplacementTest : FunSpec({
         finalPending.redirectResult?.shuffleIntoLibrary shouldBe true
         finalPending.residualObligations.shuffleOwnerLibrary shouldBe true
 
-        val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+        val transition = services.zones
             .performPendingZoneChange(state, finalPending)
         transition.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
         transition.state.getZone(ZoneKey(playerId, Zone.LIBRARY)).contains(commanderId) shouldBe false
@@ -373,7 +384,7 @@ class CommanderZoneReplacementTest : FunSpec({
     ): ExecutionResult {
         val decision = orderPrompt.pendingDecision.shouldBeInstanceOf<ReorderLibraryDecision>()
         return services.continuationHandler.resume(
-            orderPrompt.state.clearPendingDecision(),
+            orderPrompt.state,
             OrderedResponse(decision.id, orderedCards),
         )
     }
@@ -466,7 +477,6 @@ class CommanderZoneReplacementTest : FunSpec({
         )
         val withTrailingEffect = state.pushContinuation(
             EffectContinuation(
-                decisionId = "pending",
                 remainingEffects = listOf(trailingMove),
                 effectContext = context,
             )
@@ -595,7 +605,6 @@ class CommanderZoneReplacementTest : FunSpec({
         )
         val withTrailingEffect = state.pushContinuation(
             EffectContinuation(
-                decisionId = "pending",
                 remainingEffects = listOf(trailingMove),
                 effectContext = context,
             )
@@ -658,7 +667,7 @@ class CommanderZoneReplacementTest : FunSpec({
     test("commander from battlefield to hand pauses before moving") {
         val result = move(stateWithCommanderIn(Zone.BATTLEFIELD), Zone.HAND)
 
-        result.isPaused shouldBe true
+        result.outcome.shouldBeInstanceOf<Outcome.Paused>()
         result.state.getZone(ZoneKey(playerId, Zone.BATTLEFIELD)) shouldBe listOf(commanderId)
         result.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe emptyList()
     }
@@ -666,7 +675,7 @@ class CommanderZoneReplacementTest : FunSpec({
     test("CZ-13: commander from command zone to hand also pauses") {
         val result = move(stateWithCommanderIn(Zone.COMMAND), Zone.HAND)
 
-        result.isPaused shouldBe true
+        result.outcome.shouldBeInstanceOf<Outcome.Paused>()
         result.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
         result.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe emptyList()
     }
@@ -694,8 +703,9 @@ class CommanderZoneReplacementTest : FunSpec({
         resumed.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe listOf(commanderId)
         resumed.events.filterIsInstance<ZoneChangeEvent>().map { it.toZone } shouldBe listOf(Zone.HAND)
         com.wingedsheep.engine.mechanics.sba.permanent.CommanderZoneChoiceCheck(
+            services.zones,
             com.wingedsheep.engine.handlers.DecisionHandler()
-        ).check(resumed.state).isPaused shouldBe false
+        ).check(resumed.state).outcome.shouldNotBeInstanceOf<Outcome.Paused>()
     }
 
     test("library YES replaces before the commander enters the library") {
@@ -726,7 +736,7 @@ class CommanderZoneReplacementTest : FunSpec({
             com.wingedsheep.sdk.scripting.effects.ZonePlacement.Bottom,
         )
 
-        initial.isPaused shouldBe true
+        initial.outcome.shouldBeInstanceOf<Outcome.Paused>()
         val resumed = resumeYesNo(services, initial, choice = true)
 
         resumed.error shouldBe null
@@ -745,7 +755,7 @@ class CommanderZoneReplacementTest : FunSpec({
             com.wingedsheep.sdk.scripting.effects.ZonePlacement.Bottom,
         )
 
-        initial.isPaused shouldBe true
+        initial.outcome.shouldBeInstanceOf<Outcome.Paused>()
         initial.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
         val resumed = resumeYesNo(services, initial, choice = false)
 
@@ -762,7 +772,7 @@ class CommanderZoneReplacementTest : FunSpec({
             .updateEntity(commanderId) { it.with(SpellOnStackComponent(playerId)) }
         val initial = moveWithServices(services, stackState, Zone.HAND)
 
-        initial.isPaused shouldBe true
+        initial.outcome.shouldBeInstanceOf<Outcome.Paused>()
         initial.state.stack shouldBe listOf(commanderId)
         val resumed = resumeYesNo(services, initial, choice = true)
 
@@ -788,7 +798,7 @@ class CommanderZoneReplacementTest : FunSpec({
         )
         val initial = services.effectExecutorRegistry.execute(state, effect, context)
 
-        initial.isPaused shouldBe true
+        initial.outcome.shouldBeInstanceOf<Outcome.Paused>()
         initial.state.getZone(ZoneKey(playerId, Zone.BATTLEFIELD)) shouldBe listOf(commanderId)
         val resumed = resumeYesNo(services, initial, choice = true)
 
@@ -818,17 +828,17 @@ class CommanderZoneReplacementTest : FunSpec({
 
         val orderDecision = orderPrompt.pendingDecision as ReorderLibraryDecision
         val replacementPrompt = services.continuationHandler.resume(
-            orderPrompt.state.clearPendingDecision(),
+            orderPrompt.state,
             OrderedResponse(orderDecision.id, listOf(commanderId)),
         )
 
-        replacementPrompt.isPaused shouldBe true
+        replacementPrompt.outcome.shouldBeInstanceOf<Outcome.Paused>()
         replacementPrompt.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
         replacementPrompt.state.getZone(ZoneKey(playerId, Zone.BATTLEFIELD)) shouldBe listOf(commanderId)
         replacementPrompt.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe emptyList()
     }
 
-    test("RedirectZoneChangeWithEffect riders use the replacement controller") {
+    test("RedirectZoneChangeWith riders use the replacement controller") {
         val replacementSourceId = EntityId.generate()
         val replacementSource = ComponentContainer.of(
             CardComponent(
@@ -849,7 +859,7 @@ class CommanderZoneReplacementTest : FunSpec({
             fromZoneKey = ZoneKey(playerId, Zone.BATTLEFIELD),
             destinationZone = Zone.GRAVEYARD,
         )
-        val effect = RedirectZoneChangeWithEffect(
+        val effect = RedirectZoneChangeWith(
             newDestination = Zone.EXILE,
             additionalEffect = GainLifeEffect(2),
             appliesTo = EventPattern.ZoneChangeEvent(
@@ -880,7 +890,7 @@ class CommanderZoneReplacementTest : FunSpec({
             EffectContext(sourceId = null, controllerId = playerId),
         )
 
-        initial.isPaused shouldBe true
+        initial.outcome.shouldBeInstanceOf<Outcome.Paused>()
         initial.state.getZone(ZoneKey(playerId, Zone.EXILE)) shouldBe listOf(commanderId)
         initial.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe emptyList()
 
@@ -900,9 +910,9 @@ class CommanderZoneReplacementTest : FunSpec({
             EffectContext(sourceId = null, controllerId = playerId),
         )
 
-        initial.isPaused shouldBe true
+        initial.outcome.shouldBeInstanceOf<Outcome.Paused>()
         val afterMayCast = resumeYesNo(services, initial, choice = false)
-        afterMayCast.isPaused shouldBe true
+        afterMayCast.outcome.shouldBeInstanceOf<Outcome.Paused>()
         val resumed = resumeExecutionYesNo(services, afterMayCast, choice = true)
 
         resumed.error shouldBe null
@@ -926,8 +936,9 @@ class CommanderZoneReplacementTest : FunSpec({
         resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe listOf(libraryCardId, commanderId)
         resumed.events.filterIsInstance<ZoneChangeEvent>().map { it.toZone } shouldBe listOf(Zone.LIBRARY)
         com.wingedsheep.engine.mechanics.sba.permanent.CommanderZoneChoiceCheck(
+            services.zones,
             com.wingedsheep.engine.handlers.DecisionHandler()
-        ).check(resumed.state).isPaused shouldBe false
+        ).check(resumed.state).outcome.shouldNotBeInstanceOf<Outcome.Paused>()
     }
 
     test("903.9b choice belongs to the commander owner, not its battlefield controller") {
@@ -949,7 +960,7 @@ class CommanderZoneReplacementTest : FunSpec({
             stateWithCommanderOnControllerBattlefield(),
         )
 
-        initial.isPaused shouldBe true
+        initial.outcome.shouldBeInstanceOf<Outcome.Paused>()
         initial.pendingDecision.shouldBeInstanceOf<YesNoDecision>().playerId shouldBe playerId
         initial.state.getZone(ZoneKey(opponentId, Zone.BATTLEFIELD)) shouldBe listOf(commanderId)
         initial.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe emptyList()
@@ -968,7 +979,7 @@ class CommanderZoneReplacementTest : FunSpec({
             stateWithCommanderOnControllerBattlefield(),
         )
 
-        initial.isPaused shouldBe true
+        initial.outcome.shouldBeInstanceOf<Outcome.Paused>()
         initial.pendingDecision.shouldBeInstanceOf<YesNoDecision>().playerId shouldBe playerId
         initial.state.getZone(ZoneKey(opponentId, Zone.BATTLEFIELD)) shouldBe listOf(commanderId)
         initial.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe emptyList()
@@ -1044,7 +1055,7 @@ class CommanderZoneReplacementTest : FunSpec({
             .addToZone(ZoneKey(opponentId, Zone.BATTLEFIELD), replacementSourceId)
         val services = EngineServices(CardRegistry())
 
-        val initial = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+        val initial = services.zones
             .moveToZoneWithReplacements(
                 state = state,
                 entityId = commanderId,
@@ -1058,19 +1069,20 @@ class CommanderZoneReplacementTest : FunSpec({
         commanderOption shouldNotBe -1
 
         val ownerPrompt = services.continuationHandler.resume(
-            initial.state.clearPendingDecision(),
+            initial.state,
             OptionChosenResponse(ordering.id, commanderOption),
         )
 
-        ownerPrompt.isPaused shouldBe true
-        ownerPrompt.pendingDecision.shouldBeInstanceOf<YesNoDecision>().playerId shouldBe playerId
+        ownerPrompt.outcome.shouldBeInstanceOf<Outcome.Paused>()
+        val ownerDecision = ownerPrompt.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
+        ownerDecision.playerId shouldBe playerId
         ownerPrompt.state.getZone(ZoneKey(opponentId, Zone.BATTLEFIELD)) shouldBe
             listOf(commanderId, replacementSourceId)
         ownerPrompt.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe emptyList()
 
         val declined = services.continuationHandler.resume(
-            ownerPrompt.state.clearPendingDecision(),
-            YesNoResponse(ownerPrompt.pendingDecision.id, choice = false),
+            ownerPrompt.state,
+            YesNoResponse(ownerDecision.id, choice = false),
         )
         declined.error shouldBe null
         declined.state.getZone(ZoneKey(playerId, Zone.EXILE)) shouldBe listOf(commanderId)
@@ -1104,8 +1116,9 @@ class CommanderZoneReplacementTest : FunSpec({
         val state = stateWithCommanderOnControllerBattlefield()
             .withEntity(replacementSourceId, replacementSource)
             .addToZone(ZoneKey(opponentId, Zone.BATTLEFIELD), replacementSourceId)
+        val services = EngineServices(CardRegistry())
 
-        val initial = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+        val initial = services.zones
             .moveToZoneWithReplacements(
                 state = state,
                 entityId = commanderId,
@@ -1151,13 +1164,14 @@ class CommanderZoneReplacementTest : FunSpec({
             fromZoneKey = ZoneKey(playerId, Zone.BATTLEFIELD),
             destinationZone = Zone.HAND,
         )
-        val processor = ReplacementEffectProcessor()
+        val processor = ReplacementEffectProcessor(conditionEvaluator = PredicateEvaluator(cardRegistry = null).conditions)
         val gathered = processor.gatherReplacements(state, pending)
             .first { it.effect == ordinaryReplacement }
 
         val result = processor.applySingle(state, gathered, pending, emptySet())
         val paused = result.shouldBeInstanceOf<ProcessorResult.Paused>()
         val continuation = paused.state.continuationStack.last()
+            .shouldBeInstanceOf<Suspension>().answer
             .shouldBeInstanceOf<OptionalReplacementContinuation>()
 
         continuation.alreadyApplied shouldBe setOf(gathered.identity)
@@ -1207,7 +1221,7 @@ class CommanderZoneReplacementTest : FunSpec({
             EffectContext(sourceId = null, controllerId = playerId),
         )
 
-        result.isPaused shouldBe false
+        result.outcome.shouldNotBeInstanceOf<Outcome.Paused>()
         result.pendingDecision shouldBe null
         result.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe listOf(regularId)
     }
@@ -1227,7 +1241,7 @@ class CommanderZoneReplacementTest : FunSpec({
             ),
         )
 
-        result.isPaused shouldBe false
+        result.outcome.shouldNotBeInstanceOf<Outcome.Paused>()
         result.error shouldBe null
         result.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
         result.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe emptyList()
@@ -1243,7 +1257,7 @@ class CommanderZoneReplacementTest : FunSpec({
             Zone.HAND,
         )
 
-        result.isPaused shouldBe false
+        result.outcome.shouldNotBeInstanceOf<Outcome.Paused>()
         result.error shouldBe null
         result.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
         result.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe emptyList()
@@ -1283,13 +1297,14 @@ class CommanderZoneReplacementTest : FunSpec({
             fromZoneKey = ZoneKey(playerId, Zone.COMMAND),
             destinationZone = Zone.HAND,
         )
-        val processor = ReplacementEffectProcessor()
+        val processor = ReplacementEffectProcessor(conditionEvaluator = PredicateEvaluator(cardRegistry = null).conditions)
 
         val first = processor.process(state, pending) as ProcessorResult.Paused
         val firstContinuation = first.state.continuationStack.last()
+            .shouldBeInstanceOf<Suspension>().answer
             as com.wingedsheep.engine.core.OptionalReplacementContinuation
         val unchanged = processor.processAfterOptionalDecline(
-            state = first.state.clearPendingDecision().copy(continuationStack = emptyList()),
+            state = first.state.copy(continuationStack = emptyList()),
             event = pending,
             gathered = firstContinuation.gathered,
             alreadyApplied = firstContinuation.alreadyApplied,
@@ -1297,7 +1312,7 @@ class CommanderZoneReplacementTest : FunSpec({
         unchanged shouldBe ProcessorResult.Pass
 
         val changed = processor.applySingle(
-            state = first.state.clearPendingDecision().copy(continuationStack = emptyList()),
+            state = first.state.copy(continuationStack = emptyList()),
             gathered = firstContinuation.gathered,
             event = pending,
             alreadyApplied = firstContinuation.alreadyApplied,

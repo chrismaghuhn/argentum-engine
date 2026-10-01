@@ -91,6 +91,48 @@ data class MayPlayPermission(
      */
     val supersededBySameSource: Boolean = false,
     /**
+     * When true, this permission lasts only for as long as its "you" still controls [sourceId] —
+     * "you may cast it for as long as you control this creature" (Taster of Wares). "You" is
+     * [expiryControllerId] when set and [controllerId] otherwise, the same resolution the turn-keyed
+     * window uses. For this flag the granting executor always pins [expiryControllerId] to the
+     * player whose ability granted the permission, so the window measures against them even under
+     * an `ownerControls` grouping, where [controllerId] is each card's owner — an owner does not
+     * control the source, so keying the window off them would revoke the grant immediately.
+     *
+     * Enforced by revocation, not by a gate: [com.wingedsheep.engine.mechanics.sba.permanent
+     * .EndedDurationExpiryCheck] deletes the permission on the first state-based check after the
+     * source leaves the battlefield or its projected controller changes. Deleting rather than
+     * gating is what makes the window one-way, as CR 611.2b requires — a gate would silently
+     * reopen if the source came back or control reverted.
+     *
+     * Set together with [permanent] = true (the window is not turn-keyed, so cleanup must not
+     * take it first) by [com.wingedsheep.engine.handlers.effects.library
+     * .GrantMayPlayFromExileExecutor] when the grant carries
+     * [com.wingedsheep.sdk.scripting.effects.MayPlayExpiry.WhileYouControlSource]. Meaningless
+     * without a [sourceId]; the executor refuses to build such a permission.
+     */
+    val endsWhenSourceUncontrolled: Boolean = false,
+    /**
+     * When true, this permission lasts only for as long as [sourceId] is **on the battlefield** —
+     * "for as long as this permanent remains on the battlefield", regardless of who controls it and
+     * regardless of who holds the permission.
+     *
+     * The controller-blind sibling of [endsWhenSourceUncontrolled], and the difference is
+     * load-bearing rather than cosmetic: Shared Fate grants play permission to *every* player,
+     * including opponents who never control the enchantment, so a window keyed to "you control the
+     * source" would revoke each opponent's grant on the first state-based check. Because the window
+     * reads only the source's zone, a control change leaves the permission alone — right for a
+     * grant that models a static ability, which keeps functioning under a new controller.
+     *
+     * Enforced the same way and for the same reason: [com.wingedsheep.engine.mechanics.sba.permanent
+     * .EndedDurationExpiryCheck] deletes rather than gates, so the latch is one-way (CR 611.2b) and
+     * the source returning cannot revive it. Set together with [permanent] = true by
+     * [com.wingedsheep.engine.handlers.effects.library.GrantMayPlayFromExileExecutor] when the grant
+     * carries [com.wingedsheep.sdk.scripting.effects.MayPlayExpiry.WhileSourceOnBattlefield].
+     * Meaningless without a [sourceId]; the executor refuses to build such a permission.
+     */
+    val endsWhenSourceLeavesBattlefield: Boolean = false,
+    /**
      * When true, this permission authorizes casting spells only — a land among [cardIds] can
      * never be played through it. Mirrors
      * [com.wingedsheep.sdk.scripting.effects.GrantMayPlayFromExileEffect.nonLandOnly]: "cast"
@@ -129,7 +171,7 @@ data class MayPlayPermission(
      *
      * Mirrors [com.wingedsheep.sdk.scripting.effects.CastFromCollectionWithoutPayingCostEffect
      * .castTransformed]: "exile it, then you may cast it transformed without paying its mana cost"
-     * (CR 310.11b, the Siege defeat trigger). Distinct from [castFaceIndex], which selects an
+     * (CR 310.12b, the Siege defeat trigger). Distinct from [castFaceIndex], which selects an
      * alternative *face* of a multi-face card (an Adventure, a split half) — a transforming
      * double-faced card's back face is `CardDefinition.backFace`, not a `cardFaces` entry, and it
      * goes on the stack as the same card turned over rather than as a separate half.
@@ -137,6 +179,15 @@ data class MayPlayPermission(
      * Ignored for a card with no back face, so it is safe on a permission covering a mixed pile.
      */
     val castTransformed: Boolean = false,
+    /**
+     * When true, playing any one card in [cardIds] through this permission revokes it for the
+     * whole group — "you may cast an instant or sorcery spell from among those cards" (Chandra,
+     * Hope's Beacon). Mirrors [com.wingedsheep.sdk.scripting.effects.GrantMayPlayFromExileEffect
+     * .singleUse]. Consumed by [consumeSingleUseMayPlayFor] at the cast site (`SpellCaster`) and the
+     * land-play site (`PlayLandHandler`), regardless of [permanent]; a card leaving exile any other
+     * way only drops that card, as for an ordinary grant.
+     */
+    val singleUse: Boolean = false,
     val timestamp: Long
 ) {
     init {
@@ -145,6 +196,16 @@ data class MayPlayPermission(
         // as the source). Require a real sourceId whenever a condition is attached.
         require(condition == null || sourceId != null) {
             "MayPlayPermission with a condition must specify sourceId (condition: ${condition!!.description})"
+        }
+        // The "for as long as you control it" window is evaluated entirely from sourceId; without
+        // one it could never close, which is the opposite of what the duration says.
+        require(!endsWhenSourceUncontrolled || sourceId != null) {
+            "MayPlayPermission with endsWhenSourceUncontrolled must specify sourceId"
+        }
+        // Same reasoning as above: the "while the source is on the battlefield" window is
+        // evaluated entirely from sourceId, so without one it could never close.
+        require(!endsWhenSourceLeavesBattlefield || sourceId != null) {
+            "MayPlayPermission with endsWhenSourceLeavesBattlefield must specify sourceId"
         }
     }
 }

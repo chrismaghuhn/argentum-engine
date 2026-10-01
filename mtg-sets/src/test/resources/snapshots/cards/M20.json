@@ -1,3 +1,51 @@
+// Agonizing Syphon
+{
+    "name": "Agonizing Syphon",
+    "manaCost": "{3}{B}",
+    "typeLine": "Sorcery",
+    "oracleText": "Agonizing Syphon deals 3 damage to any target and you gain 3 life.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "DealDamage",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 3
+                    },
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    }
+                },
+                {
+                    "type": "GainLife",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 3
+                    }
+                }
+            ]
+        },
+        "targetRequirements": [
+            {
+                "type": "AnyTarget",
+                "id": "t0"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "83",
+        "artist": "Seb McKinnon",
+        "flavorText": "\"Your death will take a mere moment, but it will feel like an eternity.\"\n—Vilis, Broker of Blood",
+        "imageUri": "https://cards.scryfall.io/normal/front/0/d/0d8efd95-1c2f-4dd1-b70b-3cfb10ff3a28.jpg?1783933001"
+    },
+    "colorIdentityOverride": [
+        "BLACK"
+    ]
+}
+
 // Angel of Vitality
 {
     "name": "Angel of Vitality",
@@ -73,16 +121,16 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Brineborn Cutthroat:1",
                 "trigger": "SpellCastEvent",
                 "binding": "ANY",
                 "effect": {
                     "type": "AddCounters",
-                    "counterType": "+1/+1",
+                    "counterType": "PLUS_ONE_PLUS_ONE",
                     "count": 1,
                     "target": "Self"
                 },
-                "triggerRestriction": "IsNotYourTurn",
+                "triggerRestriction": "IsOpponentsTurn",
                 "descriptionOverride": "Whenever you cast a spell during an opponent's turn, put a +1/+1 counter on this creature."
             }
         ]
@@ -108,7 +156,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Cryptic Caves:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -121,7 +169,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Cryptic Caves:2",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -191,7 +239,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Dawning Angel:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -231,7 +279,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature or planeswalker that's black or red"
+                        "name": "t0"
                     },
                     "destination": "Exile"
                 },
@@ -247,7 +295,7 @@
                 "filter": {
                     "baseFilter": "creature|planeswalker black|red"
                 },
-                "id": "target creature or planeswalker that's black or red"
+                "id": "t0"
             }
         ]
     },
@@ -279,7 +327,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Drakuseth, Maw of Flames:1",
                 "trigger": "AttackEvent",
                 "effect": {
                     "type": "Composite",
@@ -291,8 +339,8 @@
                                 "amount": 4
                             },
                             "target": {
-                                "type": "ContextTarget",
-                                "index": 0
+                                "type": "BoundVariable",
+                                "name": "t0"
                             }
                         },
                         {
@@ -302,8 +350,8 @@
                                 "amount": 3
                             },
                             "target": {
-                                "type": "ContextTarget",
-                                "index": 1
+                                "type": "BoundVariable",
+                                "name": "t1[0]"
                             }
                         },
                         {
@@ -313,15 +361,15 @@
                                 "amount": 3
                             },
                             "target": {
-                                "type": "ContextTarget",
-                                "index": 2
+                                "type": "BoundVariable",
+                                "name": "t1[1]"
                             }
                         }
                     ]
                 },
                 "targetRequirement": {
                     "type": "AnyTarget",
-                    "id": "any target"
+                    "id": "t0"
                 },
                 "additionalTargetRequirements": [
                     {
@@ -331,7 +379,7 @@
                             "count": 2,
                             "minCount": 0
                         },
-                        "id": "up to two other targets"
+                        "id": "t1"
                     }
                 ],
                 "descriptionOverride": "Whenever Drakuseth attacks, it deals 4 damage to any target and 3 damage to each of up to two other targets."
@@ -369,11 +417,11 @@
                             "amount": 7
                         }
                     },
-                    "storeAs": "looked"
+                    "storeAs": "gathered0"
                 },
                 {
                     "type": "SelectFromCollection",
-                    "from": "looked",
+                    "from": "gathered0",
                     "selection": {
                         "type": "ChooseExactly",
                         "count": {
@@ -381,14 +429,14 @@
                             "amount": 2
                         }
                     },
-                    "storeSelected": "kept",
-                    "storeRemainder": "rest",
+                    "storeSelected": "selected1",
+                    "storeRemainder": "remainder1",
                     "selectedLabel": "Put in hand",
                     "remainderLabel": "Put on bottom"
                 },
                 {
                     "type": "MoveCollection",
-                    "from": "kept",
+                    "from": "selected1",
                     "destination": {
                         "type": "ToZone",
                         "zone": "Hand"
@@ -396,7 +444,7 @@
                 },
                 {
                     "type": "MoveCollection",
-                    "from": "rest",
+                    "from": "remainder1",
                     "destination": {
                         "type": "ToZone",
                         "zone": "Library",
@@ -471,7 +519,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ferocious Pup:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -519,7 +567,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Gnarlback Rhino:1",
                 "trigger": {
                     "type": "SpellCastEvent",
                     "requires": [
@@ -564,14 +612,14 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Goblin Smuggler:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "GrantKeyword",
                     "keyword": "CANT_BE_BLOCKED",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -581,7 +629,7 @@
                             "baseFilter": "creature pow<=2",
                             "excludeSelf": true
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ],
                 "descriptionOverride": "Another target creature with power 2 or less can't be blocked this turn."
@@ -596,6 +644,90 @@
     },
     "colorIdentityOverride": [
         "RED"
+    ]
+}
+
+// Hanged Executioner
+{
+    "name": "Hanged Executioner",
+    "manaCost": "{2}{W}",
+    "typeLine": "Creature — Spirit",
+    "oracleText": "Flying\nWhen this creature enters, create a 1/1 white Spirit creature token with flying.\n{3}{W}, Exile this creature: Exile target creature.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 1
+    },
+    "keywords": [
+        "FLYING"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Hanged Executioner:1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "to": "Battlefield"
+                },
+                "effect": {
+                    "type": "CreateToken",
+                    "power": 1,
+                    "toughness": 1,
+                    "colors": [
+                        "WHITE"
+                    ],
+                    "creatureTypes": [
+                        "Spirit"
+                    ],
+                    "keywords": [
+                        "FLYING"
+                    ]
+                }
+            }
+        ],
+        "activatedAbilities": [
+            {
+                "id": "Hanged Executioner:2",
+                "cost": {
+                    "type": "CostComposite",
+                    "costs": [
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomMana",
+                                "cost": "{3}{W}"
+                            }
+                        },
+                        "CostExileSelf"
+                    ]
+                },
+                "effect": {
+                    "type": "MoveToZone",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    },
+                    "destination": "Exile"
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": "creature"
+                        },
+                        "id": "t0"
+                    }
+                ]
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "22",
+        "rarity": "RARE",
+        "artist": "Johann Bodin",
+        "imageUri": "https://cards.scryfall.io/normal/front/e/0/e0d6cea1-83d1-4045-b4da-40560af86df9.jpg?1783933026"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
     ]
 }
 
@@ -619,6 +751,180 @@
     ]
 }
 
+// Infuriate
+{
+    "name": "Infuriate",
+    "manaCost": "{R}",
+    "typeLine": "Instant",
+    "oracleText": "Target creature gets +3/+2 until end of turn.",
+    "script": {
+        "spellEffect": {
+            "type": "ModifyStats",
+            "powerModifier": {
+                "type": "Fixed",
+                "amount": 3
+            },
+            "toughnessModifier": {
+                "type": "Fixed",
+                "amount": 2
+            },
+            "target": {
+                "type": "BoundVariable",
+                "name": "t0"
+            }
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "creature"
+                },
+                "id": "t0"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "145",
+        "artist": "Caio Monteiro",
+        "flavorText": "\"No shirt, no shoes, no service.\"\n—Marketplace sign",
+        "imageUri": "https://cards.scryfall.io/normal/front/7/a/7ac778f6-8997-47ee-a676-3eb9f8d1592f.jpg"
+    },
+    "colorIdentityOverride": [
+        "RED"
+    ]
+}
+
+// Ironroot Warlord
+{
+    "name": "Ironroot Warlord",
+    "manaCost": "{1}{G}{W}",
+    "typeLine": "Creature — Treefolk Soldier",
+    "oracleText": "Ironroot Warlord's power is equal to the number of creatures you control.\n{3}{G}{W}: Create a 1/1 white Soldier creature token.",
+    "creatureStats": {
+        "power": {
+            "type": "Dynamic",
+            "source": {
+                "type": "AggregateBattlefield",
+                "player": "You",
+                "filter": "creature"
+            }
+        },
+        "toughness": 5
+    },
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Ironroot Warlord:1",
+                "cost": {
+                    "type": "CostAtomWrapper",
+                    "atom": {
+                        "type": "AtomMana",
+                        "cost": "{3}{G}{W}"
+                    }
+                },
+                "effect": {
+                    "type": "CreateToken",
+                    "power": 1,
+                    "toughness": 1,
+                    "colors": [
+                        "WHITE"
+                    ],
+                    "creatureTypes": [
+                        "Soldier"
+                    ]
+                },
+                "descriptionOverride": "{3}{G}{W}: Create a 1/1 white Soldier creature token."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "209",
+        "rarity": "UNCOMMON",
+        "artist": "Filip Burburan",
+        "flavorText": "\"Alone, it's a fortification. At the head of its troops, it's a battering ram.\"\n—Skerk Hobnett, wilderness guide",
+        "imageUri": "https://cards.scryfall.io/normal/front/e/d/edec85ce-7daa-48c2-b25d-b22941e01e73.jpg?1783932951"
+    },
+    "colorIdentityOverride": [
+        "GREEN",
+        "WHITE"
+    ]
+}
+
+// Kykar, Wind's Fury
+{
+    "name": "Kykar, Wind's Fury",
+    "manaCost": "{1}{U}{R}{W}",
+    "typeLine": "Legendary Creature — Bird Wizard",
+    "oracleText": "Flying\nWhenever you cast a noncreature spell, create a 1/1 white Spirit creature token with flying.\nSacrifice a Spirit: Add {R}.",
+    "creatureStats": {
+        "power": 3,
+        "toughness": 3
+    },
+    "keywords": [
+        "FLYING"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Kykar, Wind's Fury:1",
+                "trigger": {
+                    "type": "SpellCastEvent",
+                    "spellFilter": {
+                        "cardPredicates": [
+                            "IsNoncreature"
+                        ]
+                    }
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "CreateToken",
+                    "power": 1,
+                    "toughness": 1,
+                    "colors": [
+                        "WHITE"
+                    ],
+                    "creatureTypes": [
+                        "Spirit"
+                    ],
+                    "keywords": [
+                        "FLYING"
+                    ]
+                }
+            }
+        ],
+        "activatedAbilities": [
+            {
+                "id": "Kykar, Wind's Fury:2",
+                "cost": {
+                    "type": "CostAtomWrapper",
+                    "atom": {
+                        "type": "AtomSacrifice",
+                        "filter": "permanent Spirit"
+                    }
+                },
+                "effect": {
+                    "type": "AddMana",
+                    "color": "RED"
+                },
+                "timing": "ManaAbility",
+                "isManaAbility": true
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "212",
+        "rarity": "MYTHIC",
+        "artist": "G-host Lee",
+        "flavorText": "\"The raging gale fans the flames of righteous wrath.\"",
+        "imageUri": "https://cards.scryfall.io/normal/front/5/9/594cb7dc-ea88-4909-ab40-1d40fecc9817.jpg?1783932950"
+    },
+    "colorIdentityOverride": [
+        "RED",
+        "BLUE",
+        "WHITE"
+    ]
+}
+
 // Moldervine Reclamation
 {
     "name": "Moldervine Reclamation",
@@ -628,7 +934,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Moldervine Reclamation:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "filter": "creature ctrl:you",
@@ -684,7 +990,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Octoprophet:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -707,6 +1013,60 @@
     ]
 }
 
+// Pyroclastic Elemental
+{
+    "name": "Pyroclastic Elemental",
+    "manaCost": "{3}{R}{R}",
+    "typeLine": "Creature — Elemental",
+    "oracleText": "{1}{R}{R}: This creature deals 1 damage to target player.",
+    "creatureStats": {
+        "power": 5,
+        "toughness": 4
+    },
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Pyroclastic Elemental:1",
+                "cost": {
+                    "type": "CostAtomWrapper",
+                    "atom": {
+                        "type": "AtomMana",
+                        "cost": "{1}{R}{R}"
+                    }
+                },
+                "effect": {
+                    "type": "DealDamage",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 1
+                    },
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    }
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetPlayer",
+                        "id": "t0"
+                    }
+                ],
+                "descriptionOverride": "{1}{R}{R}: This creature deals 1 damage to target player."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "296",
+        "rarity": "UNCOMMON",
+        "artist": "Svetlin Velinov",
+        "flavorText": "\"Whoever thought of making mobile volcanoes was a genius.\"\n—Chandra Nalaar",
+        "imageUri": "https://cards.scryfall.io/normal/front/2/d/2d57f8b5-fde9-498d-82bf-34bfb2370703.jpg?1783932918"
+    },
+    "colorIdentityOverride": [
+        "RED"
+    ]
+}
+
 // Rapacious Dragon
 {
     "name": "Rapacious Dragon",
@@ -723,7 +1083,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Rapacious Dragon:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -761,7 +1121,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Savannah Sage:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -804,7 +1164,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Silverback Shaman:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "from": "Battlefield",
@@ -840,7 +1200,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Sorin, Imperious Bloodlord:1",
                 "cost": {
                     "type": "CostLoyalty",
                     "change": 1
@@ -853,7 +1213,7 @@
                             "keyword": "DEATHTOUCH",
                             "target": {
                                 "type": "BoundVariable",
-                                "name": "creature you control"
+                                "name": "t0"
                             }
                         },
                         {
@@ -861,7 +1221,7 @@
                             "keyword": "LIFELINK",
                             "target": {
                                 "type": "BoundVariable",
-                                "name": "creature you control"
+                                "name": "t0"
                             }
                         },
                         {
@@ -871,19 +1231,19 @@
                                 "condition": {
                                     "type": "EntityMatches",
                                     "entity": {
-                                        "type": "ContextTarget",
-                                        "index": 0
+                                        "type": "BoundVariable",
+                                        "name": "t0"
                                     },
                                     "filter": "creature Vampire"
                                 }
                             },
                             "then": {
                                 "type": "AddCounters",
-                                "counterType": "+1/+1",
+                                "counterType": "PLUS_ONE_PLUS_ONE",
                                 "count": 1,
                                 "target": {
                                     "type": "BoundVariable",
-                                    "name": "creature you control"
+                                    "name": "t0"
                                 }
                             }
                         }
@@ -895,14 +1255,14 @@
                         "filter": {
                             "baseFilter": "creature ctrl:you"
                         },
-                        "id": "creature you control"
+                        "id": "t0"
                     }
                 ],
                 "timing": "SorcerySpeed",
                 "isPlaneswalkerAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Sorin, Imperious Bloodlord:2",
                 "cost": {
                     "type": "CostLoyalty",
                     "change": 1
@@ -920,13 +1280,13 @@
                                         "baseFilter": "creature Vampire ctrl:you"
                                     }
                                 },
-                                "storeAs": "vampireToSacrifice"
+                                "storeAs": "target0"
                             },
                             {
                                 "type": "SacrificeTarget",
                                 "target": {
                                     "type": "PipelineTarget",
-                                    "collectionName": "vampireToSacrifice"
+                                    "collectionName": "target0"
                                 }
                             }
                         ]
@@ -941,8 +1301,8 @@
                                     "amount": 3
                                 },
                                 "target": {
-                                    "type": "ContextTarget",
-                                    "index": 0
+                                    "type": "BoundVariable",
+                                    "name": "t1"
                                 }
                             },
                             {
@@ -955,7 +1315,10 @@
                         ]
                     },
                     "reflexiveTargetRequirements": [
-                        "AnyTarget"
+                        {
+                            "type": "AnyTarget",
+                            "id": "t1"
+                        }
                     ],
                     "descriptionOverride": "You may sacrifice a Vampire. When you do, Sorin deals 3 damage to any target and you gain 3 life."
                 },
@@ -963,7 +1326,7 @@
                 "isPlaneswalkerAbility": true
             },
             {
-                "id": "ability_3",
+                "id": "Sorin, Imperious Bloodlord:3",
                 "cost": {
                     "type": "CostLoyalty",
                     "change": -3
@@ -1036,7 +1399,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Spectral Sailor:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -1086,7 +1449,8 @@
                 "count": {
                     "type": "AggregateBattlefield",
                     "player": "You",
-                    "filter": "creature attacking"
+                    "filter": "creature",
+                    "excludeSelf": true
                 }
             }
         ]
@@ -1115,12 +1479,12 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Twinblade Paladin:1",
                 "trigger": "LifeGainEvent",
                 "binding": "ANY",
                 "effect": {
                     "type": "AddCounters",
-                    "counterType": "+1/+1",
+                    "counterType": "PLUS_ONE_PLUS_ONE",
                     "count": 1,
                     "target": "Self"
                 },
@@ -1161,5 +1525,45 @@
     },
     "colorIdentityOverride": [
         "WHITE"
+    ]
+}
+
+// Winged Words
+{
+    "name": "Winged Words",
+    "manaCost": "{2}{U}",
+    "typeLine": "Sorcery",
+    "oracleText": "This spell costs {1} less to cast if you control a creature with flying.\nDraw two cards.",
+    "script": {
+        "spellEffect": {
+            "type": "DrawCards",
+            "count": {
+                "type": "Fixed",
+                "amount": 2
+            }
+        },
+        "staticAbilities": [
+            {
+                "type": "ModifySpellCost",
+                "target": "SelfCast",
+                "modification": {
+                    "type": "ReduceGenericBy",
+                    "source": {
+                        "type": "FixedIfControlFilter",
+                        "amount": 1,
+                        "filter": "creature kw:flying"
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "80",
+        "artist": "Chris Seaman",
+        "flavorText": "Magic written across the sky falls like rain on thirsty ground, bringing forth wisdom in its season.",
+        "imageUri": "https://cards.scryfall.io/normal/front/f/f/ff765065-b160-49b6-99ac-cd695bd0d903.jpg?1783933001"
+    },
+    "colorIdentityOverride": [
+        "BLUE"
     ]
 }

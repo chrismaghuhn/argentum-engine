@@ -331,9 +331,10 @@ class Bindings private constructor(private val values: Map<String, Any?>) {
 /** Builds the [Bindings] a `match` half returns: `bind("n" to it.count)`. */
 fun bind(vararg pairs: Pair<String, Any?>): Bindings = Bindings.of(pairs.toMap())
 
-class PhraseBuilder<T> internal constructor(private val template: String, private val ruleName: String?) {
+class PhraseBuilder<T> internal constructor(val template: String, val ruleName: String?) {
 
     private val slots = LinkedHashMap<String, Phrase<*>>()
+    private val spellings = mutableListOf<Pair<String, String>>()
     private var builder: ((Bindings) -> T?)? = null
     private var matcher: ((T) -> Bindings?)? = null
 
@@ -343,6 +344,26 @@ class PhraseBuilder<T> internal constructor(private val template: String, privat
     /** Registers the sub-phrase a `{name}` placeholder stands for. Slots are phrases, recursively. */
     fun slot(name: String, phrase: Phrase<*>) {
         require(slots.put(name, phrase) == null) { "slot '$name' registered twice in \"$template\"" }
+    }
+
+    /**
+     * Registers an **additional surface spelling** of this same rule: the same slots, the same
+     * `build`, the same `match`, and it never prints.
+     *
+     * The kernel's answer to "one printed form per model" when the second form is not a second
+     * *rule* but the same one with a word somewhere else. Writing it as a sibling [phrase] would
+     * mean a second copy of `build` and `match` — two halves that agree until someone edits one of
+     * them, which is the drift this whole module is built to make impossible. Sharing the closures
+     * makes the two spellings the same rule by construction, so a change to what the sentence means
+     * cannot reach one spelling and miss the other.
+     *
+     * It is deliberately *not* a duration, a word order, or any other piece of Oracle vocabulary:
+     * [template] is public so a grammar family can derive the second spelling from the first and
+     * own the derivation itself (see `Durations.fronted`). The kernel only knows that a rule may
+     * have more than one surface form and that exactly one of them prints.
+     */
+    fun alsoSpelled(template: String, name: String) {
+        spellings.add(template to name)
     }
 
     /** text → model. Returning null means the surface form is grammatical but denotes nothing. */
@@ -355,13 +376,19 @@ class PhraseBuilder<T> internal constructor(private val template: String, privat
         matcher = f
     }
 
-    internal fun finish(): Phrase<T> {
+    /** Every spelling of a rule binds the same slots, so each one is checked against them. */
+    private fun compile(template: String): List<TemplatePart> {
         val parts = compileTemplate(template)
         val referenced = parts.filterIsInstance<TemplatePart.SlotRef>().map { it.slot }.toSet()
         val missing = referenced - slots.keys
         require(missing.isEmpty()) { "template \"$template\" references unregistered slot(s) $missing" }
         val unused = slots.keys - referenced
         require(unused.isEmpty()) { "slot(s) $unused registered but absent from template \"$template\"" }
+        return parts
+    }
+
+    internal fun finish(): Phrase<T> {
+        val parts = compile(template)
 
         val build = requireNotNull(builder) { "rule \"$template\" has no build { } — a phrase must parse" }
         // Bidirectional or it doesn't ship. The single exception is a non-canonical alternate,
@@ -371,7 +398,17 @@ class PhraseBuilder<T> internal constructor(private val template: String, privat
             "rule \"$template\" has no match { } — a canonical phrase must print as well as parse. " +
                 "Set `canonical = false` if it is an alternate phrasing that should never print."
         }
-        return TemplatePhrase(ruleName ?: template, template, parts, slots.toMap(), build, match, canonical)
+        val bound = slots.toMap()
+        val rule = TemplatePhrase(ruleName ?: template, template, parts, bound, build, match, canonical)
+        if (spellings.isEmpty()) return rule
+
+        // An extra spelling is an alternate by construction — it shares this rule's `build` and is
+        // never asked to print, which is what keeps the printed form determined by the model.
+        val alternates = spellings.map { (alsoTemplate, alsoName) ->
+            alternate(TemplatePhrase(alsoName, alsoTemplate, compile(alsoTemplate), bound, build, null, false))
+        }
+        val choice = oneOf(ruleName ?: template, listOf(rule) + alternates)
+        return if (canonical) choice else alternate(choice)
     }
 }
 
@@ -599,4 +636,40 @@ private class TokenPhrase<T>(
         if (m == null || m.value.length != text.length) return null
         return if (runCatching { read(text) }.getOrNull() == value) text else null
     }
+}
+
+/**
+ * A rule that resolves [inner] on **first use** rather than at construction.
+ *
+ * Every grammar family here is an `object` whose rules are built during initialization, and that
+ * makes the reference graph between families an initialization *order*: a family that slots another
+ * one is constructed after it. Two families that each slot the other therefore cannot both be
+ * second, and the JVM does not refuse — it hands the one still initializing back a half-built
+ * object, so the slot reads `null` and the failure surfaces as a decline somewhere else entirely.
+ * That is the trap [com.wingedsheep.assay.grammar.Primitives]' own note describes, one file wider.
+ *
+ * The cycle is not an accident of layout: a noun phrase can be qualified by a count
+ * ("card with mana value less than or equal to **the number of lands you control**") and a count is
+ * taken over a noun phrase ("the number of **lands you control**"), so English genuinely nests each
+ * inside the other. Duplicating either vocabulary to break the cycle is the one thing this module
+ * exists to prevent, so the kernel carries the indirection instead — exactly the reason parser
+ * combinators over a recursive language usually have one.
+ *
+ * [inner] is called at most once and must not be called during the *caller's* own initialization,
+ * which is the whole point; a slot declared this way is otherwise an ordinary sub-phrase. It is not
+ * a way to write left recursion: re-entering a rule at the same offset is still
+ * [DeclineReason.LEFT_RECURSION], detected by [ParseContext] as before.
+ */
+fun <T> deferred(name: String, inner: () -> Phrase<T>): Phrase<T> = DeferredPhrase(name, inner)
+
+private class DeferredPhrase<T>(override val name: String, resolve: () -> Phrase<T>) : Phrase<T>() {
+    private val inner: Phrase<T> by lazy(resolve)
+    override val canonical: Boolean get() = inner.canonical
+
+    // A one-branch alternation, which is operationally what a deferred reference is: parse it, print
+    // it, nothing else. Reported as its own node rather than as the inner rule's so the grammar view
+    // shows where the indirection is, and so the walker's visited set still terminates the cycle.
+    override val shape: RuleShape get() = RuleShape.Choice(listOf(inner))
+    override fun parseHere(ctx: ParseContext, from: Int): List<Parse<T>> = inner.parseAt(ctx, from)
+    override fun unparse(value: T): String? = inner.unparse(value)
 }

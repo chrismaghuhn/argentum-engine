@@ -17,6 +17,7 @@ import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
 import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Kíli the Resourceful — conditional first-equip alternative cost and a once-per-turn Dwarf or
@@ -59,7 +60,7 @@ class KiliTheResourcefulScenarioTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(firstTarget)),
                 alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.lifeTotal(you) shouldBe 20
         driver.state.getEntity(precious)?.get<AttachedToComponent>()?.targetId shouldBe firstTarget
@@ -71,7 +72,7 @@ class KiliTheResourcefulScenarioTest : FunSpec({
         driver.giveColorlessMana(you, 2)
         driver.submit(
             ActivateAbility(you, precious, equipId, targets = listOf(ChosenTarget.Permanent(secondTarget)))
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.lifeTotal(you) shouldBe 18
         driver.state.getEntity(precious)?.get<AttachedToComponent>()?.targetId shouldBe secondTarget
@@ -92,7 +93,7 @@ class KiliTheResourcefulScenarioTest : FunSpec({
         driver.giveColorlessMana(you, 2)
         driver.submit(
             ActivateAbility(you, precious, equipId, targets = listOf(ChosenTarget.Permanent(target)))
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.lifeTotal(you) shouldBe 18
     }
@@ -106,14 +107,14 @@ class KiliTheResourcefulScenarioTest : FunSpec({
 
         val handBeforeFirst = driver.getHandSize(you)
         driver.giveMana(you, Color.RED)
-        driver.castSpell(you, firstDwarf).isSuccess shouldBe true
+        driver.castSpell(you, firstDwarf).outcome shouldBe Outcome.Done
         driver.bothPass() // Resolve the Dwarf.
         driver.bothPass() // Resolve Kíli's draw trigger.
         driver.getHandSize(you) shouldBe handBeforeFirst
 
         val handBeforeSecond = driver.getHandSize(you)
         driver.giveMana(you, Color.RED)
-        driver.castSpell(you, secondDwarf).isSuccess shouldBe true
+        driver.castSpell(you, secondDwarf).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.getHandSize(you) shouldBe handBeforeSecond - 1
     }
@@ -126,7 +127,7 @@ class KiliTheResourcefulScenarioTest : FunSpec({
 
         val handBefore = driver.getHandSize(you)
         driver.giveColorlessMana(you, 3)
-        driver.castSpell(you, equipment).isSuccess shouldBe true
+        driver.castSpell(you, equipment).outcome shouldBe Outcome.Done
         driver.bothPass() // Resolve the Equipment.
         driver.bothPass() // Resolve Kíli's draw trigger.
         driver.getHandSize(you) shouldBe handBefore

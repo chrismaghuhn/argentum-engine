@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.mechanics.sba.player
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEndReason
 import com.wingedsheep.engine.core.PlayerLostEvent
@@ -18,7 +19,9 @@ import com.wingedsheep.sdk.model.EntityId
 /**
  * 704.5a - A player with 0 or less life loses the game.
  */
-class PlayerLifeLossCheck : StateBasedActionCheck {
+class PlayerLifeLossCheck(
+    private val predicateEvaluator: PredicateEvaluator
+) : StateBasedActionCheck {
     override val name = "704.5a Player Life Loss"
     override val order = SbaOrder.PLAYER_LIFE_LOSS
 
@@ -31,9 +34,9 @@ class PlayerLifeLossCheck : StateBasedActionCheck {
         for (playerId in state.turnOrder) {
             val container = state.getEntity(playerId) ?: continue
             if (container.has<PlayerLostComponent>()) continue
-            if (playerCantLoseGame(state, playerId)) continue
+            if (playerCantLoseGame(state, playerId, predicateEvaluator = predicateEvaluator)) continue
             // Narrow "don't lose for 0 or less life" (Marina Vendrell's Grimoire) — 704.5a only.
-            if (playerCantLoseGameFromLife(state, playerId)) continue
+            if (playerCantLoseGameFromLife(state, playerId, predicateEvaluator = predicateEvaluator)) continue
 
             // Presence guard stays per-player; the value is the team's shared total (CR 810.9c).
             // Reading through the resolver means every member of a 0-life team is marked in this
@@ -51,24 +54,32 @@ class PlayerLifeLossCheck : StateBasedActionCheck {
     }
 }
 
-internal fun playerCantLoseGame(state: GameState, playerId: EntityId): Boolean {
+internal fun playerCantLoseGame(state: GameState, playerId: EntityId, predicateEvaluator: PredicateEvaluator): Boolean {
     // CR 810.8a — "if an effect says a player can't lose the game, that player's team can't lose":
     // a can't-lose grant controlled by any teammate protects the whole team. This team-wide reach
     // only applies when players win/lose as a team (2HG); in Team vs. Team (CR 808) and non-team
     // games the grant protects only its own controller.
     val team = (if (state.format.playersWinLoseAsTeam) state.teamOf(playerId) else listOf(playerId))
         .toHashSet()
-    return ControllerGrants.anyGranting<GrantsCantLoseGameComponent>(state) { it in team }
+    return ControllerGrants.anyGranting<GrantsCantLoseGameComponent>(state, predicateEvaluator = predicateEvaluator) { it in team }
 }
 
 /**
- * Narrow sibling of [playerCantLoseGame]: true when [playerId] controls a permanent granting
- * "you don't lose the game for having 0 or less life" (Marina Vendrell's Grimoire). Consulted only
- * by the 704.5a life-loss check, so poison / empty-library / effect losses are unaffected. Scoped
- * to the controller itself — it is not a team-wide "can't lose" grant.
+ * Narrow sibling of [playerCantLoseGame]: true when [playerId] — or, where players win and lose
+ * as a team, a teammate — controls a permanent granting "you don't lose the game for having 0 or
+ * less life" (Transcendence, Marina Vendrell's Grimoire). Consulted only by the 704.5a life-loss
+ * check, so poison / empty-library / effect losses are unaffected.
+ *
+ * The team reach is CR 810.8a's own example: a Two-Headed Giant team at 0 or less life with
+ * Transcendence on one head doesn't lose. The life total is the team's (810.4), so a grant that
+ * excuses one head from the 0-life loss has to excuse the other — otherwise the unprotected head
+ * is marked, TeamLossPropagationCheck drags the protected one down, and the grant did nothing.
  */
-internal fun playerCantLoseGameFromLife(state: GameState, playerId: EntityId): Boolean =
-    ControllerGrants.grantedTo<GrantsCantLoseGameFromLifeComponent>(state, playerId)
+internal fun playerCantLoseGameFromLife(state: GameState, playerId: EntityId, predicateEvaluator: PredicateEvaluator): Boolean {
+    val team = (if (state.format.playersWinLoseAsTeam) state.teamOf(playerId) else listOf(playerId))
+        .toHashSet()
+    return ControllerGrants.anyGranting<GrantsCantLoseGameFromLifeComponent>(state, predicateEvaluator = predicateEvaluator) { it in team }
+}
 
 /**
  * True when [playerId] can't win the game because one of its opponents controls a permanent
@@ -76,7 +87,7 @@ internal fun playerCantLoseGameFromLife(state: GameState, playerId: EntityId): B
  * path so an effect that would make [playerId] win does nothing. [GameState.getOpponents] is
  * team-aware, so a teammate of [playerId] never counts as the source of this restriction.
  */
-internal fun playerCantWinGame(state: GameState, playerId: EntityId): Boolean {
+internal fun playerCantWinGame(state: GameState, playerId: EntityId, predicateEvaluator: PredicateEvaluator): Boolean {
     val opponents = state.getOpponents(playerId).toHashSet()
-    return ControllerGrants.anyGranting<GrantsOpponentsCantWinGameComponent>(state) { it in opponents }
+    return ControllerGrants.anyGranting<GrantsOpponentsCantWinGameComponent>(state, predicateEvaluator = predicateEvaluator) { it in opponents }
 }

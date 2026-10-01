@@ -237,7 +237,7 @@ The single largest untouched cluster — 19 effects, none mapped.
 `ChangeSpellTarget`, `ChangeTriggeringObjectTargets`, `CopyEachSpellCast`, `CopyEachTargetSpell`,
 `CopyTargetTriggeredAbility`, `CounterAllOnStack`, `DestroySourceOfTargetedAbility`,
 `ExileSpellsOnStack`, `GrantKeywordToSpell`, `GrantNextSpellAffinity`, `MakeNextSpellUncounterable`,
-`MarkSpellExileWithCounters`, `ReduceSpellCostsThisTurn`,
+`MarkSpellExileWithCounters`, `ReduceSpellCosts`,
 `RemoveAbilitiesFromSourceOfTargetedAbility`, `ReselectTargetRandomly`,
 `ReturnSpellOrPermanentToOwnersHand`, `ReturnSpellToOwnersHand`, `StormCopy`, `WardCounter`
 
@@ -248,7 +248,7 @@ The single largest untouched cluster — 19 effects, none mapped.
 `GrantKeywordToAttackersBlockedBy`, `MarkMustAttackThisTurn`, `Provoke`,
 `RedirectCombatDamageToController`, `SetSuspected`
 
-Plus from removal/damage: `CantBeRegenerated`, `AmplifyNoncombatDamageThisTurn`,
+Plus from removal/damage: `CantBeRegenerated`, `AmplifyDamageThisTurn`,
 `DealDamagePerEntityInZone`, `DoubleDamageToPlayer`, `RemoveDamageShield`
 
 ### 2.6 Types & colors
@@ -360,6 +360,9 @@ Madness / Impending / Firebending ones.
 `absorb`, `afflict`, `annihilator`, `bushido`, `casualty`, `devour` / `devourLand`, `fabricate`,
 `fading`, `hideaway`, `mobilize`, `modular`, `rampage`, `renown`, `toxic`, `tribute`, `vanishing`
 
+(`vanishing` is now engine-live — declaring `KeywordAbility.vanishing(n)` is the whole
+implementation, so the emitter can render it as a bare keyword line with no hand-lowering.)
+
 These are the cheapest wins in the whole document — the shape is identical to the already-rendered
 `saddle(N)` / `firebending(N)`, just a different factory name.
 
@@ -375,8 +378,8 @@ render.
 
 ### Scoped protection / ward variants
 
-`hexproofFrom`, `protectionFromSubtype`, `protectionFromSupertype`, `wardComposite`,
-`wardWaterbend`
+`hexproofFrom`, `protectionFromSubtype`, `protectionFromSupertype`, ward with a
+`WardCost.Composite` or waterbend `WardCost.Mana` cost
 
 ### No-arg but unbranched
 

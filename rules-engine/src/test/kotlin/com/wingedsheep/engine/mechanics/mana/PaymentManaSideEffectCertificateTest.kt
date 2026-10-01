@@ -55,7 +55,7 @@ class PaymentManaSideEffectCertificateTest : FunSpec({
             cost = Costs.Tap
             effect = Effects.AddMana(
                 color = Color.BLACK,
-                riders = setOf(ManaSpellRider.MakesSpellUncounterable),
+                riders = setOf(ManaSpellRider.MakesSpellUncounterable()),
             )
             manaAbility = true
         }
@@ -106,7 +106,7 @@ class PaymentManaSideEffectCertificateTest : FunSpec({
         val player = driver.activePlayer!!
         driver.putPermanentOnBattlefield(player, definition.name)
         additionalPermanents.forEach { driver.putPermanentOnBattlefield(player, it.name) }
-        return ManaSolver(driver.cardRegistry)
+        return ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.name == definition.name }
     }
@@ -128,7 +128,7 @@ class PaymentManaSideEffectCertificateTest : FunSpec({
 
         val player = driver.activePlayer!!
         val sourceId = driver.putPermanentOnBattlefield(player, LlanowarWastes.name)
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
 

@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.legalactions.enumerators
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.TurnFaceUp
 import com.wingedsheep.engine.legalactions.ActionEnumerator
 import com.wingedsheep.engine.legalactions.EnumerationContext
@@ -27,7 +28,9 @@ import com.wingedsheep.sdk.scripting.costs.PayCost
  * is then driven by [CostPaymentService] as a decision pause when the action is taken, rather than
  * pre-selected via [AdditionalCostData][com.wingedsheep.engine.legalactions.AdditionalCostData].
  */
-class TurnFaceUpEnumerator : ActionEnumerator {
+class TurnFaceUpEnumerator(
+    private val predicateEvaluator: PredicateEvaluator
+) : ActionEnumerator {
 
     // Lets restricted mana tagged "spend only to turn permanents face up" count toward
     // affordability of the turn-face-up special action (Overgrown Zealot, Creeping Peeper).
@@ -50,22 +53,27 @@ class TurnFaceUpEnumerator : ActionEnumerator {
             // Must have turn-up data (to get the cost)
             val morphData = container.get<MorphDataComponent>() ?: continue
 
-            // Morph cost increases (Exiled Doomsayer) apply to every turn-up procedure alike.
-            val morphCostIncrease = context.costCalculator.calculateMorphCostIncrease(state)
-
             morphData.procedures.forEachIndexed { procedureIndex, procedure ->
                 val cost = procedure.cost
+                val manaMorph = (cost as? PayCost.Atom)?.atom as? CostAtom.Mana
+                // Global increases (Exiled Doomsayer) and the procedure's own reduction (Fugitive
+                // Codebreaker) both land here, so the button quotes the price actually charged
+                // rather than the printed one.
+                val effectiveCost = manaMorph?.let {
+                    context.costCalculator.calculateTurnFaceUpCost(
+                        state, it.cost, procedure.costReduction, playerId, entityId
+                    )
+                }
+                val costLabel = effectiveCost?.toString() ?: cost.description
                 // Only label the mechanic when there is a choice to make; a lone procedure reads
                 // the way it always has.
                 val label = if (morphData.procedures.size > 1) {
-                    "Turn face-up — ${procedure.label} (${cost.description})"
+                    "Turn face-up — ${procedure.label} ($costLabel)"
                 } else {
-                    "Turn face-up (${cost.description})"
+                    "Turn face-up ($costLabel)"
                 }
-                val manaMorph = (cost as? PayCost.Atom)?.atom as? CostAtom.Mana
                 when {
-                    manaMorph != null -> {
-                        val effectiveCost = context.costCalculator.increaseGenericCost(manaMorph.cost, morphCostIncrease)
+                    effectiveCost != null -> {
                         if (effectiveCost.hasX) {
                             // X turn-up cost (e.g., {X}{X}{R}) — always show as available with X selection
                             val availableSources = context.manaSolver.getAvailableManaCount(state, playerId, precomputedSources = context.availableManaSources)
@@ -109,6 +117,7 @@ class TurnFaceUpEnumerator : ActionEnumerator {
                                 cost,
                                 entityId,
                                 context.manaSolver,
+                                predicateEvaluator = predicateEvaluator,
                                 cardRegistry = context.cardRegistry,
                             )
                         ) {

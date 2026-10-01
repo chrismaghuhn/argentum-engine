@@ -1,7 +1,5 @@
 package com.wingedsheep.engine.mechanics.cost
 
-import com.wingedsheep.engine.handlers.ConditionEvaluator
-import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.ScenarioTestBase
@@ -10,6 +8,7 @@ import com.wingedsheep.sdk.dsl.DynamicAmounts
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.scripting.AbilityCost
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.scripting.ReduceEquipCost
 import com.wingedsheep.sdk.scripting.costs.CostAtom
@@ -164,6 +163,7 @@ class ActivatedAbilityCostCalculatorTest : ScenarioTestBase() {
                 ),
             )
             val ability = ActivatedAbility(
+                id = AbilityId("ActivatedAbilityCostCalculatorTest-equip"),
                 cost = nonManaCost,
                 effect = Effects.GainLife(1),
                 isEquipAbility = true,
@@ -174,7 +174,8 @@ class ActivatedAbilityCostCalculatorTest : ScenarioTestBase() {
     }
 
     private fun calculator(): ActivatedAbilityCostCalculator = ActivatedAbilityCostCalculator(
-        CastPermissionUtils(cardRegistry, PredicateEvaluator(), ConditionEvaluator()),
+        CastPermissionUtils(cardRegistry, services.predicateEvaluator, services.conditionEvaluator),
+        services.conditionEvaluator,
     )
 
     private fun manaCost(symbols: String): AbilityCost =

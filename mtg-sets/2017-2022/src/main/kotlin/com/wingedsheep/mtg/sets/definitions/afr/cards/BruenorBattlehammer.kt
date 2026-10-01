@@ -1,15 +1,16 @@
 package com.wingedsheep.mtg.sets.definitions.afr.cards
 
+import com.wingedsheep.sdk.dsl.DynamicAmounts
 import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.dsl.times
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.FreeFirstEquipEachTurn
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.GrantDynamicStatsEffect
+import com.wingedsheep.sdk.scripting.GrantDynamicStats
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.values.AttachmentKind
-import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.values.EntityNumericProperty
-import com.wingedsheep.sdk.scripting.values.EntityReference
 
 /**
  * Bruenor Battlehammer — Adventures in the Forgotten Realms #219
@@ -28,16 +29,13 @@ val BruenorBattlehammer = card("Bruenor Battlehammer") {
     toughness = 3
 
     staticAbility {
-        ability = GrantDynamicStatsEffect(
+        ability = GrantDynamicStats(
             filter = GroupFilter(GameObjectFilter.Creature.youControl()),
-            powerBonus = DynamicAmount.Multiply(
-                DynamicAmount.EntityProperty(
-                    EntityReference.AffectedEntity,
-                    EntityNumericProperty.AttachmentCount(AttachmentKind.EQUIPMENT)
-                ),
-                2
-            ),
-            toughnessBonus = DynamicAmount.Fixed(0)
+            powerBonus = DynamicAmounts.propertyOf(
+                EffectTarget.AffectedEntity,
+                EntityNumericProperty.AttachmentCount(AttachmentKind.EQUIPMENT)
+            ) * 2,
+            toughnessBonus = DynamicAmounts.fixed(0)
         )
     }
 

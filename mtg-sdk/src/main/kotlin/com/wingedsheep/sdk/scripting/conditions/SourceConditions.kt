@@ -3,7 +3,7 @@ package com.wingedsheep.sdk.scripting.conditions
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
-import com.wingedsheep.sdk.scripting.events.CounterTypeFilter
+import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.text.TextReplacer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -26,6 +26,23 @@ import kotlinx.serialization.Serializable
 @Serializable
 data object YouControlSource : Condition {
     override val description: String = "if you control this permanent"
+}
+
+/**
+ * Condition: the effect's source dealt damage — combat or noncombat — to [player] this turn.
+ * Reads the source's per-recipient damage memory, so it answers for the source *as the current
+ * object*: a permanent that left the battlefield and returned has dealt damage to nobody (CR 400.7).
+ *
+ * As a player-target restriction ([player] = `Player.Candidate`, via
+ * `Conditions.candidateWasDealtDamageBySourceThisTurn()`) it backs "target player dealt damage by
+ * this creature this turn" (Wicked Akuba).
+ */
+@SerialName("SourceDealtDamageToPlayerThisTurn")
+@Serializable
+data class SourceDealtDamageToPlayerThisTurn(
+    val player: Player
+) : Condition {
+    override val description: String = "if this dealt damage to ${player.description} this turn"
 }
 
 /**
@@ -90,7 +107,7 @@ data object SourceIsRingBearer : Condition {
 /**
  * Condition: "if you chose a creature other than this as your Ring-bearer" (CR 701.54a).
  *
- * Pairs with `Triggers.RingTemptsYou` as an intervening-if on cards whose payoff fires only when
+ * Pairs with `Triggers.you.isTemptedByTheRing()` as an intervening-if on cards whose payoff fires only when
  * the player picked someone other than the source — Aragorn (Company Leader), Faramir (Field
  * Commander), Gandalf (Friend of the Shire), Galadriel of Lothlórien. True when the ability's
  * controller currently has a Ring-bearer AND that Ring-bearer isn't the source permanent. If the
@@ -177,8 +194,8 @@ data object NoManaSpentToCast : Condition {
  *
  * True iff **every** captured permanent satisfies [NoManaSpentToCast] (was put onto the
  * battlefield without being cast, or was cast with zero total mana spent). An empty capture is
- * vacuously true. Use as a resolution-time gate ([ConditionalEffect]) on a
- * [com.wingedsheep.sdk.dsl.Triggers.OneOrMorePermanentsEnter] payoff — Satoru, the Infiltrator
+ * vacuously true. Use as a resolution-time gate ([Effects.If]) on a
+ * `Triggers.oneOrMore(filter).enter()` payoff — Satoru, the Infiltrator
  * ("Whenever Satoru and/or one or more other nontoken creatures you control enter, if none of
  * them were cast or no mana was spent to cast them, draw a card.").
  */
@@ -194,7 +211,7 @@ data object NoManaSpentToCastEntered : Condition {
  * The batch-enters, any-of counterpart of
  * [com.wingedsheep.sdk.scripting.conditions.TriggeringEntityEnteredOrWasCastFromGraveyard]:
  * evaluated over the permanents a batch-enters trigger captured (the
- * `Triggers.OneOrMorePermanentsEnter` batch, exposed as the `trigger.captured` pipeline
+ * `Triggers.oneOrMore(filter).enter()` batch, exposed as the `trigger.captured` pipeline
  * collection), it is true iff **at least one** captured permanent came from exile — either put
  * onto the battlefield directly from exile or cast from exile. An empty capture is false.
  *
@@ -311,6 +328,24 @@ data object MayhemCostWasPaid : Condition {
 }
 
 /**
+ * Condition: "if it escaped" (CR 702.138b — a spell or permanent "escaped" if that spell, or the
+ * spell that became that permanent as it resolved, was cast from a graveyard with an escape
+ * ability).
+ *
+ * True for a permanent carrying the durable [com.wingedsheep.sdk.scripting.ChoiceSlot.ESCAPED]
+ * flag the engine stamps when an escape-cast permanent spell resolves, and for a spell still on the
+ * stack that was cast for its [Escape][com.wingedsheep.sdk.scripting.KeywordAbility.Escape] cost.
+ * Reads identically at resolution and during projection, so it gates an enters trigger ("sacrifice
+ * it unless it escaped" — Phlage), an enters-with-counters replacement ("escapes with a +1/+1
+ * counter", CR 702.138c) and a conditional static ("escapes with [ability]", CR 702.138d) alike.
+ */
+@SerialName("Escaped")
+@Serializable
+data object Escaped : Condition {
+    override val description: String = "it escaped"
+}
+
+/**
  * Condition: "If this spell's blight additional cost was paid"
  * Used for Lorwyn Eclipsed cards (e.g., Cinder Strike) where the effect changes
  * based on whether the optional Blight additional cost was actually paid.
@@ -348,8 +383,8 @@ data object WaterbendWasPaid : Condition {
  * Used for Lorwyn Incarnation cycle (Catharsis, Deceit, Emptiness, etc.)
  * where ETB triggers are gated on specific mana colors spent to cast.
  *
- * Checks the CastRecordComponent on the permanent for per-color mana spent.
- * Each pip in [requiredWhite], [requiredBlue], etc. must have been spent.
+ * Checks actual payment on the spell, resolved permanent, or self-cast trigger snapshot.
+ * Each required pip must have been spent; colorless mana is distinct from colored mana.
  */
 @SerialName("ManaSpentToCastIncludes")
 @Serializable
@@ -358,7 +393,8 @@ data class ManaSpentToCastIncludes(
     val requiredBlue: Int = 0,
     val requiredBlack: Int = 0,
     val requiredRed: Int = 0,
-    val requiredGreen: Int = 0
+    val requiredGreen: Int = 0,
+    val requiredColorless: Int = 0
 ) : Condition {
     override val description: String = buildString {
         append("if ")
@@ -368,6 +404,7 @@ data class ManaSpentToCastIncludes(
         repeat(requiredBlack) { parts.add("{B}") }
         repeat(requiredRed) { parts.add("{R}") }
         repeat(requiredGreen) { parts.add("{G}") }
+        repeat(requiredColorless) { parts.add("{C}") }
         append(parts.joinToString(""))
         append(" was spent to cast it")
     }
@@ -508,6 +545,47 @@ data class SacrificedPermanentHadSubtype(val subtype: String) : Condition {
     override fun applyTextReplacement(replacer: TextReplacer): Condition {
         val newSubtype = replacer.replaceSubtype(Subtype(subtype))
         return if (newSubtype.value == subtype) this else SacrificedPermanentHadSubtype(newSubtype.value)
+    }
+}
+
+/**
+ * True when the activated ability currently resolving has been activated at least [count] times
+ * this turn, counting the activation that is resolving right now.
+ *
+ * Fallen Empires' burnout mana creatures — Farrelite Priest and Initiates of the Ebon Hand — print
+ * "{1}: Add {W}. If this ability has been activated four or more times this turn, sacrifice this
+ * creature at the beginning of the next end step." (the Initiates add {B} rather than {W}; the
+ * burnout clause is identical). The clause reads a tally rather than imposing a limit, so the
+ * ability must opt into bookkeeping with
+ * [com.wingedsheep.sdk.scripting.ActivatedAbility.trackActivations]; without that the engine only
+ * counts activations for abilities gated by OncePerTurn / MaxPerTurn and this reads zero.
+ *
+ * Scoped to the resolving ability on its own source: two copies of Farrelite Priest each burn out
+ * on their own fourth activation.
+ */
+@SerialName("ThisAbilityActivatedThisTurnAtLeast")
+@Serializable
+data class ThisAbilityActivatedThisTurnAtLeast(val count: Int) : Condition {
+    override val description: String = "if this ability has been activated $count or more times this turn"
+}
+
+/**
+ * Condition: "if the exiled creature was a [subtype]" — reads what an **exile additional cost**
+ * (`Costs.additional.ExileCards`) just ate, for either a spell (Soul Exchange's "Put a +2/+2
+ * counter on that creature if the exiled creature was a Thrull") or an activated ability.
+ *
+ * The cost is paid as the spell is cast or the ability is activated (CR 601.2h), long before the
+ * effect resolves, so the answer is recorded at payment time. For a cost exiling from the
+ * battlefield the engine keeps a last-known-information snapshot (CR 113.7a), which is what makes
+ * an exiled *token* — a Breeding Pit Thrull, say — still count.
+ */
+@SerialName("ExiledAsCostHadSubtype")
+@Serializable
+data class ExiledAsCostHadSubtype(val subtype: String) : Condition {
+    override val description: String = "if a $subtype was exiled this way"
+    override fun applyTextReplacement(replacer: TextReplacer): Condition {
+        val newSubtype = replacer.replaceSubtype(Subtype(subtype))
+        return if (newSubtype.value == subtype) this else ExiledAsCostHadSubtype(newSubtype.value)
     }
 }
 

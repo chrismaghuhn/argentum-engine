@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { attachmentStackLayout, shouldShowCastModal } from './shared'
-import type { LegalActionInfo } from '../../../types'
+import { attachmentStackLayout, hasMultipleCastingOptions, shouldShowCastModal } from './shared'
+import type { ClientCard, LegalActionInfo } from '../../../types'
 import { entityId } from '../../../types'
 
 // --- Fixture builders -------------------------------------------------------
@@ -68,6 +68,42 @@ function playLand(): LegalActionInfo {
   }
 }
 
+/** The back-face half of a modal double-faced land (CR 712.12). */
+function playLandBackFace(): LegalActionInfo {
+  return {
+    actionType: 'PlayLand',
+    description: 'Play Lavaglide Pathway',
+    action: { type: 'PlayLand', playerId: PLAYER, cardId: CARD, asBackFace: true },
+  }
+}
+
+/** A card with evoke (CR 702.74) — two real prices, only one of them ever enumerated. */
+const mulldrifter = {
+  name: 'Mulldrifter',
+  manaCost: '{4}{U}',
+  cardTypes: [],
+  evoke: '{2}{U}',
+} as unknown as ClientCard
+
+/** A card with impending (CR 702.176) — the same shape, with a time-counter count attached. */
+const overlord = {
+  name: 'Overlord of the Mistmoors',
+  manaCost: '{5}{W}{W}',
+  cardTypes: [],
+  impending: { cost: '{2}{W}{W}', time: 4 },
+} as unknown as ClientCard
+
+/** A card with neither, to prove the new branch doesn't widen to every cast. */
+const grizzlyBears = { name: 'Grizzly Bears', manaCost: '{1}{G}', cardTypes: [] } as unknown as ClientCard
+
+function evokeCast(): LegalActionInfo {
+  return {
+    actionType: 'CastWithAlternativeCost',
+    description: 'Evoke Mulldrifter ({2}{U})',
+    action: { type: 'CastSpell', playerId: PLAYER, cardId: CARD, useAlternativeCost: true, alternativeCostType: 'EVOKE' },
+  } as unknown as LegalActionInfo
+}
+
 describe('shouldShowCastModal', () => {
   it('does not open the menu when there are no legal actions', () => {
     expect(shouldShowCastModal([])).toBe(false)
@@ -118,6 +154,48 @@ describe('shouldShowCastModal', () => {
 
   it('does not open the menu for a plain land with only a play-land action', () => {
     expect(shouldShowCastModal([playLand()])).toBe(false)
+  })
+
+  it('opens the menu for a modal double-faced land — two land faces are two choices', () => {
+    expect(shouldShowCastModal([playLand(), playLandBackFace()])).toBe(true)
+  })
+
+  // Evoke (CR 702.74) is the cycling case reached from the cast side: the card has two real
+  // prices, but the server enumerates only the affordable one. Dragging out a Mulldrifter you can
+  // only afford to evoke used to cast it for its evoke cost — and sacrifice it — unasked.
+  it('opens the menu for an evoke card whose only enumerated cast is the evoke one', () => {
+    expect(shouldShowCastModal([evokeCast()], mulldrifter)).toBe(true)
+  })
+
+  it('opens the menu for an evoke card whose only enumerated cast is the hard one', () => {
+    expect(shouldShowCastModal([castSpell()], mulldrifter)).toBe(true)
+  })
+
+  it('opens the menu for an impending card with a single enumerated cast', () => {
+    expect(shouldShowCastModal([castSpell()], overlord)).toBe(true)
+  })
+
+  // The keyword is a second *cast* price, not a second way to use the card in any zone: an evoke
+  // creature already on the battlefield offers its activated abilities, and those are not casts.
+  it('leaves a non-cast action alone even on an evoke card', () => {
+    expect(shouldShowCastModal([cycle()], mulldrifter)).toBe(true)
+    expect(shouldShowCastModal([playLand()], mulldrifter)).toBe(false)
+  })
+
+  it('does not open the menu for a plain card with no keyword alternative cost', () => {
+    expect(shouldShowCastModal([castSpell()], grizzlyBears)).toBe(false)
+  })
+})
+
+describe('hasMultipleCastingOptions', () => {
+  it('counts a modal double-faced land\'s two land faces as two ways to play it', () => {
+    // Both actions are PlayLand, so a boolean "has a play-land action" would count them as one
+    // — and this helper's whole job is answering how many ways the card can be played (CR 712.12).
+    expect(hasMultipleCastingOptions([playLand(), playLandBackFace()])).toBe(true)
+  })
+
+  it('an ordinary land is still a single way to play it', () => {
+    expect(hasMultipleCastingOptions([playLand()])).toBe(false)
   })
 
   it('opens the menu for multiple casting variants (morph + normal cast)', () => {
@@ -254,5 +332,20 @@ describe('attachmentStackLayout', () => {
     expect(layout(false, []).containerHeight).toBe(CARD_HEIGHT)
     expect(layout(false, [false]).containerHeight).toBe(CARD_HEIGHT + PEEK)
     expect(layout(false, [false, false]).containerHeight).toBe(CARD_HEIGHT + 2 * PEEK)
+  })
+})
+
+
+describe('bestow cast choice', () => {
+  const card = { name: 'Bestow Creature', manaCost: '{1}{G}', cardTypes: [], bestow: { cost: '{3}{G}' } } as unknown as ClientCard
+  it('opens the menu when only the ordinary cast is legal', () => {
+    expect(shouldShowCastModal([castSpell()], card)).toBe(true)
+  })
+  it('opens the menu when only bestow is legal', () => {
+    const bestow = {
+      ...evokeCast(),
+      action: { type: 'CastSpell', playerId: PLAYER, cardId: CARD, useAlternativeCost: true, alternativeCostType: 'BESTOW' },
+    } as unknown as LegalActionInfo
+    expect(shouldShowCastModal([bestow], card)).toBe(true)
   })
 })

@@ -1,16 +1,18 @@
 package com.wingedsheep.engine.event
 
+import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.core.ContinuationFrame
+import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.core.TriggeredAbilityContinuation
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.core.effectiveRecipientKind
 import com.wingedsheep.engine.core.effectiveRecipientKinds
-import com.wingedsheep.engine.handlers.ConditionEvaluator
-import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
@@ -38,9 +40,9 @@ import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
-import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Supertype
@@ -58,14 +60,11 @@ import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.predicates.StatePredicate
 import com.wingedsheep.sdk.scripting.events.DamageType
-import com.wingedsheep.sdk.scripting.events.RecipientFilter
-import com.wingedsheep.sdk.scripting.events.SourceFilter
+import com.wingedsheep.sdk.scripting.events.Recipient
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.values.EntityNumericProperty
-import com.wingedsheep.sdk.scripting.values.EntityReference
 import com.wingedsheep.sdk.scripting.values.contextScopedReferenceIn
 import com.wingedsheep.sdk.scripting.effects.MoveToZoneEffect
 import io.kotest.core.spec.style.FunSpec
@@ -78,6 +77,11 @@ class DamageTriggerContextTest : FunSpec({
         serializersModule = engineSerializersModule
         encodeDefaults = true
     }
+
+    // The evaluators are injected (no no-arg constructors). These tests are pure data, so one
+    // registry-less evaluator graph serves every matcher, detector and amount read below.
+    val predicateEvaluator = PredicateEvaluator(cardRegistry = null)
+    val conditionEvaluator = predicateEvaluator.conditions
 
     val sourceId = EntityId("damage-source")
     val recipientId = EntityId("damage-recipient")
@@ -114,7 +118,7 @@ class DamageTriggerContextTest : FunSpec({
         val controllerId = EntityId("direct-damage-received-controller")
         val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
             id = AbilityId("direct-damage-received-creature-source"),
-            trigger = EventPattern.DamageReceivedEvent(source = SourceFilter.Creature),
+            trigger = EventPattern.DamageReceivedEvent(source = GameObjectFilter.Creature),
             binding = TriggerBinding.SELF,
             effect = Effects.DrawCards(1),
         )
@@ -173,12 +177,14 @@ class DamageTriggerContextTest : FunSpec({
             sourceId = null,
             controllerId = controllerId,
             triggeringEntityId = recipientId,
-            damageSourceEntityId = sourceId,
-            damageRecipientEntityId = recipientId,
-            damageRecipientKind = DamageRecipientKind.CREATURE,
-            damageRecipientKinds = DamageRecipientKindSet.CREATURE,
-            damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
-            damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot,
+            triggerContext = TriggerContext(
+                damageSourceEntityId = sourceId,
+                damageRecipientEntityId = recipientId,
+                damageRecipientKind = DamageRecipientKind.CREATURE,
+                damageRecipientKinds = DamageRecipientKindSet.CREATURE,
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot,
+            ),
         )
 
         TargetResolutionUtils.resolveTarget(EffectTarget.DamageSource, context) shouldBe null
@@ -214,7 +220,7 @@ class DamageTriggerContextTest : FunSpec({
         val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
             id = AbilityId("deleted-token-source-damage"),
             trigger = EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
             ),
             binding = TriggerBinding.SELF,
             effect = Effects.DrawCards(1),
@@ -239,8 +245,9 @@ class DamageTriggerContextTest : FunSpec({
         )
         val triggers = mutableListOf<PendingTrigger>()
         val detector = DamageTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), abilityRegistry),
-            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+            TriggerAbilityResolver(CardRegistry(), abilityRegistry, predicateEvaluator),
+            TriggerMatcher(predicateEvaluator, conditionEvaluator),
+            predicateEvaluator,
         )
 
         detector.detectDamageSourceTriggers(
@@ -269,8 +276,9 @@ class DamageTriggerContextTest : FunSpec({
         )
         val triggers = mutableListOf<PendingTrigger>()
         DamageTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), abilityRegistry),
-            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+            TriggerAbilityResolver(CardRegistry(), abilityRegistry, predicateEvaluator),
+            TriggerMatcher(predicateEvaluator, conditionEvaluator),
+            predicateEvaluator,
         ).detectDamagedBySourceTriggers(
             state = state,
             statics = BattlefieldStaticsIndex.EMPTY,
@@ -288,8 +296,9 @@ class DamageTriggerContextTest : FunSpec({
             TypeLine(cardTypes = setOf(CardType.CREATURE)),
         )
         val detector = DamageTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), abilityRegistry),
-            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+            TriggerAbilityResolver(CardRegistry(), abilityRegistry, predicateEvaluator),
+            TriggerMatcher(predicateEvaluator, conditionEvaluator),
+            predicateEvaluator,
         )
 
         val missingSnapshotTriggers = mutableListOf<PendingTrigger>()
@@ -321,7 +330,7 @@ class DamageTriggerContextTest : FunSpec({
         val oldAbility = com.wingedsheep.sdk.scripting.TriggeredAbility(
             id = AbilityId("detector-old-source-damage"),
             trigger = EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
             ),
             binding = TriggerBinding.SELF,
             effect = Effects.DrawCards(1),
@@ -366,7 +375,7 @@ class DamageTriggerContextTest : FunSpec({
             damageSourceLastKnownSnapshot = oldSnapshot,
         )
 
-        val triggers = TriggerDetector(CardRegistry(), abilityRegistry)
+        val triggers = TriggerDetector(CardRegistry(), abilityRegistry, predicateEvaluator, conditionEvaluator)
             .detectTriggers(state, listOf(event))
 
         triggers shouldHaveSize 1
@@ -379,7 +388,7 @@ class DamageTriggerContextTest : FunSpec({
         val controllerId = EntityId("unstamped-source-dispatch-controller")
         val sourceAbility = com.wingedsheep.sdk.scripting.TriggeredAbility(
             id = AbilityId("unstamped-source-dispatch-ability"),
-            trigger = EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyCreature),
+            trigger = EventPattern.DealsDamageEvent(recipient = Recipient.AnyCreature),
             binding = TriggerBinding.SELF,
             effect = Effects.DrawCards(1),
         )
@@ -420,8 +429,9 @@ class DamageTriggerContextTest : FunSpec({
                 ),
             )
         val detector = DamageTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), abilityRegistry),
-            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+            TriggerAbilityResolver(CardRegistry(), abilityRegistry, predicateEvaluator),
+            TriggerMatcher(predicateEvaluator, conditionEvaluator),
+            predicateEvaluator,
         )
 
         val missingSnapshotTriggers = mutableListOf<PendingTrigger>()
@@ -504,8 +514,9 @@ class DamageTriggerContextTest : FunSpec({
         )
         val triggers = mutableListOf<PendingTrigger>()
         val detector = DamageTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), abilityRegistry),
-            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+            TriggerAbilityResolver(CardRegistry(), abilityRegistry, predicateEvaluator),
+            TriggerMatcher(predicateEvaluator, conditionEvaluator),
+            predicateEvaluator,
         )
 
         detector.detectDamageReceivedTriggers(
@@ -565,7 +576,7 @@ class DamageTriggerContextTest : FunSpec({
                     BattlefieldEntryTimestampComponent(32L),
                 ),
             )
-        val detector = TriggerDetector(CardRegistry(), abilityRegistry)
+        val detector = TriggerDetector(CardRegistry(), abilityRegistry, predicateEvaluator, conditionEvaluator)
 
         detector.detectTriggers(
             state,
@@ -641,7 +652,7 @@ class DamageTriggerContextTest : FunSpec({
             damageRecipientLastKnownSnapshot = oldSnapshot,
         )
 
-        val triggers = TriggerDetector(CardRegistry(), abilityRegistry)
+        val triggers = TriggerDetector(CardRegistry(), abilityRegistry, predicateEvaluator, conditionEvaluator)
             .detectTriggers(state, listOf(event))
 
         triggers shouldHaveSize 1
@@ -651,7 +662,7 @@ class DamageTriggerContextTest : FunSpec({
     }
 
     test("source-filtered damage fails closed when the event source is unknown") {
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
         val sourceUnknownEvent = damageEvent.copy(
             sourceId = null,
             damageSourceLastKnownSnapshot = null,
@@ -668,7 +679,7 @@ class DamageTriggerContextTest : FunSpec({
 
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter.Creature,
             ),
             sourceUnknownEvent,
@@ -676,7 +687,7 @@ class DamageTriggerContextTest : FunSpec({
             EntityId("observer-controller"),
         ) shouldBe false
         matcher.matchesDealsDamageTrigger(
-            EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyCreature),
+            EventPattern.DealsDamageEvent(recipient = Recipient.AnyCreature),
             sourceUnknownEvent,
             GameState(),
             EntityId("observer-controller"),
@@ -702,10 +713,10 @@ class DamageTriggerContextTest : FunSpec({
             ),
         )
         val creatureSourceTrigger = EventPattern.DealsDamageEvent(
-            recipient = RecipientFilter.AnyCreature,
+            recipient = Recipient.AnyCreature,
             sourceFilter = GameObjectFilter.Creature,
         )
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
 
         matcher.matchesDealsDamageTrigger(
             creatureSourceTrigger,
@@ -791,11 +802,11 @@ class DamageTriggerContextTest : FunSpec({
             damageSourceLastKnownSnapshot = sourceSnapshot,
             damageRecipientLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, targetId),
         )
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
                 damageType = DamageType.NonCombat,
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter.Instant.youControl(),
             ),
             event,
@@ -808,32 +819,34 @@ class DamageTriggerContextTest : FunSpec({
         val sourceSnapshot = damageEvent.damageSourceLastKnownSnapshot!!.copy(
             power = 5,
             basePower = 3,
-            counters = mapOf("+1/+1" to 1),
+            counters = mapOf(CounterType.PLUS_ONE_PLUS_ONE to 1),
             battlefieldEntryTimestamp = 1L,
         )
         val modifiedFilter = GameObjectFilter.Creature.copy(
             statePredicates = listOf(StatePredicate.IsModified),
         )
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
+        // The observer's controller is now a required argument; neither filter reads it.
+        val observerControllerId = EntityId("observer-controller")
 
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = modifiedFilter,
             ),
             damageEvent.copy(damageSourceLastKnownSnapshot = sourceSnapshot),
             GameState(),
-            null,
+            observerControllerId,
         ) shouldBe true
 
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter.Creature.powerGreaterThanBase(),
             ),
             damageEvent.copy(damageSourceLastKnownSnapshot = sourceSnapshot),
             GameState(),
-            null,
+            observerControllerId,
         ) shouldBe true
     }
 
@@ -842,7 +855,7 @@ class DamageTriggerContextTest : FunSpec({
         val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
             id = AbilityId("attached-source-filtered-damage"),
             trigger = EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter.Creature,
             ),
             binding = TriggerBinding.ATTACHED,
@@ -870,8 +883,8 @@ class DamageTriggerContextTest : FunSpec({
             creatureDamageDeathTrackers = emptyList(),
         )
         val detector = AttachmentTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
-            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry(), predicateEvaluator),
+            TriggerMatcher(predicateEvaluator, conditionEvaluator),
         )
         val triggers = mutableListOf<PendingTrigger>()
 
@@ -893,7 +906,7 @@ class DamageTriggerContextTest : FunSpec({
         val attachmentId = EntityId("attached-damage-received-source-binding")
         val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
             id = AbilityId("attached-damage-received-source-binding-ability"),
-            trigger = EventPattern.DamageReceivedEvent(source = SourceFilter.Creature),
+            trigger = EventPattern.DamageReceivedEvent(source = GameObjectFilter.Creature),
             binding = TriggerBinding.ATTACHED,
             effect = Effects.DrawCards(1),
         )
@@ -919,8 +932,8 @@ class DamageTriggerContextTest : FunSpec({
             creatureDamageDeathTrackers = emptyList(),
         )
         val detector = AttachmentTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
-            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry(), predicateEvaluator),
+            TriggerMatcher(predicateEvaluator, conditionEvaluator),
         )
 
         fun detect(event: DamageDealtEvent): List<PendingTrigger> {
@@ -952,7 +965,7 @@ class DamageTriggerContextTest : FunSpec({
         val attachmentId = EntityId("attached-deals-damage-source-binding")
         val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
             id = AbilityId("attached-deals-damage-source-binding-ability"),
-            trigger = EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyCreature),
+            trigger = EventPattern.DealsDamageEvent(recipient = Recipient.AnyCreature),
             binding = TriggerBinding.ATTACHED,
             effect = Effects.DrawCards(1),
         )
@@ -987,8 +1000,8 @@ class DamageTriggerContextTest : FunSpec({
             ComponentContainer.of(BattlefieldEntryTimestampComponent(1L)),
         )
         val detector = AttachmentTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
-            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry(), predicateEvaluator),
+            TriggerMatcher(predicateEvaluator, conditionEvaluator),
         )
 
         fun detect(event: DamageDealtEvent): List<PendingTrigger> {
@@ -1027,7 +1040,7 @@ class DamageTriggerContextTest : FunSpec({
             sourceName = "Delayed Damage Watcher",
             controllerId = controllerId,
             trigger = TriggerSpec(
-                event = EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyCreature),
+                event = EventPattern.DealsDamageEvent(recipient = Recipient.AnyCreature),
                 binding = TriggerBinding.ANY,
             ),
             watchedEntityId = sourceId,
@@ -1038,7 +1051,7 @@ class DamageTriggerContextTest : FunSpec({
             delayedTriggers = listOf(delayed),
             zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(recipientId)),
         )
-        val detector = TriggerDetector(CardRegistry())
+        val detector = TriggerDetector(CardRegistry(), predicateEvaluator = predicateEvaluator, conditionEvaluator = conditionEvaluator)
 
         detector.detectTriggers(state, listOf(damageEvent))
             .filter { it.consumesDelayedTriggerId == delayedId }
@@ -1134,25 +1147,27 @@ class DamageTriggerContextTest : FunSpec({
             )
 
         val damageRelativeFilter = GameObjectFilter.Creature
-            .withCardPredicate(CardPredicate.PowerAtMostEntity(EntityReference.DamageSource))
-            .withCardPredicate(CardPredicate.PowerAtMostEntity(EntityReference.DamageRecipient))
+            .withCardPredicate(CardPredicate.PowerAtMostEntity(EffectTarget.DamageSource))
+            .withCardPredicate(CardPredicate.PowerAtMostEntity(EffectTarget.DamageRecipient))
         val targetRequirement = TargetObject(filter = TargetFilter(damageRelativeFilter))
         val ability = TriggeredAbilityOnStackComponent(
             sourceId = EntityId("damage-context-observer"),
             sourceName = "Damage context observer",
             controllerId = controllerId,
             effect = Effects.GainLife(
-                DynamicAmount.EntityProperty(EntityReference.DamageRecipient, EntityNumericProperty.Power)
+                DynamicAmount.EntityProperty(EffectTarget.DamageRecipient, EntityNumericProperty.Power)
             ),
             description = "Candidate gains context life",
-            damageSourceEntityId = sourceId,
-            damageRecipientEntityId = recipientId,
-            damageRecipientKind = DamageRecipientKind.CREATURE,
-            damageRecipientKinds = DamageRecipientKindSet.CREATURE,
-            damageSourceLastKnownSnapshot = sourceSnapshot,
-            damageRecipientLastKnownSnapshot = recipientSnapshot,
+            triggerContext = TriggerContext(
+                damageSourceEntityId = sourceId,
+                damageRecipientEntityId = recipientId,
+                damageRecipientKind = DamageRecipientKind.CREATURE,
+                damageRecipientKinds = DamageRecipientKindSet.CREATURE,
+                damageSourceLastKnownSnapshot = sourceSnapshot,
+                damageRecipientLastKnownSnapshot = recipientSnapshot,
+            ),
         )
-        val resolver = StackResolver(CardRegistry())
+        val resolver = EngineServices(CardRegistry()).stackResolver
         val putResult = resolver.putTriggeredAbility(
             state = initialState,
             ability = ability,
@@ -1207,11 +1222,11 @@ class DamageTriggerContextTest : FunSpec({
             effect = Effects.TapEachTarget(),
             description = "Tap the selected target",
         )
-        val resolver = StackResolver(CardRegistry())
+        val resolver = EngineServices(CardRegistry()).stackResolver
         val putResult = resolver.putTriggeredAbility(
             state = initialState,
             ability = ability,
-            targetRequirements = listOf(TargetCreature(count = 2)),
+            targetRequirements = listOf(TargetObject(count = 2, filter = TargetFilter.Creature)),
             targets = listOf(
                 ChosenTarget.Permanent(removedTargetId),
                 ChosenTarget.Permanent(legalTargetId),
@@ -1287,7 +1302,7 @@ class DamageTriggerContextTest : FunSpec({
                 com.wingedsheep.sdk.scripting.TriggeredAbility(
                     id = AbilityId("batch-observer-ability"),
                     trigger = EventPattern.DealsDamageEvent(
-                        recipient = RecipientFilter.AnyCreature,
+                        recipient = Recipient.AnyCreature,
                         sourceFilter = GameObjectFilter.Creature,
                         batch = true,
                     ),
@@ -1307,8 +1322,9 @@ class DamageTriggerContextTest : FunSpec({
             creatureDamageDeathTrackers = emptyList(),
         )
         val detector = DamageTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
-            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry(), predicateEvaluator),
+            TriggerMatcher(predicateEvaluator, conditionEvaluator),
+            predicateEvaluator,
         )
         val unknownSourceEvent = damageEvent.copy(
             sourceId = null,
@@ -1381,9 +1397,11 @@ class DamageTriggerContextTest : FunSpec({
             sourceId = null,
             controllerId = EntityId("controller"),
             triggeringEntityId = playerId,
-            damageSourceEntityId = sourceId,
-            damageRecipientEntityId = playerId,
-            damageRecipientKind = DamageRecipientKind.PLAYER
+            triggerContext = TriggerContext(
+                damageSourceEntityId = sourceId,
+                damageRecipientEntityId = playerId,
+                damageRecipientKind = DamageRecipientKind.PLAYER
+            )
         )
 
         TriggerContext.fromEvent(playerEvent).damageRecipientEntityId shouldBe playerId
@@ -1401,9 +1419,11 @@ class DamageTriggerContextTest : FunSpec({
             val context = EffectContext(
                 sourceId = null,
                 controllerId = EntityId("controller"),
-                damageSourceEntityId = sourceId,
-                damageRecipientEntityId = recipientId,
-                damageRecipientKind = kind
+                triggerContext = TriggerContext(
+                    damageSourceEntityId = sourceId,
+                    damageRecipientEntityId = recipientId,
+                    damageRecipientKind = kind
+                )
             )
 
             TargetResolutionUtils.resolvePlayerTarget(EffectTarget.DamageRecipient, context) shouldBe null
@@ -1411,7 +1431,7 @@ class DamageTriggerContextTest : FunSpec({
     }
 
     test("damage detector dispatch uses the captured recipient role") {
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
         val playerEvent = damageEvent.copy(
             targetId = EntityId("player"),
             targetIsPlayer = true,
@@ -1422,29 +1442,40 @@ class DamageTriggerContextTest : FunSpec({
             targetId = EntityId("planeswalker"),
             targetIsPlayer = false,
             recipientKind = DamageRecipientKind.PLANESWALKER,
+            // Recipient.Object filters also read the recipient's event-time characteristics, so the
+            // captured snapshot describes the planeswalker that the captured role names.
             damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot
-                ?.copy(entityId = EntityId("planeswalker")),
+                ?.copy(
+                    entityId = EntityId("planeswalker"),
+                    typeLine = TypeLine(cardTypes = setOf(CardType.PLANESWALKER)),
+                ),
         )
+        // A player recipient must also be a seated player (Recipient.Player reads the turn order).
+        val state = GameState(turnOrder = listOf(EntityId("player")))
+        val observerControllerId = EntityId("observer-controller")
 
         matcher.matchesDealsDamageTrigger(
-            EventPattern.DealsDamageEvent(recipient = com.wingedsheep.sdk.scripting.events.RecipientFilter.AnyPlayer),
+            EventPattern.DealsDamageEvent(recipient = Recipient.AnyPlayer),
             playerEvent,
-            GameState()
+            state,
+            observerControllerId
         ) shouldBe true
         matcher.matchesDealsDamageTrigger(
-            EventPattern.DealsDamageEvent(recipient = com.wingedsheep.sdk.scripting.events.RecipientFilter.AnyPlayer),
+            EventPattern.DealsDamageEvent(recipient = Recipient.AnyPlayer),
             damageEvent,
-            GameState()
+            state,
+            observerControllerId
         ) shouldBe false
         matcher.matchesDealsDamageTrigger(
-            EventPattern.DealsDamageEvent(recipient = com.wingedsheep.sdk.scripting.events.RecipientFilter.AnyPlayerOrPlaneswalker),
+            EventPattern.DealsDamageEvent(recipient = Recipient.AnyPlayerOrPlaneswalker),
             planeswalkerEvent,
-            GameState()
+            state,
+            observerControllerId
         ) shouldBe true
     }
 
     test("a deathtouch source damaging a planeswalker keeps the planeswalker recipient role") {
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
         val event = damageEvent.copy(
             targetId = EntityId("planeswalker"),
             targetIsPlayer = false,
@@ -1452,25 +1483,33 @@ class DamageTriggerContextTest : FunSpec({
             damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
                 keywords = setOf("DEATHTOUCH")
             ),
+            // Recipient.Object filters also read the recipient's event-time characteristics, so the
+            // captured snapshot describes the planeswalker that the captured role names.
             damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot
-                ?.copy(entityId = EntityId("planeswalker")),
+                ?.copy(
+                    entityId = EntityId("planeswalker"),
+                    typeLine = TypeLine(cardTypes = setOf(CardType.PLANESWALKER)),
+                ),
         )
+        val observerControllerId = EntityId("observer-controller")
 
         event.effectiveRecipientKind shouldBe DamageRecipientKind.PLANESWALKER
         matcher.matchesDealsDamageTrigger(
-            EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyPlayerOrPlaneswalker),
+            EventPattern.DealsDamageEvent(recipient = Recipient.AnyPlayerOrPlaneswalker),
             event,
-            GameState()
+            GameState(),
+            observerControllerId
         ) shouldBe true
         matcher.matchesDealsDamageTrigger(
-            EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyCreature),
+            EventPattern.DealsDamageEvent(recipient = Recipient.AnyCreature),
             event,
-            GameState()
+            GameState(),
+            observerControllerId
         ) shouldBe false
     }
 
     test("damage detector dispatch rejects a non-player recipient even when its id is player-shaped") {
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
         val observer = TriggerIndex.IndexedEntity(
             entityId = EntityId("damage-observer"),
             cardComponent = CardComponent(
@@ -1483,7 +1522,7 @@ class DamageTriggerContextTest : FunSpec({
             abilities = listOf(
                 com.wingedsheep.sdk.scripting.TriggeredAbility(
                     id = AbilityId("damage-observer-ability"),
-                    trigger = EventPattern.DealsDamageEvent(recipient = RecipientFilter.You),
+                    trigger = EventPattern.DealsDamageEvent(recipient = Recipient.You),
                     binding = TriggerBinding.ANY,
                     effect = Effects.DrawCards(1)
                 )
@@ -1500,8 +1539,9 @@ class DamageTriggerContextTest : FunSpec({
             creatureDamageDeathTrackers = emptyList()
         )
         val detector = DamageTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
-            matcher
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry(), predicateEvaluator),
+            matcher,
+            predicateEvaluator,
         )
         val playerId = EntityId("player")
         val state = GameState()
@@ -1530,7 +1570,7 @@ class DamageTriggerContextTest : FunSpec({
     }
 
     test("source-blind damage-to-you observers accept an unknown source") {
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
         val observer = TriggerIndex.IndexedEntity(
             entityId = EntityId("source-blind-observer"),
             cardComponent = CardComponent(
@@ -1543,7 +1583,7 @@ class DamageTriggerContextTest : FunSpec({
             abilities = listOf(
                 com.wingedsheep.sdk.scripting.TriggeredAbility(
                     id = AbilityId("source-blind-observer-ability"),
-                    trigger = EventPattern.DealsDamageEvent(recipient = RecipientFilter.You),
+                    trigger = EventPattern.DealsDamageEvent(recipient = Recipient.You),
                     binding = TriggerBinding.ANY,
                     effect = Effects.DrawCards(1)
                 )
@@ -1570,8 +1610,9 @@ class DamageTriggerContextTest : FunSpec({
         val triggers = mutableListOf<PendingTrigger>()
 
         DamageTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry(), predicateEvaluator),
             matcher,
+            predicateEvaluator,
         ).detectDamageToControllerTriggers(
             GameState(), event, triggers, GameState().projectedState, index
         )
@@ -1599,7 +1640,7 @@ class DamageTriggerContextTest : FunSpec({
                     id = AbilityId("subtype-observer-ability"),
                     trigger = EventPattern.DealsDamageEvent(
                         damageType = DamageType.Combat,
-                        recipient = RecipientFilter.AnyPlayer,
+                        recipient = Recipient.AnyPlayer,
                         sourceFilter = GameObjectFilter.Creature.withSubtype("Goblin"),
                     ),
                     binding = TriggerBinding.ANY,
@@ -1655,8 +1696,9 @@ class DamageTriggerContextTest : FunSpec({
         val triggers = mutableListOf<PendingTrigger>()
 
         DamageTriggerDetector(
-            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
-            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry(), predicateEvaluator),
+            TriggerMatcher(predicateEvaluator, conditionEvaluator),
+            predicateEvaluator,
         ).detectSubtypeDamageToPlayerTriggers(
             state, event, triggers, state.projectedState, index
         )
@@ -1666,7 +1708,7 @@ class DamageTriggerContextTest : FunSpec({
     }
 
     test("damage source predicates do not fall back to the recipient") {
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
         val candidate = CardComponent(
             cardDefinitionId = "recipient-creature",
             name = "Recipient Creature",
@@ -1683,11 +1725,12 @@ class DamageTriggerContextTest : FunSpec({
 
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter.Creature
             ),
             event,
-            state
+            state,
+            EntityId("observer-controller")
         ) shouldBe false
     }
 
@@ -1721,11 +1764,11 @@ class DamageTriggerContextTest : FunSpec({
             sourceId = sourceId,
             damageSourceLastKnownSnapshot = sourceSnapshot,
         )
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
 
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter.Creature,
             ),
             event,
@@ -1734,7 +1777,7 @@ class DamageTriggerContextTest : FunSpec({
         ) shouldBe true
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter.Creature.nontoken(),
             ),
             event,
@@ -1755,32 +1798,34 @@ class DamageTriggerContextTest : FunSpec({
         val context = EffectContext(
             sourceId = null,
             controllerId = EntityId("controller"),
-            damageSourceEntityId = sourceId,
-            damageRecipientEntityId = recipientId,
-            damageRecipientKind = DamageRecipientKind.CREATURE,
-            damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
-            damageRecipientLastKnownSnapshot = snapshot
+            triggerContext = TriggerContext(
+                damageSourceEntityId = sourceId,
+                damageRecipientEntityId = recipientId,
+                damageRecipientKind = DamageRecipientKind.CREATURE,
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = snapshot
+            )
         )
-        val amountEvaluator = DynamicAmountEvaluator()
+        val amountEvaluator = predicateEvaluator.amounts
 
         amountEvaluator.evaluate(
             GameState(),
-            DynamicAmount.EntityProperty(EntityReference.DamageRecipient, EntityNumericProperty.Power),
+            DynamicAmount.EntityProperty(EffectTarget.DamageRecipient, EntityNumericProperty.Power),
             context
         ) shouldBe 7
         amountEvaluator.evaluate(
             GameState(),
-            DynamicAmount.EntityProperty(EntityReference.DamageRecipient, EntityNumericProperty.SubtypeCount),
+            DynamicAmount.EntityProperty(EffectTarget.DamageRecipient, EntityNumericProperty.SubtypeCount),
             context
         ) shouldBe 1
         amountEvaluator.evaluate(
             GameState(),
-            DynamicAmount.EntityProperty(EntityReference.DamageRecipient, EntityNumericProperty.ColorCount),
+            DynamicAmount.EntityProperty(EffectTarget.DamageRecipient, EntityNumericProperty.ColorCount),
             context
         ) shouldBe 1
         amountEvaluator.evaluate(
             GameState(),
-            DynamicAmount.EntityProperty(EntityReference.DamageSource, EntityNumericProperty.Power),
+            DynamicAmount.EntityProperty(EffectTarget.DamageSource, EntityNumericProperty.Power),
             context
         ) shouldBe 4
 
@@ -1805,35 +1850,34 @@ class DamageTriggerContextTest : FunSpec({
             damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
             damageRecipientLastKnownSnapshot = snapshot
         )
-        val predicateEvaluator = PredicateEvaluator()
 
         predicateEvaluator.matchesCardPredicate(
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.PowerAtMostEntity(EntityReference.DamageRecipient),
+            CardPredicate.PowerAtMostEntity(EffectTarget.DamageRecipient),
             predicateContext
         ) shouldBe true
         predicateEvaluator.matchesCardPredicate(
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.SharesCreatureTypeWith(EntityReference.DamageRecipient),
+            CardPredicate.SharesCreatureTypeWith(EffectTarget.DamageRecipient),
             predicateContext
         ) shouldBe true
         predicateEvaluator.matchesCardPredicate(
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.SharesColorWith(EntityReference.DamageRecipient),
+            CardPredicate.SharesColorWith(EffectTarget.DamageRecipient),
             predicateContext
         ) shouldBe true
 
         contextScopedReferenceIn(
-            DynamicAmount.EntityProperty(EntityReference.DamageSource, EntityNumericProperty.Power)
+            DynamicAmount.EntityProperty(EffectTarget.DamageSource, EntityNumericProperty.Power)
         ) shouldBe "DamageSource"
         contextScopedReferenceIn(
-            DynamicAmount.EntityProperty(EntityReference.DamageRecipient, EntityNumericProperty.Power)
+            DynamicAmount.EntityProperty(EffectTarget.DamageRecipient, EntityNumericProperty.Power)
         ) shouldBe "DamageRecipient"
     }
 
@@ -1875,11 +1919,11 @@ class DamageTriggerContextTest : FunSpec({
                 BattlefieldEntryTimestampComponent(99L),
             ),
         )
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
 
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.Matching(GameObjectFilter.Planeswalker),
+                recipient = Recipient.Object(GameObjectFilter.Planeswalker),
             ),
             event,
             replacementState,
@@ -1889,33 +1933,35 @@ class DamageTriggerContextTest : FunSpec({
         val context = EffectContext(
             sourceId = null,
             controllerId = controllerId,
-            damageSourceEntityId = sourceId,
-            damageRecipientEntityId = recipientId,
-            damageRecipientKind = DamageRecipientKind.PLANESWALKER,
-            damageRecipientKinds = DamageRecipientKindSet.PLANESWALKER,
-            damageSourceLastKnownSnapshot = unstampedSourceSnapshot,
-            damageRecipientLastKnownSnapshot = unstampedRecipientSnapshot,
+            triggerContext = TriggerContext(
+                damageSourceEntityId = sourceId,
+                damageRecipientEntityId = recipientId,
+                damageRecipientKind = DamageRecipientKind.PLANESWALKER,
+                damageRecipientKinds = DamageRecipientKindSet.PLANESWALKER,
+                damageSourceLastKnownSnapshot = unstampedSourceSnapshot,
+                damageRecipientLastKnownSnapshot = unstampedRecipientSnapshot,
+            ),
         )
-        context.lkiSnapshotFor(EntityReference.DamageSource, sourceId, GameState()) shouldBe null
-        context.lkiSnapshotFor(EntityReference.DamageRecipient, recipientId, GameState()) shouldBe null
-        TargetResolutionUtils.resolveEntityReference(
-            EntityReference.DamageSource,
+        context.lkiSnapshotFor(EffectTarget.DamageSource, sourceId, GameState()) shouldBe null
+        context.lkiSnapshotFor(EffectTarget.DamageRecipient, recipientId, GameState()) shouldBe null
+        TargetResolutionUtils.resolveEntity(
+            EffectTarget.DamageSource,
             context,
             GameState(),
         ) shouldBe null
-        TargetResolutionUtils.resolveEntityReference(
-            EntityReference.DamageRecipient,
+        TargetResolutionUtils.resolveEntity(
+            EffectTarget.DamageRecipient,
             context,
             GameState(),
         ) shouldBe null
-        DynamicAmountEvaluator().evaluate(
+        predicateEvaluator.amounts.evaluate(
             GameState(),
-            DynamicAmount.EntityProperty(EntityReference.DamageRecipient, EntityNumericProperty.Power),
+            DynamicAmount.EntityProperty(EffectTarget.DamageRecipient, EntityNumericProperty.Power),
             context,
         ) shouldBe 0
-        DynamicAmountEvaluator().evaluate(
+        predicateEvaluator.amounts.evaluate(
             GameState(),
-            DynamicAmount.EntityProperty(EntityReference.DamageSource, EntityNumericProperty.Power),
+            DynamicAmount.EntityProperty(EffectTarget.DamageSource, EntityNumericProperty.Power),
             context,
         ) shouldBe 0
     }
@@ -1976,34 +2022,34 @@ class DamageTriggerContextTest : FunSpec({
                 ),
             ),
         )
-        val evaluator = PredicateEvaluator()
+        val evaluator = PredicateEvaluator(cardRegistry = null)
 
         evaluator.matchesCardPredicate(
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.PowerAtMostEntity(EntityReference.DamageRecipient),
+            CardPredicate.PowerAtMostEntity(EffectTarget.DamageRecipient),
             context,
         ) shouldBe false
         evaluator.matchesCardPredicate(
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.PowerAtMostEntity(EntityReference.DamageSource),
+            CardPredicate.PowerAtMostEntity(EffectTarget.DamageSource),
             context,
         ) shouldBe false
         evaluator.matchesCardPredicate(
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.SharesCreatureTypeWith(EntityReference.DamageRecipient),
+            CardPredicate.SharesCreatureTypeWith(EffectTarget.DamageRecipient),
             context,
         ) shouldBe false
         evaluator.matchesCardPredicate(
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.SharesColorWith(EntityReference.DamageRecipient),
+            CardPredicate.SharesColorWith(EffectTarget.DamageRecipient),
             context,
         ) shouldBe false
     }
@@ -2059,27 +2105,27 @@ class DamageTriggerContextTest : FunSpec({
                 battlefieldEntryTimestamp = 30L,
             )
         )
-        val evaluator = PredicateEvaluator()
+        val evaluator = PredicateEvaluator(cardRegistry = null)
 
         evaluator.matchesCardPredicate(
             stateWithCandidate,
             stateWithCandidate.projectedState,
             candidateId,
-            CardPredicate.PowerAtMostEntity(EntityReference.DamageRecipient),
+            CardPredicate.PowerAtMostEntity(EffectTarget.DamageRecipient),
             context
         ) shouldBe false
         evaluator.matchesCardPredicate(
             stateWithCandidate,
             stateWithCandidate.projectedState,
             candidateId,
-            CardPredicate.SharesCreatureTypeWith(EntityReference.DamageRecipient),
+            CardPredicate.SharesCreatureTypeWith(EffectTarget.DamageRecipient),
             context
         ) shouldBe false
         evaluator.matchesCardPredicate(
             stateWithCandidate,
             stateWithCandidate.projectedState,
             candidateId,
-            CardPredicate.SharesColorWith(EntityReference.DamageRecipient),
+            CardPredicate.SharesColorWith(EffectTarget.DamageRecipient),
             context
         ) shouldBe false
     }
@@ -2113,19 +2159,21 @@ class DamageTriggerContextTest : FunSpec({
         val context = EffectContext(
             sourceId = null,
             controllerId = controllerId,
-            damageSourceEntityId = sourceId,
-            damageSourceLastKnownSnapshot = sourceSnapshot,
+            triggerContext = TriggerContext(
+                damageSourceEntityId = sourceId,
+                damageSourceLastKnownSnapshot = sourceSnapshot,
+            ),
         )
 
-        TargetResolutionUtils.resolveEntityReference(
-            EntityReference.DamageSource,
+        TargetResolutionUtils.resolveEntity(
+            EffectTarget.DamageSource,
             context,
             state,
         ) shouldBe null
 
-        DynamicAmountEvaluator().evaluate(
+        predicateEvaluator.amounts.evaluate(
             state,
-            DynamicAmount.EntityProperty(EntityReference.DamageSource, EntityNumericProperty.Power),
+            DynamicAmount.EntityProperty(EffectTarget.DamageSource, EntityNumericProperty.Power),
             context,
         ) shouldBe 8
     }
@@ -2173,27 +2221,27 @@ class DamageTriggerContextTest : FunSpec({
             damageSourceId = sourceId,
             damageSourceLastKnownSnapshot = sourceSnapshot,
         )
-        val evaluator = PredicateEvaluator()
+        val evaluator = PredicateEvaluator(cardRegistry = null)
 
         evaluator.matchesCardPredicate(
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.PowerAtMostEntity(EntityReference.DamageSource),
+            CardPredicate.PowerAtMostEntity(EffectTarget.DamageSource),
             context,
         ) shouldBe true
         evaluator.matchesCardPredicate(
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.SharesCreatureTypeWith(EntityReference.DamageSource),
+            CardPredicate.SharesCreatureTypeWith(EffectTarget.DamageSource),
             context,
         ) shouldBe true
         evaluator.matchesCardPredicate(
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.SharesColorWith(EntityReference.DamageSource),
+            CardPredicate.SharesColorWith(EffectTarget.DamageSource),
             context,
         ) shouldBe true
         evaluator.matchesSnapshot(
@@ -2208,7 +2256,7 @@ class DamageTriggerContextTest : FunSpec({
             state,
             state.projectedState,
             candidateId,
-            CardPredicate.ManaValueAtMostEntity(EntityReference.DamageSource),
+            CardPredicate.ManaValueAtMostEntity(EffectTarget.DamageSource),
             context,
         ) shouldBe false
     }
@@ -2218,14 +2266,16 @@ class DamageTriggerContextTest : FunSpec({
             sourceId = sourceId,
             controllerId = EntityId("controller"),
             triggeringEntityId = sourceId,
-            damageSourceEntityId = sourceId,
-            damageRecipientEntityId = recipientId,
-            damageRecipientKinds = DamageRecipientKindSet.of(
-                DamageRecipientKind.CREATURE,
-                DamageRecipientKind.PLANESWALKER,
+            triggerContext = TriggerContext(
+                damageSourceEntityId = sourceId,
+                damageRecipientEntityId = recipientId,
+                damageRecipientKinds = DamageRecipientKindSet.of(
+                    DamageRecipientKind.CREATURE,
+                    DamageRecipientKind.PLANESWALKER,
+                ),
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot,
             ),
-            damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
-            damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot,
         )
 
         val event = ReflexiveTriggerEffectExecutor.buildReflexiveTriggeredEvent(
@@ -2247,27 +2297,44 @@ class DamageTriggerContextTest : FunSpec({
     }
 
     test("damage roles survive triggered-ability continuation serialization") {
-        val continuation: ContinuationFrame = TriggeredAbilityContinuation(
-            decisionId = "damage-decision",
+        // The target-selection frame is an answer continuation now: it has no decision id of its
+        // own and is persisted inside the Suspension that pairs it with its question. The damage
+        // roles travel in its TriggerContext record.
+        val continuation = TriggeredAbilityContinuation(
             sourceId = sourceId,
             sourceName = "damage-observer",
             controllerId = EntityId("controller"),
             effect = Effects.DrawCards(1),
             description = "draw",
-            triggeringEntityId = sourceId,
-            damageSourceEntityId = sourceId,
-            damageRecipientEntityId = recipientId,
-            damageRecipientKind = DamageRecipientKind.PLANESWALKER,
-            damageRecipientKinds = DamageRecipientKindSet.of(
-                DamageRecipientKind.CREATURE,
-                DamageRecipientKind.PLANESWALKER,
+            triggerContext = TriggerContext(
+                triggeringEntityId = sourceId,
+                damageSourceEntityId = sourceId,
+                damageRecipientEntityId = recipientId,
+                damageRecipientKind = DamageRecipientKind.PLANESWALKER,
+                damageRecipientKinds = DamageRecipientKindSet.of(
+                    DamageRecipientKind.CREATURE,
+                    DamageRecipientKind.PLANESWALKER,
+                ),
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot
+            )
+        )
+        val suspension: ContinuationFrame = Suspension(
+            question = ChooseTargetsDecision(
+                id = "damage-decision",
+                playerId = EntityId("controller"),
+                prompt = "Choose targets",
+                context = DecisionContext(sourceId = sourceId),
+                targetRequirements = emptyList(),
+                legalTargets = emptyMap(),
             ),
-            damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
-            damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot
+            answer = continuation,
         )
 
-        val encoded = json.encodeToString(ContinuationFrame.serializer(), continuation)
-        json.decodeFromString(ContinuationFrame.serializer(), encoded) shouldBe continuation
+        val encoded = json.encodeToString(ContinuationFrame.serializer(), suspension)
+        val decoded = json.decodeFromString(ContinuationFrame.serializer(), encoded)
+        decoded shouldBe suspension
+        (decoded as Suspension).answer shouldBe continuation
     }
 
     test("damage role targets retain IDs when source and recipient leave before resolution") {
@@ -2275,8 +2342,10 @@ class DamageTriggerContextTest : FunSpec({
             sourceId = null,
             controllerId = EntityId("controller"),
             triggeringEntityId = recipientId,
-            damageSourceEntityId = sourceId,
-            damageRecipientEntityId = recipientId
+            triggerContext = TriggerContext(
+                damageSourceEntityId = sourceId,
+                damageRecipientEntityId = recipientId
+            )
         )
 
         TargetResolutionUtils.resolveTarget(EffectTarget.DamageSource, context) shouldBe null
@@ -2299,15 +2368,15 @@ class DamageTriggerContextTest : FunSpec({
         json.encodeToString(TriggerContext.serializer(), decoded) shouldBe encoded
 
         val damageSourceReference = json.encodeToString(
-            EntityReference.serializer(), EntityReference.DamageSource
+            EffectTarget.serializer(), EffectTarget.DamageSource
         )
         val damageRecipientReference = json.encodeToString(
-            EntityReference.serializer(), EntityReference.DamageRecipient
+            EffectTarget.serializer(), EffectTarget.DamageRecipient
         )
-        json.decodeFromString(EntityReference.serializer(), damageSourceReference) shouldBe
-            EntityReference.DamageSource
-        json.decodeFromString(EntityReference.serializer(), damageRecipientReference) shouldBe
-            EntityReference.DamageRecipient
+        json.decodeFromString(EffectTarget.serializer(), damageSourceReference) shouldBe
+            EffectTarget.DamageSource
+        json.decodeFromString(EffectTarget.serializer(), damageRecipientReference) shouldBe
+            EffectTarget.DamageRecipient
     }
 
     test("damage roles survive serialization of the triggered ability stack component") {
@@ -2317,9 +2386,11 @@ class DamageTriggerContextTest : FunSpec({
             controllerId = EntityId("controller"),
             effect = Effects.DrawCards(1),
             description = "draw",
-            triggeringEntityId = recipientId,
-            damageSourceEntityId = sourceId,
-            damageRecipientEntityId = recipientId
+            triggerContext = TriggerContext(
+                triggeringEntityId = recipientId,
+                damageSourceEntityId = sourceId,
+                damageRecipientEntityId = recipientId
+            )
         )
 
         val encoded = json.encodeToString(TriggeredAbilityOnStackComponent.serializer(), ability)
@@ -2336,12 +2407,14 @@ class DamageTriggerContextTest : FunSpec({
             controllerId = EntityId("controller"),
             effect = Effects.DrawCards(1),
             description = "draw",
-            triggeringEntityId = sourceId,
-            damageSourceEntityId = sourceId,
-            damageRecipientEntityId = recipientId,
-            damageRecipientKind = DamageRecipientKind.PLANESWALKER,
-            damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
-            damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot
+            triggerContext = TriggerContext(
+                triggeringEntityId = sourceId,
+                damageSourceEntityId = sourceId,
+                damageRecipientEntityId = recipientId,
+                damageRecipientKind = DamageRecipientKind.PLANESWALKER,
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot
+            )
         )
         val state = GameState(
             entities = mapOf(stackId to ComponentContainer.of(ability)),
@@ -2389,11 +2462,11 @@ class DamageTriggerContextTest : FunSpec({
                 BattlefieldEntryTimestampComponent(8L),
             )
         )
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
 
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.Matching(GameObjectFilter.Planeswalker)
+                recipient = Recipient.Object(GameObjectFilter.Planeswalker)
             ),
             event,
             reusedState,
@@ -2403,14 +2476,23 @@ class DamageTriggerContextTest : FunSpec({
         val context = EffectContext(
             sourceId = null,
             controllerId = controllerId,
-            damageRecipientEntityId = recipientId,
-            damageRecipientKind = DamageRecipientKind.PLANESWALKER,
-            damageRecipientKinds = DamageRecipientKindSet.of(DamageRecipientKind.PLANESWALKER),
-            damageRecipientLastKnownSnapshot = oldSnapshot,
+            triggerContext = TriggerContext(
+                damageRecipientEntityId = recipientId,
+                damageRecipientKind = DamageRecipientKind.PLANESWALKER,
+                damageRecipientKinds = DamageRecipientKindSet.of(DamageRecipientKind.PLANESWALKER),
+                damageRecipientLastKnownSnapshot = oldSnapshot,
+            ),
         )
         TargetResolutionUtils.resolveTarget(EffectTarget.DamageRecipient, context, reusedState) shouldBe null
         val destroy = Effects.Destroy(EffectTarget.DamageRecipient) as MoveToZoneEffect
-        val result = MoveToZoneEffectExecutor(CardRegistry()).execute(reusedState, destroy, context)
+        val services = EngineServices(CardRegistry())
+        val executor = MoveToZoneEffectExecutor(
+            services.zones,
+            services.cardRegistry,
+            services.targetFinder,
+            services.effectExecutorRegistry::execute,
+        )
+        val result = executor.execute(reusedState, destroy, context)
         result.state.getBattlefield() shouldBe setOf(recipientId)
     }
 
@@ -2443,9 +2525,9 @@ class DamageTriggerContextTest : FunSpec({
             ),
         )
 
-        TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()).matchesDealsDamageTrigger(
+        TriggerMatcher(predicateEvaluator, conditionEvaluator).matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.Matching(GameObjectFilter.Creature),
+                recipient = Recipient.Object(GameObjectFilter.Creature),
             ),
             event,
             state,
@@ -2461,30 +2543,40 @@ class DamageTriggerContextTest : FunSpec({
         val event = damageEvent.copy(
             recipientKind = DamageRecipientKind.UNKNOWN,
             recipientKinds = kinds,
+            // Recipient.Object filters also read the recipient's event-time characteristics, so the
+            // captured snapshot carries both card types the captured role set names.
+            damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot?.copy(
+                typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE, CardType.PLANESWALKER)),
+            ),
         )
 
         event.effectiveRecipientKinds shouldBe kinds
         event.effectiveRecipientKind shouldBe DamageRecipientKind.UNKNOWN
 
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
+        val observerControllerId = EntityId("observer-controller")
         matcher.matchesDealsDamageTrigger(
-            EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyCreature),
+            EventPattern.DealsDamageEvent(recipient = Recipient.AnyCreature),
             event,
             GameState(),
+            observerControllerId,
         ) shouldBe true
         matcher.matchesDealsDamageTrigger(
-            EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyPlayerOrPlaneswalker),
+            EventPattern.DealsDamageEvent(recipient = Recipient.AnyPlayerOrPlaneswalker),
             event,
             GameState(),
+            observerControllerId,
         ) shouldBe true
 
         val mixedRoleContext = EffectContext(
             sourceId = null,
             controllerId = EntityId("mixed-role-controller"),
-            damageRecipientEntityId = recipientId,
-            damageRecipientKinds = DamageRecipientKindSet.of(
-                DamageRecipientKind.PLAYER,
-                DamageRecipientKind.PLANESWALKER,
+            triggerContext = TriggerContext(
+                damageRecipientEntityId = recipientId,
+                damageRecipientKinds = DamageRecipientKindSet.of(
+                    DamageRecipientKind.PLAYER,
+                    DamageRecipientKind.PLANESWALKER,
+                ),
             ),
         )
         TargetResolutionUtils.resolvePlayerTarget(
@@ -2555,10 +2647,10 @@ class DamageTriggerContextTest : FunSpec({
                 BattlefieldEntryTimestampComponent(13L),
             )
         )
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter.Creature.nontoken(),
             ),
             damageEvent.copy(
@@ -2597,9 +2689,9 @@ class DamageTriggerContextTest : FunSpec({
         val snapshot = DamageUtils.captureDamageEntitySnapshot(state, legendaryId)
 
         snapshot?.typeLine?.supertypes shouldBe setOf(Supertype.LEGENDARY)
-        TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()).matchesDealsDamageTrigger(
+        TriggerMatcher(predicateEvaluator, conditionEvaluator).matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter(
                     cardPredicates = listOf(CardPredicate.IsLegendary),
                 ),
@@ -2611,9 +2703,9 @@ class DamageTriggerContextTest : FunSpec({
             GameState(),
             controllerId,
         ) shouldBe true
-        TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()).matchesDealsDamageTrigger(
+        TriggerMatcher(predicateEvaluator, conditionEvaluator).matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter(
                     cardPredicates = listOf(CardPredicate.IsNonlegendary),
                 ),
@@ -2639,15 +2731,16 @@ class DamageTriggerContextTest : FunSpec({
             damageSourceLastKnownSnapshot = snapshot,
         )
 
-        TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()).matchesDealsDamageTrigger(
+        TriggerMatcher(predicateEvaluator, conditionEvaluator).matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
-                recipient = RecipientFilter.AnyCreature,
+                recipient = Recipient.AnyCreature,
                 sourceFilter = GameObjectFilter(
                     cardPredicates = listOf(CardPredicate.IsBasicLand),
                 ),
             ),
             event,
             GameState(),
+            EntityId("observer-controller"),
         ) shouldBe true
     }
 
@@ -2679,7 +2772,7 @@ class DamageTriggerContextTest : FunSpec({
             ),
         )
 
-        PredicateEvaluator().matches(
+        predicateEvaluator.matches(
             state = state,
             projected = projected,
             entityId = landId,
@@ -2691,20 +2784,24 @@ class DamageTriggerContextTest : FunSpec({
     }
 
     test("unknown damage recipient role never becomes a player from a reused id") {
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(predicateEvaluator, conditionEvaluator)
         val event = damageEvent.copy(
             targetId = EntityId("player-shaped-id"),
             targetIsPlayer = false,
-            targetWasCreature = false,
+            // No recipient LKI either: the legacy fallback that replaced `targetWasCreature` reads it.
+            targetLastKnown = null,
             recipientKind = DamageRecipientKind.UNKNOWN,
             recipientKinds = DamageRecipientKindSet.UNKNOWN,
             damageRecipientLastKnownSnapshot = null,
         )
+        // Seat the id, so only the unknown captured role can keep it from matching a player recipient.
+        val state = GameState(turnOrder = listOf(EntityId("player-shaped-id")))
 
         matcher.matchesDealsDamageTrigger(
-            EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyPlayer),
+            EventPattern.DealsDamageEvent(recipient = Recipient.AnyPlayer),
             event,
-            GameState(),
+            state,
+            EntityId("observer-controller"),
         ) shouldBe false
     }
 })

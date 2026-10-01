@@ -53,6 +53,7 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /** RED/contract coverage for the V3 ordered program's single global resource ledger. */
 class PaymentPlanV3ValidatorTest : FunSpec({
@@ -215,7 +216,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val signetId = driver.putPermanentOnBattlefield(player, GolgariSignet.name)
         if (includePool != null) driver.addComponent(player, includePool)
 
-        val solver = ManaSolver(driver.cardRegistry)
+        val solver = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
         val sources = solver.findAvailableManaSources(
             state = driver.state,
             playerId = player,
@@ -283,7 +284,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             player,
             permissionTargetManaSource.name,
         )
-        val sources = ManaSolver(driver.cardRegistry).findAvailableManaSources(
+        val sources = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).findAvailableManaSources(
             state = driver.state,
             playerId = player,
             spellContext = null,
@@ -308,7 +309,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         val player = driver.activePlayer!!
         val sourceId = driver.putPermanentOnBattlefield(player, LlanowarWastes.name)
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(
                 state = driver.state,
                 playerId = player,
@@ -333,7 +334,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val player = driver.activePlayer!!
         val firstSourceId = driver.putLandOnBattlefield(player, LlanowarWastes.name)
         val secondSourceId = driver.putLandOnBattlefield(player, LlanowarWastes.name)
-        val sources = ManaSolver(driver.cardRegistry).findAvailableManaSources(
+        val sources = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).findAvailableManaSources(
             state = driver.state,
             playerId = player,
             spellContext = null,
@@ -361,7 +362,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val player = driver.activePlayer!!
         val painSourceId = driver.putPermanentOnBattlefield(player, LlanowarWastes.name)
         val guardedSourceId = driver.putPermanentOnBattlefield(player, lifeHistoryGuardedManaSource.name)
-        val sources = ManaSolver(driver.cardRegistry).findAvailableManaSources(
+        val sources = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator).findAvailableManaSources(
             state = driver.state,
             playerId = player,
             spellContext = null,
@@ -571,7 +572,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         cost: ManaCost = ManaCost.parse("{1}{B}"),
         plan: PaymentPlanV3 = validPlan(fixture),
         reservedOuterLifePayment: Int = 0,
-    ): PaymentPlanValidation = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry)).validateV3(
+    ): PaymentPlanValidation = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator)).validateV3(
         state = fixture.driver.state,
         playerId = fixture.player,
         cost = cost,
@@ -594,8 +595,9 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val fixture = signetFixture()
         val services = EngineServices(fixture.driver.cardRegistry)
         val processor = CastPaymentProcessor(
+            zones = services.zones,
             manaSolver = services.manaSolver,
-            costHandler = CostHandler(fixture.driver.cardRegistry),
+            costHandler = CostHandler(services.zones),
             manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
         )
         val action = CastSpell(
@@ -624,8 +626,9 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val fixture = signetFixture()
         val services = EngineServices(fixture.driver.cardRegistry)
         val processor = CastPaymentProcessor(
+            zones = services.zones,
             manaSolver = services.manaSolver,
-            costHandler = CostHandler(fixture.driver.cardRegistry),
+            costHandler = CostHandler(services.zones),
             manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
         )
         val plan = validPlan(fixture).copy(
@@ -661,8 +664,9 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val fixture = signetFixture(includePool = ManaPoolComponent(green = 1))
         val services = EngineServices(fixture.driver.cardRegistry)
         val processor = CastPaymentProcessor(
+            zones = services.zones,
             manaSolver = services.manaSolver,
-            costHandler = CostHandler(fixture.driver.cardRegistry),
+            costHandler = CostHandler(services.zones),
             manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
         )
         val green = ManaResourceRefV1.InitialPoolResource(
@@ -706,8 +710,9 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val fixture = signetFixture()
         val services = EngineServices(fixture.driver.cardRegistry)
         val processor = CastPaymentProcessor(
+            zones = services.zones,
             manaSolver = services.manaSolver,
-            costHandler = CostHandler(fixture.driver.cardRegistry),
+            costHandler = CostHandler(services.zones),
             manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
         )
         val invalidPlan = validPlan(fixture).copy(
@@ -751,7 +756,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         fixture.driver.state.getEntity(fixture.forestId)?.has<TappedComponent>() shouldBe true
         fixture.driver.state.getEntity(fixture.signetId)?.has<TappedComponent>() shouldBe true
         fixture.driver.state.getEntity(fixture.player)?.get<ManaPoolComponent>()?.unrestrictedTotal shouldBe 0
@@ -780,7 +785,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         fixture.driver.state.getEntity(fixture.forestId)?.has<TappedComponent>() shouldBe true
         fixture.driver.state.getEntity(fixture.signetId)?.has<TappedComponent>() shouldBe true
         val pool = fixture.driver.state.getEntity(fixture.player)?.get<ManaPoolComponent>()
@@ -794,7 +799,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             fixture.player,
             sequenceGuardedManaSource.name,
         )
-        val solver = ManaSolver(fixture.driver.cardRegistry)
+        val solver = ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator)
         val guardedSource = solver.findAvailableManaSources(
             state = fixture.driver.state,
             playerId = fixture.player,
@@ -850,7 +855,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             fixture.player,
             sequenceCostChangingManaSource.name,
         )
-        val solver = ManaSolver(fixture.driver.cardRegistry)
+        val solver = ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator)
         val changingSource = solver.findAvailableManaSources(
             state = fixture.driver.state,
             playerId = fixture.player,
@@ -974,7 +979,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val fixture = painFixture()
         fixture.driver.setLifeTotal(fixture.player, 2)
         val before = fixture.driver.state
-        val rejected = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry)).validateV3(
+        val rejected = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator)).validateV3(
             state = before,
             playerId = fixture.player,
             cost = ManaCost.parse("{G}"),
@@ -991,7 +996,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val fixture = painFixture()
         fixture.driver.setLifeTotal(fixture.player, 3)
         val before = fixture.driver.state
-        val accepted = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry)).validateV3(
+        val accepted = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator)).validateV3(
             state = before,
             playerId = fixture.player,
             cost = ManaCost.parse("{G}"),
@@ -1007,7 +1012,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
     test("PAY106-OUTER-COST-03: the outer PayLife budget is cumulative across painful sources") {
         val fixture = doublePainFixture()
         fixture.driver.setLifeTotal(fixture.player, 3)
-        val validator = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry))
+        val validator = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator))
         val before = fixture.driver.state
 
         validator.validateV3(
@@ -1085,7 +1090,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
     test("PAY106-LETHAL-PAIN-03: an outer life payment still bounds cumulative pain") {
         val fixture = doublePainFixture()
         fixture.driver.setLifeTotal(fixture.player, 2)
-        val validator = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry))
+        val validator = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator))
         val before = fixture.driver.state
 
         validator.validateV3(
@@ -1112,7 +1117,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
 
     test("PAY106-SIDEEFFECT-03: pain before a life-history-sensitive node is not certified") {
         val fixture = painSequenceFixture()
-        val sources = ManaSolver(fixture.driver.cardRegistry).findAvailableManaSources(
+        val sources = ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator).findAvailableManaSources(
             state = fixture.driver.state,
             playerId = fixture.player,
             spellContext = null,
@@ -1125,7 +1130,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             .paymentManaExecutionStabilityCertified shouldBe false
 
         val before = fixture.driver.state
-        val rejected = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry)).validateV3(
+        val rejected = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator)).validateV3(
             state = before,
             playerId = fixture.player,
             cost = ManaCost.parse("{G}{B}"),
@@ -1192,7 +1197,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
                 )
             )
         }
-        val solver = ManaSolver(fixture.driver.cardRegistry)
+        val solver = ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator)
         val source = solver.findAvailableManaSources(
             state = stateWithReplacement,
             playerId = fixture.player,
@@ -1562,7 +1567,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             .requireCard(GolgariSignet.name)
             .activatedAbilities
             .single()
-        val solver = ManaSolver(fixture.driver.cardRegistry)
+        val solver = ManaSolver(fixture.driver.cardRegistry, fixture.driver.services.predicateEvaluator)
         val originalCost = solver.calculateEffectiveActivatedAbilityCost(
             state = fixture.driver.state,
             sourceId = fixture.signetId,

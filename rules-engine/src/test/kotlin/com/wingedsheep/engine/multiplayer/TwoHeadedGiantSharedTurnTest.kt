@@ -19,15 +19,16 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Two-Headed Giant — Phase 4: shared team turns (CR 805 / 810.6).
  *
  * A team takes ONE turn together: both members untap and draw (805.4b), each may play a land
  * (805.4c) and act at sorcery speed on the team's turn (805.5a), the turn passes team-by-team
- * (805.4), and the starting team skips its first draw (810.6). Priority still cycles per player —
- * that already gives each teammate a window — so this verifies turn *structure* and the
- * turn-ownership gates, not the priority machinery.
+ * (805.4), and the starting team skips its first draw (810.6). This verifies turn *structure* and
+ * the turn-ownership gates; who may act inside a given priority window is
+ * [TwoHeadedGiantTeamPriorityTest]'s subject (CR 805.5).
  *
  * Teams are [[0,1],[2,3]] with turn order pinned to player order: p0,p1 = team 0 (starting);
  * p2,p3 = team 1.
@@ -153,7 +154,7 @@ class TwoHeadedGiantSharedTurnTest : FunSpec({
         val forestInHand = s.getZone(ZoneKey(p[1], Zone.HAND)).first()
         val landsBefore = s.getZone(ZoneKey(p[1], Zone.BATTLEFIELD)).size
         val result = proc.process(s, PlayLand(p[1], forestInHand))
-        result.result.isSuccess shouldBe true
+        result.result.outcome shouldBe Outcome.Done
         // The teammate's land resolved onto the battlefield even though they are not the active player.
         result.result.newState.getZone(ZoneKey(p[1], Zone.BATTLEFIELD)).size shouldBe landsBefore + 1
     }

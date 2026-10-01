@@ -5,7 +5,6 @@ import com.wingedsheep.engine.core.ChooseColorDecision
 import com.wingedsheep.engine.core.ChooseNumberDecision
 import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.core.ContinuationFrame
-import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
@@ -39,6 +38,7 @@ import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import com.wingedsheep.engine.core.Outcome
 
 /** Production-time subtype snapshots must use projected, not printed, characteristics. */
 class ManaProductionSubtypeSnapshotTest : FunSpec({
@@ -143,7 +143,7 @@ class ManaProductionSubtypeSnapshotTest : FunSpec({
 
         driver.state.projectedState.getSubtypes(sourceId) shouldBe setOf(Subtype.MOUNTAIN.value)
 
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
         source.producesColors shouldBe setOf(Color.RED)
@@ -167,10 +167,11 @@ class ManaProductionSubtypeSnapshotTest : FunSpec({
                 phase = com.wingedsheep.engine.core.DecisionPhase.RESOLUTION,
             ),
             canDecline = false,
-            cardRegistry = driver.cardRegistry,
+            manaSolver = driver.services.manaSolver,
         )
 
         val result = ManaPaymentWindow.floatSelectedMana(
+            zones = driver.zones,
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{R}"),
@@ -179,7 +180,7 @@ class ManaProductionSubtypeSnapshotTest : FunSpec({
                 selectedSources = listOf(sourceId),
             ),
             availableSources = decision.availableSources,
-            services = EngineServices(driver.cardRegistry),
+            services = driver.services,
         )
         result.paid shouldBe true
 
@@ -264,7 +265,7 @@ class ManaProductionSubtypeSnapshotTest : FunSpec({
                     abilityId = card.activatedAbilities.first().id,
                 )
             )
-            activation.isPaused shouldBe true
+            activation.outcome.shouldBeInstanceOf<Outcome.Paused>()
 
             val json = Json {
                 serializersModule = engineSerializersModule

@@ -1,9 +1,8 @@
 package com.wingedsheep.engine.event
 
+import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
-import com.wingedsheep.engine.mechanics.StateBasedActionChecker
-import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -71,7 +70,8 @@ class SpellFizzledEmitterAuthorityCharacterizationTest : FunSpec({
                 nextObjectIdentityStamp = 102L,
             )
 
-        val result = StackResolver(CardRegistry()).resolveTop(before)
+        val services = EngineServices(CardRegistry())
+        val result = services.stackResolver.resolveTop(before)
 
         result.error shouldBe null
         result.events.map { it::class.simpleName ?: "UnknownGameEvent" } shouldBe
@@ -87,7 +87,7 @@ class SpellFizzledEmitterAuthorityCharacterizationTest : FunSpec({
         result.state.getZone(ZoneKey(player, Zone.GRAVEYARD)).contains(copyId) shouldBe true
         result.state.objectIdentityStamps[copyId] shouldBe 102L
 
-        val afterSba = StateBasedActionChecker(cardRegistry = CardRegistry()).checkAndApply(result.state)
+        val afterSba = services.sbaChecker.checkAndApply(result.state)
         afterSba.error shouldBe null
         afterSba.state.hasEntity(copyId) shouldBe false
     }

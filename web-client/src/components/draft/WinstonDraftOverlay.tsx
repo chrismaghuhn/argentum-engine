@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useGameStore, type WinstonDraftState } from '@/store/gameStore.ts'
 import type { SealedCardInfo, LobbySettings } from '@/types'
 import { useResponsive } from '@/hooks/useResponsive.ts'
-import { getCardImageUrl, landscapeImageRotateDeg } from '@/utils/cardImages.ts'
+import { getCardImageUrl } from '@/utils/cardImages.ts'
 import { ManaCost } from '../ui/ManaSymbols'
 import { HoverCardPreview } from '../ui/HoverCardPreview'
 import { useDfcHoverFlip } from '../ui/useDfcHoverFlip'
@@ -79,7 +79,8 @@ function WinstonDrafter({ winstonState, settings }: { winstonState: WinstonDraft
     }
   }, [resetDfcFlip])
 
-  const timerWarning = winstonState.timeRemaining <= 10
+  // An untimed draft (winstonState.timeRemaining === null) never warns.
+  const timerWarning = winstonState.timeRemaining !== null && winstonState.timeRemaining <= 10
 
   // Group picked cards by color for sidebar
   const pickedByColor = useMemo(() => {
@@ -165,8 +166,9 @@ function WinstonDrafter({ winstonState, settings }: { winstonState: WinstonDraft
             color: timerWarning ? '#e94560' : 'rgba(255,255,255,0.7)',
             fontVariantNumeric: 'tabular-nums',
             animation: timerWarning ? 'pulse 1s infinite' : undefined,
-          }}>
-            {winstonState.timeRemaining}s
+          }}
+          title={winstonState.timeRemaining === null ? 'No time limit — take as long as you like' : undefined}>
+            {winstonState.timeRemaining === null ? '\u221e' : `${winstonState.timeRemaining}s`}
           </div>
 
           {/* Deck remaining */}
@@ -716,8 +718,8 @@ function WinstonDrafter({ winstonState, settings }: { winstonState: WinstonDraft
           imageUri={dfc.displayImageUri ?? hoveredCard.imageUri}
           pos={hoverPos}
           rulings={hoveredCard.rulings}
-          overlay={dfc.hint}
-          imageRotateDeg={landscapeImageRotateDeg(hoveredCard)}
+          hint={dfc.hint}
+          imageRotateDeg={dfc.imageRotateDeg(hoveredCard)}
         />
       )}
 

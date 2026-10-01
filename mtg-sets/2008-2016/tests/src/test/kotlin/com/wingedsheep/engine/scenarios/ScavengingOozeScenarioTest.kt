@@ -13,6 +13,7 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Scavenging Ooze (CMD #170).
@@ -56,7 +57,7 @@ class ScavengingOozeScenarioTest : io.kotest.core.spec.style.FunSpec({
                 targets = listOf(ChosenTarget.Card(creatureCard, opponent, Zone.GRAVEYARD))
             )
         )
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.getGraveyardCardNames(opponent) shouldBe emptyList()
@@ -83,7 +84,7 @@ class ScavengingOozeScenarioTest : io.kotest.core.spec.style.FunSpec({
                 targets = listOf(ChosenTarget.Card(landCard, activePlayer, Zone.GRAVEYARD))
             )
         )
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.getGraveyardCardNames(activePlayer) shouldBe emptyList()

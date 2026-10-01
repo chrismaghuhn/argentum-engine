@@ -49,7 +49,13 @@ data class LegalActionTargetInfo(
      * (`TargetObject.dynamicMaxCount == DynamicAmount.XValue`). The client must
      * cap selectable targets at the chosen X after the cast-time `xSelection` phase.
      */
-    val xConstrainsCount: Boolean = false
+    val xConstrainsCount: Boolean = false,
+    /**
+     * True when a target for this requirement must differ from every target chosen for an
+     * earlier requirement ("another target"). False lets separate "target" instances pick the
+     * same object (Seeds of Strength) — the client only strips earlier picks when this is set.
+     */
+    val mustDifferFromEarlier: Boolean = false
 )
 
 @Serializable
@@ -98,6 +104,12 @@ data class LegalActionInfo(
     val validBlockers: List<EntityId>? = null,
     val hasXCost: Boolean = false,
     val maxAffordableX: Int? = null,
+    /**
+     * Set when the caster may pay "any amount of mana" as an additional cost for this cast
+     * (Chorus of the Conclave): the upper bound for the amount picker. The chosen amount goes out
+     * as `CastSpell.additionalManaForCounters`; null means no such payment is offered.
+     */
+    val maxAdditionalManaForCounters: Int? = null,
     val minX: Int = 0,
     val isManaAbility: Boolean = false,
     val additionalCostInfo: AdditionalCostInfo? = null,
@@ -122,6 +134,13 @@ data class LegalActionInfo(
     val hasHarmonize: Boolean = false,
     val validHarmonizeCreatures: List<HarmonizeCreatureInfo>? = null,
     val manaCostString: String? = null,
+    /**
+     * Mana added to this spell's cost per target beyond the first, so [manaCostString] above is
+     * only the one-target minimum and the real price is settled by targeting. Mirrors
+     * [com.wingedsheep.engine.legalactions.LegalAction.manaCostPerExtraTarget]; the client uses it
+     * to run targeting before a manual mana-source pick, and to price that pick.
+     */
+    val manaCostPerExtraTarget: String? = null,
     /**
      * The cheapest [manaCostString] can end up being once the alternative payments this action
      * already offers are used to the maximum — convoke taps (CR 702.51a), delve exiles (CR 702.66a),
@@ -163,6 +182,14 @@ data class LegalActionInfo(
      */
     val availableManaColors: List<String>? = null,
     val sourceZone: String? = null,
+    /**
+     * True when this cast puts the card on the stack **back face up** (CR 712.8c) — disturb
+     * (CR 702.146a) today. The card sits in its zone printed *front* face up, so a client that
+     * renders the offer from the card's own name/art/text shows the wrong spell; it must swap in
+     * the `backFace*` fields of [ClientCard] instead. Mirrors
+     * [com.wingedsheep.engine.legalactions.LegalAction.castsTransformed].
+     */
+    val castsTransformed: Boolean = false,
     val blockerMaxBlockCounts: Map<EntityId, Int>? = null,
     val mandatoryBlockerAssignments: Map<EntityId, List<EntityId>>? = null,
     val maxRepeatableActivations: Int? = null,
@@ -234,7 +261,16 @@ data class HarmonizeCreatureInfo(
 data class TapForPowerCreatureInfo(
     val entityId: EntityId,
     val name: String,
-    val power: Int
+    /** What this creature contributes toward the cost — for Crew and Saddle that can exceed its
+     * printed power (a "crews as though its power were 2 greater" static), and it is the number the
+     * handler charges against, so the client's progress bar must sum this and not power. */
+    val power: Int,
+    /**
+     * Whether this creature could legally attack right now (CR 508.1a per-creature restrictions).
+     * Paying with it taps it, which takes it out of combat — the client spends the creatures that
+     * couldn't attack anyway first, and flags the ones that could.
+     */
+    val canAttack: Boolean = true
 )
 
 @Serializable
@@ -260,8 +296,35 @@ data class AdditionalCostInfo(
     val validExileTargets: List<EntityId> = emptyList(),
     val exileMinCount: Int = 0,
     val exileMaxCount: Int = 0,
+    /**
+     * Sum gate for a graveyard exile cost measured by a total rather than a count — collect
+     * evidence N (CR 701.59a) and `ExileForTotal` alike; see
+     * [com.wingedsheep.engine.legalactions.AdditionalCostData.exileMinTotalWeight]. The client sums
+     * [exileCardWeights] over its selection, labels the tally with [exileWeightUnit] and enables
+     * Confirm at [exileMinTotalWeight]; the server re-validates the submitted selection either way.
+     * All three are 0 / empty for every other cost type.
+     */
+    val exileMinTotalWeight: Int = 0,
+    val exileCardWeights: Map<EntityId, Int> = emptyMap(),
+    val exileWeightUnit: String = "",
+    /**
+     * Per-card card types for a union-measured exile cost — see
+     * [com.wingedsheep.engine.legalactions.AdditionalCostData.exileCardTypes]. When non-empty the
+     * client tallies distinct types across the selection instead of summing [exileCardWeights].
+     */
+    val exileCardTypes: Map<EntityId, List<String>> = emptyMap(),
+    /**
+     * What each legal target would add to [exileMinTotalWeight] — see
+     * [com.wingedsheep.engine.legalactions.AdditionalCostData.exileWeightPerTarget]. Non-empty only
+     * for a cost priced off the spell's targets, and its presence is what tells the client to run
+     * this cost's picker *after* targeting and to price it on what was chosen.
+     */
+    val exileWeightPerTarget: Map<EntityId, Int> = emptyMap(),
     val validBeholdTargets: List<EntityId> = emptyList(),
     val beholdCount: Int = 0,
+    /** Hand cards that could pay a reveal-from-hand additional cost, and how many to pick. */
+    val validRevealTargets: List<EntityId> = emptyList(),
+    val revealCount: Int = 0,
     val counterRemovalCreatures: List<CounterRemovalCreatureInfo> = emptyList(),
     val validBlightTargets: List<EntityId> = emptyList(),
     val blightAmount: Int = 0,

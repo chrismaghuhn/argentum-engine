@@ -1,15 +1,15 @@
 package com.wingedsheep.engine.handlers.actions.ability
 
+import com.wingedsheep.engine.mechanics.mana.withSpendingColors
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.ForetellCard
 import com.wingedsheep.engine.core.PaymentStrategy
-import com.wingedsheep.engine.core.tap
+import com.wingedsheep.engine.core.tapForMana
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.handlers.actions.ActionHandler
-import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.toManaPool
@@ -77,7 +77,7 @@ class ForetellCardHandler(
         if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             return "PaymentStrategy.ExplicitV2 is not supported for foretell"
         }
-        if (state.priorityPlayerId != action.playerId) {
+        if (!state.hasPriority(action.playerId)) {
             return "You don't have priority"
         }
         // CR 116.2h / 702.143a: any time you have priority during your own turn.
@@ -126,7 +126,7 @@ class ForetellCardHandler(
         // Pay the fixed {2} setup cost — drain mana pool first, then tap lands for the remainder.
         val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
             ?: ManaPoolComponent()
-        val pool = poolComponent.toManaPool()
+        val pool = poolComponent.toManaPool().withSpendingColors(currentState, action.playerId)
         val partialResult = pool.payPartial(setupCost)
         val poolAfterPayment = partialResult.newPool
         val remainingCost = partialResult.remainingCost
@@ -148,9 +148,9 @@ class ForetellCardHandler(
         if (!remainingCost.isEmpty()) {
             if (action.paymentStrategy is PaymentStrategy.Explicit) {
                 for (sourceId in action.paymentStrategy.manaAbilitiesToActivate) {
-                    val (tappedState, tapEvent) = tap(currentState, sourceId)
+                    val (tappedState, tapEvents) = tapForMana(currentState, sourceId, action.playerId)
                     currentState = tappedState
-                    tapEvent?.let(events::add)
+                    events.addAll(tapEvents)
                 }
             } else {
                 val solution = manaSolver.solve(currentState, action.playerId, remainingCost, 0)
@@ -192,6 +192,7 @@ class ForetellCardHandler(
         val fromZoneKey = ZoneKey(action.playerId, Zone.HAND)
         val exileZone = ZoneKey(ownerId, Zone.EXILE)
         currentState = currentState.removeFromZone(fromZoneKey, action.cardId)
+        val oldObjectRef = currentState.objectRef(action.cardId)
         currentState = currentState.addToZone(exileZone, action.cardId)
         events.add(
             ZoneChangeEvent(
@@ -199,7 +200,9 @@ class ForetellCardHandler(
                 entityName = cardComponent.name,
                 fromZone = Zone.HAND,
                 toZone = Zone.EXILE,
-                ownerId = ownerId
+                ownerId = ownerId,
+                oldObject = oldObjectRef,
+                newObject = currentState.objectRef(action.cardId)
             )
         )
 

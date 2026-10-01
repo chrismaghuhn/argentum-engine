@@ -14,6 +14,8 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Mask of Memory (MRD) — "Whenever equipped creature deals combat damage to a player, you may draw
@@ -44,7 +46,7 @@ class MaskOfMemoryScenarioTest : ScenarioTestBase() {
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -147,7 +149,7 @@ class MaskOfMemoryScenarioTest : ScenarioTestBase() {
                     abilityId = equipAbilityId,
                     targets = listOf(ChosenTarget.Permanent(opponentCreature)),
                 )
-            ).isSuccess shouldBe false
+            ).outcome shouldNotBe Outcome.Done
             driver.state.getEntity(mask)?.get<AttachedToComponent>() shouldBe null
 
             equip(driver, player, mask, ownCreature)
@@ -162,7 +164,7 @@ class MaskOfMemoryScenarioTest : ScenarioTestBase() {
                     abilityId = equipAbilityId,
                     targets = listOf(ChosenTarget.Permanent(secondCreature)),
                 )
-            ).isSuccess shouldBe false
+            ).outcome shouldNotBe Outcome.Done
             driver.state.getEntity(mask)?.get<AttachedToComponent>()?.targetId shouldBe ownCreature
         }
 

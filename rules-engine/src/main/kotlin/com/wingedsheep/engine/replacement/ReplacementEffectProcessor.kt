@@ -29,7 +29,9 @@ sealed interface ProcessorResult {
      * Replacements are still being resolved. The caller should return this
      * paused result to the engine so it waits for player input.
      */
-    data class Paused(val state: GameState, val decision: PendingDecision) : ProcessorResult
+    data class Paused(val state: GameState, val events: List<GameEvent>) : ProcessorResult {
+        val decision: PendingDecision get() = requireNotNull(state.pendingDecision)
+    }
 
     /**
      * All matching replacements have been applied. The outcome tells the
@@ -76,9 +78,9 @@ sealed interface ProcessorResult {
  * 4. **Self-redirect components** via [SelfZoneRedirectComponent] on any
  *    entity
  */
-class ReplacementEffectProcessor {
-
-    private val conditionEvaluator = ConditionEvaluator()
+class ReplacementEffectProcessor(
+    private val conditionEvaluator: ConditionEvaluator
+) {
 
     /**
      * Process a pending game event through the replacement effect pipeline.
@@ -269,7 +271,15 @@ class ReplacementEffectProcessor {
             }
             else -> EffectContext(
                 controllerId = event.affectedPlayerId,
-                sourceId = gathered.sourceEntityId(state)
+                sourceId = gathered.sourceEntityId(state),
+                objectReferences = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(captured = true,
+                    origin = gathered.sourceEntityId(state)?.let(state::objectRef),
+                    source = gathered.sourceEntityId(state)?.let(state::objectRef),
+                    // One application per (effect identity, source object): `alreadyApplied`
+                    // stops the same identity applying twice to one event, so this is unique
+                    // without a random token — and reproduces on re-execution.
+                    resolutionKey = "replacement:${gathered.identity}:" +
+                        "${gathered.sourceEntityId(state)?.let(state::objectRef)?.generation}")
             )
         }
 
@@ -355,10 +365,11 @@ class ReplacementEffectProcessor {
         alreadyApplied: Set<ReplacementEffectIdentity>,
         context: EffectContext?,
     ): ProcessorResult.Paused {
+        // Zone changes order by the object's controller; the Commander 903.9b answer itself
+        // still belongs to the owner (see PendingGameEvent.replacementOrderingPlayerId).
         val playerId = event.replacementOrderingPlayerId(state)
-        val decisionId = UUID.randomUUID().toString()
 
-        val decision = ChooseOptionDecision(
+        val question = { decisionId: String -> ChooseOptionDecision(
             id = decisionId,
             playerId = playerId,
             prompt = "Choose which replacement effect to apply",
@@ -371,20 +382,17 @@ class ReplacementEffectProcessor {
                 options.map { it.description }
             ),
             canCancel = false
-        )
+        ) }
 
         val continuation = ReplacementChoiceContinuation(
-            decisionId = decisionId,
             pendingEvent = event,
             options = options,
             alreadyApplied = alreadyApplied,
             context = context
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return ProcessorResult.Paused(stateWithContinuation, decision)
+        val pause = state.suspendForDecision(question, continuation)
+        return ProcessorResult.Paused(pause.state, pause.events)
     }
 
     /**
@@ -403,21 +411,17 @@ class ReplacementEffectProcessor {
         alreadyApplied: Set<ReplacementEffectIdentity>,
         context: EffectContext?
     ): ProcessorResult {
-        val decisionId = UUID.randomUUID().toString()
         val promptResult = event.createOptionalPrompt(
-            decisionId = decisionId,
             gathered = gathered,
-            state = state,
+            state = state.copy(activeReplacementChain = alreadyApplied),
             context = context,
             alreadyApplied = alreadyApplied,
         )
             ?: // Event doesn't support optional prompts — treat as mandatory
             return applySingle(state, gathered, event, alreadyApplied)
 
-        val stateWithDecision = state.withPendingDecision(promptResult.decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(promptResult.continuation)
-
-        return ProcessorResult.Paused(stateWithContinuation, promptResult.decision)
+        val pause = state.suspendForDecision(promptResult.question, promptResult.continuation)
+        return ProcessorResult.Paused(pause.state, pause.events)
     }
 
     /**
@@ -488,7 +492,7 @@ class ReplacementEffectProcessor {
                     controllerId = controllerId,
                     sourceId = entityId
                 )
-                if (!matchesEvent(effect, event, controllerId, state, evalContext)) continue
+                if (!matchesEvent(effect, event, controllerId, state, evalContext, entityId)) continue
 
                 results.add(
                     GatheredReplacement(
@@ -511,7 +515,7 @@ class ReplacementEffectProcessor {
 
             val sdkEffect = fe.effect.modification.toReplacementEffect(fe.controllerId) ?: continue
 
-            if (!matchesEvent(sdkEffect, event, fe.controllerId, state, context)) continue
+            if (!matchesEvent(sdkEffect, event, fe.controllerId, state, context, fe.sourceId)) continue
 
             val cardName = fe.sourceName
                 ?: fe.sourceId
@@ -530,7 +534,7 @@ class ReplacementEffectProcessor {
         // 3. Granted replacement effects (temporary riders like Malicious Eclipse)
         for ((index, grant) in state.grantedReplacementEffects.withIndex()) {
             val controllerId = grant.controllerId
-            if (!matchesEvent(grant.replacement, event, controllerId, state, context)) continue
+            if (!matchesEvent(grant.replacement, event, controllerId, state, context, grant.entityId)) continue
 
             results.add(
                 GatheredReplacement(
@@ -556,7 +560,7 @@ class ReplacementEffectProcessor {
                 ?: continue
 
             for ((index, effect) in selfRedirect.redirects.withIndex()) {
-                if (!matchesEvent(effect, event, controllerId, state, context)) continue
+                if (!matchesEvent(effect, event, controllerId, state, context, entityId)) continue
 
                 results.add(
                     GatheredReplacement(
@@ -571,6 +575,8 @@ class ReplacementEffectProcessor {
                 )
             }
         }
+
+        results.addAll(DredgeReplacements.gather(state, event, context, conditionEvaluator.predicates))
 
         return results
     }
@@ -618,7 +624,8 @@ class ReplacementEffectProcessor {
         event: PendingGameEvent,
         sourceControllerId: EntityId,
         state: GameState,
-        context: EffectContext? = null
+        context: EffectContext? = null,
+        sourceId: EntityId? = null
     ): Boolean {
         // Delegate to the polymorphic event match
         if (!event.matchesReplacement(effect, sourceControllerId, state, context)) {
@@ -633,8 +640,12 @@ class ReplacementEffectProcessor {
         // player the event is happening to, not the caller's context.
         val restrictions = effect.restrictions
         if (restrictions.isNotEmpty()) {
+            // The *source* is this replacement's own object, taken from the gather loop rather
+            // than from `context` (which may belong to an unrelated resolving spell). Without it a
+            // source-relative restriction — "as long as this Case is solved" (CR 702.169b), the
+            // replacement-effect form of a Solved static — could never resolve its own permanent.
             val evalContext = EffectContext(
-                sourceId = null,
+                sourceId = sourceId,
                 controllerId = event.affectedPlayerId
             )
             return restrictions.all { condition ->

@@ -12,6 +12,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /** Open the Armory (SOI #32) — searches for either an Aura or an Equipment. */
 class OpenTheArmoryScenarioTest : FunSpec({
@@ -34,7 +35,7 @@ class OpenTheArmoryScenarioTest : FunSpec({
         driver.giveMana(player, Color.WHITE)
         driver.giveColorlessMana(player, 1)
 
-        driver.castSpell(player, armory).isSuccess shouldBe true
+        driver.castSpell(player, armory).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val search = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
@@ -43,7 +44,7 @@ class OpenTheArmoryScenarioTest : FunSpec({
         search.options shouldContain equipment
         search.options shouldNotContain irrelevant
 
-        driver.submitCardSelection(player, listOf(equipment)).isSuccess shouldBe true
+        driver.submitCardSelection(player, listOf(equipment)).outcome shouldBe Outcome.Done
         driver.findCardInHand(player, "Basilisk Collar") shouldBe equipment
         driver.state.getLibrary(player) shouldNotContain equipment
     }

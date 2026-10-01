@@ -644,7 +644,15 @@ class TrajectoryV1WriterTest : FunSpec({
         // because the repeat-count field and the explicit v2 action-domain identity are current
         // contract inputs; historical v5 replay metadata and trajectory contracts remain explicit
         // and unchanged.
-        A3SemanticJson.sha256(bytes) shouldBe "c955a21e671445cc7d89e3da38e78eb4d851f5aed32c99ee6205a7a316f05913"
+        //
+        // Re-pinned for upstream-sync-05 (was c955a21e…5913). A field-by-field diff of the storage
+        // bytes against fork main shows exactly three intended inputs, everything else equal:
+        // the Gym contract id (argentum-gym-contract@v1.26-repeat-count-domain ->
+        // @v1.27-upstream-sync-05), the two per-player SIDEBOARD zone views that zone order now
+        // includes, and the opening hand's entity ids (upstream mints each deck's ids in a seeded
+        // shuffled order, GameConfig.shuffledDeckIds — same seed, same cards dealt). The
+        // observation, decision, episode and trajectory digests follow from those three.
+        A3SemanticJson.sha256(bytes) shouldBe "3e0d4d0db0bea49507ecc3c8317d789495db453c0391d33baa386427892b5160"
     }
 
     test("unknown future storage schema version or identity fails closed during shard verification") {

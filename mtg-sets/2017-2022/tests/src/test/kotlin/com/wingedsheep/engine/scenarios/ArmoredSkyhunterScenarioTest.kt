@@ -13,8 +13,9 @@ import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
@@ -44,7 +45,7 @@ class ArmoredSkyhunterScenarioTest : ScenarioTestBase() {
         manaCost = "{1}{W}"
         typeLine = "Enchantment — Aura"
         oracleText = "Enchant planeswalker"
-        auraTarget = Targets.Planeswalker
+        auraTarget = TargetObject(filter = TargetFilter.Planeswalker)
     }
 
     init {

@@ -81,6 +81,18 @@ export const HELP_SECTIONS: readonly { id: HelpSection; title: string; blurb: st
 export const HELP_TOPICS: readonly HelpTopic[] = [
   // ── Getting started ────────────────────────────────────────────────────
   {
+    id: 'learn-to-play',
+    section: 'getting-started',
+    title: 'New to Magic itself?',
+    summary:
+      'This guide assumes you know the game. If you do not, the Learn to Play course teaches it by playing: a handful of short games against the AI, each from a board set up to teach one thing, with a coach saying what to do next and pointing at the part of the table to do it on.',
+    body: [
+      { kind: 'p', text: 'The course lives at /learn and needs no name or account. Progress is kept in this browser, and the landing page keeps a row pointing at it — including after you have finished, so any mission can be played again.' },
+    ],
+    links: [{ label: 'Learn to play', href: '/learn' }],
+    related: ['first-game'],
+  },
+  {
     id: 'pick-a-name',
     section: 'getting-started',
     title: 'Picking a name',
@@ -402,7 +414,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     section: 'modes',
     title: 'Just me',
     summary:
-      'You and the built-in AI. Nobody else has to show up, and the game starts as soon as you have picked a deck.',
+      'You and an AI opponent. Nobody else has to show up, and the game starts as soon as you have picked a deck.',
     body: [
       { kind: 'p', text: 'At 1v1 the AI can play any of the card sources — your own deck, a rolled pool, or Momir Basic.' },
       { kind: 'p', text: 'Every table is open too: the lobby starts with a useful AI roster — four players for a shared table, six for a limited round robin, and four for a brought-deck round robin. You can add or remove AI seats in the lobby without making the maximum capacity the default.' },
@@ -482,6 +494,18 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     ],
     shortcuts: ['stack-yield-menu'],
     related: ['priority-modes'],
+  },
+  {
+    id: 'card-preview',
+    section: 'playing',
+    title: 'Reading a card in full',
+    summary:
+      'Hover any card — hand, battlefield, stack, or the top of a graveyard or exile pile — and it opens full-size beside the pointer. On a touch screen, press and hold the card instead, or tap it and pick “View card”.',
+    body: [
+      { kind: 'p', text: 'The preview is read-only; nothing you do to it changes the game. Press F while a double-faced card is open to see its other face.' },
+    ],
+    shortcuts: ['flip-dfc'],
+    related: ['targeting-and-combat', 'zone-browsers'],
   },
   {
     id: 'targeting-and-combat',
@@ -579,7 +603,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         '`1 Cardname (SET) *F* *A* 42 #tag` — Moxfield bulk edit. Foil, alter and tag markers are read and discarded.',
         '`SB: 2 Counterspell` — the MTGO sideboard prefix.',
       ] },
-      { kind: 'p', text: 'Section headers are case-insensitive: `Deck` / `Mainboard` / `Main Deck` / `Maindeck`, `Sideboard` / `Side` / `SB`, `Commander` / `Commanders` / `EDH`, `Companion`, and `About`. Only the main deck and commander are imported. Blank lines and lines starting with `//` or `#` are ignored.' },
+      { kind: 'p', text: 'Section headers are case-insensitive: `Deck` / `Mainboard` / `Main Deck` / `Maindeck`, `Sideboard` / `Side` / `SB`, `Commander` / `Commanders` / `EDH`, `Companion`, and `About`. The main deck, the sideboard and the commander are all imported; `Companion` and `About` are skipped. Blank lines and lines starting with `//` or `#` are ignored.' },
       { kind: 'p', text: 'A line that looks like a card but cannot be matched is reported rather than dropped, so an import never silently loses cards. Export writes the plain `4 Lightning Bolt` shape, which every one of the above tools reads.' },
     ],
     related: ['deckbuilder', 'deck-sharing'],
@@ -688,10 +712,10 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     summary:
       'Overview shows every opponent board side by side; turn it off to focus one board at a time. Follow slides the view to whoever is acting; turn it off for a manual camera.',
     body: [
-      { kind: 'p', text: 'Number keys 1–9 jump to an opponent’s board and 0 toggles the overview. Clicking an opponent chip pins that board until you press Esc.' },
+      { kind: 'p', text: 'Number keys 1–9 jump to an opponent’s board — each chip in the rail shows its key — and 0 toggles the overview. Clicking a chip pins that board (📌) and pauses Follow until you press Esc, click the chip again, or click Follow. With the focused camera you can also swipe left and right across the opponent’s board.' },
       { kind: 'p', text: 'Overview is desktop and landscape-tablet only — three boards side by side are unusable on a portrait phone.' },
     ],
-    shortcuts: ['opponent-boards', 'overview', 'escape'],
+    shortcuts: ['opponent-boards', 'overview', 'escape', 'strip-swipe'],
     related: ['table-free-for-all'],
   },
   {

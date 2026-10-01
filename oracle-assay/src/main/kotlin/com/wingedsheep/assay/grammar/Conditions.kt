@@ -14,9 +14,11 @@ import com.wingedsheep.sdk.scripting.conditions.Compare
 import com.wingedsheep.sdk.scripting.conditions.ComparisonOperator
 import com.wingedsheep.sdk.scripting.conditions.Exists
 import com.wingedsheep.sdk.scripting.conditions.NotCondition
+import com.wingedsheep.sdk.scripting.conditions.PutCounterKindOnCreatureThisTurn
 import com.wingedsheep.sdk.scripting.conditions.YouWereAttackedThisStep
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.dsl.Conditions as SdkConditions
 
 /**
@@ -119,6 +121,31 @@ object Conditions {
             }
         }
 
+    /**
+     * "…if you discarded a card this turn…" — Ragged Recluse's end-step flip, Fell Stinger's
+     * Illusion, Typhoid Mary; "…if you've discarded a card this turn…" — Containment Construct's
+     * activation gate and Alrund's Epiphany's foretell-adjacent cost reduction.
+     *
+     * A `phrase` rather than a [constant] row because the clause has **two printed tenses**. Past
+     * simple leads inside an intervening "if" and present perfect leads after "As long as" and
+     * "Activate only if"; both are the same fact about the same per-player tally, so they are one
+     * rule with a second spelling rather than two rows — a copied `build`/`match` pair is what the
+     * kernel's [com.wingedsheep.assay.syntax.PhraseBuilder.alsoSpelled] exists to prevent. Past
+     * simple is canonical because the positions that print it are the ones a condition slot reaches
+     * today.
+     *
+     * The model is `Conditions.YouDiscardedACardThisTurn`, which was named in this change: it is the
+     * `Compare` over `TurnTracker.CARDS_DISCARDED` that a card would otherwise spell inline, so the
+     * rule and the cards are one definition. Naming an existing composition is the one `mtg-sdk`
+     * change this module makes on its own; it adds no capability.
+     */
+    private val discardedACardThisTurn: Phrase<Condition> =
+        phrase("you discarded a card this turn", name = "you discarded a card this turn") {
+            alsoSpelled("you've discarded a card this turn", name = "you have discarded a card this turn")
+            build { SdkConditions.YouDiscardedACardThisTurn }
+            match { if (it == SdkConditions.YouDiscardedACardThisTurn) bind() else null }
+        }
+
     val all: List<Phrase<Condition>> = listOf(
         constant("an opponent controls more lands than you", SdkConditions.OpponentControlsMoreLands),
         // `IsYourTurn` / `IsNotYourTurn` are deliberately absent, and the reason is one position
@@ -149,8 +176,47 @@ object Conditions {
         // durable cast-choice slot rather than naming a condition per mechanic, and `WasBargained`
         // is the facade over exactly that read, so the rule is a constant and the mechanic's other
         // spellings arrive as sibling rows rather than as a shape.
+        // "Whenever a player plays a land or casts a spell, **if it shares a card type with the
+        // exiled card**, …" — the Crimson Vow cemetery cycle. The pronoun is the object the trigger
+        // just reported (a played land or a cast spell), and "the exiled card" is the CR 607
+        // imprint anaphor `EffectTarget.LinkedExiledCard` — the same handle Mirrodin's imprint
+        // payoffs read. So the whole clause is one `EntityMatches` over a one-predicate filter, and
+        // there is nothing in it to slot: neither side of the comparison is a noun phrase the text
+        // varies. A card that compared some *other* characteristic with the exiled card ("shares a
+        // color", Thought Prison) prints its own clause, and would be a sibling row rather than a
+        // widening of this one — the predicates are separate SDK values and Oracle spells them with
+        // separate nouns.
+        constant(
+            "it shares a card type with the exiled card",
+            SdkConditions.TriggeringSpellMatches(
+                GameObjectFilter.Any.sharingCardTypeWith(EffectTarget.LinkedExiledCard()),
+            ),
+        ),
         constant("it's bargained", SdkConditions.WasBargained),
-        constant("it's kicked", SdkConditions.WasKicked),
+        // "When ~ enters, **if it was kicked**, …" — the kicker permanents' intervening-if. Past
+        // tense is the only printed spelling (81 cards); the row used to read "it's kicked" by
+        // analogy with "it's bargained" above, which Oracle never prints. Bargain is the other way
+        // round: the present is its cost-position spelling, so its trigger form ("if it was
+        // bargained") is a separate, positional question this row doesn't answer.
+        constant("it was kicked", SdkConditions.WasKicked),
+        // The life-state conditions Bloomburrow's Bats and Lizards check. Each is one whole clause
+        // with a facade of its own, so they are constants rather than a shape: `Conditions` names
+        // the gained/lost pair and both of its joins, and the printed English draws the same
+        // distinctions ("gained **or** lost" against "gained **and** lost").
+        //
+        // Each has exactly one printed spelling in the corpus, which is what lets all five be
+        // canonical. `YouLostLifeThisTurn` is the one worth stating: it is spelled in the *present
+        // perfect* — "As long as **you've** lost life this turn" (Essence Channeler) — where the
+        // other four are past simple, and the only other card whose text contains "you lost life
+        // this turn" is Ludevic, Necro-Alchemist, whose clause is about a player *other* than you
+        // and therefore a different model. So the perfect is not a second spelling to choose
+        // between; it is this condition's only one.
+        constant("you gained life this turn", SdkConditions.YouGainedLifeThisTurn),
+        constant("you gained or lost life this turn", SdkConditions.YouGainedOrLostLifeThisTurn),
+        constant("you gained and lost life this turn", SdkConditions.YouGainedAndLostLifeThisTurn),
+        constant("you've lost life this turn", SdkConditions.YouLostLifeThisTurn),
+        constant("an opponent lost life this turn", SdkConditions.OpponentLostLifeThisTurn),
+        discardedACardThisTurn,
         eitherControlled,
         countAtLeast(
             "you control {n} or more {filter}",
@@ -181,9 +247,11 @@ object Conditions {
         // is a numeral rather than a number word because Oracle spells a life total in digits, so the
         // leaf is [Primitives.cardinal] and not [Cardinals.word].
         lifeThreshold(),
+        putCounterKindOnCreatureThisTurn(),
         countAtLeast(
-            "there are {n} or more {filter} cards in your graveyard",
+            "there are {n} or more {filter} in your graveyard",
             "several cards of a kind in your graveyard",
+            noun = Filters.pluralCards,
         ) { count, filter -> SdkConditions.CardsInGraveyardMatchingAtLeast(count, filter) },
         // Lavaborn Muse's intervening-if. "That player" is the one whose step triggered, which the
         // SDK names as `Player.TriggeringPlayer`.
@@ -253,10 +321,13 @@ object Conditions {
     private fun countAtLeast(
         template: String,
         name: String,
+        // The noun this row counts. Three rows count permanents and one counts *cards*, which is a
+        // different noun phrase rather than a different word — see [Filters.cardNoun].
+        noun: Phrase<GameObjectFilter> = Filters.plural,
         condition: (Int, GameObjectFilter) -> Condition,
     ): Phrase<Condition> = phrase(template, name = name) {
         slot("n", Cardinals.word)
-        slot("filter", Filters.plural)
+        slot("filter", noun)
         build { bindings ->
             val filter = bindings.value<GameObjectFilter>("filter")
             if (filter == GameObjectFilter.Any) return@build null
@@ -280,6 +351,34 @@ object Conditions {
      * word. The two leaves are not interchangeable in either direction, which is the distinction
      * [Cardinals] exists to keep.
      */
+    /**
+     * "you've put one or more +1/+1 counters on **a creature** this turn" — Sigardian Paladin.
+     *
+     * The counted noun is fixed and the *kind* is the slot, which is the opposite split from most of
+     * this file and is the SDK's own: `PutCounterKindOnCreatureThisTurn` carries a kind string and
+     * nothing else, because the record it reads is per-player and keyed on kind. There is no field
+     * for what the counter landed on — "a creature" is the condition's whole domain, and the
+     * per-*permanent* wording ("on ~ this turn", Kid Loki) is a different SDK type entirely.
+     *
+     * "One or more" is not a threshold to slot either: the record is a set of kinds, so any number
+     * above zero is the same fact, and a card printing a real count would have to decline here
+     * rather than round a number down to presence. None does.
+     */
+    private fun putCounterKindOnCreatureThisTurn(): Phrase<Condition> =
+        phrase(
+            "you've put one or more {kind} counters on a creature this turn",
+            name = "you placed a kind of counter this turn",
+        ) {
+            slot("kind", Primitives.counterKind)
+            build { SdkConditions.PutCounterKindOnCreatureThisTurn(it.value("kind")) }
+            match { value ->
+                val condition = value as? PutCounterKindOnCreatureThisTurn ?: return@match null
+                val kind = condition.counterType ?: return@match null
+                if (value != SdkConditions.PutCounterKindOnCreatureThisTurn(kind)) return@match null
+                bind("kind" to kind)
+            }
+        }
+
     private fun lifeThreshold(): Phrase<Condition> =
         phrase("a player has {n} or less life", name = "a player is low on life") {
             slot("n", Primitives.cardinal)

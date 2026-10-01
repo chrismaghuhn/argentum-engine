@@ -33,9 +33,11 @@ import com.wingedsheep.sdk.model.EntityId
  *  - **Playing a same-named card from hand** — a [SpellCastEvent] whose spell was cast
  *    from hand, or a land played from hand — forgets every still-known copy of that name
  *    in the player's hand.
- *  - **Leaving the hand** — any [ZoneChangeEvent] out of [Zone.HAND] drops that card's
- *    hand-knowledge, so it can't leak once the card is hidden again (e.g. cast face-down,
- *    or put back on top of the library).
+ *  - **Leaving the hand** — a [ZoneChangeEvent] out of [Zone.HAND] to anywhere but a library
+ *    drops that card's hand-knowledge, so it can't leak once the card is hidden again (e.g. cast
+ *    face-down). A move *into* a library is left alone: `ZoneTransitionService` has already
+ *    replaced the audience with whoever knows that library slot, and overwriting it here would
+ *    blind the mover to a card they legitimately watched go in.
  *
  * It deliberately does **not** touch library/face-down reveals: a private tutor to hand
  * (a [Zone.LIBRARY] → [Zone.HAND] move with no reveal) stays hidden, returns from
@@ -100,7 +102,14 @@ object RevealedInHandTracker {
             }
         }
         // Left the hand → forget this card's hand-knowledge so it can't leak once hidden.
-        if (event.fromZone == Zone.HAND) {
+        //
+        // A library destination is the exception, and deliberately so: ZoneTransitionService has
+        // already *replaced* the card's audience with whoever legitimately knows that library slot
+        // (LibraryRevealUtils.placementAudience — nobody on a shuffle, the mover on a hand
+        // put-back like Conch Horn, the table on a public move). Clearing here would wipe that
+        // authoritative answer and blind the player to the card they just chose to put back.
+        // Leaks are prevented by that replace, not by this clear.
+        if (event.fromZone == Zone.HAND && event.toZone != Zone.LIBRARY) {
             var newState = LibraryRevealUtils.clearReveals(state, listOf(event.entityId))
             // A land enters the battlefield straight from hand (it is never cast), so the
             // land play itself is the "play a same-named card" trigger.
@@ -113,15 +122,15 @@ object RevealedInHandTracker {
     }
 
     private fun onSpellCast(state: GameState, event: SpellCastEvent): GameState {
-        // The cast card is public on the stack regardless; dropping its hand-knowledge also
-        // stops a bounced-then-cast-face-down card from leaking its real identity.
+        // The card has left its hand. Dropping that hand-knowledge also stops a
+        // bounced-then-cast-face-down card from leaking its real identity.
         var newState = LibraryRevealUtils.clearReveals(state, listOf(event.spellEntityId))
         val castFromZone = state.getEntity(event.spellEntityId)
             ?.get<SpellOnStackComponent>()?.castFromZone
         // Only a card played *from hand* makes the known copies of its name ambiguous;
         // casting the same name from the graveyard/exile leaves the hand copy identifiable.
         if (castFromZone == Zone.HAND) {
-            newState = forgetSameNamedInHand(newState, event.casterId, event.cardName)
+            newState = forgetSameNamedInHand(newState, event.casterId, event.underlyingCardName)
         }
         return newState
     }

@@ -13,11 +13,10 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class DamageAssignmentContinuation(
-    override val decisionId: String,
     val attackerId: EntityId,
     val defendingPlayerId: EntityId,
     val firstStrike: Boolean = false
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume a [CombatResolutionDecision] (the bipartite combat-damage board).
@@ -26,34 +25,49 @@ data class DamageAssignmentContinuation(
  * @property pendingChoosers The choosers still to confirm in the combat
  *   assignment plan's active-player/nonactive-player sequence. The head is the
  *   current chooser; the resumer filters the response to edges they own and
- *   re-pauses for the next chooser until the queue empties.
- * @property decisionShape The cached decision (attackers/blockers/defenders/edges). The resumer
- *   reads [DamageEdge.editableBy] and [DamageEdge.sourceId]/[DamageEdge.targetId] from here
- *   rather than re-deriving them, so edge ids never need to be parsed.
+ *   re-pauses for the next chooser until the queue empties. For the two-actor
+ *   banding case this carries both players (CR 702.22j + 702.22k).
+ * The paired [CombatResolutionDecision] supplies represented edges and their ownership to the
+ * resumer (it reads [DamageEdge.editableBy] and [DamageEdge.sourceId]/[DamageEdge.targetId] from
+ * there, so edge ids never need to be parsed); this answer payload retains only the work needed
+ * after those choices are submitted.
  */
 @Serializable
 data class CombatResolutionContinuation(
-    override val decisionId: String,
     val firstStrike: Boolean,
     val pendingChoosers: List<EntityId>,
-    val decisionShape: CombatResolutionDecision,
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume combat damage after player decides whether to assign damage as though unblocked.
  * Used for creatures with AssignCombatDamageAsUnblocked (e.g. Thorn Elemental).
  *
  * @property attackerId The attacking creature with the ability
- * @property defendingPlayerId The defending player
+ * @property defendingPlayerId The player, planeswalker or battle the attacker is attacking — where
+ *   an unblocked creature's damage goes, so the recipient of the bypassed damage. (Name kept for
+ *   serialized compatibility.)
  * @property firstStrike Whether this is during the first strike combat damage step
  */
 @Serializable
 data class AssignAsUnblockedContinuation(
-    override val decisionId: String,
     val attackerId: EntityId,
     val defendingPlayerId: EntityId,
     val firstStrike: Boolean = false
-) : ContinuationFrame
+) : AnswerContinuation
+
+/**
+ * Resume combat damage after the player picks (or declines to pick) a creature for an unblocked
+ * attacker with AssignUnblockedCombatDamageToDefendingCreature (Cunning Giant) to assign its
+ * combat damage to.
+ *
+ * @property attackerId The unblocked attacking creature with the ability
+ * @property firstStrike Whether this is during the first strike combat damage step
+ */
+@Serializable
+data class AssignUnblockedToCreatureContinuation(
+    val attackerId: EntityId,
+    val firstStrike: Boolean = false
+) : AnswerContinuation
 
 /**
  * Resume after player has distributed damage among targets.
@@ -68,11 +82,11 @@ data class AssignAsUnblockedContinuation(
  */
 @Serializable
 data class DistributeDamageContinuation(
-    override val decisionId: String,
     val sourceId: EntityId?,
     val controllerId: EntityId,
-    val targets: List<EntityId>
-) : ContinuationFrame
+    val targets: List<EntityId>,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
  * Resume after defending player distributes damage prevention among multiple combat damage sources.
@@ -88,13 +102,12 @@ data class DistributeDamageContinuation(
  */
 @Serializable
 data class DamagePreventionContinuation(
-    override val decisionId: String,
     val recipientId: EntityId,
     val shieldEffectId: EntityId,
     val shieldAmount: Int,
     val damageBySource: Map<EntityId, Int>,
     val firstStrike: Boolean
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume after a player chooses a source of damage for Deflecting Palm-style effects.
@@ -108,18 +121,18 @@ data class DamagePreventionContinuation(
  */
 @Serializable
 data class DeflectDamageSourceChoiceContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
     /** Arbitrary follow-up effect run when the chosen source's damage is prevented (null = pure prevention). */
     val onPrevented: Effect? = null,
     /** When false, the chosen source's damage is not prevented — it still hits, the reaction still fires (Eye for an Eye). */
-    val preventDamage: Boolean = true
-) : ContinuationFrame
+    val preventDamage: Boolean = true,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
 
 /**
- * Continuation for PreventNextDamageFromChosenSourceEffect.
+ * Continuation for a [com.wingedsheep.sdk.scripting.effects.PreventDamageEffect] over a chosen source.
  *
  * Resume after a player chooses a damage source. Creates a prevention shield
  * on the target that only prevents damage from the chosen source.
@@ -135,7 +148,6 @@ data class DeflectDamageSourceChoiceContinuation(
  */
 @Serializable
 data class PreventDamageFromChosenSourceContinuation(
-    override val decisionId: String,
     val controllerId: EntityId,
     val targetId: EntityId,
     val amount: Int?,
@@ -147,5 +159,53 @@ data class PreventDamageFromChosenSourceContinuation(
      * would deal damage" shield (Circle of Protection family) rather than the all-damage-from-source
      * shield. Ignored when [amount] is non-null.
      */
-    val nextInstanceOnly: Boolean = false
-) : ContinuationFrame
+    val nextInstanceOnly: Boolean = false,
+    /**
+     * When true and [amount] is null, prevent all damage the chosen source would deal **to
+     * anything** for the rest of the turn, rather than shielding a single recipient. This is the
+     * `PreventionDirection.FromTarget` reading of a chosen source — "prevent all damage that would
+     * be dealt this turn by a source of your choice" with no recipient clause (Mourner's Shield).
+     * [targetId] is unused in that case, since the shield is keyed to the source instead.
+     */
+    val silenceChosenSource: Boolean = false,
+    /**
+     * When true (with [nextInstanceOnly]), the single-instance shield prevents only *half* the
+     * damage, rounded down — Dark Sphere. Ignored otherwise.
+     */
+    val halvePreventedDamage: Boolean = false,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
+
+/**
+ * Resume the combat damage step after the controller of an optional damage-redirection shield has
+ * answered one "you may have that damage dealt to you instead" question (Blood of the Martyr).
+ *
+ * The answer is recorded under [choiceKey] and the whole step is re-run: it re-proposes the same
+ * assignments, finds this instance already answered, and asks about the next one — so a batch that
+ * covers several creatures is settled question by question before any of its damage is dealt
+ * (CR 510.2).
+ *
+ * @property choiceKey Identity of the (shield, damage instance) pair being answered — see
+ *   [com.wingedsheep.engine.handlers.effects.damage.OptionalDamageRedirect.choiceKey].
+ * @property firstStrike Whether this is the first-strike combat damage step.
+ */
+@Serializable
+data class CombatOptionalRedirectContinuation(
+    val choiceKey: String,
+    val firstStrike: Boolean = false
+) : AnswerContinuation
+
+/**
+ * The non-combat counterpart of [CombatOptionalRedirectContinuation]: record the answer, then re-run
+ * the damage [effect] that asked.
+ *
+ * Re-running is safe because the question is raised *before* the effect deals any damage, so nothing
+ * has happened yet that the re-run would repeat. Each pass answers one more instance until the effect
+ * runs to completion.
+ */
+@Serializable
+data class OptionalRedirectEffectContinuation(
+    val choiceKey: String,
+    val effect: Effect,
+    val effectContext: com.wingedsheep.engine.handlers.EffectContext
+) : AnswerContinuation

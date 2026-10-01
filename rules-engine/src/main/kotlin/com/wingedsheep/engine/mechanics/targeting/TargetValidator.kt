@@ -35,6 +35,7 @@ import com.wingedsheep.sdk.core.AbilityFlag
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.CardFace
@@ -107,8 +108,10 @@ data class TargetingSourceCharacteristics(
  * Uses PredicateEvaluator to match unified filters against game state.
  */
 class TargetValidator(
-    private val predicateEvaluator: PredicateEvaluator = PredicateEvaluator(),
+    private val predicateEvaluator: PredicateEvaluator
 ) {
+    private val amountEvaluator: DynamicAmountEvaluator = predicateEvaluator.amounts
+
     /**
      * Evaluate a target aggregate cap without turning unavailable data into an unlimited cap.
      * A negative fixed value is the serialized fail-closed marker produced when announcement-time
@@ -121,7 +124,7 @@ class TargetValidator(
     ): Int? {
         if (expression is DynamicAmount.Fixed && expression.amount < 0) return null
         return runCatching {
-            DynamicAmountEvaluator().evaluate(state, expression, context).coerceAtLeast(0)
+            amountEvaluator.evaluate(state, expression, context).coerceAtLeast(0)
         }.getOrNull()
     }
 
@@ -320,7 +323,7 @@ class TargetValidator(
     ): Int? = if (dynamicCountContextUnavailable(state, amount, context)) {
         null
     } else {
-        runCatching { DynamicAmountEvaluator().evaluate(state, amount, context) }.getOrNull()
+        runCatching { amountEvaluator.evaluate(state, amount, context) }.getOrNull()
     }
 
     /**
@@ -361,31 +364,34 @@ class TargetValidator(
             ContextPropertyKey.TRIGGER_DAMAGE_AMOUNT,
             ContextPropertyKey.PREVENTED_DAMAGE_AMOUNT,
             ContextPropertyKey.TRIGGER_LIFE_GAINED,
-            ContextPropertyKey.TRIGGER_LIFE_LOST -> context.triggerDamageAmount == null
+            ContextPropertyKey.TRIGGER_LIFE_LOST -> context.triggerContext?.damageAmount == null
             ContextPropertyKey.LAST_KNOWN_PLUS_ONE_COUNTER_COUNT,
-            ContextPropertyKey.TRIGGER_COUNTERS_PLACED_AMOUNT -> context.triggerCounterCount == null
-            ContextPropertyKey.LAST_KNOWN_TOTAL_COUNTER_COUNT -> context.triggerTotalCounterCount == null
+            ContextPropertyKey.TRIGGER_COUNTERS_PLACED_AMOUNT,
+            ContextPropertyKey.TRIGGER_COUNTERS_REMOVED_AMOUNT -> context.triggerContext?.counterCount == null
+            ContextPropertyKey.LAST_KNOWN_TOTAL_COUNTER_COUNT -> context.triggerContext?.totalCounterCount == null
             // These values are not carried by a pending-target producer's context, so zero would
             // be an invented cap rather than an authoritative snapshot.
             ContextPropertyKey.ADDITIONAL_COST_EXILED_COUNT,
-            ContextPropertyKey.TARGET_COUNT -> true
+            ContextPropertyKey.TARGET_COUNT,
+            ContextPropertyKey.TARGETS_TOTAL_MANA_VALUE -> true
             ContextPropertyKey.MODES_CHOSEN_ON_TRIGGERING_SPELL ->
-                context.triggerModesChosenCount == null
+                context.triggerContext?.modesChosenCount == null
             ContextPropertyKey.MANA_SPENT_ON_TRIGGERING_SPELL ->
-                context.triggerManaSpentOnTriggeringSpell == null
+                context.triggerContext?.manaSpentOnTriggeringSpell == null
             ContextPropertyKey.COLORS_SPENT_ON_TRIGGERING_SPELL ->
-                context.triggerColorsSpentOnTriggeringSpell == null
+                context.triggerContext?.colorsSpentOnTriggeringSpell == null
             ContextPropertyKey.TRIGGERING_SPELL_MANA_VALUE ->
-                context.triggerManaValueOfTriggeringSpell == null
+                context.triggerContext?.manaValueOfTriggeringSpell == null
             ContextPropertyKey.X_VALUE_OF_TRIGGERING_SPELL ->
-                context.triggerXValueOfTriggeringSpell == null
-            ContextPropertyKey.TRIGGER_SCRY_COUNT -> context.triggerScryCount == null
-            ContextPropertyKey.TRIGGER_DISCARD_COUNT -> context.triggerDiscardCount == null
-            ContextPropertyKey.TRIGGER_DISCOVER_VALUE -> context.triggerDiscoverValue == null
+                context.triggerContext?.xValueOfTriggeringSpell == null
+            ContextPropertyKey.TRIGGER_SCRY_COUNT -> context.triggerContext?.scryCount == null
+            ContextPropertyKey.TRIGGER_DISCARD_COUNT -> context.triggerContext?.discardedCardCount == null
+            ContextPropertyKey.TRIGGER_DISCOVER_VALUE -> context.triggerContext?.discoverValue == null
             ContextPropertyKey.TRIGGER_EXCESS_DAMAGE_AMOUNT ->
-                context.triggerExcessDamageAmount == null
-            ContextPropertyKey.TRIGGER_RECIPIENT_TOUGHNESS -> context.triggerRecipientToughness == null
-            ContextPropertyKey.DIED_BATCH_TOTAL_POWER -> context.triggerDiedBatchTotalPower == null
+                context.triggerContext?.excessDamageAmount == null
+            ContextPropertyKey.TRIGGER_RECIPIENT_TOUGHNESS ->
+                context.triggerContext?.recipientToughnessAtDamage == null
+            ContextPropertyKey.DIED_BATCH_TOTAL_POWER -> context.triggerContext?.diedBatchTotalPower == null
             ContextPropertyKey.LINKED_EXILE_CARD_COUNT,
             ContextPropertyKey.LINKED_EXILE_DISTINCT_CARD_TYPE_COUNT -> {
                 val source = context.sourceId?.let(state::getEntity)
@@ -441,7 +447,7 @@ class TargetValidator(
                 pipeline = PipelineState(storedCollections = storedCollections)
             )
             val resolved = runCatching {
-                DynamicAmountEvaluator().evaluate(state, expression, context).coerceAtLeast(0)
+                amountEvaluator.evaluate(state, expression, context).coerceAtLeast(0)
             }.getOrElse { requirement.count }
             requirement.copy(
                 count = resolved,
@@ -587,6 +593,10 @@ class TargetValidator(
         }
         if (expectedSlots != targets.size) return malformedPayload()
 
+        // A filter bound to an earlier named target ("target creature that player controls",
+        // Ravager of the Fells) re-checks against the same choice at resolution. The locked counts
+        // partition the payload exactly, so the names line up with their original slots.
+        val namedTargets = EffectContext.buildNamedTargets(requirements, targets)
         val legal = BooleanArray(targets.size)
         var offset = 0
         for (requirement in requirements) {
@@ -642,7 +652,8 @@ class TargetValidator(
                         damageRecipientKinds = damageRecipientKinds,
                         damageSourceLastKnownSnapshot = damageSourceLastKnownSnapshot,
                         damageRecipientLastKnownSnapshot = damageRecipientLastKnownSnapshot,
-                        storedCollections = storedCollections
+                        storedCollections = storedCollections,
+                        namedTargets = namedTargets,
                     ) == null
             }
             offset = end
@@ -735,7 +746,7 @@ class TargetValidator(
                 if (dynamic == DynamicAmount.XValue) return (xValue ?: 0).coerceAtLeast(0)
                 if (dynamic != null) {
                     return try {
-                        DynamicAmountEvaluator().evaluate(
+                        amountEvaluator.evaluate(
                             state,
                             dynamic,
                             EffectContext(sourceId = sourceId, controllerId = casterId, xValue = xValue)
@@ -911,10 +922,18 @@ class TargetValidator(
         }
         if (objectRequirement.sameCreatureType) {
             val subtypeSets = presentTargets.mapNotNull { target ->
-                val permanent = target as? ChosenTarget.Permanent ?: return@mapNotNull null
-                state.getEntity(permanent.entityId)?.get<CardComponent>()
-                    ?: return "Target characteristics are unavailable"
-                state.projectedState.getSubtypes(permanent.entityId)
+                when (target) {
+                    is ChosenTarget.Permanent -> {
+                        state.getEntity(target.entityId)?.get<CardComponent>()
+                            ?: return "Target characteristics are unavailable"
+                        state.projectedState.getSubtypes(target.entityId)
+                    }
+                    // A card in another zone shares by its printed creature types (Unbury).
+                    is ChosenTarget.Card -> state.getEntity(target.cardId)?.get<CardComponent>()
+                        ?.let(::printedCreatureTypes)
+                        ?: return "Target characteristics are unavailable"
+                    else -> null
+                }
             }
             if (subtypeSets.isNotEmpty() && subtypeSets.reduce { acc, next -> acc intersect next }.isEmpty()) {
                 return "Targets must share a creature type"
@@ -992,7 +1011,13 @@ class TargetValidator(
         sourceSubtypes: Set<String> = emptySet(),
         sourceId: EntityId? = null,
         xValue: Int? = null,
-        targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
+        /**
+         * Whether the thing doing the targeting is a spell or an ability (CR 115.6). Deliberately
+         * has **no default**: a permissive default would silently under-apply a spells-only
+         * restriction (Lurker), and a strict one would wrongly block abilities, so every call site
+         * is made to say which it is.
+         */
+        targetingSourceType: TargetingSourceType,
         sourceCharacteristicsOverride: TargetingSourceCharacteristics? = null,
     ): String? {
         val sourceCharacteristics = sourceCharacteristicsForTargeting(
@@ -1032,7 +1057,7 @@ class TargetValidator(
                             controllerId = casterId,
                             xValue = xValue
                         )
-                        DynamicAmountEvaluator().evaluate(state, dyn, context).coerceAtLeast(0)
+                        amountEvaluator.evaluate(state, dyn, context).coerceAtLeast(0)
                     } catch (_: Exception) {
                         unboundedFallback
                     }
@@ -1134,18 +1159,23 @@ class TargetValidator(
                 }
             }
 
-            // "... that share a creature type" — every chosen permanent target must hold at least
-            // one creature type in common with all the others (Secret Tunnel). Uses projected
-            // subtypes so granted/changed types count. No-op for single-target requirements; a
-            // target with no creature types (or one off the battlefield) can never share, so the
-            // set is rejected.
+            // "... that share a creature type" — every chosen target must hold at least one
+            // creature type in common with all the others. A permanent (Secret Tunnel) reads its
+            // projected subtypes, so granted/changed types count; a card in another zone (Unbury's
+            // "two target creature cards that share a creature type", Aphetto Dredging) reads its
+            // printed creature types, and a changeling card has every one of them (CR 702.73a).
+            // No-op for single-target requirements; a target with no creature types can never
+            // share, so the set is rejected.
             if (requirement is TargetObject && requirement.sameCreatureType && targetsForReq.size > 1) {
                 val projected = state.projectedState
                 val subtypeSets = targetsForReq.map { target ->
-                    (target as? ChosenTarget.Permanent)
-                        ?.takeIf { it.entityId in state.getBattlefield() }
-                        ?.let { projected.getSubtypes(it.entityId) }
-                        ?: emptySet()
+                    when (target) {
+                        is ChosenTarget.Permanent -> target.takeIf { it.entityId in state.getBattlefield() }
+                            ?.let { projected.getSubtypes(it.entityId) }
+                        is ChosenTarget.Card -> state.getEntity(target.cardId)?.get<CardComponent>()
+                            ?.let(::printedCreatureTypes)
+                        else -> null
+                    } ?: emptySet()
                 }
                 val shared = subtypeSets.reduce { acc, next -> acc intersect next }
                 if (shared.isEmpty()) {
@@ -1209,10 +1239,41 @@ class TargetValidator(
                     return "Targets must have different names"
                 }
             }
+
+            // "For each other player, ... up to one target creature that player controls" — no two
+            // chosen targets for this requirement may share a controller (Kaya, Spirits' Justice).
+            // CR 601.2c. Read from projected state so a control-change effect is respected.
+            if (requirement is TargetObject && requirement.differentControllers && targetsForReq.size > 1) {
+                val controllers = targetsForReq.map { target ->
+                    (target as? ChosenTarget.Permanent)?.entityId?.let { id ->
+                        state.projectedState.getController(id)
+                            ?: state.getEntity(id)?.get<ControllerComponent>()?.playerId
+                    }
+                }
+                if (controllers.size != controllers.toSet().size) {
+                    return "Targets must be controlled by different players"
+                }
+            }
+
+            // "Up to one target ... of each card type" — each chosen object must fill a different
+            // card-type slot it qualifies for (Uldaros Theorix). CR 115.3 / CR 205.2a.
+            if (requirement is TargetObject && requirement.onePerCardType && targetsForReq.size > 1) {
+                val ids = targetsForReq.mapNotNull { target ->
+                    (target as? ChosenTarget.Permanent)?.entityId ?: (target as? ChosenTarget.Card)?.cardId
+                }
+                if (!OnePerCardType.isSatisfied(state, ids)) {
+                    return "Targets must be at most one of each card type"
+                }
+            }
         }
 
         return null
     }
+
+    /** A card's printed creature types; a changeling card has every creature type (CR 702.73a). */
+    private fun printedCreatureTypes(card: CardComponent): Set<String> =
+        if (Keyword.CHANGELING in card.baseKeywords) Subtype.ALL_CREATURE_TYPES.toSet()
+        else card.typeLine.subtypes.map { it.value }.filterTo(mutableSetOf()) { it in Subtype.ALL_CREATURE_TYPES }
 
     /**
      * Resolve the characteristics of a targeting source once for both enumeration and strict
@@ -1321,7 +1382,9 @@ class TargetValidator(
         damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
         damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
         damageSourceLastKnownSnapshot: EntitySnapshot? = null,
-        damageRecipientLastKnownSnapshot: EntitySnapshot? = null
+        damageRecipientLastKnownSnapshot: EntitySnapshot? = null,
+        /** Named targets of the same payload, for filters bound to an earlier named target. */
+        namedTargets: Map<String, ChosenTarget> = emptyMap(),
     ): String? {
         val sourceTypeCharacteristics = sourceCharacteristicsOverride
             ?: sourceCharacteristicsForTargeting(
@@ -1343,6 +1406,7 @@ class TargetValidator(
             defendingPlayerId = defendingPlayerId,
             storedCollections = storedCollections,
             targets = allTargets,
+            namedTargets = namedTargets,
             xValue = xValue,
             damageSourceId = damageSourceId,
             damageRecipientId = damageRecipientId,
@@ -1354,7 +1418,19 @@ class TargetValidator(
         val error = when (requirement) {
             is TargetPlayer -> validatePlayerTarget(state, target, requirement, casterId, sourceId)
             is TargetOpponent -> validateOpponentTarget(state, target, requirement, casterId, sourceId)
-            is AnyTarget -> validateAnyTarget(state, target, casterId)
+            is AnyTarget -> {
+                val baseError = validateAnyTarget(state, target, casterId)
+                val entityId = when (target) {
+                    is ChosenTarget.Player -> target.playerId
+                    is ChosenTarget.Permanent -> target.entityId
+                    else -> null
+                }
+                if (baseError != null) baseError
+                else if (entityId == null || !predicateEvaluator.matches(
+                        state, state.projectedState, entityId, requirement.filter, targetPredicateContext
+                    )) "Target does not match ${requirement.description}"
+                else null
+            }
             is TargetCreatureOrPlayer -> validateCreatureOrPlayerTarget(state, target, casterId)
             is TargetPermanentOrPlayer ->
                 validatePermanentOrPlayerTarget(
@@ -1393,6 +1469,7 @@ class TargetValidator(
                 damageRecipientKinds = damageRecipientKinds,
                 damageSourceLastKnownSnapshot = damageSourceLastKnownSnapshot,
                 damageRecipientLastKnownSnapshot = damageRecipientLastKnownSnapshot,
+                namedTargets = namedTargets,
             )
         }
         if (error != null) return error
@@ -1414,7 +1491,8 @@ class TargetValidator(
                 entityController != casterId &&
                 ControllerGrants.isActiveOn<CantBeTargetedByOpponentAbilitiesComponent>(
                     state,
-                    target.entityId
+                    target.entityId,
+                    predicateEvaluator = predicateEvaluator,
                 )
             ) {
                 return "Target can't be targeted by an opponent's ability"
@@ -1429,28 +1507,45 @@ class TargetValidator(
                 playerId = target.playerId,
                 source = sourceTypeCharacteristics.asPlayerProtectionSource(),
                 casterId = casterId,
+                predicateEvaluator = predicateEvaluator,
+                sourceId = sourceId,
             )
         ) {
             return "Target player has protection from this source"
         }
 
+        // A known source with no colors is colorless (CR 105.2c): it still meets "protection from
+        // colorless" and "hexproof from non<color>", where an unknown source matches neither.
+        val sourceKnown = sourceId != null && state.getEntity(sourceId) != null
+
         // Check hexproof and shroud on permanent targets (Rule 702.11, 702.18)
         val hexproofShroudError = checkHexproofAndShroud(state, target, casterId)
         if (hexproofShroudError != null) return hexproofShroudError
 
-        // Check hexproof from color (Rule 702.11b)
-        val hexproofError = checkHexproofFromColor(state, target, casterId, sourceColors)
-        if (hexproofError != null) return hexproofError
+        // "Can't be the target of spells unless ..." (Lurker) — spells only, so an ability may
+        // still target it either way.
+        val spellTargetingError = checkCantBeTargetedBySpells(state, target, targetingSourceType)
+        if (spellTargetingError != null) return spellTargetingError
 
-        // Check hexproof from card type, e.g. "hexproof from instants" (Rule 702.11b).
-        // Elenda, Saint of Dusk.
-        val hexproofCardTypeError = checkHexproofFromCardType(
+        // Check hexproof from a quality — color, non-color, card type (Rule 702.11d), against the
+        // same canonical source characteristics as protection (Elenda, Saint of Dusk; Thrun).
+        val hexproofError = checkHexproofFrom(
             state,
             target,
             casterId,
+            sourceColors,
             sourceTypeCharacteristics.cardTypes,
+            sourceKnown,
         )
-        if (hexproofCardTypeError != null) return hexproofCardTypeError
+        if (hexproofError != null) return hexproofError
+
+        // Protection / hexproof from a kind of source — spells, permanents cast this turn,
+        // activated or triggered abilities (Emrakul, the World Anew; Volatile Stormdrake).
+        if (target is ChosenTarget.Permanent) {
+            SourceKindProtection.targetingError(
+                state, target.entityId, sourceId, casterId, targetingSourceType, predicateEvaluator
+            )?.let { return it }
+        }
 
         // Check protection from each opponent (Rule 702.16e)
         val protectionFromOpponentError = checkProtectionFromEachOpponent(state, target, casterId)
@@ -1479,7 +1574,7 @@ class TargetValidator(
         if (cantBeEnchantedError != null) return cantBeEnchantedError
 
         // Check protection from color and creature subtype (Rule 702.16)
-        return checkProtection(state, target, sourceColors, sourceSubtypes)
+        return checkProtection(state, target, sourceColors, sourceSubtypes, sourceKnown)
     }
 
     /**
@@ -1588,7 +1683,7 @@ class TargetValidator(
             return "$cardName has shroud"
         }
         if (projected.hasKeyword(entityId, Keyword.HEXPROOF) && entityController != casterId &&
-            !HexproofSuppression.isSuppressedForCaster(state, projected, entityId, casterId)
+            !HexproofSuppression.isSuppressedForCaster(state, projected, entityId, casterId, predicateEvaluator = predicateEvaluator)
         ) {
             val cardName = state.getEntity(entityId)?.get<CardComponent>()?.name ?: "target"
             return "$cardName has hexproof"
@@ -1597,87 +1692,68 @@ class TargetValidator(
     }
 
     /**
-     * Check if a target has hexproof from any of the source's colors.
-     * "Hexproof from [color]" prevents opponents from targeting with spells/abilities of that color.
-     * Returns an error message if hexproof blocks this targeting, null otherwise.
+     * [AbilityFlag.CANT_BE_TARGETED_BY_SPELLS]: the target can't be the target of *spells* (Lurker).
+     *
+     * Only spells are restricted, which is why [TargetingSourceType] has to reach this far —
+     * `Keyword.SHROUD` would also lock out abilities. An ANY-typed caller (a path that hasn't said
+     * what it is) is treated as not-a-spell, so the restriction is never applied on a guess.
+     *
+     * The *conditional* wording ("unless it attacked or blocked this turn") is not handled here:
+     * the card grants this flag through a `ConditionalStaticAbility`, so the projector has already
+     * decided whether the creature has it right now. Reading projected state keeps this check a
+     * single lookup with no registry and no condition evaluation.
      */
-    private fun checkHexproofFromColor(
+    private fun checkCantBeTargetedBySpells(
         state: GameState,
         target: ChosenTarget,
-        casterId: EntityId,
-        sourceColors: Set<Color>
+        targetingSourceType: TargetingSourceType
     ): String? {
-        if (sourceColors.isEmpty()) return null
-
-        val entityId = when (target) {
-            is ChosenTarget.Permanent -> target.entityId
-            else -> return null
-        }
-
-        // Only check permanents on the battlefield
+        if (targetingSourceType != TargetingSourceType.SPELL) return null
+        val entityId = (target as? ChosenTarget.Permanent)?.entityId ?: return null
         if (entityId !in state.getBattlefield()) return null
-
-        // Hexproof from color only blocks opponents — owner can still target. Use projected
-        // control because a control-changing effect can resolve before this target recheck.
-        val entityController = state.projectedState.getController(entityId)
-            ?: state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
-        if (entityController == casterId) return null
-
-        val projected = state.projectedState
-        val hexproofSuppressed = HexproofSuppression.isSuppressedForCaster(state, projected, entityId, casterId)
-        if (!hexproofSuppressed) {
-            for (color in sourceColors) {
-                if (projected.hasKeyword(entityId, "HEXPROOF_FROM_${color.name}")) {
-                    val cardName = state.getEntity(entityId)?.get<CardComponent>()?.name ?: "target"
-                    return "$cardName has hexproof from ${color.displayName.lowercase()}"
-                }
-            }
-            // Hexproof from monocolored: a source with exactly one color can't target (CR 105.2).
-            if (sourceColors.size == 1 && projected.hasKeyword(entityId, "HEXPROOF_FROM_MONOCOLORED")) {
-                val cardName = state.getEntity(entityId)?.get<CardComponent>()?.name ?: "target"
-                return "$cardName has hexproof from monocolored"
-            }
-        }
-        return null
+        if (!state.projectedState.hasKeyword(entityId, AbilityFlag.CANT_BE_TARGETED_BY_SPELLS)) return null
+        val cardName = state.getEntity(entityId)?.get<CardComponent>()?.name ?: "That permanent"
+        return "$cardName can't be the target of spells"
     }
 
     /**
-     * Check if a target has hexproof from one of the source's card types — "hexproof from
-     * instants" (Rule 702.11b). Format: `HEXPROOF_FROM_CARDTYPE_<CARDTYPE>`.
-     *
-     * Like hexproof from a color this only blocks *opponents*: the permanent's controller can
-     * still target it with their own instants, and hexproof-suppressing effects (Glaring Spotlight
-     * and friends) turn it off for the caster. The source's card types are resolved the same way as
-     * for protection-from-card-type — projected types for a permanent source, falling back to the
-     * printed type line for a spell on the stack, which the layer projector doesn't cover.
+     * Check if a target has "hexproof from [quality]" matching the source — a color ("hexproof
+     * from white"), monocolored/multicolored, a non-color ("nongreen", colorless sources included)
+     * or a card type ("hexproof from instants"). CR 702.11d: it only blocks *opponents*, and
+     * hexproof-suppressing effects turn it off for the caster. The quality match itself is the
+     * shared [HexproofFromRules]; the source's colors and card types are the canonical targeting
+     * characteristics resolved once for the whole validation (projected for a battlefield source,
+     * the effective face for a spell), the same ones protection is checked against.
      */
-    private fun checkHexproofFromCardType(
+    private fun checkHexproofFrom(
         state: GameState,
         target: ChosenTarget,
         casterId: EntityId,
+        sourceColors: Set<Color>,
         sourceCardTypes: Set<String>,
+        sourceKnown: Boolean,
     ): String? {
-        if (sourceCardTypes.isEmpty()) return null
-        val entityId = when (target) {
-            is ChosenTarget.Permanent -> target.entityId
-            else -> return null
-        }
+        val entityId = (target as? ChosenTarget.Permanent)?.entityId ?: return null
         if (entityId !in state.getBattlefield()) return null
 
-        val entityController = state.projectedState.getController(entityId)
+        // Hexproof from a quality only blocks opponents — the controller can still target. Use
+        // projected control because a control-changing effect can resolve before this target recheck.
+        val projected = state.projectedState
+        val entityController = projected.getController(entityId)
             ?: state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
         if (entityController == casterId) return null
 
-        val projected = state.projectedState
-        if (HexproofSuppression.isSuppressedForCaster(state, projected, entityId, casterId)) return null
+        if (HexproofSuppression.isSuppressedForCaster(state, projected, entityId, casterId, predicateEvaluator = predicateEvaluator)) return null
 
-        for (cardType in sourceCardTypes) {
-            if (projected.hasKeyword(entityId, "HEXPROOF_FROM_CARDTYPE_${cardType.uppercase()}")) {
-                val cardName = state.getEntity(entityId)?.get<CardComponent>()?.name ?: "target"
-                return "$cardName has hexproof from ${cardType.lowercase()}s"
-            }
-        }
-        return null
+        val quality = HexproofFromRules.blockingQuality(
+            projected,
+            entityId,
+            sourceColors = sourceColors.mapTo(mutableSetOf()) { it.name },
+            sourceCardTypes = sourceCardTypes,
+            sourceKnown = sourceKnown
+        ) ?: return null
+        val cardName = state.getEntity(entityId)?.get<CardComponent>()?.name ?: "target"
+        return "$cardName has hexproof from $quality"
     }
 
     /**
@@ -1714,9 +1790,11 @@ class TargetValidator(
         state: GameState,
         target: ChosenTarget,
         sourceColors: Set<Color>,
-        sourceSubtypes: Set<String> = emptySet()
+        sourceSubtypes: Set<String> = emptySet(),
+        sourceKnown: Boolean = false
     ): String? {
-        if (sourceColors.isEmpty() && sourceSubtypes.isEmpty()) return null
+        // A known source with no colors is colorless (CR 105.2c) and still meets protection from colorless.
+        if (sourceColors.isEmpty() && sourceSubtypes.isEmpty() && !sourceKnown) return null
 
         val entityId = when (target) {
             is ChosenTarget.Permanent -> target.entityId
@@ -1728,10 +1806,10 @@ class TargetValidator(
         if (entityId !in state.getBattlefield()) return null
 
         val projected = state.projectedState
-        for (color in sourceColors) {
-            if (projected.hasKeyword(entityId, "PROTECTION_FROM_${color.name}")) {
+        if (sourceKnown || sourceColors.isNotEmpty()) {
+            ColorProtection.matchedQuality(projected, entityId, sourceColors.map { it.name })?.let { quality ->
                 val cardName = state.getEntity(entityId)?.get<CardComponent>()?.name ?: "target"
-                return "$cardName has protection from ${color.displayName.lowercase()}"
+                return "$cardName has protection from ${ColorProtection.describe(quality)}"
             }
         }
         for (subtype in sourceSubtypes) {
@@ -1803,7 +1881,7 @@ class TargetValidator(
         }
         // CR 608.2b: a target illegal at resolution is removed. Re-checking the restriction
         // here covers both cast-time validation and the resolution-time re-validation.
-        if (!PlayerTargetRestriction.isSatisfied(state, requirement.restriction, target.playerId, casterId, sourceId)) {
+        if (!PlayerTargetRestriction.isSatisfied(state, requirement.restriction, target.playerId, casterId, sourceId, predicateEvaluator = predicateEvaluator)) {
             return "Target player does not match: ${requirement.description}"
         }
         return null
@@ -1831,7 +1909,7 @@ class TargetValidator(
         if (playerHasHexproof(state, target.playerId)) {
             return "Target player has hexproof"
         }
-        if (!PlayerTargetRestriction.isSatisfied(state, requirement.restriction, target.playerId, casterId, sourceId)) {
+        if (!PlayerTargetRestriction.isSatisfied(state, requirement.restriction, target.playerId, casterId, sourceId, predicateEvaluator = predicateEvaluator)) {
             return "Target player does not match: ${requirement.description}"
         }
         return null
@@ -1846,7 +1924,11 @@ class TargetValidator(
                 else null
             }
             is ChosenTarget.Permanent -> {
-                if (target.entityId !in state.getBattlefield()) "Target not on battlefield" else null
+                val projected = state.projectedState
+                if (target.entityId !in state.getBattlefield()) "Target not on battlefield"
+                else if (!projected.isCreature(target.entityId) && !projected.isPlaneswalker(target.entityId) &&
+                    !projected.isBattle(target.entityId)) "Target must be a creature, player, planeswalker, or battle"
+                else null
             }
             else -> "Invalid target type"
         }
@@ -1896,6 +1978,8 @@ class TargetValidator(
         return when (target) {
             is ChosenTarget.Player -> {
                 if (!state.hasEntity(target.playerId)) "Target player not found"
+                else if (requirement.opponentsOnly && !state.isOpponentOf(target.playerId, casterId))
+                    "Target must be an opponent"
                 else if (playerHasShroud(state, target.playerId)) "Target player has shroud"
                 else if (playerHasHexproofAgainst(state, target.playerId, casterId)) "Target player has hexproof"
                 else null
@@ -1905,7 +1989,8 @@ class TargetValidator(
                     state, target, requirement.permanentFilter, casterId, sourceId, xValue, chosenPlayerTarget,
                     predicateContext
                 )
-            else -> "Target must be a ${requirement.permanentFilter.description} or player"
+            else -> "Target must be a ${requirement.permanentFilter.description} or " +
+                if (requirement.opponentsOnly) "opponent" else "player"
         }
     }
 
@@ -2100,8 +2185,11 @@ class TargetValidator(
     /**
      * Validate a target for TargetSpellOrPermanent.
      * Accepts either a spell on the stack or a permanent on the battlefield.
-     * If [requirement.permanentFilter] is set, permanent targets must also match it
-     * (e.g., "target spell or creature" restricts the permanent side to creatures).
+     * Each half carries its own optional filter, and a target must match the one for its
+     * side: [requirement.permanentFilter] for battlefield targets (e.g. "target spell or
+     * creature" restricts the permanent side to creatures) and [requirement.spellFilter]
+     * for stack targets (Divide by Zero's "with mana value 1 or greater" restricts both,
+     * so it passes the same filter to each).
      */
     private fun validateSpellOrPermanentTarget(
         state: GameState,
@@ -2133,6 +2221,15 @@ class TargetValidator(
             is ChosenTarget.Spell -> {
                 if (target.spellEntityId !in state.stack) {
                     return "Target spell not on the stack"
+                }
+                val spellFilter = requirement.spellFilter
+                if (spellFilter != null) {
+                    val projected = state.projectedState
+                    val context = (predicateContext ?: PredicateContext(controllerId = casterId))
+                        .copy(controllerId = casterId, sourceId = sourceId, xValue = xValue)
+                    if (!predicateEvaluator.matches(state, projected, target.spellEntityId, spellFilter, context)) {
+                        return "Target does not match ${spellFilter.description}"
+                    }
                 }
                 null
             }
@@ -2183,10 +2280,10 @@ class TargetValidator(
      * or Gilded Light's "You gain shroud until end of turn").
      */
     private fun playerHasShroud(state: GameState, playerId: EntityId): Boolean =
-        ControllerShroud.appliesTo(state, playerId)
+        ControllerShroud.appliesTo(state, playerId, predicateEvaluator = predicateEvaluator)
 
     private fun playerHasHexproof(state: GameState, playerId: EntityId): Boolean =
-        ControllerHexproof.appliesTo(state, playerId)
+        ControllerHexproof.appliesTo(state, playerId, predicateEvaluator = predicateEvaluator)
 
     private fun playerHasHexproofAgainst(state: GameState, playerId: EntityId, casterId: EntityId): Boolean {
         return playerId != casterId && playerHasHexproof(state, playerId)

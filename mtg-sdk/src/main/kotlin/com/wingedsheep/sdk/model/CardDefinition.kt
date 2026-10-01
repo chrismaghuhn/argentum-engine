@@ -142,6 +142,16 @@ enum class CardLayout {
      * leaves the battlefield or otherwise stops being prepared, the exiled copy ceases to exist.
      */
     PREPARE,
+
+    /**
+     * Flip card (CR 710, Kamigawa block). The primary characteristics describe the upright half;
+     * [CardDefinition.flipSide] holds the upside-down half as a full definition (its own name,
+     * type line, oracle text, P/T and abilities). The flip half is used only while the permanent
+     * is on the battlefield **and** flipped (CR 710.1b, 710.2); flipping never changes the card's
+     * mana cost or colour (CR 710.1c). Flipped is a permanent *status* (CR 110.5), one-way while
+     * the permanent stays on the battlefield (CR 710.4) — see `Effects.Flip`.
+     */
+    FLIP,
 }
 
 /**
@@ -207,6 +217,7 @@ data class CardDefinition(
     val oracleId: String? = null,
     val setCode: String? = null,
     val backFace: CardDefinition? = null,  // For double-faced cards
+    val flipSide: CardDefinition? = null,  // For flip cards (CR 710): the upside-down half
     val metadata: ScryfallMetadata = ScryfallMetadata(),  // Scryfall metadata for web client
     val startingLoyalty: Int? = null,  // For planeswalkers
     /**
@@ -264,9 +275,35 @@ data class CardDefinition(
      * override. A card with an empty mana cost and a black color indicator is exactly black; a
      * normal card (no indicator) is just its mana-cost colors. Used e.g. by The Grim Captain, whose
      * transformed back face has no mana cost and a black color indicator.
+     *
+     * [Keyword.DEVOID] (CR 702.114a) overrides both. Devoid is a characteristic-defining ability —
+     * "this object is colorless" — and CDAs function in every zone (CR 604.3), so it belongs to the
+     * card's derived colors rather than to any continuous effect: every reader downstream (the
+     * engine's `CardComponent.colors`, projection's layer-5 base row, evasion and protection checks,
+     * the client card view, search) then sees a colorless object in hand, graveyard, exile, on the
+     * stack and on the battlefield alike, with nothing to wire per zone. A layer-5 effect that says
+     * "becomes blue" still applies on top, which is the order CR 613.3 asks for (CDAs first, then
+     * other effects by timestamp).
+     *
+     * [colorIdentity] deliberately does **not** consult devoid: CR 903.4 builds identity out of the
+     * mana symbols in the cost and rules text, and devoid defines *no* color for the CDA clause to
+     * contribute. Ulamog's Nullifier is colorless and blue-identity at the same time.
      */
     val colors: Set<Color>
-        get() = if (colorIndicator == null) manaCost.colors else manaCost.colors + colorIndicator
+        get() = when {
+            hasDevoid -> emptySet()
+            colorIndicator == null -> manaCost.colors
+            else -> manaCost.colors + colorIndicator
+        }
+
+    /**
+     * Devoid, in either of the two spellings the SDK gives a parameterless keyword: the bare
+     * [keywords] set — what the `keywords(…)` DSL and Assay's compiler both write — and the
+     * [keywordAbilities] list a card may reach for instead. Reading only one would make a card's
+     * colorlessness depend on which spelling its author picked.
+     */
+    private val hasDevoid: Boolean
+        get() = Keyword.DEVOID in keywords || keywordAbilities.any { it.keyword == Keyword.DEVOID }
 
     /**
      * Color identity per CR 903.4: the colors of any mana symbols in the card's mana cost or
@@ -361,6 +398,7 @@ data class CardDefinition(
     val isEquipment: Boolean get() = typeLine.isEquipment
     val isPermanent: Boolean get() = typeLine.isPermanent
     val isDoubleFaced: Boolean get() = backFace != null
+    val isFlip: Boolean get() = flipSide != null
     val isSplit: Boolean get() = layout == CardLayout.SPLIT
     val isAdventure: Boolean get() = layout == CardLayout.ADVENTURE
     val isOmen: Boolean get() = layout == CardLayout.OMEN
@@ -402,6 +440,23 @@ data class CardDefinition(
 
     /** Whether this card has any scripted behavior beyond being a vanilla permanent */
     val hasBehavior: Boolean get() = script.hasBehavior
+
+    /**
+     * Threshold: the smallest N for which one of this card's static abilities is gated on "you have
+     * N or more cards in your graveyard", or null when none is. Derived from [script]; never
+     * authored and never serialized (a getter has no backing field).
+     */
+    val graveyardThreshold: Int? get() = GraveyardThresholds.graveyardSize(this)
+
+    /**
+     * Delirium: the smallest N for which anything on this card — any ability, effect, cost or face —
+     * is gated on "N or more card types among cards in your graveyard", or null when nothing is.
+     *
+     * Derived from the whole typed tree, so it is computed once per definition and kept. Delegated
+     * properties are not serialized, so this never reaches a card's JSON; nor does it take part in
+     * `equals`/`copy`, being outside the primary constructor.
+     */
+    val deliriumThreshold: Int? by lazy { GraveyardThresholds.delirium(this) }
 
     /** The effect when this spell resolves (for instants/sorceries) */
     val spellEffect get() = script.spellEffect
@@ -702,6 +757,25 @@ data class CardDefinition(
         }
 
         /**
+         * Creates a flip card (CR 710): [unflipped] is the upright half the card has everywhere,
+         * [flipped] the upside-down half it has only on the battlefield once flipped. The flipped
+         * half keeps the card's mana cost and colour (CR 710.1c), so it carries no cost of its own.
+         * It is not a double-faced card — transform effects do nothing to it (CR 701.27c).
+         */
+        fun flipCard(
+            unflipped: CardDefinition,
+            flipped: CardDefinition
+        ): CardDefinition {
+            require(unflipped.isPermanent) { "Flip card must be a permanent: ${unflipped.name}" }
+            require(flipped.isPermanent) { "Flipped half must be a permanent: ${flipped.name}" }
+            require(unflipped.backFace == null) { "A flip card is not double-faced: ${unflipped.name}" }
+            return unflipped.copy(
+                flipSide = flipped.copy(manaCost = unflipped.manaCost),
+                layout = CardLayout.FLIP,
+            )
+        }
+
+        /**
          * Creates a double-faced transforming permanent of any permanent type.
          * Use this for non-creature TDFCs (e.g., Incubator tokens whose front face is
          * an artifact and back face is an artifact creature).
@@ -712,6 +786,38 @@ data class CardDefinition(
         ): CardDefinition {
             require(frontFace.isPermanent) { "Front face must be a permanent: ${frontFace.name}" }
             require(backFace.isPermanent) { "Back face must be a permanent: ${backFace.name}" }
+            return frontFace.copy(backFace = backFace)
+        }
+
+        /**
+         * Creates a transforming double-faced card whose **back face is an instant or sorcery** — the
+         * March of the Machine Sieges Invasion of Kylem // Valor's Reach Tag Team and Invasion of
+         * Alara // Awaken the Maelstrom.
+         *
+         * The only way to reach such a back face is to *cast* the card transformed (CR 712.11a); a
+         * Siege's defeat trigger does exactly that from exile. The back face then resolves like any
+         * other instant or sorcery and goes to its owner's graveyard, where it has only its front
+         * face's characteristics again (CR 712.8a). Every other route to the back face is closed by
+         * the rules, and the engine honours each: a transform instruction does nothing (CR 712.10),
+         * a card told to enter the battlefield transformed stays in its current zone (CR 712.14a with
+         * CR 400.4a), and a resolving front-face spell told to enter transformed goes to the
+         * graveyard instead (CR 712.13a).
+         *
+         * The back face carries no mana cost of its own — as a nonmodal DFC's back face, its mana
+         * value on the stack is the front face's (CR 712.8c) — and takes its colours from a colour
+         * indicator. Write its rules text as a `spell { }` block like any other instant or sorcery.
+         *
+         * @param frontFace The front face (must be a permanent).
+         * @param backFace The back face (must be an instant or sorcery).
+         */
+        fun doubleFacedWithSpellBack(
+            frontFace: CardDefinition,
+            backFace: CardDefinition
+        ): CardDefinition {
+            require(frontFace.isPermanent) { "Front face must be a permanent: ${frontFace.name}" }
+            require(backFace.typeLine.isInstant || backFace.typeLine.isSorcery) {
+                "Back face must be an instant or sorcery: ${backFace.name}"
+            }
             return frontFace.copy(backFace = backFace)
         }
 
@@ -764,6 +870,43 @@ data class CardDefinition(
             require(backFace.colorIndicator == null) {
                 "Modal DFC back face '${backFace.name}' takes no color indicator; its colors come " +
                     "from its own mana cost (CR 712.8f)"
+            }
+            return frontFace.copy(backFace = backFace, layout = CardLayout.MODAL_DFC)
+        }
+
+        /**
+         * Creates a **modal double-faced land** — a modal DFC (CR 712.3) both of whose faces are
+         * lands, the Zendikar Rising Pathway cycle (Riverglide Pathway // Lavaglide Pathway and its
+         * nine siblings).
+         *
+         * The rule that makes this its own shape is CR 712.12: *"A player playing a modal
+         * double-faced card or a copy of a modal double-faced card as a land chooses one of its
+         * faces that's a land before putting it onto the battlefield. It enters the battlefield
+         * with that face up."* So neither face is ever cast — the card is **played**, and the
+         * choice is made on the way in — which is exactly why it can't use
+         * [modalDoubleFacedPermanent]: that factory requires the back face to carry its own mana
+         * cost because it is castable (CR 712.11b), and a land has none.
+         *
+         * Once on the battlefield the permanent has only the played face's characteristics
+         * (CR 712.8f) and can never turn over — CR 712.9 excludes modal DFCs from transforming.
+         *
+         * @param frontFace The front face (must be a land with no mana cost).
+         * @param backFace The back face (must be a land with no mana cost).
+         */
+        fun modalDoubleFacedLand(
+            frontFace: CardDefinition,
+            backFace: CardDefinition
+        ): CardDefinition {
+            for (face in listOf(frontFace, backFace)) {
+                require(face.typeLine.isLand) {
+                    "Modal double-faced land face '${face.name}' must be a land (CR 712.12)"
+                }
+                require(face.manaCost.isEmpty()) {
+                    "Modal double-faced land face '${face.name}' is played, not cast — it takes no mana cost"
+                }
+                require(face.colorIndicator == null) {
+                    "Modal double-faced land face '${face.name}' takes no color indicator; a land face is colorless"
+                }
             }
             return frontFace.copy(backFace = backFace, layout = CardLayout.MODAL_DFC)
         }

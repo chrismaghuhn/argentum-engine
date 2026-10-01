@@ -27,6 +27,7 @@ import { AuthWidget } from '@/components/auth/AuthWidget'
 import { LoginModal } from '@/components/auth/LoginModal'
 import { DeckMigrationPrompt } from '@/components/auth/DeckMigrationPrompt'
 import { AccountBenefitsCallout } from '@/components/auth/AccountBenefitsCallout'
+import { LearnCallout } from '@/components/learn/LearnCallout'
 import { FullscreenButton } from './FullscreenButton'
 import { PlayWizard } from './PlayWizard'
 import { SetupRail } from './SetupRail'
@@ -41,6 +42,9 @@ const DISCORD_INVITE_URL = 'https://discord.com/invite/dy6eSRPWzu'
 
 /** Public source repository for the engine and web client. */
 const GITHUB_REPOSITORY_URL = 'https://github.com/wingedsheep/argentum-engine'
+
+/** The maker's portfolio site — a byline in the credits, not a community link. */
+const MAKER_PORTFOLIO_URL = 'https://wingedsheep.com'
 
 /**
  * The contributing guide is a static page under `web-client/public/`, not an SPA route — it must be
@@ -331,6 +335,13 @@ export function HomeScreen({
               while the account check is in flight so the prompt can't flash and vanish. */}
           {!nameConfirmed && !connectName && !nameResolving && (
             <div className={styles.inputGroup}>
+              {/* The one screen a first-time visitor sees. Someone who has never played Magic
+                  needs the course before they need a name, so it comes first — unless they arrived
+                  with an invite code or a game token, in which case they are here to join a
+                  table, not to learn. */}
+              {!joinSessionId && !new URLSearchParams(window.location.search).has('token') && (
+                <LearnCallout variant="arrival" />
+              )}
               <label className={styles.inputLabel}>{joinSessionId ? 'Enter your name to join' : 'Enter your name'}</label>
               <input
                 type="text"
@@ -417,6 +428,9 @@ export function HomeScreen({
                   </div>
                 )}
 
+                {/* Quiet row for a connected player: progress while the course is unfinished,
+                    then a dimmed "course complete" row that still opens it for a replay. */}
+                <LearnCallout variant="tier" />
                 <AccountBenefitsCallout onCreateAccount={() => setLoginOpen(true)} />
                 <DeckMigrationPrompt />
               </section>
@@ -529,6 +543,9 @@ export function HomeScreen({
             <GuideIcon />
             Help build it
           </a>
+        </span>
+        <span>
+          Made by <a href={MAKER_PORTFOLIO_URL} target="_blank" rel="noopener noreferrer" className={styles.attributionLink}>wingedsheep</a>
         </span>
         <span>
           Card images via <a href="https://scryfall.com" target="_blank" rel="noopener noreferrer" className={styles.attributionLink}>Scryfall</a>

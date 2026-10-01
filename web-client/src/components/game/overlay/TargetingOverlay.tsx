@@ -31,7 +31,7 @@ function ZoneCardTargetingOverlay({
   onViewBattlefield,
 }: {
   zoneCards: ClientCard[]
-  targetingState: { selectedTargets: readonly EntityId[]; minTargets: number; maxTargets: number; targetDescription?: string; currentRequirementIndex?: number; totalRequirements?: number; sourceCardName?: string; minTotalManaValue?: number }
+  targetingState: { selectedTargets: readonly EntityId[]; minTargets: number; maxTargets: number; targetDescription?: string; currentRequirementIndex?: number; totalRequirements?: number; sourceCardName?: string; minTotalWeight?: number; cardWeights?: Record<string, number>; weightUnit?: string; cardTypes?: Record<string, readonly string[]> }
   responsive: ResponsiveSizes
   onSelect: (cardId: EntityId) => void
   onDeselect: (cardId: EntityId) => void
@@ -57,22 +57,29 @@ function ZoneCardTargetingOverlay({
   const minTargets = targetingState.minTargets
   const maxTargets = targetingState.maxTargets
 
-  // Collect evidence N (CR 701.59a): the cost constrains the *summed mana value* of the picked
-  // cards, not how many there are, so Confirm is gated on the running total rather than the count.
-  // An empty selection is exempt — that is how an optional collection is declined.
-  const manaFloor = targetingState.minTotalManaValue
-  const totalManaValueSelected =
-    manaFloor == null
+  // A sum-gated graveyard exile — collect evidence N (CR 701.59a) or Baron Helmut Zemo's pip total
+  // — constrains the *summed measure* of the picked cards, not how many there are, so Confirm is
+  // gated on the running total rather than the count. An empty selection is exempt: that is how an
+  // optional collection is declined. Every weight comes from the server (the client computes no
+  // measure of its own), and the server names the unit it measured in.
+  const sumFloor = targetingState.minTotalWeight
+  const weights = targetingState.cardWeights
+  const floorUnit = targetingState.weightUnit ? ` ${targetingState.weightUnit}` : ''
+  const weightOf = (id: EntityId): number => weights?.[id] ?? 0
+  // A union-measured cost ("four or more card types among them") counts distinct types across the
+  // selection rather than summing: an artifact creature plus a creature shows two types, not three.
+  const cardTypes = targetingState.cardTypes
+  const totalSelected =
+    sumFloor == null
       ? 0
-      : targetingState.selectedTargets.reduce(
-          (sum, id) => sum + (gameState?.cards[id]?.manaValue ?? 0),
-          0,
-        )
-  const meetsManaFloor =
-    manaFloor == null || selectedCount === 0 || totalManaValueSelected >= manaFloor
+      : cardTypes != null
+        ? new Set(targetingState.selectedTargets.flatMap((id) => cardTypes[id] ?? [])).size
+        : targetingState.selectedTargets.reduce((sum, id) => sum + weightOf(id), 0)
+  const meetsSumFloor =
+    sumFloor == null || selectedCount === 0 || totalSelected >= sumFloor
 
-  const hasEnoughTargets = selectedCount >= minTargets && meetsManaFloor
-  const hasMaxTargets = manaFloor != null ? false : selectedCount >= maxTargets
+  const hasEnoughTargets = selectedCount >= minTargets && meetsSumFloor
+  const hasMaxTargets = sumFloor != null ? false : selectedCount >= maxTargets
 
   // A group key combines the owning player and the card's zone, so graveyard and exile piles for
   // the same player are separate tabs. Zone defaults to Graveyard when the card carries none.
@@ -473,8 +480,8 @@ function ZoneCardTargetingOverlay({
             transition: 'all 0.15s',
           }}
         >
-          {manaFloor != null
-            ? `Confirm (${totalManaValueSelected}/${manaFloor} mana value)`
+          {sumFloor != null
+            ? `Confirm (${totalSelected}/${sumFloor}${floorUnit})`
             : minTargets === 0 && selectedCount === 0
               ? 'Skip'
               : selectedCount > 0
@@ -508,6 +515,7 @@ function ZoneCardTargetingOverlay({
  */
 export function TargetingOverlay() {
   const targetingState = useGameStore((state) => state.targetingState)
+  const interactionEpoch = useGameStore((state) => state.interactionEpoch)
   const cancelTargeting = useGameStore((state) => state.cancelTargeting)
   const confirmTargeting = useGameStore((state) => state.confirmTargeting)
   const goBackTargeting = useGameStore((state) => state.goBackTargeting)
@@ -593,8 +601,8 @@ export function TargetingOverlay() {
         responsive={responsive}
         onSelect={addTarget}
         onDeselect={removeTarget}
-        onConfirm={confirmTargeting}
-        onCancel={cancelTargeting}
+        onConfirm={() => confirmTargeting(interactionEpoch)}
+        onCancel={() => cancelTargeting(interactionEpoch)}
         {...(canGoBack ? { onBack: goBackTargeting } : {})}
       />
     )
@@ -611,8 +619,8 @@ export function TargetingOverlay() {
         responsive={responsive}
         onSelect={addTarget}
         onDeselect={removeTarget}
-        onConfirm={confirmTargeting}
-        onCancel={cancelTargeting}
+        onConfirm={() => confirmTargeting(interactionEpoch)}
+        onCancel={() => cancelTargeting(interactionEpoch)}
         onViewBattlefield={() => setPilePickerOpen(false)}
         {...(canGoBack ? { onBack: goBackTargeting } : {})}
       />
@@ -820,7 +828,7 @@ export function TargetingOverlay() {
           </button>
         )}
         {hasEnoughTargets && (
-          <button onClick={confirmTargeting} style={{
+          <button onClick={() => confirmTargeting(interactionEpoch)} style={{
             ...styles.actionButton,
             padding: responsive.isMobile ? '8px 12px' : '10px 16px',
             fontSize: responsive.fontSize.normal,
@@ -828,7 +836,7 @@ export function TargetingOverlay() {
             Confirm ({selectedCount})
           </button>
         )}
-        <button onClick={cancelTargeting} style={{
+        <button onClick={() => cancelTargeting(interactionEpoch)} style={{
           ...styles.cancelButton,
           padding: responsive.isMobile ? '8px 12px' : '10px 16px',
           fontSize: responsive.fontSize.normal,

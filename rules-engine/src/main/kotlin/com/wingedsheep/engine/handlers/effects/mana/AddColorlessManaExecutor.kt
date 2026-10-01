@@ -9,6 +9,7 @@ import com.wingedsheep.engine.mechanics.mana.capturedProductionSourceSubtypes
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.scripting.effects.AddColorlessManaEffect
+import com.wingedsheep.sdk.scripting.effects.ManaRestriction
 import kotlin.reflect.KClass
 
 /**
@@ -16,7 +17,7 @@ import kotlin.reflect.KClass
  * "Add {C}{C}" or "Add an amount of {C} equal to..."
  */
 class AddColorlessManaExecutor(
-    private val amountEvaluator: DynamicAmountEvaluator = DynamicAmountEvaluator()
+    private val amountEvaluator: DynamicAmountEvaluator
 ) : EffectExecutor<AddColorlessManaEffect> {
 
     override val effectType: KClass<AddColorlessManaEffect> = AddColorlessManaEffect::class
@@ -31,7 +32,7 @@ class AddColorlessManaExecutor(
             return EffectResult.success(state)
         }
 
-        if (effect.restriction == null) {
+        if (effect.restriction == null && effect.riders.isEmpty()) {
             return EffectResult.success(
                 ManaProvenanceTracker.addUnrestrictedMana(
                     state = state,
@@ -46,10 +47,25 @@ class AddColorlessManaExecutor(
 
         val newState = state.updateEntity(context.controllerId) { container ->
             val manaPool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
-            val updatedPool = manaPool.addRestricted(null, amount, effect.restriction!!)
+            // Riders ride on restricted-mana entries, so rider-carrying mana with no restriction is
+            // stored under the no-op AnySpend marker (mirrors AddManaExecutor).
+            val updatedPool = manaPool.addRestricted(
+                null,
+                amount,
+                effect.restriction ?: ManaRestriction.AnySpend,
+                effect.riders,
+            )
             container.with(updatedPool)
         }
 
-        return EffectResult.success(newState)
+        return EffectResult.success(
+            ManaProvenanceTracker.tagAddedRestrictedMana(
+                newState,
+                context.controllerId,
+                context.sourceId,
+                amount,
+                sourceSubtypes = context.capturedProductionSourceSubtypes(),
+            )
+        )
     }
 }

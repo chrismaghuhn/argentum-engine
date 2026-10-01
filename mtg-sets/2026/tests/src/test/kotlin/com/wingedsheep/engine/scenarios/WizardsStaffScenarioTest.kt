@@ -13,6 +13,8 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Wizard's Staff (HOB #59) — {1}{U} Artifact — Equipment.
@@ -61,7 +63,7 @@ class WizardsStaffScenarioTest : FunSpec({
                 abilityId = equipGenericId,
                 targets = listOf(ChosenTarget.Permanent(bear))
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.state.projectedState.hasKeyword(bear, Keyword.PROWESS) shouldBe true
@@ -82,7 +84,7 @@ class WizardsStaffScenarioTest : FunSpec({
                 abilityId = equipWizardId,
                 targets = listOf(ChosenTarget.Permanent(bear))
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
 
         driver.state.projectedState.hasKeyword(bear, Keyword.PROWESS) shouldBe false
     }
@@ -104,7 +106,7 @@ class WizardsStaffScenarioTest : FunSpec({
                 abilityId = equipGenericId,
                 targets = listOf(ChosenTarget.Permanent(skirge))
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)

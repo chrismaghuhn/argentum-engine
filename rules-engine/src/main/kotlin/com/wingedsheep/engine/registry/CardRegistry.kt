@@ -83,6 +83,12 @@ class CardRegistry(private val parent: CardRegistry? = null) {
             val alias = CombinedDfcAlias(card.name, backFace.name)
             combinedDfcAliases[alias.externalName] = alias
         }
+        // A flip card's upside-down half (CR 710), resolvable by name once the permanent flips.
+        card.flipSide?.let { flipSide ->
+            if (!cardsByName.containsKey(flipSide.name)) {
+                cardsByName[flipSide.name] = flipSide
+            }
+        }
     }
 
     /**

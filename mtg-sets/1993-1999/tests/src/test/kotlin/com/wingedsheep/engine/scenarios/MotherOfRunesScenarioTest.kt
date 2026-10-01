@@ -14,6 +14,8 @@ import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /** Characterization scaffold for Mother of Runes (ULG #14). */
 class MotherOfRunesScenarioTest : FunSpec({
@@ -31,7 +33,7 @@ class MotherOfRunesScenarioTest : FunSpec({
 
     fun chooseRed(driver: GameTestDriver, player: com.wingedsheep.sdk.model.EntityId) {
         val decision = driver.pendingDecision.shouldBeInstanceOf<ChooseColorDecision>()
-        driver.submitDecision(player, ColorChosenResponse(decision.id, Color.RED)).isSuccess shouldBe true
+        driver.submitDecision(player, ColorChosenResponse(decision.id, Color.RED)).outcome shouldBe Outcome.Done
     }
 
     test("tapping Mother of Runes presents a color choice and grants protection only to the chosen creature") {
@@ -52,7 +54,7 @@ class MotherOfRunesScenarioTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(target)),
             )
         )
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.pendingDecision.shouldBeInstanceOf<ChooseColorDecision>()
         chooseRed(driver, player)
@@ -80,7 +82,7 @@ class MotherOfRunesScenarioTest : FunSpec({
                 abilityId = abilityId,
                 targets = listOf(ChosenTarget.Permanent(opponentCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
 
         driver.submit(
             ActivateAbility(
@@ -89,7 +91,7 @@ class MotherOfRunesScenarioTest : FunSpec({
                 abilityId = abilityId,
                 targets = listOf(ChosenTarget.Permanent(ownCreature)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         chooseRed(driver, player)
 
@@ -103,7 +105,7 @@ class MotherOfRunesScenarioTest : FunSpec({
                 abilityId = abilityId,
                 targets = listOf(ChosenTarget.Permanent(ownCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
 
         driver.passPriorityUntil(Step.UPKEEP)
         projector.project(driver.state).hasKeyword(ownCreature, "PROTECTION_FROM_RED") shouldBe false

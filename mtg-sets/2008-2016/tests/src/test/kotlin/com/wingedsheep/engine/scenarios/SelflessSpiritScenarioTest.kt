@@ -9,6 +9,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Selfless Spirit (EMN #40)
@@ -42,7 +43,7 @@ class SelflessSpiritScenarioTest : FunSpec({
                 sourceId = spirit,
                 abilityId = abilityId
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.findPermanent(player, "Selfless Spirit") shouldBe null
         driver.state.getGraveyard(player) shouldBe listOf(spirit)
 

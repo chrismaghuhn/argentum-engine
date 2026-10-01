@@ -36,7 +36,7 @@ object PendingManaPaymentPlanExecutor {
             )
         }
         return OrderedPaymentProgramExecutor(
-            manaSolver = ManaSolver(services.cardRegistry),
+            manaSolver = services.manaSolver,
             manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
         ).executeV3(
             state = state,

@@ -93,11 +93,20 @@ class FrozenBaselineTest : FunSpec({
          * exactly, so the stream is identical apart from that insertion. The outcome is untouched:
          * seat 1 still wins on turn 20 at life -8 / 16.
          *
-         * Note for whoever hits this next: hashing `GameAction.toString()` means *any* new field on
-         * a cast/action data class moves this hash without the AI having changed. Check the outcome
-         * line in the failure clue first — if turns/winner/life match the values above, you are
-         * almost certainly in this benign case rather than a real behavioural drift.
+         * Note for whoever hits this next: this branch hashes the explicit-field trace in
+         * `CanonicalActionTrace`, not `GameAction.toString()`, so a new field on an action data class
+         * does not move it — upstream's re-blessings of 2026-08-24 to 2026-09-30 (`asBackFace`,
+         * `additionalManaForCounters`, `additionalCostChoices`, `declaredCostTimes`) never applied here,
+         * and the golden stayed `6ff9ded1403d59ac`. Recorded actions do name cards by entity ID, so
+         * anything that changes ID assignment moves it. Check the outcome line in the failure clue
+         * first — if turns/winner/life match the values above, you are almost certainly in that benign
+         * case rather than a real behavioural drift.
+         *
+         * Re-blessed 2026-10-01 (upstream-sync-05) for deck IDs minted in a seeded shuffled order.
+         * **`LEGACY_V0` did not move.** With `shuffledDeckIds = false` in the runner's `GameConfig`,
+         * this branch reproduces the previous golden `6ff9ded1403d59ac` exactly. Seat 1 still wins on
+         * turn 20 at life -8 / 16.
          */
-        private const val GOLDEN_HASH = "6ff9ded1403d59ac"
+        private const val GOLDEN_HASH = "135c913b07c0dbec"
     }
 }

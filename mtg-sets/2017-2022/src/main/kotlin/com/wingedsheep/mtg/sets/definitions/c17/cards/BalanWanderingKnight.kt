@@ -12,11 +12,9 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.GrantKeyword
 import com.wingedsheep.sdk.scripting.conditions.ComparisonOperator
 import com.wingedsheep.sdk.scripting.effects.CardSource
-import com.wingedsheep.sdk.scripting.effects.ForEachInCollectionEffect
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
 /**
  * Balan, Wandering Knight — Commander 2017 #2
@@ -42,7 +40,7 @@ val BalanWanderingKnight = card("Balan, Wandering Knight") {
         condition = Conditions.CompareAmounts(
             DynamicAmounts.equipmentAttachedToSelf(),
             ComparisonOperator.GTE,
-            DynamicAmount.Fixed(2),
+            2,
         )
         ability = GrantKeyword(Keyword.DOUBLE_STRIKE, GroupFilter.source())
     }
@@ -57,11 +55,11 @@ val BalanWanderingKnight = card("Balan, Wandering Knight") {
                 name = "equipment",
             )
             run(
-                ForEachInCollectionEffect(
-                    collection = equipment.key,
-                    effect = Effects.AttachTargetEquipmentToCreature(
-                        equipmentTarget = EffectTarget.Self,
-                        creatureTarget = EffectTarget.PipelineTarget(source.key),
+                Effects.ForEachInCollection(
+                    equipment,
+                    Effects.AttachTargetEquipmentToCreature(
+                        equipmentTarget = EffectTarget.IterationEntity,
+                        creatureTarget = source.asTarget,
                     ),
                 )
             )

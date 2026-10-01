@@ -126,10 +126,7 @@ class ManaSourceProvenanceScenarioTest : ScenarioTestBase() {
                 timing = TimingRule.ManaAbility
             }
             triggeredAbility {
-                trigger = Triggers.youCastSpell(
-                    spellFilter = GameObjectFilter.Permanent,
-                    requires = setOf(SpellCastPredicate.PaidWithManaFromSource),
-                )
+                trigger = Triggers.you.casts(GameObjectFilter.Permanent, requires = setOf(SpellCastPredicate.PaidWithManaFromSource))
                 effect = Effects.GainLife(5)
             }
         }

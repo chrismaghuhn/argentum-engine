@@ -6,12 +6,14 @@ import com.wingedsheep.assay.syntax.printLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.CharacteristicValue
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.GrantDynamicStats
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.values.Aggregation
 import com.wingedsheep.sdk.scripting.values.CardNumericProperty
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 
 /**
@@ -39,6 +41,10 @@ class AmountsTest : StringSpec({
 
     fun dynamic(line: String): DynamicAmount =
         (fragment(line).dynamicPower as CharacteristicValue.Dynamic).source
+
+    /** The power bonus of a line whose only ability is a `~ gets …` static. */
+    fun dynamicStat(line: String): DynamicAmount =
+        (fragment(line).script.staticAbilities.single() as GrantDynamicStats).powerBonus
 
     // ---------------------------------------------------------------------------------------
     // The vocabulary
@@ -148,12 +154,16 @@ class AmountsTest : StringSpec({
     // The counted verbs' second spelling
     // ---------------------------------------------------------------------------------------
 
-    // Life is not in the band: "for each" is its canonical spelling and outnumbers "equal to"
-    // 131 to 23, so offering both would be two printed forms for one model. See
-    // [Steps.countedSteps] for what it would take to unify them.
-    "life keeps its numeral and declines the clause the damage verbs read" {
+    // Life joined the band with the life-amount rewrite: the seven life rows became one
+    // `LifeChange` table over `countedStepPair`, so the clause the damage verbs read is now a
+    // second *input* spelling rather than a decline. It is an `alsoSpelled` alternate, not a
+    // second printed form — "for each" outnumbers "equal to" 131 to 23 in print and stays
+    // canonical, so the clause reads and reprints as the numeral form.
+    "life reads its numeral, and the damage verbs' clause reprints as it" {
         roundTrips("You gain 3 life.")
-        declines("You gain life equal to the number of creatures you control.")
+        Grammar.abilityLine.printLine(
+            fragment("You gain life equal to the number of creatures you control.")
+        ) shouldBe "You gain 1 life for each creature you control."
     }
 
     "damage puts the clause where the amount's shape says it goes" {
@@ -165,6 +175,55 @@ class AmountsTest : StringSpec({
         roundTrips("~ deals damage equal to the number of +1/+1 counters on ~ to target creature.")
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Where a tally counts — [Amounts.scopes], the layer five families each froze a row of
+    // ---------------------------------------------------------------------------------------
+
+    "the where-clause is three rows of one layer, and the families share them" {
+        // "the number of …" had both printed rows already; the sentences that count had one each.
+        roundTrips("~ gets +1/+1 for each creature on the battlefield.")
+        roundTrips("~ gets +1/+0 for each artifact you control.")
+        roundTrips("You gain 1 life for each creature on the battlefield.")
+        roundTrips("You gain 2 life for each creature you control.")
+        roundTrips("Draw a card for each creature you control.")
+        roundTrips("This spell costs {1} less to cast for each creature you control.")
+        roundTrips("This spell costs {1} less to cast for each creature on the battlefield.")
+    }
+
+    "the empty row parses and prints as the clause it leaves out" {
+        // English omits "on the battlefield" and means it, so the bare spelling is an alternate of
+        // the printed one rather than a value of its own.
+        Grammar.abilityLine.printLine(fragment("You gain 1 life for each attacking creature.")) shouldBe
+            "You gain 1 life for each attacking creature on the battlefield."
+        Grammar.abilityLine.printLine(fragment("Draw a card for each attacking creature.")) shouldBe
+            "Draw a card for each attacking creature on the battlefield."
+        Grammar.abilityLine.printLine(
+            fragment("This spell costs {1} less to cast for each attacking creature.")
+        ) shouldBe "This spell costs {1} less to cast for each attacking creature on the battlefield."
+    }
+
+    "a counted noun phrase says where it counts exactly once" {
+        // The clause and the noun phrase's own controller layer are the same layer, so a row with a
+        // surface refuses a filter that already carries one — otherwise "for each creature you
+        // control" has two readings with two models, which is the ambiguity this grammar never
+        // resolves by ordering an alternation.
+        declines("You gain 1 life for each creature you control on the battlefield.")
+        declines("~ gets +1/+1 for each creature you control on the battlefield.")
+        // The empty row refuses only the clause the " you control" row prints, so a controller the
+        // layer has no row for still reaches the model through the noun phrase. (It reads rather
+        // than round-trips: the noun phrase itself has a canonical spelling of its own.)
+        fragment("You gain 1 life for each creature an opponent controls.")
+    }
+
+    "the modifier pair is two numbers, not one" {
+        // "+1/+0" is the bare tally beside a Fixed(0) — Nim Lasher's model, and every card in the
+        // family. The rule used to require the two halves to agree, which is why it read none of them.
+        dynamicStat("~ gets +1/+0 for each artifact you control.") shouldBe
+            DynamicAmount.AggregateBattlefield(Player.You, GameObjectFilter.Artifact)
+        roundTrips("~ gets +0/+1 for each Mountain you control.")
+        roundTrips("~ gets +2/+2 for each face-down creature on the battlefield.")
+    }
+
     // The minority order for each domain parses and comes back as the majority one: the reading
     // survived, only the spelling moved, which is what an `alternate` is for.
     "the minority word order reads and reprints as the canonical one" {
@@ -174,5 +233,25 @@ class AmountsTest : StringSpec({
         Grammar.abilityLine.printLine(
             fragment("~ deals damage to any target equal to the number of +1/+1 counters on ~.")
         ) shouldBe "~ deals damage equal to the number of +1/+1 counters on ~ to any target."
+    }
+
+    // The aggregation boundary is the *player*, which no `AggregateBattlefield` scope can be:
+    // "on the battlefield" flattens the table into one set and counts it, giving 5 where this
+    // gives 3. Both spellings parse, so the assertion is about which value each denotes.
+    "the superlative counts each player separately and takes the largest" {
+        fragment("~ enters with a number of suspect counters on it equal to the greatest number of creatures a player controls.")
+            .script.replacementEffects.single()
+            .let { it as com.wingedsheep.sdk.scripting.EntersWithDynamicCounters }
+            .count shouldBe DynamicAmount.GreatestAmongPlayers(
+                players = Player.Each,
+                inner = DynamicAmount.AggregateBattlefield(Player.You, GameObjectFilter.Creature),
+            )
+        roundTrips("~ enters with X suspect counters on it, where X is the greatest number of creatures a player controls.")
+        roundTrips("~ enters with X charge counters on it, where X is the greatest number of artifacts an opponent controls.")
+    }
+
+    "the collective count and the superlative are different values of the same words" {
+        fragment("~ gets +1/+1 for each creature on the battlefield.") shouldNotBe
+            fragment("~ enters with X +1/+1 counters on it, where X is the greatest number of creatures a player controls.")
     }
 })

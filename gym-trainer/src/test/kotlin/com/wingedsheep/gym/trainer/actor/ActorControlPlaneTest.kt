@@ -1138,11 +1138,11 @@ private fun testB2Episode(
         reason = closureReason,
     )
     val replayContent = ReplayContentIdentityV1(
-        replayVersion = 6,
+        replayVersion = com.wingedsheep.gym.trainer.trajectory.CURRENT_TRAJECTORY_REPLAY_VERSION,
         value = "c".repeat(64),
     )
     val verification = VerifiedReplayVerification(
-        replayVersion = 6,
+        replayVersion = com.wingedsheep.gym.trainer.trajectory.CURRENT_TRAJECTORY_REPLAY_VERSION,
         replayActionCount = 0,
         verifiedActionCount = 0,
         fidelity = ReplayFidelity.EXACT,

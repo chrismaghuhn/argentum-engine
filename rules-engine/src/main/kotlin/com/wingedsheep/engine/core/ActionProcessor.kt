@@ -12,6 +12,7 @@ import com.wingedsheep.engine.handlers.actions.room.RoomModule
 import com.wingedsheep.engine.handlers.actions.special.SpecialActionsModule
 import com.wingedsheep.engine.handlers.actions.spell.SpellModule
 import com.wingedsheep.engine.mechanics.KnownInformationLedger
+import com.wingedsheep.engine.mechanics.SplitSecond
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.core.UndoPolicyComputer
@@ -77,49 +78,59 @@ class ActionProcessor(
      *
      * @param state The current game state
      * @param action The action to process
-     * @return ExecutionResult with new state, events, and any error or pending decision
+     * @return ExecutionResult with new state, events, and its [Outcome]
      */
     fun process(state: GameState, action: GameAction): ProcessedAction {
-        // Basic validation that applies to all actions
-        val basicError = validateBasics(state, action)
-        if (basicError != null) {
-            return ProcessedAction(ExecutionResult.error(state, basicError))
-        }
-
-        // Delegate to the handler registry for action-specific validation
-        val validationError = registry.validate(state, action)
+        val validationError = validate(state, action)
         if (validationError != null) {
-            return ProcessedAction(ExecutionResult.error(state, validationError))
+            return ProcessedAction(ExecutionResult.rejected(state, Rejection.IllegalAction(validationError)))
         }
 
-        // Execute the action, then update which revealed/returned cards opponents may see
-        // (cards revealed into hand or bounced back to hand stay visible until a same-named
-        // card is played — see [RevealedInHandTracker]).
+        // Handlers never detect triggers or check state-based actions themselves. The one settle
+        // boundary does that for every action, paused or not (CR 117.5, 603.3).
         val executed = try {
-            registry.execute(state, action)
+            services.settler.settle(registry.execute(ControlHistory.initialize(state), action))
         } catch (unsupported: UnsupportedPathFailure) {
             // Authoritative target-context gaps must remain typed all the way to trusted
             // observation/action boundaries. Do not let a missing predicate fact escape as an
-            // ordinary empty-target fizzle or as an untyped handler exception.
+            // ordinary empty-target fizzle or as an untyped handler exception. Trigger placement
+            // now runs inside the settle boundary, so it is guarded together with the handler.
             ExecutionResult.error(
                 state = state,
                 message = unsupported.message ?: "Trusted execution encountered an unsupported path",
                 diagnostics = unsupported.diagnostics,
             )
         }
-        val result = com.wingedsheep.engine.mechanics.RevealedInHandTracker
-            .applyAfterAction(executed)
-            .let { knownInformationResult ->
-                if (!trackKnownInformation) {
-                    knownInformationResult
-                } else {
-                    KnownInformationLedger.applyAfterAction(
-                        beforeState = state,
-                        result = knownInformationResult,
-                        cardRegistry = services.cardRegistry,
-                    )
+
+        // Action handlers may compose several immutable intermediate states before a nested
+        // handler or resumed continuation rejects a later step. The public action contract is
+        // atomic on error: retain only the rejection and hand back the entry state itself. A
+        // rejected attempt therefore skips event-driven post-action bookkeeping entirely — its
+        // events describe work that is being thrown away and must not reach the tracker. The
+        // typed reason survives: validation refusals above are IllegalAction, and anything
+        // execution rejects keeps its own reason. Transient diagnostics are not part of the
+        // thrown-away work: a trusted caller must still see why the attempt failed closed.
+        val outcome = executed.outcome
+        val result = if (outcome is Outcome.Rejected) {
+            ExecutionResult.rejected(state, outcome.reason, diagnostics = executed.diagnostics)
+        } else {
+            // Cards revealed into hand or bounced back to hand stay visible until a same-named
+            // card is played — see [RevealedInHandTracker]. Paused actions are accepted in-flight
+            // actions, so they retain this existing bookkeeping just like completed successes.
+            com.wingedsheep.engine.mechanics.RevealedInHandTracker
+                .applyAfterAction(executed)
+                .let { knownInformationResult ->
+                    if (!trackKnownInformation) {
+                        knownInformationResult
+                    } else {
+                        KnownInformationLedger.applyAfterAction(
+                            beforeState = state,
+                            result = knownInformationResult,
+                            cardRegistry = services.cardRegistry,
+                        )
+                    }
                 }
-            }
+        }
         val undoPolicy = if (computeUndo) {
             UndoPolicyComputer.compute(action, state, result, services.cardRegistry)
         } else {
@@ -127,6 +138,15 @@ class ActionProcessor(
         }
         return ProcessedAction(result, undoPolicy)
     }
+
+    /**
+     * The verdict [process] gives [action] before executing it: `null` when it is legal, otherwise
+     * why not. The legal-action enumerators must never offer a fully-specified action this refuses —
+     * `LegalActionsPassValidateTest` holds them to it.
+     */
+    fun validate(state: GameState, action: GameAction): String? =
+        // Basic validation that applies to all actions, then the handler's own.
+        validateBasics(state, action) ?: registry.validate(state, action)
 
     /**
      * Basic validation that applies to all actions.
@@ -140,6 +160,14 @@ class ActionProcessor(
         // Check player exists
         if (!state.turnOrder.contains(action.playerId)) {
             return "Unknown player: ${action.playerId}"
+        }
+
+        // Split second (CR 702.61): no spells, no non-mana activated abilities. An ActivateAbility
+        // is decided by ActivationValidator, the only place that knows whether it's a mana ability.
+        if (action !is ActivateAbility && SplitSecond.forbids(action) &&
+            SplitSecond.isLocked(state, services.cardRegistry)
+        ) {
+            return SplitSecond.REJECTION
         }
 
         return null

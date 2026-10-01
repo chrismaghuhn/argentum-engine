@@ -1,11 +1,12 @@
 package com.wingedsheep.mtg.sets.definitions.som.cards
 
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.DynamicAmounts
+import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
-import com.wingedsheep.sdk.scripting.effects.CreateTokenEffect
 
 /**
  * Kemba, Kha Regent — Scars of Mirrodin #12
@@ -22,8 +23,8 @@ val KembaKhaRegent = card("Kemba, Kha Regent") {
     oracleText = "At the beginning of your upkeep, create a 2/2 white Cat creature token for each Equipment attached to Kemba."
 
     triggeredAbility {
-        trigger = Triggers.YourUpkeep
-        effect = CreateTokenEffect(
+        trigger = Triggers.you.beginningOf(Step.UPKEEP)
+        effect = Effects.CreateToken(
             count = DynamicAmounts.attachmentsOnSelf(),
             power = 2,
             toughness = 2,

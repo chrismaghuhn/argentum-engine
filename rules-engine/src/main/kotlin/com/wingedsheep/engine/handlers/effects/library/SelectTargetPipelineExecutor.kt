@@ -10,7 +10,6 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.SelectTargetEffect
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -19,12 +18,17 @@ import kotlin.reflect.KClass
  * Finds legal targets using [TargetFinder], then:
  * - **No legal targets** → stores empty collection, pipeline continues
  * - **Single legal target (non-optional)** → auto-selects, stores in [updatedCollections]
- * - **Multiple legal targets** → creates [ChooseTargetsDecision], pushes
- *   [SelectTargetPipelineContinuation], returns paused
+ * - **Multiple legal targets, or a single one the player may decline** → creates
+ *   [ChooseTargetsDecision], pushes [SelectTargetPipelineContinuation], returns paused
+ *
+ * The requirement is single-target by construction — [createDecision] offers one slot — so a
+ * requirement asking for more is rejected up front rather than turned into a decision no response
+ * can satisfy.
  */
 class SelectTargetPipelineExecutor(
-    private val targetFinder: TargetFinder = TargetFinder(),
-    private val targetValidator: TargetValidator = TargetValidator(),
+    private val targetFinder: TargetFinder,
+    /** Builds the pending target metadata; defaults to one over the finder's (the engine's) evaluator. */
+    private val targetValidator: TargetValidator = TargetValidator(targetFinder.predicateEvaluator),
 ) : EffectExecutor<SelectTargetEffect> {
 
     override val effectType: KClass<SelectTargetEffect> = SelectTargetEffect::class
@@ -43,10 +47,12 @@ class SelectTargetPipelineExecutor(
                 requirement = effect.requirement,
                 controllerId = controllerId,
                 sourceId = sourceId,
-                // Carry the resolving ability's granter so a target filter can exclude it via
-                // StatePredicate.IsGrantingPermanent — e.g. Dire Blunderbuss's "an artifact other than
-                // Dire Blunderbuss" (CR 201.5a). Only granterId is threaded; other context fields keep
-                // their prior (null) defaults so no existing SelectTargetEffect changes behavior.
+                // A non-targeting choice ("choose a player") isn't limited by hexproof or shroud.
+                ignoreTargetingRestrictions = effect.nonTargeting,
+                // The resolving ability's whole predicate context — its granter, so a target filter
+                // can exclude it via StatePredicate.IsGrantingPermanent (Dire Blunderbuss's "an
+                // artifact other than Dire Blunderbuss", CR 201.5a), its pipeline values and trigger
+                // facts — so every filter is evaluated against authoritative facts or fails closed.
                 pipelineContext = com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context),
                 requireAuthoritativeContext = true,
             )
@@ -72,6 +78,8 @@ class SelectTargetPipelineExecutor(
             requirement = effect.requirement,
             context = context,
             legalTargetCount = legalTargets.size,
+            // The client shows this line as the prompt; an authored prompt says what the choice is for.
+            description = effect.prompt ?: effect.requirement.description,
         ).orReturnUnsupported { return it.toEffectError(state) }
 
         if (legalTargets.isEmpty()) {
@@ -83,14 +91,14 @@ class SelectTargetPipelineExecutor(
             )
         }
 
-        if (legalTargets.size == 1) {
-            // Single legal target — auto-select
+        if (legalTargets.size == 1 && effect.requirement.requiresExactlyOneTarget) {
+            // Single mandatory legal target — auto-select
             return EffectResult.success(state).copy(
                 updatedCollections = mapOf(effect.storeAs to legalTargets)
             )
         }
 
-        // Multiple legal targets — pause for player decision
+        // Multiple legal targets or an optional singleton — pause for player decision
         return createDecision(state, context, effect, legalTargets, requirementInfo)
     }
 
@@ -101,11 +109,15 @@ class SelectTargetPipelineExecutor(
         legalTargets: List<EntityId>,
         requirementInfo: TargetRequirementInfo,
     ): EffectResult {
-        val decisionId = UUID.randomUUID().toString()
         val controllerId = context.controllerId
         val sourceName = context.sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name }
 
-        val decision = ChooseTargetsDecision(
+        require(effect.requirement.count == 1) {
+            "SelectTargetEffect offers one target slot, but ${effect.requirement.description} asks " +
+                "for ${effect.requirement.count}"
+        }
+
+        val decision = { decisionId: String -> ChooseTargetsDecision(
             id = decisionId,
             playerId = controllerId,
             prompt = effect.description,
@@ -116,31 +128,17 @@ class SelectTargetPipelineExecutor(
             ),
             targetRequirements = listOf(requirementInfo),
             legalTargets = mapOf(0 to legalTargets)
-        )
+        ) }
 
         val continuation = SelectTargetPipelineContinuation(
-            decisionId = decisionId,
             playerId = controllerId,
             sourceId = context.sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             storeAs = effect.storeAs,
             storedCollections = context.pipeline.storedCollections
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = controllerId,
-                    decisionType = "CHOOSE_TARGETS",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 }

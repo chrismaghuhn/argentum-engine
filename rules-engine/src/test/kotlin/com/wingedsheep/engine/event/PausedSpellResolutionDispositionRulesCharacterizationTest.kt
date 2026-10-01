@@ -4,14 +4,13 @@ import com.wingedsheep.engine.core.ActionProcessor
 import com.wingedsheep.engine.core.AlternativeCostType
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.EngineServices
+import com.wingedsheep.engine.core.FinishResolvingSpellContinuation
 import com.wingedsheep.engine.core.ResolvedEvent
-import com.wingedsheep.engine.core.SpellResolutionContinuation
 import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.handlers.ContinuationHandler
-import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.mechanics.sba.zone.PhantomCardCopiesCheck
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.support.GameTestDriver
@@ -46,12 +45,13 @@ import com.wingedsheep.sdk.scripting.GraveyardCardsHaveFlashback
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.KeywordAbility
 import com.wingedsheep.sdk.scripting.RedirectZoneChange
-import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import io.kotest.matchers.types.shouldNotBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Regression coverage for the state boundary when an instant/sorcery resolution pauses for input.
@@ -87,7 +87,7 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
             ControllerComponent(playerId),
             SpellOnStackComponent(
                 casterId = playerId,
-                resolvingSpellEffectOverride = MayEffect(Effects.GainLife(1)),
+                resolvingSpellEffectOverride = Effects.May(Effects.GainLife(1)),
             ),
         )
         if (copy) {
@@ -111,10 +111,13 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
             .withEntity(opponentId, ComponentContainer.of(PlayerComponent("P2"), LifeTotalComponent(20)))
             .withEntity(spellId, spell)
             .copy(
-                stack = listOf(spellId),
                 objectIdentityStamps = mapOf(spellId to stamp),
                 nextObjectIdentityStamp = stamp + 1L,
             )
+            // Enter the stack through the zone API so the spell is a tracked stack object (its
+            // ObjectRef / logical STACK zone drive resolution and finalization); it is already
+            // stamped, so pushToStack keeps the stamp.
+            .pushToStack(spellId)
         return Fixture(state, playerId, spellId, stamp)
     }
 
@@ -151,11 +154,11 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
     fun withHandRedirect(fixture: Fixture): GameState = withRedirect(fixture, Zone.HAND)
 
     fun resolvePaused(fixture: Fixture) =
-        StackResolver(CardRegistry()).resolveTop(fixture.state)
+        EngineServices(CardRegistry()).stackResolver.resolveTop(fixture.state)
 
     fun assertPauseEnvelope(result: com.wingedsheep.engine.core.ExecutionResult) {
         result.error shouldBe null
-        result.isPaused shouldBe true
+        result.outcome.shouldBeInstanceOf<Outcome.Paused>()
         val decision = result.pendingDecision.shouldNotBeNull()
         result.state.pendingDecision shouldBe decision
         result.state.peekContinuation().shouldNotBeNull()
@@ -169,7 +172,7 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
         destination: Zone = Zone.GRAVEYARD,
     ) {
         result.error shouldBe null
-        result.isPaused shouldBe false
+        result.outcome.shouldNotBeInstanceOf<Outcome.Paused>()
         result.state.pendingDecision shouldBe null
         result.state.continuationStack shouldBe emptyList()
         val zoneChange = result.events.filterIsInstance<ZoneChangeEvent>().single()
@@ -185,8 +188,9 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
     ): com.wingedsheep.engine.core.ExecutionResult {
         val decision = result.pendingDecision.shouldNotBeNull().shouldBeInstanceOf<YesNoDecision>()
         val services = EngineServices(CardRegistry())
+        // The pending question is the Suspension on top of the continuation stack; resume pops it.
         return services.continuationHandler.resume(
-            result.state.clearPendingDecision(),
+            result.state,
             YesNoResponse(decision.id, choice),
         )
     }
@@ -265,7 +269,7 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
         val resumed = submitYes(paused, fixture.playerId)
 
         resumed.error shouldBe null
-        resumed.isPaused shouldBe false
+        resumed.outcome.shouldNotBeInstanceOf<Outcome.Paused>()
         resumed.state.pendingDecision shouldBe null
         resumed.state.getEntity(fixture.spellId) shouldBe null
         resumed.state.continuationStack shouldBe emptyList()
@@ -304,9 +308,9 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
         val afterEffect = resumeYes(paused)
 
         afterEffect.error shouldBe null
-        afterEffect.isPaused shouldBe true
+        afterEffect.outcome.shouldBeInstanceOf<Outcome.Paused>()
         afterEffect.pendingDecision.shouldNotBeNull().shouldBeInstanceOf<YesNoDecision>()
-        afterEffect.state.continuationStack.filterIsInstance<SpellResolutionContinuation>()
+        afterEffect.state.continuationStack.filterIsInstance<FinishResolvingSpellContinuation>()
             .single().dispositionPending shouldBe true
         afterEffect.state.getEntity(fixture.spellId)?.has<SpellOnStackComponent>() shouldBe true
         afterEffect.state.getZone(ZoneKey(fixture.playerId, Zone.HAND)).contains(fixture.spellId) shouldBe false
@@ -357,17 +361,16 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
                     spell.copy(
                         castFromZone = Zone.GRAVEYARD,
                         alternativeCost = AlternativeCostType.FLASHBACK,
-                        resolvingSpellEffectOverride = Effects.Composite(
-                            Effects.Destroy(EffectTarget.SpecificEntity(grantSourceId)),
-                            MayEffect(Effects.GainLife(1)),
-                        ),
+                        resolvingSpellEffectOverride =
+                            Effects.Destroy(EffectTarget.SpecificEntity(grantSourceId)) then
+                                Effects.May(Effects.GainLife(1)),
                     )
                 )
             }
 
-        val paused = StackResolver(registry).resolveTop(state)
+        val paused = EngineServices(registry).stackResolver.resolveTop(state)
         paused.error shouldBe null
-        paused.isPaused shouldBe true
+        paused.outcome.shouldBeInstanceOf<Outcome.Paused>()
         paused.pendingDecision.shouldNotBeNull().shouldBeInstanceOf<YesNoDecision>()
         paused.state.pendingDecision shouldBe paused.pendingDecision
         paused.state.getBattlefield(fixture.playerId).contains(grantSourceId) shouldBe false
@@ -396,10 +399,8 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
             manaCost = "{0}"
             typeLine = "Instant"
             spell {
-                effect = Effects.Composite(
-                    Effects.DestroyAll(GameObjectFilter.Enchantment),
-                    MayEffect(Effects.GainLife(1)),
-                )
+                effect = Effects.DestroyAll(GameObjectFilter.Enchantment) then
+                    Effects.May(Effects.GainLife(1))
             }
         }
         val driver = GameTestDriver()
@@ -429,7 +430,7 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
         stackComponent.alternativeCost shouldBe AlternativeCostType.FLASHBACK
 
         val paused = driver.bothPass()
-        paused.isPaused shouldBe true
+        paused.outcome.shouldBeInstanceOf<Outcome.Paused>()
         driver.state.getBattlefield(player).contains(grantSourceId) shouldBe false
         driver.state.getZone(ZoneKey(player, Zone.GRAVEYARD)).contains(spellId) shouldBe false
 
@@ -446,7 +447,7 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
             manaCost = "{0}"
             typeLine = "Instant"
             spell {
-                effect = MayEffect(Effects.GainLife(1))
+                effect = Effects.May(Effects.GainLife(1))
             }
             keywordAbility(KeywordAbility.harmonize("{0}"))
         }
@@ -474,7 +475,7 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
             ?.alternativeCost shouldBe AlternativeCostType.HARMONIZE
 
         val paused = driver.bothPass()
-        paused.isPaused shouldBe true
+        paused.outcome.shouldBeInstanceOf<Outcome.Paused>()
         val resolved = driver.submitYesNo(player, choice = true)
 
         resolved.error shouldBe null
@@ -496,7 +497,7 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
             manaCost = "{0}"
             typeLine = "Instant"
             spell {
-                effect = MayEffect(Effects.GainLife(1))
+                effect = Effects.May(Effects.GainLife(1))
             }
             additionalCost(Costs.additional.SacrificePermanent(GameObjectFilter.Enchantment))
         }
@@ -529,7 +530,7 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
         driver.state.getBattlefield(player).contains(grantSourceId) shouldBe false
 
         val paused = driver.bothPass()
-        paused.isPaused shouldBe true
+        paused.outcome.shouldBeInstanceOf<Outcome.Paused>()
         val resolved = driver.submitYesNo(player, choice = true)
 
         resolved.error shouldBe null

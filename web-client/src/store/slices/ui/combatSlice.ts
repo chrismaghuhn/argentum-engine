@@ -8,11 +8,12 @@ import type {
 } from '../types'
 import {
   entityId,
-  createSubmitActionMessage,
   createUpdateAttackerTargetsMessage,
   createUpdateBlockerAssignmentsMessage,
 } from '@/types'
 import type { ClientGameState } from '@/types'
+import { Keyword } from '@/types/enums'
+import { bandIsLegal, mergedBand } from '@/utils/combatBands'
 import { getWebSocket } from '../shared'
 
 /**
@@ -74,8 +75,8 @@ export interface CombatSliceActions {
   stopDraggingAttacker: () => void
   startDraggingCard: (cardId: EntityId) => void
   stopDraggingCard: () => void
-  confirmCombat: () => void
-  cancelCombat: () => void
+  confirmCombat: (interactionEpoch: string | null) => void
+  cancelCombat: (interactionEpoch: string | null) => void
   attackWithAll: () => void
   clearAttackers: () => void
   clearCombat: () => void
@@ -91,11 +92,12 @@ export interface CombatSliceActions {
    * - If both are in different bands → merges into the band of [target].
    * - If neither is in a band → creates a fresh band of [source, target].
    *
-   * `sourceHasBanding` and `targetHasBanding` are caller-supplied keyword flags. If
-   * neither has banding the link is rejected; the "at most one non-banding member"
-   * rule (CR 702.22c) is enforced at drop time by the caller and re-checked server-side.
+   * CR 702.22c (at most one member without banding) is checked here against the store's
+   * projected keywords — the set the server's `validateBands` reads — so the merge path and the
+   * drop path can't disagree, and no band the server would accept is refused. The server
+   * re-validates on declaration regardless.
    */
-  linkBand: (sourceId: EntityId, targetId: EntityId, sourceHasBanding: boolean, targetHasBanding: boolean) => void
+  linkBand: (sourceId: EntityId, targetId: EntityId) => void
 }
 
 export type CombatSlice = CombatSliceState & CombatSliceActions
@@ -110,6 +112,7 @@ export const createCombatSlice: SliceCreator<CombatSlice> = (set, get) => ({
   opponentBlockerAssignments: null,
 
   startCombat: (combatState) => {
+    if (!combatState.interactionEpoch || combatState.interactionEpoch !== get().interactionEpoch) return
     set({ combatState })
     // Sync pre-populated blocker assignments with opponent
     if (combatState.mode === 'declareBlockers' && Object.keys(combatState.blockerAssignments).length > 0) {
@@ -301,9 +304,12 @@ export const createCombatSlice: SliceCreator<CombatSlice> = (set, get) => ({
     set({ draggingCardId: null })
   },
 
-  confirmCombat: () => {
+  confirmCombat: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { combatState, playerId, gameState } = get()
-    if (!combatState || !playerId) return
+    // The submission below carries combatState's captured origin, so that is the value that has
+    // to be current — checking only the caller's would let a stale declaration through.
+    if (!combatState || combatState.interactionEpoch !== interactionEpoch || !playerId) return
     // In hotseat the single connection declares for whichever seat the server is asking:
     // the acting seat from the legal action (active player / defending player fallback).
     const actingSeat = combatActingSeat(combatState, playerId, gameState)
@@ -312,10 +318,13 @@ export const createCombatSlice: SliceCreator<CombatSlice> = (set, get) => ({
       if (!gameState) return
 
       // Default defender for attackers without an explicit assignment: the sticky
-      // defender (multiplayer pick), else the first opponent still in the game —
-      // which in a 2-player game is the sole opponent, as before.
+      // defender (multiplayer pick), else the first living opponent the server lists as
+      // attackable — under attack-left/right or a "can't be attacked" effect the first
+      // living opponent in seat order may not be — else the first opponent at all.
+      const attackable = new Set(combatState.validAttackTargets)
       const defaultDefender =
         combatState.stickyDefenderId ??
+        gameState.players.find((p) => p.playerId !== actingSeat && !p.hasLost && attackable.has(p.playerId))?.playerId ??
         gameState.players.find((p) => p.playerId !== actingSeat && !p.hasLost)?.playerId ??
         gameState.players.find((p) => p.playerId !== actingSeat)?.playerId
       if (!defaultDefender) return
@@ -345,7 +354,7 @@ export const createCombatSlice: SliceCreator<CombatSlice> = (set, get) => ({
         attackers,
         ...(validBands.length > 0 ? { bands: validBands } : {}),
       }
-      getWebSocket()?.send(createSubmitActionMessage(action))
+      get().submitAction(action, combatState.interactionEpoch)
     } else if (combatState.mode === 'declareBlockers') {
       const blockers: Record<EntityId, readonly EntityId[]> = {}
       for (const [blockerIdStr, attackerIds] of Object.entries(combatState.blockerAssignments)) {
@@ -357,7 +366,7 @@ export const createCombatSlice: SliceCreator<CombatSlice> = (set, get) => ({
         playerId: actingSeat,
         blockers,
       }
-      getWebSocket()?.send(createSubmitActionMessage(action))
+      get().submitAction(action, combatState.interactionEpoch)
     }
 
     set({ draggingBlockerId: null })
@@ -390,9 +399,10 @@ export const createCombatSlice: SliceCreator<CombatSlice> = (set, get) => ({
     })
   },
 
-  cancelCombat: () => {
+  cancelCombat: (interactionEpoch) => {
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const { combatState, playerId, gameState } = get()
-    if (!combatState || !playerId) return
+    if (!combatState || combatState.interactionEpoch !== interactionEpoch || !playerId) return
     const actingSeat = combatActingSeat(combatState, playerId, gameState)
 
     if (combatState.mode === 'declareAttackers') {
@@ -401,14 +411,14 @@ export const createCombatSlice: SliceCreator<CombatSlice> = (set, get) => ({
         playerId: actingSeat,
         attackers: {} as Record<EntityId, EntityId>,
       }
-      getWebSocket()?.send(createSubmitActionMessage(action))
+      get().submitAction(action, combatState.interactionEpoch)
     } else if (combatState.mode === 'declareBlockers') {
       const action = {
         type: 'DeclareBlockers' as const,
         playerId: actingSeat,
         blockers: {} as Record<EntityId, readonly EntityId[]>,
       }
-      getWebSocket()?.send(createSubmitActionMessage(action))
+      get().submitAction(action, combatState.interactionEpoch)
     }
 
     set({ draggingBlockerId: null })
@@ -462,11 +472,13 @@ export const createCombatSlice: SliceCreator<CombatSlice> = (set, get) => ({
     })
   },
 
-  linkBand: (sourceId, targetId, sourceHasBanding, targetHasBanding) => {
+  linkBand: (sourceId, targetId) => {
     if (sourceId === targetId) return
     set((state) => {
       if (!state.combatState || state.combatState.mode !== 'declareAttackers') return state
-      if (!sourceHasBanding && !targetHasBanding) return state
+      const hasBanding = (id: EntityId): boolean =>
+        state.gameState?.cards[id]?.keywords.includes(Keyword.BANDING) ?? false
+      if (!bandIsLegal(mergedBand(state.combatState.bands, sourceId, targetId), hasBanding)) return state
 
       // Auto-select both attackers if not already selected. Mandatory creatures are
       // already in the list; this just extends it.

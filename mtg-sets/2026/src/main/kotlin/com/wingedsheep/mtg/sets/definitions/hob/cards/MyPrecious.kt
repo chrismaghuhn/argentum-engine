@@ -1,15 +1,16 @@
 package com.wingedsheep.mtg.sets.definitions.hob.cards
 
-import com.wingedsheep.sdk.core.AbilityFlag
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.CantBeBlocked
 import com.wingedsheep.sdk.scripting.GrantKeyword
+import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.TimingRule
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
  * My Precious // Allure of Power
@@ -36,13 +37,18 @@ val MyPrecious = card("My Precious") {
     staticAbility {
         ability = GrantKeyword(Keyword.HEXPROOF)
     }
-    flags(AbilityFlag.CANT_BE_BLOCKED)
+    staticAbility {
+        // A card-level `flags(AbilityFlag.CANT_BE_BLOCKED)` would land the evasion on this
+        // Equipment itself, which never blocks or is blocked — the printed line is about the
+        // equipped creature, so the evasion is a static scoped to what this is attached to.
+        ability = CantBeBlocked(GroupFilter.attachedCreature())
+    }
 
     activatedAbility {
         isEquipAbility = true
         timing = TimingRule.SorcerySpeed
         cost = Costs.Composite(Costs.Mana("{2}"), Costs.PayLife(2))
-        val creature = target("creature you control", Targets.CreatureYouControl)
+        val creature = target(TargetFilter.CreatureYouControl)
         effect = Effects.AttachEquipment(creature)
     }
 

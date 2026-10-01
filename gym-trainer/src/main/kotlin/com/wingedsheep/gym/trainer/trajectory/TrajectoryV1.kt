@@ -61,21 +61,36 @@ const val COMPACT_REPLAY_LINK_V1_SCHEMA_IDENTITY: String = "argentum-trajectory-
 const val COMPACT_REPLAY_V5_VERSION: Int = 5
 const val COMPACT_REPLAY_V5_SCHEMA_IDENTITY: String = "argentum-compact-replay@v5"
 
-/** Current CompactReplay semantic version carried by new replay recordings. */
+/** Historical CompactReplay semantic version: recordings made before deck ids were shuffled. */
 const val COMPACT_REPLAY_V6_VERSION: Int = 6
 const val COMPACT_REPLAY_V6_SCHEMA_IDENTITY: String = "argentum-compact-replay@v6"
 
+/**
+ * Current CompactReplay semantic version carried by new replay recordings: v6 plus the seeded
+ * shuffled deck ids and team seats adopted in upstream-sync-05, which the replay reconstructor
+ * must reproduce to replay the recorded actions.
+ */
+const val COMPACT_REPLAY_V7_VERSION: Int = 7
+const val COMPACT_REPLAY_V7_SCHEMA_IDENTITY: String = "argentum-compact-replay@v7"
+
 /** Current replay version used by newly constructed Trajectory V1 metadata. */
-const val CURRENT_TRAJECTORY_REPLAY_VERSION: Int = COMPACT_REPLAY_V6_VERSION
+const val CURRENT_TRAJECTORY_REPLAY_VERSION: Int = COMPACT_REPLAY_V7_VERSION
 
 /** Closed replay-version set supported by the Trajectory V1 linkage. */
 private val SUPPORTED_TRAJECTORY_REPLAY_SCHEMA_PAIRS: Map<Int, String> = mapOf(
     COMPACT_REPLAY_V5_VERSION to COMPACT_REPLAY_V5_SCHEMA_IDENTITY,
     COMPACT_REPLAY_V6_VERSION to COMPACT_REPLAY_V6_SCHEMA_IDENTITY,
+    COMPACT_REPLAY_V7_VERSION to COMPACT_REPLAY_V7_SCHEMA_IDENTITY,
 )
 
 val SUPPORTED_TRAJECTORY_REPLAY_VERSIONS: Set<Int> =
     SUPPORTED_TRAJECTORY_REPLAY_SCHEMA_PAIRS.keys.toSet()
+
+/** The schema identity the linkage pairs with [replayVersion]; throws for an unsupported version. */
+fun compactReplaySchemaIdentity(replayVersion: Int): String =
+    requireNotNull(SUPPORTED_TRAJECTORY_REPLAY_SCHEMA_PAIRS[replayVersion]) {
+        "Unsupported replay version: $replayVersion"
+    }
 
 private fun requireSupportedTrajectoryReplayPair(
     replayVersion: Int,
@@ -223,7 +238,7 @@ data class EnvironmentIdentityV1(
     val observationSchemaIdentity: String = PLAYER_OBSERVATION_V1_SCHEMA_IDENTITY,
     val actionDomainSchemaIdentity: String = COMPLETE_LEGAL_DOMAIN_SCHEMA_IDENTITY,
     val candidateDomainDigestSchemaIdentity: String = CANDIDATE_DOMAIN_DIGEST_SCHEMA_IDENTITY,
-    val replaySchemaIdentity: String = COMPACT_REPLAY_V6_SCHEMA_IDENTITY,
+    val replaySchemaIdentity: String = COMPACT_REPLAY_V7_SCHEMA_IDENTITY,
 ) {
     init {
         require(version == ENVIRONMENT_IDENTITY_V1_VERSION) {
@@ -345,7 +360,7 @@ data class CompactReplayLinkV1(
     val version: Int = COMPACT_REPLAY_LINK_V1_VERSION,
     val schemaIdentity: String = COMPACT_REPLAY_LINK_V1_SCHEMA_IDENTITY,
     val replayVersion: Int = CURRENT_TRAJECTORY_REPLAY_VERSION,
-    val replaySchemaIdentity: String = COMPACT_REPLAY_V6_SCHEMA_IDENTITY,
+    val replaySchemaIdentity: String = compactReplaySchemaIdentity(replayVersion),
     val replayContentIdentity: String,
     val replayActionStart: Int = 0,
     val replayActionCount: Int,

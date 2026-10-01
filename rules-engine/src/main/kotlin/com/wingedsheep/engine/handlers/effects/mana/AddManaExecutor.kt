@@ -18,7 +18,7 @@ import kotlin.reflect.KClass
  * "Add {G}" or "Add {R}{R}" or "Add {R} for each Goblin on the battlefield."
  */
 class AddManaExecutor(
-    private val amountEvaluator: DynamicAmountEvaluator = DynamicAmountEvaluator()
+    private val amountEvaluator: DynamicAmountEvaluator
 ) : EffectExecutor<AddManaEffect> {
 
     override val effectType: KClass<AddManaEffect> = AddManaEffect::class
@@ -66,6 +66,16 @@ class AddManaExecutor(
             container.with(updatedPool)
         }
 
-        return EffectResult.success(newState)
+        // Restricted, rider-carrying and combat-duration entries carry their own provenance tag
+        // (plain unrestricted mana took the atomic provenance seam above).
+        return EffectResult.success(
+            ManaProvenanceTracker.tagAddedRestrictedMana(
+                newState,
+                context.controllerId,
+                context.sourceId,
+                amount,
+                sourceSubtypes = context.capturedProductionSourceSubtypes(),
+            )
+        )
     }
 }

@@ -1,5 +1,6 @@
 package com.wingedsheep.mtg.sets.definitions.cns.cards
 
+import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Conditions
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
@@ -19,7 +20,7 @@ val DeathreapRitual = card("Deathreap Ritual") {
     oracleText = "Morbid — At the beginning of each end step, if a creature died this turn, you may draw a card."
 
     triggeredAbility {
-        trigger = Triggers.EachEndStep
+        trigger = Triggers.anyPlayer.beginningOf(Step.END)
         interveningIf = Conditions.CreatureDiedThisTurn
         optional = true
         effect = Effects.DrawCards(1)

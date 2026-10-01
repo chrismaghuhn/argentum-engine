@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.effects.DamageUtils
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.mechanics.combat.CombatDamageAssignmentPlanValidator
+import com.wingedsheep.engine.handlers.effects.combat.installPreventAndReactShield
 import com.wingedsheep.engine.mechanics.layers.ActiveFloatingEffect
 import com.wingedsheep.engine.mechanics.layers.FloatingEffectData
 import com.wingedsheep.engine.mechanics.layers.Layer
@@ -22,17 +23,64 @@ class CombatContinuationResumer(
         resumer(DamageAssignmentContinuation::class) { state, continuation, response, _ ->
             resumeDamageAssignment(state, continuation, response)
         },
-        resumer(CombatResolutionContinuation::class) { state, continuation, response, _ ->
-            resumeCombatResolution(state, continuation, response)
+        questionResumer(CombatResolutionContinuation::class) { state, continuation, question, response, _ ->
+            resumeCombatResolution(state, continuation, question, response)
         },
         resumer(AssignAsUnblockedContinuation::class) { state, continuation, response, _ ->
             resumeAssignAsUnblocked(state, continuation, response)
         },
+        questionResumer(AssignUnblockedToCreatureContinuation::class) { state, continuation, question, response, _ ->
+            resumeAssignUnblockedToCreature(state, continuation, question, response)
+        },
         resumer(DamagePreventionContinuation::class, ::resumeDamagePrevention),
         resumer(DistributeDamageContinuation::class, ::resumeDistributeDamage),
         resumer(DeflectDamageSourceChoiceContinuation::class, ::resumeDeflectDamageSourceChoice),
-        resumer(PreventDamageFromChosenSourceContinuation::class, ::resumePreventDamageFromChosenSource)
+        resumer(PreventDamageFromChosenSourceContinuation::class, ::resumePreventDamageFromChosenSource),
+        resumer(CombatOptionalRedirectContinuation::class) { state, continuation, response, _ ->
+            resumeCombatOptionalRedirect(state, continuation, response)
+        },
+        resumer(OptionalRedirectEffectContinuation::class, ::resumeOptionalRedirectEffect)
     )
+
+    /**
+     * Record one "you may have that damage dealt to you instead" answer and re-run the combat damage
+     * step, which then asks about the next instance the shield covers (or deals the damage).
+     */
+    fun resumeCombatOptionalRedirect(
+        state: GameState,
+        continuation: CombatOptionalRedirectContinuation,
+        response: DecisionResponse
+    ): ExecutionResult {
+        if (response !is YesNoResponse) {
+            return ExecutionResult.error(state, "Expected yes/no response for optional damage redirection")
+        }
+        val recorded = com.wingedsheep.engine.handlers.effects.damage.OptionalDamageRedirect
+            .record(state, continuation.choiceKey, response.choice)
+        return services.combatManager.applyCombatDamage(recorded, firstStrike = continuation.firstStrike)
+    }
+
+    /** The non-combat counterpart: record the answer, then re-run the damage effect that asked. */
+    fun resumeOptionalRedirectEffect(
+        state: GameState,
+        continuation: OptionalRedirectEffectContinuation,
+        response: DecisionResponse,
+        checkForMore: CheckForMore
+    ): ExecutionResult {
+        if (response !is YesNoResponse) {
+            return ExecutionResult.error(state, "Expected yes/no response for optional damage redirection")
+        }
+        val recorded = com.wingedsheep.engine.handlers.effects.damage.OptionalDamageRedirect
+            .record(state, continuation.choiceKey, response.choice)
+        val result = services.effectExecutorRegistry.execute(
+            recorded,
+            continuation.effect,
+            continuation.effectContext
+        )
+        if (result.outcome is Outcome.Paused) {
+            return ExecutionResult.propagatePause(result.state, result.events)
+        }
+        return checkForMore(result.state, result.events)
+    }
 
     fun resumeDamageAssignment(
         state: GameState,
@@ -66,9 +114,14 @@ class CombatContinuationResumer(
         }
 
         val newState = if (response.choice) {
-            // Player chose to assign damage to the defending player — store a manual assignment
-            val projected = state.projectedState
-            val power = projected.getPower(continuation.attackerId) ?: 0
+            // Player chose to assign as though unblocked — store a manual assignment to the player,
+            // planeswalker or battle it attacks (the continuation's `defendingPlayerId`).
+            // The amount it assigns, not its raw power: Doran-style "assigns equal to toughness"
+            // and "assigns no combat damage" riders still apply to the redirected assignment.
+            val power = com.wingedsheep.engine.mechanics.combat.CombatDamageUtils.getAssignedCombatDamage(
+                state, state.projectedState, continuation.attackerId, services.cardRegistry,
+                predicateEvaluator = services.predicateEvaluator
+            )
             state.updateEntity(continuation.attackerId) { container ->
                 container.with(
                     com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent(
@@ -77,8 +130,8 @@ class CombatContinuationResumer(
                 )
             }
         } else {
-            // Player chose to assign to blockers normally — mark with empty assignment
-            // so the pre-check doesn't re-ask; proposeDamageAssignments will auto-distribute
+            // Declining suppresses the bypass question, but leaves normal assignment open:
+            // the combat board still asks when blockers allow a choice, otherwise it auto-distributes.
             state.updateEntity(continuation.attackerId) { container ->
                 container.with(
                     com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent(emptyMap())
@@ -90,10 +143,43 @@ class CombatContinuationResumer(
     }
 
     /**
+     * Record the chosen creature as the unblocked attacker's whole assignment, or an empty
+     * assignment (assign to what it's attacking, as normal) when the player declined.
+     */
+    fun resumeAssignUnblockedToCreature(
+        state: GameState,
+        continuation: AssignUnblockedToCreatureContinuation,
+        question: PendingDecision,
+        response: DecisionResponse
+    ): ExecutionResult {
+        if (response !is CardsSelectedResponse) {
+            return ExecutionResult.error(state, "Expected card selection for unblocked damage assignment")
+        }
+        val options = (question as? SelectCardsDecision)?.options.orEmpty()
+        val chosen = response.selectedCards.singleOrNull()
+        if (response.selectedCards.size > 1 || (chosen != null && chosen !in options)) {
+            return ExecutionResult.error(state, "Invalid creature for unblocked damage assignment")
+        }
+        val assignments = if (chosen == null) emptyMap() else {
+            val amount = com.wingedsheep.engine.mechanics.combat.CombatDamageUtils.getAssignedCombatDamage(
+                state, state.projectedState, continuation.attackerId, services.cardRegistry,
+                predicateEvaluator = services.predicateEvaluator
+            )
+            mapOf(chosen to amount)
+        }
+        val newState = state.updateEntity(continuation.attackerId) { container ->
+            container.with(
+                com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent(assignments)
+            )
+        }
+        return services.combatManager.applyCombatDamage(newState, firstStrike = continuation.firstStrike)
+    }
+
+    /**
      * Apply a [CombatResolutionResponse] (the combat-damage board).
      *
      * The current chooser is `continuation.pendingChoosers.first()`. We honor only the edges they
-     * own (filtered by [DamageEdge.editableBy] on the cached `decisionShape`), bake those amounts
+     * own (filtered by [DamageEdge.editableBy] on the paired question), bake those amounts
      * on top of the shape's current amounts, and:
      *
      * - if more choosers remain (CR 510.1c sequencing, or the CR 702.22j/k two-actor banding case),
@@ -106,13 +192,15 @@ class CombatContinuationResumer(
     fun resumeCombatResolution(
         state: GameState,
         continuation: CombatResolutionContinuation,
+        question: PendingDecision,
         response: DecisionResponse,
     ): ExecutionResult {
         if (response !is CombatResolutionResponse) {
             return ExecutionResult.error(state, "Expected combat resolution response for combat resolution decision")
         }
 
-        val shape = continuation.decisionShape
+        val shape = question as? CombatResolutionDecision
+            ?: return ExecutionResult.error(state, "Expected paired combat resolution question")
         val submittingPlayer = continuation.pendingChoosers.firstOrNull()
         val remainingChoosers = continuation.pendingChoosers.drop(1)
 
@@ -173,24 +261,38 @@ class CombatContinuationResumer(
 
         val timestamp = originalShield?.timestamp ?: state.timestamp
         var workingState = state
+        val gainsLife = (originalShield?.effect?.modification as? SerializableModification.PreventNextDamage)
+            ?.controllerGainsLife ?: false
         for ((sourceId, preventionAmount) in response.distribution) {
             if (preventionAmount <= 0) continue
             val (effectId, advanced) = workingState.newEntity()
             workingState = advanced
+            val splitEffectData = FloatingEffectData(
+                layer = Layer.ABILITY,
+                modification = SerializableModification.PreventNextDamage(
+                    preventionAmount,
+                    onlyFromSource = sourceId,
+                    controllerGainsLife = gainsLife
+                ),
+                affectedEntities = setOf(continuation.recipientId)
+            )
             updatedEffects.add(
-                ActiveFloatingEffect(
-                    id = effectId,
-                    effect = FloatingEffectData(
-                        layer = Layer.ABILITY,
-                        modification = SerializableModification.PreventNextDamage(preventionAmount, onlyFromSource = sourceId),
-                        affectedEntities = setOf(continuation.recipientId)
-                    ),
-                    duration = originalShield?.duration ?: com.wingedsheep.sdk.scripting.Duration.EndOfTurn,
-                    sourceId = originalShield?.sourceId,
-                    sourceName = originalShield?.sourceName,
-                    controllerId = originalShield?.controllerId ?: continuation.recipientId,
-                    timestamp = timestamp
-                )
+                // Copy the original shield so every field carries — including duration-specific
+                // bookkeeping such as `expiresAfterTurn`. Rebuilding field-by-field silently drops
+                // whatever the next duration adds. `timestamp` is restated rather than left to the
+                // copy: it is the same value either way (it is derived from the original shield
+                // above), and saying so keeps the split pieces pinned to the shield's own Rule 613
+                // ordering if that derivation ever changes.
+                originalShield?.copy(id = effectId, effect = splitEffectData, timestamp = timestamp)
+                    ?: ActiveFloatingEffect(
+                        id = effectId,
+                        effect = splitEffectData,
+                        duration = com.wingedsheep.sdk.scripting.Duration.EndOfTurn,
+                        sourceId = null,
+                        sourceName = null,
+                        controllerId = continuation.recipientId,
+                        timestamp = timestamp
+                    )
             )
         }
 
@@ -217,17 +319,19 @@ class CombatContinuationResumer(
         for ((targetId, damageAmount) in distribution) {
             if (damageAmount > 0) {
                 val result = DamageUtils.dealDamageToTarget(
+                    services.zones,
                     newState,
                     targetId,
                     damageAmount,
                     continuation.sourceId
                 )
 
-                if (!result.isSuccess) {
+                // Dealing damage never asks a question, so the only other outcome is a rejection.
+                if (result.outcome is Outcome.Rejected) {
                     return ExecutionResult(
                         state = newState,
                         events = events,
-                        error = result.error,
+                        outcome = result.outcome,
                         diagnostics = result.diagnostics,
                     )
                 }
@@ -254,58 +358,15 @@ class CombatContinuationResumer(
         val chosenSourceId = response.selectedCards.firstOrNull()
             ?: return ExecutionResult.error(state, "No source selected")
 
-        // The spell that set up the shield is the source of the follow-up's reflected damage.
-        val (effectiveState, reactionSourceId) = if (continuation.sourceId != null) {
-            state to continuation.sourceId
-        } else {
-            val (id, s) = state.newEntity()
-            s to id
-        }
-
-        // Two linked objects, per CR: (1) the one-shot prevention shield, and (2) a delayed
-        // triggered ability "When damage is prevented this way, …" that goes on the stack when the
-        // shield fires. They are linked by the delayed trigger's id, carried on the shield and
-        // echoed back by the DamagePreventedEvent so only this shield's trigger fires.
-        val sourceName = continuation.sourceName
-            ?: state.getEntity(reactionSourceId)?.get<CardComponent>()?.name
-            ?: "Source"
-        val delayedTriggerId = java.util.UUID.randomUUID().toString()
-
-        var newState = effectiveState
-        continuation.onPrevented?.let { onPrevented ->
-            newState = newState.addDelayedTrigger(
-                com.wingedsheep.engine.event.DelayedTriggeredAbility(
-                    id = delayedTriggerId,
-                    effect = onPrevented,
-                    sourceId = reactionSourceId,
-                    sourceName = sourceName,
-                    controllerId = continuation.controllerId,
-                    trigger = com.wingedsheep.sdk.scripting.TriggerSpec(
-                        event = com.wingedsheep.sdk.scripting.EventPattern.DamagePreventedEvent
-                    ),
-                    // Scopes the fired trigger's context to the prevented source (so
-                    // ControllerOfTriggeringEntity = "that source's controller").
-                    watchedEntityId = chosenSourceId,
-                    watchedEntitySnapshot = DamageUtils.captureDamageEntitySnapshot(effectiveState, chosenSourceId),
-                    expiry = com.wingedsheep.sdk.scripting.effects.DelayedTriggerExpiry.EndOfTurn
-                )
-            )
-        }
-
-        val context = EffectContext(
-            sourceId = continuation.sourceId,
+        val newState = state.installPreventAndReactShield(
+            damageSourceId = chosenSourceId,
+            protectedEntityId = continuation.controllerId,
             controllerId = continuation.controllerId,
-        )
-        newState = newState.addFloatingEffect(
-            layer = Layer.ABILITY,
-            modification = SerializableModification.PreventNextDamageFromChosenSourceShield(
-                damageSourceId = chosenSourceId,
-                linkId = delayedTriggerId,
-                preventDamage = continuation.preventDamage
-            ),
-            affectedEntities = setOf(continuation.controllerId),
-            duration = com.wingedsheep.sdk.scripting.Duration.EndOfTurn,
-            context = context
+            effectSourceId = continuation.sourceId,
+            effectSourceName = continuation.sourceName,
+            onPrevented = continuation.onPrevented,
+            preventDamage = continuation.preventDamage,
+            objectReferences = continuation.objectReferences
         )
 
         return checkForMore(newState, emptyList())
@@ -326,13 +387,31 @@ class CombatContinuationResumer(
 
         val context = EffectContext(
             sourceId = continuation.sourceId,
+            objectReferences = continuation.objectReferences,
             controllerId = continuation.controllerId,
         )
+        // "Prevent all damage that would be dealt this turn by a source of your choice", with no
+        // recipient clause (Mourner's Shield): the shield belongs on the *source*, not on a
+        // protected recipient, so it reuses the same `PreventAllDamageDealtBy` silence shield that a
+        // targeted `PreventionDirection.FromTarget` installs — and is honored for combat and
+        // noncombat damage alike by the same two read sites.
+        if (continuation.silenceChosenSource && continuation.amount == null) {
+            val silenced = state.addFloatingEffect(
+                layer = Layer.ABILITY,
+                modification = SerializableModification.PreventAllDamageDealtBy,
+                affectedEntities = setOf(chosenSourceId),
+                duration = com.wingedsheep.sdk.scripting.Duration.EndOfTurn,
+                context = context
+            )
+            return checkForMore(silenced, emptyList())
+        }
+
         val modification = if (continuation.amount == null && continuation.nextInstanceOnly) {
             // "The next time that source would deal damage to you this turn, prevent that damage"
             // (Circle of Protection family) — single instance, then consumed.
             SerializableModification.PreventNextDamageInstanceFromSource(
-                damageSourceId = chosenSourceId
+                damageSourceId = chosenSourceId,
+                halveRoundedDown = continuation.halvePreventedDamage
             )
         } else if (continuation.amount == null) {
             // Prevent all damage from the chosen source for the rest of the turn (Samite Ministration)

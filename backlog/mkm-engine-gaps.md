@@ -4,7 +4,13 @@ Cross-reference of the **260 remaining (unimplemented, non-basic) MKM cards** ag
 actual capabilities (SDK reference + source verification, June 2026). Generated to scope what must be
 built before the set can be completed.
 
-**Status:** 14 / 276 implemented (5%). The 14 done are almost entirely the ten surveil dual lands
+> **DONE — MKM is 276/276 as of 2026-08-21.** Every gap below was built; the set is
+> `sealedSupported = true` with draft/sealed archetypes. The last card in was Kaya, Spirits'
+> Justice, which needed the ownership-scoped/token-inclusive exile batch trigger and the
+> one-target-per-other-player requirement shape. Kept for the build-order reasoning, which is the
+> template the next set's gap analysis follows.
+
+**Status (at time of writing):** 14 / 276 implemented (5%). The 14 done are almost entirely the ten surveil dual lands
 (Raucous Theater, Hedge Maze, Undercity Sewers, Elegant Parlor, Underground Mortuary, Lush Portico,
 Meticulous Archive, …) — essentially no MKM *mechanic* is built yet. Card list comes from
 `scripts/card-status --list --set MKM`; oracle text pulled from Scryfall (`set:mkm`, 279 printings).
@@ -104,16 +110,22 @@ all routed through the engine's `CollectEvidenceResolver` so the cost and effect
 The optional *linked* cast cost (`card { collectEvidence(n) }`) rides the existing
 optional-additional-cost rail under `ChoiceSlot.EVIDENCE_COLLECTED`, read back by
 `Conditions.WasEvidenceCollected`; `Triggers.WheneverYouCollectEvidence` is the payoff. Selection is
-sum-gated (`minTotalManaValue` / `exileMinTotalManaValue`), and CR 701.59b fails closed everywhere.
+sum-gated (`minTotalManaValue` / `exileMinTotalWeight`), and CR 701.59b fails closed everywhere.
 Six cards ship with it (Vitu-Ghazi Inspector, Crimestopper Sprite, Bite Down on Crime, Sample
 Collector, Forensic Researcher, Surveillance Monitor); the rest are unblocked but not yet written,
 and four need *separate* features first — see below.
 
-**Still blocked on other features:** Conspiracy Unraveler (collect evidence as an *alternative* cost
-"rather than pay the mana cost"), Axebane Ferox (`WardCost` has no collect-evidence variant), Urgent
-Necropsy and Incinerator of the Guilty (a *dynamic* N — "collect evidence X" where X is the targets'
-total mana value / a chosen X; the atom takes a fixed `Int`), Detective's Phoenix (a bestow cost with
-a non-mana component), Kylox's Voltstrider (needs "cards exiled with it" linkage).
+**Also shipped since:** the *alternative* cost form — `GrantAlternativeCastingCost` now carries a
+non-mana half (a `{0}` mana cost plus an `AdditionalCost` list, the same two halves
+`SelfAlternativeCost` has), so **Conspiracy Unraveler** works and any future "you may <non-mana cost>
+rather than pay the mana cost for spells you cast" composes. Axebane Ferox is likewise done —
+`KeywordAbility.Ward(WardCost.CollectEvidence(4))` exists.
+
+**Still blocked on other features:** Urgent Necropsy and Incinerator of the Guilty (a *dynamic* N —
+"collect evidence X" where X is the targets' total mana value / a chosen X; the atom takes a fixed
+`Int`, and the client's cast pipeline runs its cost-payment phase *before* targeting, so a
+target-derived X has nothing to gate the picker on), Detective's Phoenix (a bestow cost with a
+non-mana component), Kylox's Voltstrider (needs "cards exiled with it" linkage).
 
 <details><summary>Original analysis</summary>
 

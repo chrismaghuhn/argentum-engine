@@ -22,6 +22,8 @@ import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 
 class AttachableToFilterExecutorTest : FunSpec({
 
@@ -52,15 +54,20 @@ class AttachableToFilterExecutorTest : FunSpec({
         )
         val effect = FilterCollectionEffect(
             from = "input",
-            filter = CollectionFilter.AttachableTo(EffectTarget.ContextTarget(0)),
+            collectionFilter = CollectionFilter.AttachableTo(EffectTarget.ContextTarget(0)),
             storeMatching = "matching",
             storeNonMatching = "nonMatching",
         )
-        val executor = FilterCollectionExecutor(AttachmentLegality(CardRegistry(), TargetFinder()))
+        val registry = CardRegistry()
+        val predicateEvaluator = PredicateEvaluator(registry)
+        val executor = FilterCollectionExecutor(
+            predicateEvaluator = predicateEvaluator,
+            attachmentLegality = AttachmentLegality(registry, TargetFinder(predicateEvaluator)),
+        )
 
         val result = executor.execute(state, effect, context)
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         result.updatedCollections["matching"] shouldContainExactly emptyList()
         result.updatedCollections["nonMatching"] shouldContainExactly listOf(attachmentId)
     }

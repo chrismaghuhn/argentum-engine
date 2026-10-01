@@ -196,6 +196,15 @@ internal data class HistoryCReferenceEvidenceV1(
  * HISTC-B will own any future alias registry.
  */
 internal object HistoryCReferenceAuthority {
+    /**
+     * An [AbilityResolvedEvent] whose source no longer exists after the transition (a token that
+     * died for its own dies trigger, a sacrificed Clue) binds its event-owned source incarnation,
+     * as an [AbilityFizzledEvent] does; a resolved ability whose source remains keeps its
+     * after-object witness.
+     */
+    fun resolvedSourceDeparted(transition: CommittedRulesTransition, event: AbilityResolvedEvent): Boolean =
+        event.sourceObjectIncarnationStamp != null && witness(transition.afterState, event.sourceId) == null
+
     private val supportedReferenceKinds = setOf(
         HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
         HistoryCReferenceKind.STACK_OBJECT,
@@ -387,11 +396,18 @@ internal object HistoryCReferenceAuthority {
                 return HistoryCFailure(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
             }
         }
+        if (rawEvent is AbilityResolvedEvent && resolvedSourceDeparted(transition, rawEvent)) {
+            val sourceStamp = rawEvent.sourceObjectIncarnationStamp
+            if (rawEvent.sourceEndpointAuthority == null || sourceStamp == null || sourceStamp <= 0L) {
+                return HistoryCFailure(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+            }
+        }
         val eventOwnedWitness = eventOwnedWitness(rawEvent, candidate)
         val candidateWitnesses = listOfNotNull(candidate.beforeWitness, candidate.afterWitness)
         val eventStampPresent = when (rawEvent) {
             is AbilityTriggeredEvent -> rawEvent.sourceObjectIncarnationStamp != null
             is AbilityFizzledEvent -> rawEvent.sourceObjectIncarnationStamp != null
+            is AbilityResolvedEvent -> resolvedSourceDeparted(transition, rawEvent)
             is PermanentsSacrificedEvent -> rawEvent.permanentObjectIncarnationStamps.isNotEmpty()
             else -> false
         }
@@ -402,10 +418,13 @@ internal object HistoryCReferenceAuthority {
         ) {
             return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
         }
+        val eventOwnedAllowed = when (rawEvent) {
+            is AbilityTriggeredEvent, is AbilityFizzledEvent, is PermanentsSacrificedEvent -> true
+            is AbilityResolvedEvent -> resolvedSourceDeparted(transition, rawEvent)
+            else -> false
+        }
         if (candidate.witnessProvenance == HistoryCReferenceWitnessProvenance.EVENT_OWNED &&
-            (rawEvent !is AbilityTriggeredEvent &&
-                rawEvent !is AbilityFizzledEvent &&
-                rawEvent !is PermanentsSacrificedEvent ||
+            (!eventOwnedAllowed ||
                 eventOwnedWitness == null ||
                 candidateWitnesses.any { it != eventOwnedWitness })
         ) {
@@ -471,6 +490,13 @@ internal object HistoryCReferenceAuthority {
             is AbilityFizzledEvent -> event.sourceEndpointAuthority
                 ?.toHistoryCReferenceEndpointAuthority()
                 ?: return HistoryCFailure(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+            is AbilityResolvedEvent -> if (resolvedSourceDeparted(transition, event)) {
+                event.sourceEndpointAuthority
+                    ?.toHistoryCReferenceEndpointAuthority()
+                    ?: return HistoryCFailure(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+            } else {
+                HistoryCReferenceEndpointAuthority.AFTER_OBJECT
+            }
             is SpellFizzledEvent -> HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
             is CreatureDestroyedEvent,
             is DamageAssignedEvent,
@@ -1248,6 +1274,7 @@ internal object HistoryCReferenceAuthority {
         val entityAndStamp = when (event) {
             is AbilityTriggeredEvent -> event.sourceId to event.sourceObjectIncarnationStamp
             is AbilityFizzledEvent -> event.sourceId to event.sourceObjectIncarnationStamp
+            is AbilityResolvedEvent -> event.sourceId to event.sourceObjectIncarnationStamp
             is PermanentsSacrificedEvent -> {
                 val index = candidate.slot.roleOrdinal
                 event.permanentIds.getOrNull(index) to

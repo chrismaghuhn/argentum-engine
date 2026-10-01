@@ -18,7 +18,7 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -323,8 +323,10 @@ class ActionTargetDomainContractTest : FunSpec({
             manaCost = "{R}"
             typeLine = "Instant"
             spell {
-                val first = target("up to one target creature", TargetCreature(optional = true))
-                val second = target("up to one other target creature", TargetCreature(optional = true))
+                // Two "up to one target creature" slots over the same candidates: the flat payload
+                // [x] could fill either slot, which is what makes the partition ambiguous.
+                val first = target(TargetFilter.Creature, optional = true)
+                val second = target(TargetFilter.Creature, optional = true)
                 effect = Effects.Tap(first).then(Effects.Tap(second))
             }
         }

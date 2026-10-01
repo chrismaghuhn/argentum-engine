@@ -5,10 +5,9 @@ import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
-import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.stack.StackPlacement
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
-import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CantBeCopiedComponent
@@ -43,15 +42,15 @@ import kotlin.reflect.KClass
  * copies at all.
  */
 class CopyTargetSpellOrAbilityExecutor(
-    private val cardRegistry: CardRegistry,
-    private val targetFinder: TargetFinder = TargetFinder()
+    private val dynamicAmountEvaluator: DynamicAmountEvaluator,
+    private val targetFinder: TargetFinder,
+    private val targetValidator: TargetValidator
 ) : EffectExecutor<CopyTargetSpellOrAbilityEffect> {
 
     override val effectType: KClass<CopyTargetSpellOrAbilityEffect> =
         CopyTargetSpellOrAbilityEffect::class
 
-    private val spellExecutor = CopyTargetSpellExecutor(cardRegistry, targetFinder)
-    private val dynamicAmountEvaluator = DynamicAmountEvaluator()
+    private val spellExecutor = CopyTargetSpellExecutor(dynamicAmountEvaluator, targetFinder, targetValidator)
 
     override fun execute(
         state: GameState,
@@ -79,8 +78,8 @@ class CopyTargetSpellOrAbilityExecutor(
                 EffectResult.from(
                     driveAbilityCopies(
                         state = state,
-                        stackResolver = StackResolver(cardRegistry = cardRegistry),
                         targetFinder = targetFinder,
+                        targetValidator = targetValidator,
                         abilityEntityId = targetId,
                         controllerId = context.controllerId,
                         copierSourceId = context.sourceId,
@@ -117,8 +116,8 @@ class CopyTargetSpellOrAbilityExecutor(
          */
         fun driveAbilityCopies(
             state: GameState,
-            stackResolver: StackResolver,
             targetFinder: TargetFinder,
+            targetValidator: TargetValidator,
             abilityEntityId: EntityId,
             controllerId: EntityId,
             copierSourceId: EntityId?,
@@ -129,7 +128,6 @@ class CopyTargetSpellOrAbilityExecutor(
             var currentState = state
             val allEvents = priorEvents.toMutableList()
             var copiesLeft = remainingCopies
-            val targetValidator = TargetValidator()
 
             while (copiesLeft > 0) {
                 val container = currentState.getEntity(abilityEntityId)
@@ -140,8 +138,11 @@ class CopyTargetSpellOrAbilityExecutor(
                 // No targets — clone and push directly (CR: any ability may be copied, not just
                 // targeted ones).
                 if (targetRequirements.isEmpty()) {
-                    val push = cloneAndPush(currentState, stackResolver, abilityEntityId, controllerId)
-                    if (!push.isSuccess) return push
+                    val push = cloneAndPush(
+                        currentState, abilityEntityId, controllerId,
+                        targetValidator = targetValidator
+                    )
+                    if (push.outcome !is Outcome.Done) return push
                     currentState = push.newState
                     allEvents.addAll(push.events)
                     copiesLeft--
@@ -159,17 +160,20 @@ class CopyTargetSpellOrAbilityExecutor(
                     sourceId = copierSourceId,
                 )
 
-                val pendingTargetContext = currentState.getEntity(abilityEntityId)?.let { container ->
-                    container.get<TriggeredAbilityOnStackComponent>()?.let { source ->
+                // The copied ability's own trigger facts / X / carried pipeline resolve any dynamic
+                // target count it published (fail closed when they cannot be resolved).
+                val pendingTargetContext = currentState.getEntity(abilityEntityId)?.let { abilityContainer ->
+                    abilityContainer.get<TriggeredAbilityOnStackComponent>()?.let { source ->
                         EffectContext(
                             sourceId = abilityEntityId,
                             controllerId = controllerId,
-                            triggeringEntityId = source.triggeringEntityId,
-                            triggeringPlayerId = source.triggeringPlayerId,
+                            triggeringEntityId = source.triggerContext?.triggeringEntityId,
+                            triggeringPlayerId = source.triggerContext?.triggeringPlayerId,
+                            triggerContext = source.triggerContext,
                             xValue = source.xValue,
                             pipeline = source.carriedPipeline ?: com.wingedsheep.engine.handlers.PipelineState.EMPTY,
                         )
-                    } ?: container.get<ActivatedAbilityOnStackComponent>()?.let { source ->
+                    } ?: abilityContainer.get<ActivatedAbilityOnStackComponent>()?.let { source ->
                         EffectContext(
                             sourceId = abilityEntityId,
                             controllerId = controllerId,
@@ -194,10 +198,11 @@ class CopyTargetSpellOrAbilityExecutor(
                 if (legalTargetsMap.any { (_, targets) -> targets.isEmpty() }) {
                     val inherited = container.get<TargetsComponent>()?.targets ?: emptyList()
                     val push = cloneAndPush(
-                        currentState, stackResolver, abilityEntityId, controllerId,
-                        inherited, targetRequirements
+                        currentState, abilityEntityId, controllerId,
+                        inherited, targetRequirements,
+                        targetValidator = targetValidator
                     )
-                    if (!push.isSuccess) return push
+                    if (push.outcome !is Outcome.Done) return push
                     currentState = push.newState
                     allEvents.addAll(push.events)
                     copiesLeft--
@@ -210,8 +215,7 @@ class CopyTargetSpellOrAbilityExecutor(
                 val copyLabel = if (totalCopies > 1)
                     "copy $copyNumber of $totalCopies of $sourceName's ability"
                 else "copy of $sourceName's ability"
-                val decisionId = "copy-ability-target-${System.nanoTime()}"
-                val decision = ChooseTargetsDecision(
+                val decision = { decisionId: String -> ChooseTargetsDecision(
                     id = decisionId,
                     playerId = controllerId,
                     prompt = "Choose new targets for $copyLabel",
@@ -222,9 +226,8 @@ class CopyTargetSpellOrAbilityExecutor(
                     ),
                     targetRequirements = targetReqInfos,
                     legalTargets = legalTargetsMap
-                )
+                ) }
                 val continuation = CopyAbilityTargetContinuation(
-                    decisionId = decisionId,
                     abilityEntityId = abilityEntityId,
                     controllerId = controllerId,
                     copierSourceId = copierSourceId,
@@ -232,10 +235,7 @@ class CopyTargetSpellOrAbilityExecutor(
                     remainingCopies = copiesLeft,
                     totalCopies = totalCopies
                 )
-                val paused = currentState
-                    .withPendingDecision(decision)
-                    .pushContinuation(continuation)
-                return ExecutionResult.paused(paused, decision, allEvents)
+                return currentState.suspendForDecision(decision, continuation, allEvents)
             }
 
             return ExecutionResult.success(currentState, allEvents)
@@ -245,26 +245,32 @@ class CopyTargetSpellOrAbilityExecutor(
          * Clone the ability at [abilityEntityId] (activated or triggered) into a fresh copy
          * controlled by [controllerId] and push it onto the stack with [targets]. The copy inherits
          * every cast-time value (X, sacrificed/tapped permanents, modal choices) per CR 707.10.
+         *
+         * [targetValidator] (the engine's canonical one) locks the stored target requirements to
+         * the copy's chosen targets, as for every other stack object; null stores them as given.
          */
         fun cloneAndPush(
             state: GameState,
-            stackResolver: StackResolver,
             abilityEntityId: EntityId,
             controllerId: EntityId,
             targets: List<ChosenTarget> = emptyList(),
-            targetRequirements: List<TargetRequirement> = emptyList()
+            targetRequirements: List<TargetRequirement> = emptyList(),
+            targetValidator: TargetValidator? = null
         ): ExecutionResult {
             val container = state.getEntity(abilityEntityId)
                 ?: return ExecutionResult.error(state, "Ability to copy no longer on stack")
 
             container.get<TriggeredAbilityOnStackComponent>()?.let { triggered ->
                 val copy = CopyTargetTriggeredAbilityExecutor.cloneAbility(triggered, controllerId)
-                return stackResolver.putTriggeredAbility(
+                // CR 707.10: copying does not trigger the ability again - suppress the triggered
+                // event; crime detection still applies to putting the copy on the stack.
+                return StackPlacement.putTriggeredAbility(
                     state,
                     copy,
                     targets,
                     targetRequirements,
-                    emitTriggeredEvent = false
+                    emitTriggeredEvent = false,
+                    targetValidator = targetValidator
                 )
             }
 
@@ -274,8 +280,9 @@ class CopyTargetSpellOrAbilityExecutor(
             // isn't "activated", so suppress the AbilityActivatedEvent (it would re-fire "whenever
             // you activate an ability" triggers off the copy).
             val copy = activated.copy(controllerId = controllerId)
-            return stackResolver.putActivatedAbility(
-                state, copy, targets, targetRequirements, emitActivationEvent = false
+            return StackPlacement.putActivatedAbility(
+                state, copy, targets, targetRequirements, emitActivationEvent = false,
+                targetValidator = targetValidator
             )
         }
 
@@ -287,13 +294,13 @@ class CopyTargetSpellOrAbilityExecutor(
             controllerId: EntityId,
             sourceId: EntityId?
         ): Map<Int, List<EntityId>> {
-            val map = mutableMapOf<Int, List<EntityId>>()
+            // Candidate filters read the copied ability's own trigger facts and pipeline.
             val sourcePredicateContext = state.getEntity(abilityEntityId)?.let { container ->
                 container.get<TriggeredAbilityOnStackComponent>()?.let { source ->
                     com.wingedsheep.engine.handlers.PredicateContext(
                         controllerId = controllerId,
-                        triggeringEntityId = source.triggeringEntityId,
-                        triggeringPlayerId = source.triggeringPlayerId,
+                        triggeringEntityId = source.triggerContext?.triggeringEntityId,
+                        triggeringPlayerId = source.triggerContext?.triggeringPlayerId,
                         xValue = source.xValue,
                         storedCollections = source.carriedPipeline?.storedCollections ?: emptyMap(),
                         chosenValues = source.carriedPipeline?.chosenValues ?: emptyMap(),
@@ -307,6 +314,7 @@ class CopyTargetSpellOrAbilityExecutor(
                     )
                 }
             }
+            val map = mutableMapOf<Int, List<EntityId>>()
             for ((index, requirement) in targetRequirements.withIndex()) {
                 map[index] = targetFinder.findLegalTargets(
                     state = state,

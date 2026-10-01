@@ -21,11 +21,14 @@ import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import kotlin.reflect.KClass
 
 /**
- * Executor for [ChangeTriggeringObjectTargetsEffect] — the chosen player may change the triggering
- * spell/ability's targets. Delegates the interactive slot-by-slot retargeting to
- * [ContestedRetargetLogic] (shared with the resumer).
+ * Executor for [ChangeTriggeringObjectTargetsEffect] — the chosen player may change the targets of
+ * the spell/ability named by `effect.spell` (the triggering one by default, or a spell this card
+ * targeted). Delegates the interactive slot-by-slot retargeting to [ContestedRetargetLogic]
+ * (shared with the resumer).
  */
-class ChangeTriggeringObjectTargetsExecutor :
+class ChangeTriggeringObjectTargetsExecutor(
+    private val targetFinder: TargetFinder
+) :
     EffectExecutor<ChangeTriggeringObjectTargetsEffect> {
 
     override val effectType: KClass<ChangeTriggeringObjectTargetsEffect> =
@@ -36,7 +39,7 @@ class ChangeTriggeringObjectTargetsExecutor :
         effect: ChangeTriggeringObjectTargetsEffect,
         context: EffectContext
     ): EffectResult {
-        val stackObjectId = context.triggeringEntityId ?: return EffectResult.success(state)
+        val stackObjectId = context.resolveTarget(effect.spell) ?: return EffectResult.success(state)
         if (!state.stack.contains(stackObjectId)) return EffectResult.success(state)
         val targetsComponent = state.getEntity(stackObjectId)?.get<TargetsComponent>()
             ?: return EffectResult.success(state)
@@ -52,7 +55,7 @@ class ChangeTriggeringObjectTargetsExecutor :
             }
         } ?: return EffectResult.success(state)
 
-        return ContestedRetargetLogic.start(state, stackObjectId, chooserId, context.sourceId)
+        return ContestedRetargetLogic.start(state, stackObjectId, chooserId, context.sourceId, targetFinder = targetFinder)
     }
 }
 
@@ -68,15 +71,14 @@ class ChangeTriggeringObjectTargetsExecutor :
  * targets are left unchanged. A target may not be chosen for two slots (CR).
  */
 object ContestedRetargetLogic {
-
-    private val targetFinder = TargetFinder()
     private val decisionHandler = DecisionHandler()
 
     fun start(
         state: GameState,
         stackObjectId: EntityId,
         chooserId: EntityId,
-        sourceId: EntityId?
+        sourceId: EntityId?,
+        targetFinder: TargetFinder
     ): EffectResult {
         val targetsComponent = state.getEntity(stackObjectId)?.get<TargetsComponent>()
             ?: return EffectResult.success(state)
@@ -93,7 +95,8 @@ object ContestedRetargetLogic {
             originalTargets = targetsComponent.targets,
             newTargets = emptyList(),
             startSlot = 0,
-            sourceId = sourceId
+            sourceId = sourceId,
+            targetFinder = targetFinder
         )
     }
 
@@ -111,14 +114,15 @@ object ContestedRetargetLogic {
         originalTargets: List<ChosenTarget>,
         newTargets: List<ChosenTarget>,
         startSlot: Int,
-        sourceId: EntityId?
+        sourceId: EntityId?,
+        targetFinder: TargetFinder
     ): EffectResult {
         var acc = newTargets
         var slot = startSlot
         while (slot < originalTargets.size) {
             val current = originalTargets[slot]
             val requirement = perSlotRequirements.getOrNull(slot)
-            val options = legalOptions(state, requirement, ownerControllerId, stackObjectId, current, acc)
+            val options = legalOptions(state, requirement, ownerControllerId, stackObjectId, current, acc, targetFinder = targetFinder)
 
             if (options.size <= 1) {
                 // No alternative target for this slot — keep the current one.
@@ -128,6 +132,17 @@ object ContestedRetargetLogic {
             }
 
             val sourceName = sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name }
+            val continuation = ContestedRetargetContinuation(
+                stackObjectId = stackObjectId,
+                chooserId = chooserId,
+                ownerControllerId = ownerControllerId,
+                perSlotRequirements = perSlotRequirements,
+                originalTargets = originalTargets,
+                newTargets = acc,
+                currentSlot = slot,
+                sourceId = sourceId
+            )
+
             val decisionResult = decisionHandler.createCardSelectionDecision(
                 state = state,
                 playerId = chooserId,
@@ -141,24 +156,12 @@ object ContestedRetargetLogic {
                 options = options,
                 minSelections = 1,
                 maxSelections = 1,
-                useTargetingUI = true
+                useTargetingUI = true,
+                answer = continuation
             )
 
-            val continuation = ContestedRetargetContinuation(
-                decisionId = decisionResult.pendingDecision!!.id,
-                stackObjectId = stackObjectId,
-                chooserId = chooserId,
-                ownerControllerId = ownerControllerId,
-                perSlotRequirements = perSlotRequirements,
-                originalTargets = originalTargets,
-                newTargets = acc,
-                currentSlot = slot,
-                sourceId = sourceId
-            )
-
-            return EffectResult.paused(
-                decisionResult.state.pushContinuation(continuation),
-                decisionResult.pendingDecision,
+            return EffectResult.propagatePause(
+                decisionResult.state,
                 decisionResult.events
             )
         }
@@ -183,7 +186,8 @@ object ContestedRetargetLogic {
         ownerControllerId: EntityId,
         stackObjectId: EntityId,
         current: ChosenTarget,
-        alreadyChosen: List<ChosenTarget>
+        alreadyChosen: List<ChosenTarget>,
+        targetFinder: TargetFinder
     ): List<EntityId> {
         val currentId = entityIdOf(current)
         if (requirement == null) return listOfNotNull(currentId)
@@ -225,8 +229,8 @@ object ContestedRetargetLogic {
             return PredicateContext(
                 controllerId = controllerId,
                 sourceId = stackObjectId,
-                triggeringEntityId = ability.triggeringEntityId,
-                triggeringPlayerId = ability.triggeringPlayerId,
+                triggeringEntityId = ability.triggerContext?.triggeringEntityId,
+                triggeringPlayerId = ability.triggerContext?.triggeringPlayerId,
                 xValue = ability.xValue,
                 storedCollections = ability.carriedPipeline?.storedCollections ?: emptyMap(),
                 chosenValues = ability.carriedPipeline?.chosenValues ?: emptyMap(),

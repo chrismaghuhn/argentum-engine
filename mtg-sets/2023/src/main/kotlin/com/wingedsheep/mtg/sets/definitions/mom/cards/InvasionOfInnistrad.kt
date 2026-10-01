@@ -6,12 +6,11 @@ import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.dsl.Conditions
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Rarity
-import com.wingedsheep.sdk.scripting.effects.ConditionalEffect
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
  * Invasion of Innistrad // Deluge of the Dead — March of the Machine #115 (canonical printing).
@@ -26,9 +25,9 @@ import com.wingedsheep.sdk.scripting.effects.ConditionalEffect
  * The reminder text a Siege prints ("As a Siege enters, choose an opponent to protect it. You and
  * others can attack it. When it's defeated, exile it, then cast it transformed.") is *not* card
  * text — it restates rules every battle has. So none of it is scripted here: the protector choice
- * is a state-based action (CR 704.5w/x), the attack legality is CR 310.8b, and the defeat trigger
+ * is a state-based action (CR 704.5x/y), the attack legality is CR 310.9b, and the defeat trigger
  * is the intrinsic ability the engine grants every Siege
- * ([com.wingedsheep.sdk.scripting.Sieges.defeatAbility], CR 310.11b). The only things this card
+ * ([com.wingedsheep.sdk.scripting.Sieges.defeatAbility], CR 310.12b). The only things this card
  * declares are its `startingDefense` and its back face.
  *
  * -13/-13 is a kill clause, not a stat tweak — big enough to finish anything the format prints —
@@ -48,8 +47,8 @@ private val InvasionOfInnistradFront = card("Invasion of Innistrad") {
     keywords(Keyword.FLASH)
 
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
-        val victim = target("target creature an opponent controls", Targets.CreatureOpponentControls)
+        trigger = Triggers.self.enters()
+        val victim = target(TargetFilter.CreatureOpponentControls)
         effect = Effects.ModifyStats(-13, -13, victim)
         description = "When this Siege enters, target creature an opponent controls gets -13/-13 until end of turn."
     }
@@ -82,7 +81,7 @@ private val DelugeOfTheDead = card("Deluge of the Dead") {
         "black Zombie creature token."
 
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
+        trigger = Triggers.self.enters()
         effect = Effects.CreateToken(
             power = 2,
             toughness = 2,
@@ -95,21 +94,19 @@ private val DelugeOfTheDead = card("Deluge of the Dead") {
 
     activatedAbility {
         cost = Costs.Mana(ManaCost.parse("{2}{B}"))
-        val exiled = target("target card in a graveyard", Targets.CardInGraveyard)
-        effect = Effects.Composite(
-            Effects.Exile(exiled),
+        val exiled = target(TargetFilter.CardInGraveyard)
+        effect = Effects.Exile(exiled) then
             // Reads the exiled card's printed type in exile, so it is true only when the card that
             // left the graveyard was a creature card — the Scavenging Ooze shape.
-            ConditionalEffect(
+            Effects.If(
                 condition = Conditions.TargetIsCreatureCard(0),
-                effect = Effects.CreateToken(
+                then = Effects.CreateToken(
                     power = 2,
                     toughness = 2,
                     colors = setOf(Color.BLACK),
                     creatureTypes = setOf("Zombie"),
                 ),
-            ),
-        )
+            )
         description = "{2}{B}: Exile target card from a graveyard. If it was a creature card, " +
             "create a 2/2 black Zombie creature token."
     }

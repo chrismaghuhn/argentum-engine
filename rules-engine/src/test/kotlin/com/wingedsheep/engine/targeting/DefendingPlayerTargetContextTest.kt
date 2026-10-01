@@ -3,10 +3,7 @@ package com.wingedsheep.engine.targeting
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.DeclaredAttack
 import com.wingedsheep.engine.event.TriggerContext
-import com.wingedsheep.engine.event.TriggerDetector
 import com.wingedsheep.engine.handlers.PredicateContext
-import com.wingedsheep.engine.handlers.PredicateEvaluator
-import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.legalactions.utils.TargetEnumerationUtils
 import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.state.components.battlefield.ProtectorComponent
@@ -64,9 +61,8 @@ class DefendingPlayerTargetContextTest : FunSpec({
         power = 2
         toughness = 2
         triggeredAbility {
-            trigger = Triggers.Attacks
+            trigger = Triggers.self.attacks()
             val target = target(
-                "target artifact or enchantment defending player controls",
                 TargetObject(
                     filter = TargetFilter(
                         GameObjectFilter.ArtifactOrEnchantment.targetPlayerControls(
@@ -118,7 +114,7 @@ class DefendingPlayerTargetContextTest : FunSpec({
             defendingPlayerId = driver.player2,
         )
 
-        TargetFinder().findLegalTargets(
+        driver.services.targetFinder.findLegalTargets(
             state = driver.state,
             requirement = requirement(),
             controllerId = driver.player1,
@@ -127,7 +123,7 @@ class DefendingPlayerTargetContextTest : FunSpec({
             pipelineContext = context,
         ) shouldBe listOf(defendingArtifact)
 
-        TargetEnumerationUtils(PredicateEvaluator()).findValidTargets(
+        TargetEnumerationUtils(driver.services.predicateEvaluator).findValidTargets(
             state = driver.state,
             playerId = driver.player1,
             requirement = requirement(),
@@ -145,7 +141,7 @@ class DefendingPlayerTargetContextTest : FunSpec({
             declaredAttacks = listOf(DeclaredAttack(watcherId, driver.player2, driver.player2)),
         )
 
-        val triggers = TriggerDetector(driver.cardRegistry)
+        val triggers = driver.services.triggerDetector
             .detectTriggers(driver.state, listOf(event))
             .filter { it.sourceId == watcherId }
 

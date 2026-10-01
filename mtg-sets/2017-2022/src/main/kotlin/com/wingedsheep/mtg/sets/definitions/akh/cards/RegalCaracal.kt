@@ -36,17 +36,17 @@ val RegalCaracal = card("Regal Caracal") {
         ability = ModifyStats(
             powerBonus = 1,
             toughnessBonus = 1,
-            filter = GroupFilter(GameObjectFilter.Creature.withSubtype(Subtype.CAT).youControl(), excludeSelf = true)
+            filter = GroupFilter(GameObjectFilter.Permanent.withSubtype(Subtype.CAT).youControl(), excludeSelf = true)
         )
     }
     staticAbility {
         ability = GrantKeyword(
             Keyword.LIFELINK,
-            GroupFilter(GameObjectFilter.Creature.withSubtype(Subtype.CAT).youControl(), excludeSelf = true)
+            GroupFilter(GameObjectFilter.Permanent.withSubtype(Subtype.CAT).youControl(), excludeSelf = true)
         )
     }
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
+        trigger = Triggers.self.enters()
         effect = Effects.CreateToken(
             power = 1,
             toughness = 1,

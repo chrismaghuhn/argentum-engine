@@ -12,6 +12,8 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.ChoiceSlot
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Tear Asunder (DMU #183).
@@ -82,7 +84,7 @@ class TearAsunderScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.findPermanent(opponent, "Centaur Courser") shouldBe creature
     }
 
@@ -127,7 +129,7 @@ class TearAsunderScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.findPermanent(opponent, "Forest") shouldBe land
     }
 })

@@ -1,13 +1,11 @@
 package com.wingedsheep.engine.legalactions
 
-import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.support.setupP1
 import com.wingedsheep.engine.legalactions.utils.TargetEnumerationUtils
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.sdk.scripting.targets.AnyTarget
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetOther
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.TargetChooser
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
@@ -33,7 +31,7 @@ class TargetInfoProjectionTest : FunSpec({
             differentNames = true,
         )
 
-        val projection = TargetEnumerationUtils(PredicateEvaluator()).buildTargetInfos(
+        val projection = TargetEnumerationUtils(driver.game.services.predicateEvaluator).buildTargetInfos(
             state = driver.game.state,
             playerId = driver.player1,
             targetReqs = listOf(requirement),
@@ -57,10 +55,10 @@ class TargetInfoProjectionTest : FunSpec({
 
     test("keeps semantic requirement order and preserves TargetOther distinctness") {
         val driver = setupP1(battlefield = listOf("Grizzly Bears", "Forest"))
-        val first = TargetCreature(filter = TargetFilter.CreatureYouControl)
-        val second = TargetOther(baseRequirement = TargetCreature(filter = TargetFilter.Creature))
+        val first = TargetObject(filter = TargetFilter.CreatureYouControl)
+        val second = TargetOther(baseRequirement = TargetObject(filter = TargetFilter.Creature))
 
-        val projection = TargetEnumerationUtils(PredicateEvaluator()).buildTargetInfos(
+        val projection = TargetEnumerationUtils(driver.game.services.predicateEvaluator).buildTargetInfos(
             state = driver.game.state,
             playerId = driver.player1,
             targetReqs = listOf(first, second),
@@ -78,7 +76,7 @@ class TargetInfoProjectionTest : FunSpec({
             filter = TargetFilter.Creature,
             dynamicMaxCount = DynamicAmount.XValue,
         )
-        val countProjection = TargetEnumerationUtils(PredicateEvaluator()).buildTargetInfos(
+        val countProjection = TargetEnumerationUtils(driver.game.services.predicateEvaluator).buildTargetInfos(
             state = driver.game.state,
             playerId = driver.player1,
             targetReqs = listOf(unresolvedCount),
@@ -93,7 +91,7 @@ class TargetInfoProjectionTest : FunSpec({
             filter = TargetFilter.Creature,
             totalManaValueAtMost = DynamicAmount.XValue,
         )
-        val aggregateProjection = TargetEnumerationUtils(PredicateEvaluator()).buildTargetInfos(
+        val aggregateProjection = TargetEnumerationUtils(driver.game.services.predicateEvaluator).buildTargetInfos(
             state = driver.game.state,
             playerId = driver.player1,
             targetReqs = listOf(unresolvedAggregate),
@@ -106,7 +104,7 @@ class TargetInfoProjectionTest : FunSpec({
 
     test("a mandatory requirement is unsatisfied when fewer candidates than its minimum exist") {
         val driver = setupP1(battlefield = listOf("Grizzly Bears"))
-        val projection = TargetEnumerationUtils(PredicateEvaluator()).buildTargetInfos(
+        val projection = TargetEnumerationUtils(driver.game.services.predicateEvaluator).buildTargetInfos(
             state = driver.game.state,
             playerId = driver.player1,
             targetReqs = listOf(TargetObject(
@@ -118,12 +116,12 @@ class TargetInfoProjectionTest : FunSpec({
 
         projection.infos.single().minTargets shouldBe 2
         projection.infos.single().validTargets shouldBe listOf(driver.game.state.getBattlefield().single())
-        TargetEnumerationUtils(PredicateEvaluator()).allRequirementsSatisfied(projection) shouldBe false
+        TargetEnumerationUtils(driver.game.services.predicateEvaluator).allRequirementsSatisfied(projection) shouldBe false
     }
 
     test("non-controller chooser fails closed without changing chooser ownership") {
         val driver = setupP1(battlefield = listOf("Grizzly Bears"))
-        val projection = TargetEnumerationUtils(PredicateEvaluator()).buildTargetInfos(
+        val projection = TargetEnumerationUtils(driver.game.services.predicateEvaluator).buildTargetInfos(
             state = driver.game.state,
             playerId = driver.player1,
             targetReqs = listOf(AnyTarget(chooser = TargetChooser.Opponent)),

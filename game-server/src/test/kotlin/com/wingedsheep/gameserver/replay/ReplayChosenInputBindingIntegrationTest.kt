@@ -164,8 +164,13 @@ class ReplayChosenInputBindingIntegrationTest : ScenarioTestBase() {
     init {
         test("combined replay binding projects SubmitDecision through the A4 public boundary") {
             cardRegistry.register(choiceCard)
-            val first = responseReplay("nonce-a")
-            val second = responseReplay("nonce-b")
+            // Decision ids are reproducible routing ids now, and ReplayReconstructor treats a
+            // recorded response whose id differs from the reconstructed prompt as divergence unless
+            // the id has the legacy (pre-routing-id) UUID shape, which it still retargets. Two
+            // legacy-shaped ids are therefore the way one recorded response can carry different
+            // routing nonces, which is what this binding must ignore.
+            val first = responseReplay("00000000-0000-4000-8000-00000000000a")
+            val second = responseReplay("00000000-0000-4000-8000-00000000000b")
 
             val firstBinding = source(first.replay).verifyTrajectoryBinding()
             val secondBinding = source(second.replay).verifyTrajectoryBinding()

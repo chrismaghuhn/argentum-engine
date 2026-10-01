@@ -23,6 +23,7 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.Duration
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /** Regression coverage for CR 509.1c's blocking-cost exemption. */
 class BlockerTaxRequirementTest : FunSpec({
@@ -52,7 +53,7 @@ class BlockerTaxRequirementTest : FunSpec({
         driver.removeSummoningSickness(attacker)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).isSuccess shouldBe true
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
 
         driver.replaceState(
@@ -78,6 +79,6 @@ class BlockerTaxRequirementTest : FunSpec({
         ) shouldBe BlockerDeclarationValidationResult.Accepted
         domain.minimumSatisfiedRequirementCount shouldBe 0
         domain.canDeclareZeroBlockers shouldBe true
-        driver.declareBlockers(defendingPlayer, emptyMap()).isSuccess shouldBe true
+        driver.declareBlockers(defendingPlayer, emptyMap()).outcome shouldBe Outcome.Done
     }
 })

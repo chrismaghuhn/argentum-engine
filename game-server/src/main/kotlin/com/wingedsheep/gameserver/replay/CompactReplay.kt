@@ -82,6 +82,17 @@ data class CompactReplay(
      * reconstruct unverified exactly as before.
      */
     val checkpoints: List<ReplayCheckpoint> = emptyList(),
+    /**
+     * True when recording was frozen before the game ended, so [actions] is an honest *prefix* of
+     * the game rather than all of it — the game went on past the last frame here.
+     *
+     * Set when a game passes [ReplayRecordingPolicy.MAX_RECORDED_ACTIONS] (a wedge that outlived
+     * the stall guard, a mill-loop stalemate, an AI grinding hundreds of turns). The prefix
+     * reconstructs exactly as any other record does; what it must not do is *look* complete, so the
+     * viewer is told to say the recording stops early. Defaults false, so every record written
+     * before this existed reads as the complete game it was.
+     */
+    val truncated: Boolean = false,
 ) {
     init {
         require(version >= 1) {
@@ -116,8 +127,26 @@ data class CompactReplay(
          * contract data and do not change replay reconstruction semantics. The codec still
          * tolerates unknown fields on supported versions, but rejects versions newer than this
          * constant before deserialization.
+         *
+         * v6 → v7 hands each deck its entity ids in a shuffled order
+         * ([com.wingedsheep.engine.core.GameConfig.shuffledDeckIds]) and shuffles the seats within
+         * each team of a team game ([com.wingedsheep.engine.core.GameConfig.shuffledTeamSeats]);
+         * the fingerprint semantics stay those of v4–v6. Here the version *is* a reconstruction
+         * gate: a v1–v6 record's actions name ids minted in decklist order, so rebuilding it with
+         * shuffled ids could replay a different, still-legal game and call it exact — and both
+         * shuffles draw from the seeded RNG, so a team game rebuilt with them would also seat
+         * players and shuffle libraries differently from the game that was recorded.
+         * (wingedsheep/argentum-engine introduced these two shuffles as its own v3 and v4; here
+         * v3–v6 were already taken by the carriers above, so both land together in v7 and a record
+         * labelled v3–v6 always has the meaning listed above.)
          */
-        const val CURRENT_VERSION = 6
+        const val CURRENT_VERSION = 7
+
+        /** The first version whose decks were given shuffled ids. */
+        const val SHUFFLED_DECK_IDS_VERSION = 7
+
+        /** The first version whose team games shuffled the seats within each team. */
+        const val SHUFFLED_TEAM_SEATS_VERSION = 7
 
         const val UNKNOWN_VERSION = "unknown"
     }
@@ -174,10 +203,12 @@ data class ReplayCheckpoint(
  * restart compares the recovered position against, so if it describes a position *later* than
  * [actions] covers, a crash at exactly that position passes the gate and recording resumes with a
  * hole in the log — the fictional replay the gate exists to prevent. Reading each getter separately
- * makes that a live race, since the game thread advances between calls.
+ * makes that a live race, since the game thread advances between calls. (A recording frozen by the
+ * size cap is the one deliberate exception: its live position has moved past [actions], but a
+ * resumed frozen recording never appends again, so no hole can follow — see [tailFingerprint].)
  */
 data class ReplayRecordingSnapshot(
-    /** Replay semantics carried by the recording being flushed; new sessions use v6. */
+    /** Replay semantics carried by the recording being flushed; new sessions use [CompactReplay.CURRENT_VERSION]. */
     val version: Int = CompactReplay.CURRENT_VERSION,
     val setup: ReplaySetup,
     val actions: List<com.wingedsheep.engine.core.GameAction>,
@@ -185,11 +216,20 @@ data class ReplayRecordingSnapshot(
     /** Monotone identity of the current input history, including truncations that restore a count. */
     val recordingRevision: Long,
     val checkpoints: List<ReplayCheckpoint>,
-    /** [ReplayFingerprint] of the position [actions] produces — the resume gate's expected value. */
+    /** [ReplayFingerprint] of the live position — the resume gate's expected value. */
     val fingerprint: String,
+    /**
+     * [ReplayFingerprint] of the position [actions] and [yields] produce — what a persisted tail
+     * checkpoint proves. Equal to [fingerprint] while every applied input is recorded; it differs
+     * once the live game has moved past the recording (frozen by the size cap, or ended by the stall
+     * guard's out-of-band draw), where proving the live position would fail an honest prefix.
+     */
+    val tailFingerprint: String = fingerprint,
     val startedAt: java.time.Instant?,
     /** Sampled with the rest, so a game that ended mid-sweep isn't flushed as in-progress. */
     val gameOver: Boolean,
+    /** Whether the recording has been frozen by the size cap — see [CompactReplay.truncated]. */
+    val truncated: Boolean,
 )
 
 /** Cadence knobs for the live recorder. */
@@ -199,6 +239,23 @@ object ReplayRecordingPolicy {
      * cadence, dense enough to pin a divergence to a handful of actions.
      */
     const val CHECKPOINT_EVERY_ACTIONS = 20
+
+    /**
+     * Actions after which a recording is frozen and marked [CompactReplay.truncated].
+     *
+     * Not a storage limit — the input log is ~7 stored bytes per action, so even this many is a
+     * couple of hundred KB, less than the archived frame stream of an ordinary game. It is a limit
+     * on the *cost of recording*: the live log is a copy-on-write list, so appending is O(n) and a
+     * game's recording is O(n²) in its own length, and the flusher re-encodes the whole log every
+     * few seconds until the game ends.
+     *
+     * A whole game of purely random play measures ~1,650 actions (`CompactReplaySizeBenchmark`) and
+     * a real one a few hundred, so this is an order of magnitude clear of any honest game and only
+     * a game that has already gone wrong can reach it. Deliberately below
+     * [com.wingedsheep.gameserver.session.GameStallGuard.MAX_ACTIONS], so the record gives up before
+     * the game does.
+     */
+    const val MAX_RECORDED_ACTIONS = 25_000
 }
 
 /** Which yield mutation a [ReplayYieldEntry] records. */

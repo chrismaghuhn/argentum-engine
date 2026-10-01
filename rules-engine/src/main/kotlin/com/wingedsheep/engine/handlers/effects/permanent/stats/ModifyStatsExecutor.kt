@@ -22,7 +22,7 @@ import kotlin.reflect.KClass
  * Supports both fixed and dynamic amounts via [DynamicAmountEvaluator].
  */
 class ModifyStatsExecutor(
-    private val amountEvaluator: DynamicAmountEvaluator = DynamicAmountEvaluator()
+    private val amountEvaluator: DynamicAmountEvaluator
 ) : EffectExecutor<ModifyStatsEffect> {
 
     override val effectType: KClass<ModifyStatsEffect> = ModifyStatsEffect::class
@@ -32,6 +32,8 @@ class ModifyStatsExecutor(
         effect: ModifyStatsEffect,
         context: EffectContext
     ): EffectResult {
+        if (context.isUnavailableBattlefieldSource(effect.target, state)) return EffectResult.success(state)
+
         // Resolve the target creature
         val targetId = context.resolveTarget(effect.target, state)
             ?: return EffectResult.error(state, "No valid target for stat modification")

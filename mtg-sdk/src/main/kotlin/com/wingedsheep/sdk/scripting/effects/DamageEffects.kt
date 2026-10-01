@@ -3,6 +3,7 @@ package com.wingedsheep.sdk.scripting.effects
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.Duration
+import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.text.TextReplacer
@@ -42,7 +43,16 @@ data class DealDamageEffect(
      * When true and the target is a creature, damage in excess of lethal (CR 120.4a) is dealt to
      * that creature's controller instead (Gandalf's Sanction).
      */
-    val excessToController: Boolean = false
+    val excessToController: Boolean = false,
+    /**
+     * When set, the excess damage (CR 120.4a) this effect deals to its single permanent target —
+     * above lethal for a creature, above loyalty for a planeswalker, above defense for a battle —
+     * is stored into this pipeline number variable for a following effect to read via
+     * `DynamicAmount.VariableReference`. 0 when no excess was dealt (including when the damage was
+     * prevented or the target is gone). Violent Echoes: "If excess damage was dealt to that
+     * permanent this way, empower Jace X, where X is that excess damage."
+     */
+    val excessDamageVariable: String? = null
 ) : Effect {
     /** Convenience constructor for fixed amounts */
     constructor(amount: Int, target: EffectTarget, cantBePrevented: Boolean = false, damageSource: EffectTarget? = null)
@@ -57,8 +67,9 @@ data class DealDamageEffect(
         if (cantBePrevented) append(". This damage can't be prevented")
     }
 
-    override fun runtimeDescription(resolver: (DynamicAmount) -> Int): String = buildString {
-        val resolved = resolver(amount)
+    override fun runtimeDescription(resolver: (DynamicAmount) -> Int?): String = buildString {
+        // Undeterminable amount ("damage equal to target's power", pre-choice) reads by name.
+        val resolved: String = resolver(amount)?.toString() ?: amount.description
         if (damageSource != null) {
             append("${damageSource.description} deals $resolved damage to ${target.description}")
         } else {
@@ -74,33 +85,39 @@ data class DealDamageEffect(
 }
 
 /**
- * Install a turn-duration (until end of turn) replacement effect that increases the amount of
- * *noncombat* damage every source the controller controls would deal to any permanent or player
- * (CR 616 — a damage-amount replacement; combat damage is unaffected).
+ * Install a turn-duration (until end of turn) replacement effect that adds [bonus] to every damage
+ * instance matching [appliesTo] for the rest of the turn (CR 616 — a damage-amount replacement:
+ * "it deals that much damage plus N instead").
  *
- * The bonus is resolved once at resolution (typically [DynamicAmount.XValue] from an `{X}` cost)
- * and baked into the floating effect, so it reads the same amount for every damage instance the
- * rest of the turn. Multiple activations stack — each installs its own additive bonus.
+ * [appliesTo] carries the whole scope — `source`, `recipient`, `damageType` and `amount` — matched by
+ * the same shared matchers as [com.wingedsheep.sdk.scripting.ModifyDamageAmount], with the effect's
+ * controller as "you" (the source that installed it answers "this permanent"). The bonus is resolved
+ * once at resolution (typically [DynamicAmount.XValue] from an `{X}` cost) and baked into the floating
+ * effect, so it reads the same amount for every damage instance the rest of the turn and outlives the
+ * source that created it (CR 611.2c). Multiple installs stack — each adds its own bonus.
  *
- * Taii Wakeen, Perfect Shot: "{X}, {T}: If a source you control would deal noncombat damage to a
- * permanent or player this turn, it deals that much damage plus X instead."
+ * - Taii Wakeen, Perfect Shot: "{X}, {T}: If a source you control would deal noncombat damage to a
+ *   permanent or player this turn, it deals that much damage plus X instead." —
+ *   `appliesTo = DamageEvent(source = Any.youControl(), damageType = NonCombat)`.
+ * - Rankle and Torbran: "If a source would deal damage to a player or battle this turn, it deals that
+ *   much damage plus 2 instead." — `appliesTo = DamageEvent(recipient = Recipient.AnyPlayerOrBattle)`.
  *
- * Modelled as its own effect (not the opponent-only, permanent-tied
- * [com.wingedsheep.sdk.scripting.NoncombatDamageBonus] static) because it (a) is turn-duration,
- * (b) applies to *any* recipient — no opponent restriction — and (c) takes a dynamic bonus.
+ * A floating effect rather than the permanent-hosted [com.wingedsheep.sdk.scripting.ModifyDamageAmount]
+ * because it is turn-duration and bakes its bonus at resolution.
  */
-@SerialName("AmplifyNoncombatDamageThisTurn")
+@SerialName("AmplifyDamageThisTurn")
 @Serializable
-data class AmplifyNoncombatDamageThisTurnEffect(
-    val bonus: DynamicAmount
+data class AmplifyDamageThisTurnEffect(
+    val bonus: DynamicAmount,
+    val appliesTo: EventPattern.DamageEvent,
 ) : Effect {
-    override val description: String =
-        "Until end of turn, if a source you control would deal noncombat damage to a permanent or " +
-            "player, it deals that much damage plus ${bonus.description} instead"
+    override val description: String = describe(bonus.description)
 
-    override fun runtimeDescription(resolver: (DynamicAmount) -> Int): String =
-        "Until end of turn, if a source you control would deal noncombat damage to a permanent or " +
-            "player, it deals that much damage plus ${resolver(bonus)} instead"
+    override fun runtimeDescription(resolver: (DynamicAmount) -> Int?): String =
+        describe(resolver(bonus)?.toString() ?: bonus.description)
+
+    private fun describe(amount: String): String =
+        "Until end of turn, if ${appliesTo.description}, it's that much damage plus $amount instead"
 
     override fun applyTextReplacement(replacer: TextReplacer): Effect {
         val newBonus = bonus.applyTextReplacement(replacer)
@@ -159,6 +176,28 @@ data class DoubleDamageToPlayerEffect(
 @Serializable
 data object DamageCantBePreventedThisTurnEffect : Effect {
     override val description: String = "Damage can't be prevented this turn"
+}
+
+/**
+ * "Damage that would be dealt to [target] this turn can't be prevented or dealt instead to another
+ * permanent or player." — the *per-recipient* form of [DamageCantBePreventedThisTurnEffect]
+ * (Whippoorwill).
+ *
+ * Both halves of the printed clause come from one marker on the recipient: prevention shields,
+ * prevention replacements and protection's prevention clause stop applying to damage aimed at it,
+ * and redirection ("dealt instead to another permanent or player") is skipped for it too.
+ *
+ * Scoped rather than global on purpose — the global effect would blank every prevention effect in
+ * the game for the turn, which is a very different card.
+ */
+@SerialName("DamageToTargetCantBePreventedThisTurn")
+@Serializable
+data class DamageToTargetCantBePreventedThisTurnEffect(
+    val target: EffectTarget = EffectTarget.ContextTarget(0)
+) : Effect {
+    override val description: String =
+        "Damage that would be dealt to ${target.description} this turn can't be prevented or " +
+            "dealt instead to another permanent or player"
 }
 
 /**

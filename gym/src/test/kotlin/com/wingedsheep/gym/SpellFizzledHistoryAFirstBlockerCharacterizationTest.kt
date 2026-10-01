@@ -85,6 +85,8 @@ class SpellFizzledHistoryAFirstBlockerCharacterizationTest : FunSpec({
             startingPlayerIndex = 0,
             format = Format.Commander(),
             seed = 1L,
+            // The pinned trajectory predates upstream-sync-05's shuffled deck ids.
+            shuffledDeckIds = false,
         )
         val environment = GameEnvironment.create(
             cardRegistry = registry,
@@ -167,7 +169,9 @@ class SpellFizzledHistoryAFirstBlockerCharacterizationTest : FunSpec({
         spellFizzled.cardName.isNotBlank() shouldBe true
         spellFizzled.reason shouldBe "All targets are invalid"
         zoneChange.entityId shouldBe spellFizzled.spellEntityId
-        zoneChange.fromZone shouldBe null
+        // Since upstream-sync-05 a resolving spell stays on the stack until it is finalized, so the
+        // fizzle's move names its origin instead of the former unknown (null) zone.
+        zoneChange.fromZone shouldBe Zone.STACK
         zoneChange.toZone shouldBe Zone.GRAVEYARD
 
         val beforeState = checkNotNull(beforeStateAtFizzle)

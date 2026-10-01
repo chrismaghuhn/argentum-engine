@@ -14,7 +14,6 @@ import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.KeywordAbility
@@ -27,6 +26,8 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
  * The source type is part of target enumeration semantics: a permanent may reject an opponent's
@@ -42,7 +43,7 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         oracleText = "{T}: Target creature gets +1/+0 until end of turn."
         activatedAbility {
             cost = Costs.Tap
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
         }
     }
@@ -53,7 +54,7 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         typeLine = "Instant"
         oracleText = "Target creature gets +1/+0 until end of turn."
         spell {
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.ModifyStats(1, 0, com.wingedsheep.sdk.scripting.targets.EffectTarget.ContextTarget(0))
         }
     }
@@ -87,7 +88,7 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         }
         activatedAbility {
             cost = Costs.Tap
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.ModifyStats(1, 0, com.wingedsheep.sdk.scripting.targets.EffectTarget.ContextTarget(0))
         }
     }
@@ -114,7 +115,7 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         }
         activatedAbility {
             cost = Costs.Tap
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
         }
     }
@@ -152,7 +153,7 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         typeLine = "Instant"
         oracleText = "Target creature gets +1/+0 until end of turn."
         spell {
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
         }
         staticAbility {
@@ -166,7 +167,7 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         typeLine = "Instant"
         oracleText = "Target creature gets +1/+0 until end of turn."
         spell {
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
         }
     }.copy(

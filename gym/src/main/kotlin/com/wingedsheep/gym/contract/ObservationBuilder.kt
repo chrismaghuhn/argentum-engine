@@ -80,6 +80,7 @@ import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
 import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
 import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.mechanics.cost.DeterministicAdditionalCostPayment
+import com.wingedsheep.engine.legality.LegalityKernel
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -164,32 +165,34 @@ private const val TARGET_COST_COMBINATION_LIMIT: Int = 4096
  * zones — see `GameState.getBattlefield`).
  */
 class ObservationBuilder(
-    private val schemaHash: String = SchemaHash.CURRENT,
     /** Shared registry used by trusted Gym projections, including the history event projector. */
     internal val cardRegistry: CardRegistry,
+    private val schemaHash: String = SchemaHash.CURRENT,
     private val paidManaSourceTimingCertifier: PaidManaSourceTimingCertifier? = null,
 ) {
-    private val visibility = Visibility(cardRegistry)
-    private val predicateEvaluator = PredicateEvaluator()
-    private val conditionEvaluator = ConditionEvaluator()
+    private val predicateEvaluator = PredicateEvaluator(cardRegistry)
+    private val conditionEvaluator = predicateEvaluator.conditions
+    private val visibility = Visibility(cardRegistry, conditionEvaluator = conditionEvaluator)
     private val castPermissionUtils by lazy {
         CastPermissionUtils(cardRegistry, predicateEvaluator, conditionEvaluator)
     }
-    private val castZoneResolver by lazy { CastZoneResolver(cardRegistry, conditionEvaluator) }
+    private val castZoneResolver by lazy {
+        CastZoneResolver(cardRegistry, conditionEvaluator, LegalityKernel(cardRegistry, conditionEvaluator))
+    }
     private val paymentDomainBuilder by lazy {
         PaymentDomainBuilder(
-            manaSolver = ManaSolver(cardRegistry),
+            manaSolver = ManaSolver(cardRegistry, predicateEvaluator),
             visibility = visibility,
             activatedAbilityCostCalculator = activatedAbilityCostCalculator,
             paidManaSourceTimingCertifier = paidManaSourceTimingCertifier
                 ?: PaidManaSourceTimingCertifier.fixedFirstSlice(cardRegistry),
         )
     }
-    private val costCalculator by lazy { CostCalculator(cardRegistry) }
-    private val manaSolver by lazy { ManaSolver(cardRegistry) }
+    private val costCalculator by lazy { CostCalculator(cardRegistry, predicateEvaluator) }
+    private val manaSolver by lazy { ManaSolver(cardRegistry, predicateEvaluator) }
     private val paymentPlanValidator by lazy { PaymentPlanValidator(manaSolver) }
     private val activatedAbilityCostCalculator by lazy {
-        ActivatedAbilityCostCalculator(castPermissionUtils)
+        ActivatedAbilityCostCalculator(castPermissionUtils, conditionEvaluator)
     }
     private val actionSerialization = Json {
         encodeDefaults = true
@@ -201,25 +204,33 @@ class ObservationBuilder(
         state: GameState,
         perspectivePlayerId: EntityId,
         legalActions: List<LegalAction>,
-        truncated: Boolean = false
+        truncated: Boolean = false,
+        /**
+         * A decision to present instead of the state's own suspension — a synthetic view of a
+         * question the server asks outside the engine (the pregame selected-card choice). The
+         * engine only exposes a pending decision through an installed suspension, so callers that
+         * render such a question pass it here rather than rewriting the state.
+         */
+        pendingDecisionOverride: PendingDecision? = null,
     ): ObservationResult {
+        val pendingDecision = pendingDecisionOverride ?: state.pendingDecision
         val players = state.turnOrder.map { buildPlayerView(state, it, perspectivePlayerId) }
 
         val zones = buildZones(state, perspectivePlayerId)
 
         val agentToAct = if (state.gameOver || truncated) null
-        else state.pendingDecision?.playerId ?: state.priorityPlayerId
+        else pendingDecision?.playerId ?: state.priorityPlayerId
         val mayReceiveActions = !state.gameOver && !truncated && perspectivePlayerId == agentToAct
 
         val stack = state.stack.map { entityId ->
             buildStackItem(state, entityId, perspectivePlayerId)
         }
 
-        val pendingDecisionAndRegistry = state.pendingDecision
+        val pendingDecisionAndRegistry = pendingDecision
             ?.let { buildPendingDecision(state, it, mayReceiveActions) }
         val pendingDecisionView = pendingDecisionAndRegistry?.first
         val decisionRegistry = pendingDecisionAndRegistry?.second ?: ActionRegistry.EMPTY
-        val actionDomainMappings = if (mayReceiveActions && state.pendingDecision == null) {
+        val actionDomainMappings = if (mayReceiveActions && pendingDecision == null) {
             legalActions.map { action ->
                 val targetResult = mapPublicTargetDomain(state, action, perspectivePlayerId)
                 ActionDomainMapping(
@@ -267,13 +278,13 @@ class ObservationBuilder(
         val diagnostics = buildList {
             if (
                 mayReceiveActions &&
-                state.pendingDecision != null &&
+                pendingDecision != null &&
                 pendingDecisionView?.requiresStructuredResponse == true &&
                 pendingDecisionView.structuredDomain == null
             ) {
                 add(DiagnosticSignal(code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING))
             }
-            if (mayReceiveActions && state.pendingDecision == null && actionDomainMappings.any { mapping ->
+            if (mayReceiveActions && pendingDecision == null && actionDomainMappings.any { mapping ->
                     when (mapping.targetPaymentQualification) {
                         TargetPaymentQualification.NotApplicable ->
                             mapping.action.affordable &&
@@ -302,9 +313,9 @@ class ObservationBuilder(
         if (!mayReceiveActions) {
             legalActionViews = emptyList()
             actionRegistry = ActionRegistry.EMPTY
-        } else if (state.pendingDecision != null) {
+        } else if (pendingDecision != null) {
             val responses = decisionRegistry.decisionResponses.map { it.second }
-            legalActionViews = buildDecisionOptionViews(state, state.pendingDecision!!, responses)
+            legalActionViews = buildDecisionOptionViews(state, pendingDecision, responses)
             actionRegistry = decisionRegistry
         } else {
             legalActionViews = supportedActionMappings.mapIndexed { idx, mapped ->
@@ -364,7 +375,8 @@ class ObservationBuilder(
     ): PlayerView {
         val container = state.getEntity(playerId)
         val playerComp = container?.get<PlayerComponent>()
-        val life = container?.get<LifeTotalComponent>()?.life ?: 0
+        // Through the resolver — a 2HG team's shared life lives on one member (CR 810.9a).
+        val life = if (container?.get<LifeTotalComponent>() != null) state.lifeTotal(playerId) else 0
         val manaPool = container?.get<ManaPoolComponent>()
         val hasLost = container?.get<PlayerLostComponent>() != null
 
@@ -401,19 +413,13 @@ class ObservationBuilder(
         state: GameState,
         perspectivePlayerId: EntityId
     ): List<ZoneView> {
-        // Emit a view for every (player, zone) in turn order so trainers see a
-        // consistent shape regardless of whether a zone happens to be empty.
-        val perPlayerZones = listOf(
-            Zone.HAND,
-            Zone.LIBRARY,
-            Zone.GRAVEYARD,
-            Zone.EXILE,
-            Zone.BATTLEFIELD,
-            Zone.COMMAND
-        )
+        // Emit a view for every modeled (player, zone) in the contract's stable order so trainers
+        // see a consistent shape regardless of whether a zone happens to be empty. The stack has
+        // its own ordered representation above; see [TRAINING_OBSERVATION_ZONE_ORDER] for why the
+        // order is spelled out rather than taken from the enum.
         val views = mutableListOf<ZoneView>()
         for (playerId in state.turnOrder) {
-            for (zone in perPlayerZones) {
+            for (zone in TRAINING_OBSERVATION_ZONE_ORDER) {
                 val key = ZoneKey(playerId, zone)
                 val ids = state.getZone(key)
                 val cards = ids.mapNotNull { entityId ->
@@ -544,7 +550,7 @@ class ObservationBuilder(
             name = if (publicFaceDown) {
                 if (onBattlefield) "Face-down permanent" else "Face-down card"
             } else {
-                card?.name ?: ""
+                pv?.name ?: card?.name ?: ""
             },
             zone = zone,
             ownerId = ownerId,
@@ -556,11 +562,21 @@ class ObservationBuilder(
             manaCost = if (publicFaceDown) "" else card?.manaCost?.toString() ?: "",
             manaValue = if (publicFaceDown) 0 else card?.manaValue ?: 0,
             oracleText = if (publicFaceDown) "" else card?.oracleText ?: "",
+            // A noncreature permanent has no power or toughness, even with numbers printed on it
+            // (an uncrewed Vehicle), so both are null unless the object is a creature now.
             power = if (onBattlefield) {
-                if (publicFaceDown) pv?.power ?: 2 else projected.getPower(entityId)
+                when {
+                    publicFaceDown -> pv?.power ?: 2
+                    projected.isCreature(entityId) -> projected.getPower(entityId)
+                    else -> null
+                }
             } else null,
             toughness = if (onBattlefield) {
-                if (publicFaceDown) pv?.toughness ?: 2 else projected.getToughness(entityId)
+                when {
+                    publicFaceDown -> pv?.toughness ?: 2
+                    projected.isCreature(entityId) -> projected.getToughness(entityId)
+                    else -> null
+                }
             } else null,
             tapped = onBattlefield && container.get<TappedComponent>() != null,
             // Only creatures meaningfully suffer summoning sickness — the engine attaches the
@@ -623,25 +639,35 @@ class ObservationBuilder(
         val identityVisible = !faceDown ||
             visibility.isCardRevealedTo(state, entityId, perspectivePlayerId) ||
             controllerId == perspectivePlayerId
-        val targets = container?.get<TargetsComponent>()?.targets
-            ?.map { target ->
-                when (target) {
-                    is ChosenTarget.Player -> target.playerId
-                    is ChosenTarget.Permanent -> target.entityId
-                    is ChosenTarget.Card -> target.cardId
-                    is ChosenTarget.Spell -> target.spellEntityId
-                }
-            } ?: emptyList()
+        val targets = container?.get<TargetsComponent>()?.targets.orEmpty().map(::targetEntityId)
+        // An ability's entity holds only its stack component, with no CardComponent of its own,
+        // so the source name and description are the only identity an agent can read for it.
+        val name = card?.name ?: triggered?.sourceName ?: activated?.sourceName ?: ""
+        val text = card?.oracleText
+            ?: triggered?.let { it.descriptionOverride ?: it.description }
+            ?: activated?.descriptionOverride
+            ?: ""
 
         return StackItemView(
             entityId = entityId,
             controllerId = controllerId,
             sourceEntityId = sourceEntityId,
-            name = if (identityVisible) card?.name ?: "" else "Face-down spell",
+            name = if (identityVisible) name else "Face-down spell",
             kind = kind,
-            oracleText = if (identityVisible) card?.oracleText ?: "" else "",
+            oracleText = if (identityVisible) text else "",
             targets = targets
         )
+    }
+
+    /**
+     * The entity a chosen target names. A player target contributes the player's own entity id —
+     * players are entities here, so the flattened list stays unambiguous.
+     */
+    private fun targetEntityId(target: ChosenTarget): EntityId = when (target) {
+        is ChosenTarget.Player -> target.playerId
+        is ChosenTarget.Permanent -> target.entityId
+        is ChosenTarget.Card -> target.cardId
+        is ChosenTarget.Spell -> target.spellEntityId
     }
 
     // =========================================================================
@@ -2339,8 +2365,9 @@ class ObservationBuilder(
     }
 
     private fun SelectManaSourcesDecision.hasRemainingCompositeWardCost(state: GameState): Boolean =
-        (state.peekContinuation() as? CounterUnlessPaysManaSelectionContinuation)
-            ?.let { it.decisionId == id && it.remainingWardParts.isNotEmpty() }
+        (state.peekContinuation() as? com.wingedsheep.engine.core.Suspension)
+            ?.takeIf { it.question.id == id }
+            ?.let { (it.answer as? CounterUnlessPaysManaSelectionContinuation)?.remainingWardParts?.isNotEmpty() }
             ?: false
 
     private fun unorderedEntityIds(ids: List<EntityId>): List<EntityId> =

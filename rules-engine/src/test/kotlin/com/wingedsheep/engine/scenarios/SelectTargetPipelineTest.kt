@@ -17,14 +17,15 @@ import com.wingedsheep.sdk.scripting.effects.DealDamageEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.effects.SelectTargetEffect
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
-import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Tests for SelectTargetEffect — mid-resolution pipeline targeting.
@@ -47,7 +48,7 @@ class SelectTargetPipelineTest : FunSpec({
             effect = CompositeEffect(
                 listOf(
                     SelectTargetEffect(
-                        requirement = TargetCreature(),
+                        requirement = TargetObject(filter = TargetFilter.Creature),
                         storeAs = "chosen"
                     ),
                     DealDamageEffect(
@@ -60,9 +61,29 @@ class SelectTargetPipelineTest : FunSpec({
         )
     )
 
+    val OptionalPipelineBolt = CardDefinition.sorcery(
+        name = "Optional Pipeline Bolt",
+        manaCost = ManaCost.parse("{R}"),
+        oracleText = "Choose up to one creature. Deal 3 damage to it.",
+        script = CardScript.spell(
+            effect = CompositeEffect(
+                listOf(
+                    SelectTargetEffect(
+                        requirement = TargetObject(filter = TargetFilter.Creature, optional = true),
+                        storeAs = "chosen"
+                    ),
+                    DealDamageEffect(
+                        amount = 3,
+                        target = EffectTarget.PipelineTarget("chosen")
+                    )
+                )
+            )
+        )
+    )
+
     fun createDriver(): GameTestDriver {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + listOf(PipelineBolt))
+        driver.registerCards(TestCards.all + listOf(PipelineBolt, OptionalPipelineBolt))
         return driver
     }
 
@@ -96,7 +117,7 @@ class SelectTargetPipelineTest : FunSpec({
         // Add Pipeline Bolt directly to hand (avoid flaky random draw)
         val boltId = driver.putCardInHand(caster, "Pipeline Bolt")
         val castResult = driver.castSpell(caster, boltId)
-        castResult.isSuccess shouldBe true
+        castResult.outcome shouldBe Outcome.Done
 
         // Spell is on the stack — resolve it
         driver.bothPass()
@@ -104,6 +125,27 @@ class SelectTargetPipelineTest : FunSpec({
         // With only one legal creature, SelectTargetEffect auto-selects.
         // DealDamageEffect deals 3 to the 2/2 Bear → it dies.
         driver.assertInGraveyard(opponent, "Grizzly Bears")
+    }
+
+    test("single legal target is still offered when selecting it is optional") {
+        val driver = createDriver()
+        driver.initMirrorMatch(
+            deck = Deck.of("Mountain" to 40),
+            startingLife = 20
+        )
+
+        val (caster, opponent) = setupForCast(driver)
+        val bear = driver.putCreatureOnBattlefield(opponent, "Grizzly Bears")
+
+        val boltId = driver.putCardInHand(caster, "Optional Pipeline Bolt")
+        driver.castSpell(caster, boltId)
+        driver.bothPass()
+
+        val decision = driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().minTargets shouldBe 0
+
+        driver.submitTargetSelection(caster, emptyList())
+        driver.getCreatures(opponent).shouldContain(bear)
     }
 
     test("multiple legal targets presents decision and deals damage to chosen") {
@@ -179,13 +221,16 @@ class SelectTargetPipelineTest : FunSpec({
             filter = TargetFilter(GameObjectFilter.Creature),
             dynamicMaxCount = DynamicAmount.XValue,
         )
-        val result = SelectTargetPipelineExecutor().execute(
+        val result = SelectTargetPipelineExecutor(
+            targetFinder = driver.services.targetFinder,
+            targetValidator = driver.services.targetValidator,
+        ).execute(
             state = driver.state,
             effect = SelectTargetEffect(requirement = unresolvedRequirement, storeAs = "chosen"),
             context = EffectContext(sourceId = null, controllerId = caster, xValue = null),
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         result.error shouldNotBe null
         result.diagnostics.single().code shouldBe DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
     }

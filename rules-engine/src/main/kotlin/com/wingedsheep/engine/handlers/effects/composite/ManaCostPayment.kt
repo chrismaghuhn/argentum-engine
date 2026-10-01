@@ -1,8 +1,11 @@
 package com.wingedsheep.engine.handlers.effects.composite
 
+import com.wingedsheep.engine.mechanics.mana.withSpendingColors
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
@@ -27,7 +30,14 @@ fun payManaCostFromPool(
     state: GameState,
     player: EntityId,
     cost: ManaCost,
-    cardRegistry: CardRegistry
+    cardRegistry: CardRegistry,
+    predicateEvaluator: PredicateEvaluator,
+    /**
+     * Pays the auto-tapped abilities' life costs. Engine callers pass
+     * `ManaAbilitySideEffectExecutor.noOp(services.zones)`; `null` builds the same side-effect-free
+     * executor over a zone service of its own, for callers that hold only a registry and evaluator.
+     */
+    manaAbilitySideEffectExecutor: ManaAbilitySideEffectExecutor? = null,
 ): EffectResult {
     val playerEntity = state.getEntity(player)
         ?: return EffectResult.error(state, "Paying player not found")
@@ -35,7 +45,7 @@ fun payManaCostFromPool(
     val manaPoolComponent = playerEntity.get<ManaPoolComponent>()
         ?: return EffectResult.error(state, "Player has no mana pool")
 
-    val manaPool = manaPoolComponent.toManaPool()
+    val manaPool = manaPoolComponent.toManaPool().withSpendingColors(state, player)
 
     val partialResult = manaPool.payPartial(cost)
     val remainingCost = partialResult.remainingCost
@@ -44,12 +54,15 @@ fun payManaCostFromPool(
     val events = mutableListOf<GameEvent>()
 
     if (!remainingCost.isEmpty()) {
-        val manaSolver = ManaSolver(cardRegistry)
+        val manaSolver = ManaSolver(cardRegistry, predicateEvaluator = predicateEvaluator)
         val solution = manaSolver.solve(currentState, player, remainingCost)
             ?: return EffectResult.error(state, "Cannot pay mana cost")
 
-        val tapResult = ManaAbilitySideEffectExecutor.noOp(cardRegistry)
-            .tapSourcesWithSideEffects(currentState, solution, player)
+        // One transactional payment: tapping, each selected ability's life cost and the activation
+        // event either all happen or the cost is unpaid with the input state untouched.
+        val sideEffects = manaAbilitySideEffectExecutor
+            ?: ManaAbilitySideEffectExecutor.noOp(ZoneTransitionService(cardRegistry, predicateEvaluator))
+        val tapResult = sideEffects.tapSourcesWithSideEffects(currentState, solution, player)
         if (!tapResult.success) return EffectResult.error(state, "Cannot pay mana ability side effect")
         currentState = tapResult.state
         events.addAll(tapResult.events)
@@ -108,15 +121,16 @@ fun canAutoPayManaCost(
     player: EntityId,
     cost: ManaCost,
     cardRegistry: CardRegistry,
-    precomputedSources: List<ManaSource>? = null
+    precomputedSources: List<ManaSource>? = null,
+    predicateEvaluator: PredicateEvaluator
 ): Boolean {
     val manaPoolComponent = state.getEntity(player)?.get<ManaPoolComponent>() ?: return false
 
-    val manaPool = manaPoolComponent.toManaPool()
+    val manaPool = manaPoolComponent.toManaPool().withSpendingColors(state, player)
 
     val remainingCost = manaPool.payPartial(cost).remainingCost
     if (remainingCost.isEmpty()) return true
 
-    return ManaSolver(cardRegistry)
+    return ManaSolver(cardRegistry, predicateEvaluator = predicateEvaluator)
         .solve(state, player, remainingCost, precomputedSources = precomputedSources) != null
 }

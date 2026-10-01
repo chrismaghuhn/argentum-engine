@@ -423,9 +423,10 @@
  * ========================================================================= */
 .title {
   margin: 0;
-  font-size: var(--font-3xl);
-  font-weight: var(--font-weight-bold);
-  letter-spacing: -0.025em;
+  font-family: var(--font-display);
+  font-size: calc(var(--font-3xl) + 4px);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.005em;
   background: linear-gradient(180deg, #ffffff 0%, #c9d2e0 55%, #8a93a8 100%);
   -webkit-background-clip: text;
   background-clip: text;
@@ -450,8 +451,9 @@
 
 .lobbyTitle {
   margin: 0 0 var(--space-1) 0;
-  font-weight: var(--font-weight-bold);
-  letter-spacing: -0.02em;
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.005em;
   background: var(--gradient-title);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -3141,6 +3143,15 @@
   padding: 2px 8px;
   background: rgba(255, 255, 255, 0.05);
   border-radius: var(--radius-sm);
+}
+
+/* Badge on an AI-vs-AI result the server decided without playing the game. */
+.resultSimulated {
+  margin-left: 6px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
 }
 
 /* =========================================================================

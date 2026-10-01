@@ -11,7 +11,6 @@ import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.GrantKeywordAbility
 import com.wingedsheep.sdk.scripting.KeywordAbility
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
-import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
 /**
  * Astor, Bearer of Blades
@@ -36,9 +35,9 @@ val AstorBearerOfBlades = card("Astor, Bearer of Blades") {
     toughness = 4
 
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
+        trigger = Triggers.self.enters()
         effect = Patterns.Library.lookAtTopRevealMatchingToHand(
-            count = DynamicAmount.Fixed(7),
+            count = 7,
             filter = GameObjectFilter.Artifact.withAnySubtype("Equipment", "Vehicle"),
             prompt = "You may reveal an Equipment or Vehicle card to put into your hand"
         )

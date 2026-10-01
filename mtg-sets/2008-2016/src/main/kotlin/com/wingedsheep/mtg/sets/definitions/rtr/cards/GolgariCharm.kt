@@ -4,11 +4,9 @@ import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
-import com.wingedsheep.sdk.scripting.effects.RegenerateEffect
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Golgari Charm
@@ -30,17 +28,17 @@ val GolgariCharm = card("Golgari Charm") {
             mode("All creatures get -1/-1 until end of turn") {
                 effect = Effects.ForEachInGroup(
                     GroupFilter.AllCreatures,
-                    Effects.ModifyStats(-1, -1, EffectTarget.Self)
+                    Effects.ModifyStats(-1, -1, EffectTarget.IterationEntity)
                 )
             }
             mode("Destroy target enchantment") {
-                val target = target("target enchantment", TargetObject(filter = TargetFilter.Enchantment))
+                val target = target(TargetFilter.Enchantment)
                 effect = Effects.Destroy(target)
             }
             mode("Regenerate each creature you control") {
                 effect = Effects.ForEachInGroup(
                     GroupFilter.AllCreaturesYouControl,
-                    RegenerateEffect(EffectTarget.Self)
+                    Effects.Regenerate(EffectTarget.IterationEntity)
                 )
             }
         }

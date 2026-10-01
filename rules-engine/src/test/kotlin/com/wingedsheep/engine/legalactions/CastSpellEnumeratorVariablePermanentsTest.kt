@@ -49,7 +49,7 @@ class CastSpellEnumeratorVariablePermanentsTest : FunSpec({
         cast.affordable shouldBe true
 
         val costInfo = cast.additionalCostInfo.shouldNotBeNull()
-        costInfo.costType shouldBe "VariableSacrifice"
+        costInfo.costType shouldBe "SacrificeVariable"
         costInfo.sacrificeCount shouldBe 0
         costInfo.sacrificeMinCount shouldBe 0
         costInfo.sacrificeMaxCount shouldBe 0

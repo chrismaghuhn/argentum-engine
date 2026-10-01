@@ -11,6 +11,8 @@ import com.wingedsheep.engine.core.ResolutionAttacker
 import com.wingedsheep.engine.core.ResolutionBlocker
 import com.wingedsheep.engine.core.ResolutionDefender
 import com.wingedsheep.engine.core.ResolutionTargetKind
+import com.wingedsheep.engine.core.Suspension
+import com.wingedsheep.engine.core.restoreSuspension
 import com.wingedsheep.engine.core.OrderBlockers
 import com.wingedsheep.engine.handlers.actions.decision.DecisionValidators
 import com.wingedsheep.engine.handlers.actions.combat.OrderBlockersHandler
@@ -548,29 +550,28 @@ class ModernCombatDamageConformanceTest : FunSpec({
                 edge.copy(amount = if (edge.targetId.value == "blocker-0") 2 else edge.amount)
             },
         )
+        // The answer continuation no longer caches the decision (or its id): the question and its
+        // answer ride the continuation stack together as one Suspension frame, so the decision
+        // shape is serialized inside that frame.
         val continuation = com.wingedsheep.engine.core.CombatResolutionContinuation(
-            decisionId = decision.id,
             firstStrike = false,
             pendingChoosers = listOf(controllerId, EntityId.of("second-chooser")),
-            decisionShape = decision,
         )
+        val suspension = Suspension(question = decision, answer = continuation)
         val json = Json {
             serializersModule = com.wingedsheep.engine.core.engineSerializersModule
             encodeDefaults = true
         }
         val encoded = json.encodeToString(
             com.wingedsheep.engine.core.ContinuationFrame.serializer(),
-            continuation,
+            suspension,
         )
         encoded.contains("orderConstrained") shouldBe false
         encoded.contains("orderedAttackers") shouldBe false
         val decoded = json.decodeFromString<com.wingedsheep.engine.core.ContinuationFrame>(encoded)
-        decoded shouldBe continuation
-        val forked = GameState().copy(
-            pendingDecision = decision,
-            continuationStack = listOf(decoded),
-        )
-        forked.peekContinuation() shouldBe continuation
+        decoded shouldBe suspension
+        val forked = GameState().restoreSuspension(decoded.shouldBeInstanceOf<Suspension>())
+        forked.peekContinuation().shouldBeInstanceOf<Suspension>().answer shouldBe continuation
         forked.pendingDecision shouldBe decision
     }
 

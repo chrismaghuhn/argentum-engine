@@ -34,6 +34,7 @@ import com.wingedsheep.gym.contract.PerspectiveHistoryIdentityDisclosureV1
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.TypeLine
@@ -52,6 +53,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
+import com.wingedsheep.engine.core.Outcome
 
 class PerspectiveHistoryCompositionTest : FunSpec({
 
@@ -123,7 +125,7 @@ class PerspectiveHistoryCompositionTest : FunSpec({
         )
         val thief = driver.putCardInHand(viewer, "Ingenious Thief")
         driver.giveMana(viewer, Color.BLUE, 2)
-        driver.castSpell(viewer, thief).isSuccess shouldBe true
+        driver.castSpell(viewer, thief).outcome shouldBe Outcome.Done
 
         var lookTransition: CommittedRulesTransition? = null
         repeat(40) {
@@ -352,7 +354,7 @@ class PerspectiveHistoryCompositionTest : FunSpec({
                     ),
                     CountersAddedEvent(
                         entityId = target,
-                        counterType = "+1/+1",
+                        counterType = CounterType.PLUS_ONE_PLUS_ONE,
                         amount = 1,
                         placedBy = p1,
                     ),

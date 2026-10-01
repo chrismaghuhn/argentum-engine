@@ -1,10 +1,12 @@
 package com.wingedsheep.sdk.serialization
 
-import com.wingedsheep.sdk.core.Counters
+import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.costs.CardMeasure
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
@@ -34,19 +36,46 @@ class CostAtomSerializationTest : FunSpec({
         CostAtom.Mana(ManaCost.parse("{2}{U}")),
         CostAtom.PayLife(3),
         CostAtom.PayLife(DynamicAmount.CommanderColorIdentityCount),
+        CostAtom.PayPlayerCounters(CounterType.ENERGY),
+        CostAtom.PayPlayerCounters(CounterType.ENERGY, com.wingedsheep.sdk.scripting.values.DynamicAmount.XValue),
+        CostAtom.PayPlayerCounters(CounterType.ENERGY, CostAtom.CollectEvidence.TARGET_SUM),
         CostAtom.Sacrifice(GameObjectFilter.Creature, count = 2),
         CostAtom.Discard(count = 1, filter = GameObjectFilter.Any, random = true),
         CostAtom.ExileFrom(Zone.GRAVEYARD, GameObjectFilter.Creature, count = 3),
         CostAtom.Mill(count = 1),
+        CostAtom.ExileTopOfLibrary(count = 10),
         CostAtom.VariablePermanents(GameObjectFilter.Artifact, minCount = 1, excludeSelf = true),
         CostAtom.TapPermanents(count = 1, filter = GameObjectFilter.Creature),
         CostAtom.ReturnToHand(GameObjectFilter.Any, count = 1),
         CostAtom.RevealFromHand(GameObjectFilter.Any, count = 1),
-        CostAtom.RemoveCounters(Counters.PLUS_ONE_PLUS_ONE, filter = GameObjectFilter.Creature),
-        CostAtom.RemoveCounters("charge", self = true),
+        CostAtom.PutFromHandOnTopOfLibrary(count = 1, filter = GameObjectFilter.Any),
+        CostAtom.RemoveCounters(CounterType.PLUS_ONE_PLUS_ONE, filter = GameObjectFilter.Creature),
+        CostAtom.RemoveCounters(CounterType.CHARGE, self = true),
         CostAtom.RemoveCounters(counterType = null, filter = GameObjectFilter.Creature),
-        CostAtom.PutCountersOnSelf(Counters.PAGE, count = 1),
-        CostAtom.CollectEvidence(amount = 6)
+        CostAtom.PutCountersOnSelf(CounterType.PAGE, count = 1),
+        CostAtom.PutCountersOnPermanent(CounterType.MINUS_ONE_MINUS_ONE, filter = GameObjectFilter.Creature),
+        CostAtom.CollectEvidence(amount = 6),
+        // Urgent Necropsy's derived threshold — the shape that made `amount` a DynamicAmount, and
+        // so the one whose round-trip is worth pinning separately from the literal.
+        CostAtom.CollectEvidence(CostAtom.CollectEvidence.TARGET_SUM),
+        CostAtom.RevealNotedCreatureType,
+        CostAtom.DiscardHand,
+        CostAtom.SacrificeAll(GameObjectFilter.Creature),
+        CostAtom.Unattach,
+        CostAtom.ExileFromGraveyardForTotal(
+            filter = GameObjectFilter.Any.withColor(Color.BLACK),
+            measure = CardMeasure.ColoredManaSymbols(listOf(Color.BLACK)),
+            minTotal = 15,
+        ),
+        CostAtom.ExileFromGraveyardForTotal(
+            measure = CardMeasure.ManaValue,
+            minTotal = 6,
+        ),
+        CostAtom.ExileFromGraveyardForTotal(
+            measure = CardMeasure.DistinctCardTypes,
+            minTotal = 4,
+            excludeSelf = true,
+        )
     )
 
     test("every concrete CostAtom subtype has a representative in this test") {
@@ -88,6 +117,9 @@ class CostAtomSerializationTest : FunSpec({
         CostAtom.Sacrifice(count = 2).selectionCount shouldBe 2
         CostAtom.ExileFrom(Zone.GRAVEYARD, count = 3).selectionCount shouldBe 3
         CostAtom.TapPermanents(count = 1).selectionCount shouldBe 1
+        // Top-of-library costs take no selection: the cards are the top, not a player's pick.
+        CostAtom.Mill(count = 1).selectionCount shouldBe 0
+        CostAtom.ExileTopOfLibrary(count = 10).selectionCount shouldBe 0
     }
 
     test("PayLife keeps fixed amounts compact while dynamic amounts retain their type") {

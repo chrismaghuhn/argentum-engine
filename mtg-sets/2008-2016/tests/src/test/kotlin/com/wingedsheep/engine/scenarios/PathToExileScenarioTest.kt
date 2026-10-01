@@ -17,6 +17,8 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /** Path to Exile (CON #15) — exile plus the target controller's optional basic-land search. */
 class PathToExileScenarioTest : FunSpec({
@@ -38,7 +40,7 @@ class PathToExileScenarioTest : FunSpec({
                 cardId = spell,
                 targets = listOf(ChosenTarget.Permanent(victim)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         return spell
     }
@@ -59,7 +61,7 @@ class PathToExileScenarioTest : FunSpec({
         val search = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
         search.playerId shouldBe victimController
         search.options shouldContain forest
-        driver.submitCardSelection(victimController, listOf(forest)).isSuccess shouldBe true
+        driver.submitCardSelection(victimController, listOf(forest)).outcome shouldBe Outcome.Done
 
         driver.getExile(victimController) shouldContain victim
         driver.state.getBattlefield(victimController) shouldContain forest
@@ -84,11 +86,11 @@ class PathToExileScenarioTest : FunSpec({
                 cardId = spell,
                 targets = listOf(ChosenTarget.Permanent(noncreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
 
         castPath(driver, caster, victim)
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>().playerId shouldBe victimController
-        driver.submitYesNo(victimController, false).isSuccess shouldBe true
+        driver.submitYesNo(victimController, false).outcome shouldBe Outcome.Done
 
         driver.getExile(victimController) shouldContain victim
         driver.state.getLibrary(victimController) shouldContain forest

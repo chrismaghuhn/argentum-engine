@@ -19,16 +19,15 @@ class ReplacementContinuationResumer(
     private val services: EngineServices
 ) : ContinuationResumerModule, AutoResumerModule {
 
-    private val castSpellHandler by lazy {
-        com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler.create(services)
-    }
+    private val castSpellHandler get() = services.castSpellHandler
     private val activateAbilityHandler by lazy {
         com.wingedsheep.engine.handlers.actions.ability.ActivateAbilityHandler.create(services)
     }
     private val moveCollectionExecutor by lazy {
         com.wingedsheep.engine.handlers.effects.library.MoveCollectionExecutor(
+            services.zones,
             cardRegistry = services.cardRegistry,
-            targetFinder = com.wingedsheep.engine.handlers.TargetFinder(),
+            targetFinder = services.targetFinder,
         )
     }
     private val costPaymentContinuationResumer by lazy {
@@ -102,7 +101,7 @@ class ReplacementContinuationResumer(
         checkForMore: CheckForMore
     ): ExecutionResult {
         return when (result) {
-            is ProcessorResult.Paused -> ExecutionResult.paused(result.state, result.decision)
+            is ProcessorResult.Paused -> ExecutionResult.propagatePause(result.state, result.events)
             is ProcessorResult.Pass -> {
                 val performFrame = event.performContinuation(state)
                 val stateToResume = performFrame?.let { state.pushContinuation(it) } ?: state
@@ -145,8 +144,7 @@ class ReplacementContinuationResumer(
         val pending = continuation.pendingEvent
         return when (val completion = pending.completion) {
             PendingGameEvent.PlainZoneChangeCompletion -> {
-                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                    .performPendingZoneChange(state, pending)
+                val transition = services.zones.performPendingZoneChange(state, pending)
                 checkForMore(transition.state, events + transition.events)
             }
             is PendingGameEvent.MoveEffectZoneChangeCompletion -> {
@@ -166,13 +164,11 @@ class ReplacementContinuationResumer(
                     completion.effect,
                     resolvedContext,
                 )
-                if (result.isPaused) {
+                if (result.outcome is Outcome.Paused) {
                     return ExecutionResult(
                         result.state,
                         events + result.events,
-                        result.error,
-                        result.pendingDecision,
-                        result.triggersAlreadyProcessed,
+                        result.outcome,
                         result.diagnostics,
                     )
                 }
@@ -180,59 +176,36 @@ class ReplacementContinuationResumer(
                     .withDiagnosticsFrom(result.diagnostics)
             }
             is PendingGameEvent.ActivateAbilityZoneChangeCompletion -> {
-                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                    .performPendingZoneChange(state, pending)
+                val transition = services.zones.performPendingZoneChange(state, pending)
                 val result = activateAbilityHandler.execute(transition.state, completion.action)
-                if (result.isPaused) {
+                if (result.outcome is Outcome.Paused) {
                     return result.copy(events = events + transition.events + result.events)
                 }
                 checkForMore(result.state, events + transition.events + result.events)
                     .withDiagnosticsFrom(result.diagnostics)
             }
             is PendingGameEvent.CastSpellZoneChangeCompletion -> {
-                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                    .performPendingZoneChange(state, pending)
+                val transition = services.zones.performPendingZoneChange(state, pending)
                 val result = castSpellHandler.execute(transition.state, completion.action)
-                if (result.isPaused) {
+                if (result.outcome is Outcome.Paused) {
                     return result.copy(events = events + transition.events + result.events)
                 }
                 checkForMore(result.state, events + transition.events + result.events)
                     .withDiagnosticsFrom(result.diagnostics)
             }
             PendingGameEvent.LibraryRevealZoneChangeCompletion -> {
-                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                    .performPendingZoneChange(state, pending)
-                val revealed = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
-                    .markRevealed(
-                        state = transition.state,
-                        cardIds = listOf(pending.entityId),
-                        playerIds = transition.state.turnOrder.toSet(),
-                        includeLibraryPositions = true,
-                    )
-                checkForMore(revealed, events + transition.events)
+                val transition = services.zones.performPendingZoneChange(state, pending)
+                checkForMore(markRevealedIfInLibrary(transition.state, pending), events + transition.events)
             }
             PendingGameEvent.StackSpellToLibraryZoneChangeCompletion -> {
-                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                    .performPendingZoneChange(state, pending)
-                val spellName = transition.state.getEntity(pending.entityId)
-                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
-                    ?.name
-                    ?: "Unknown"
-                val revealed = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
-                    .markRevealed(
-                        state = transition.state,
-                        cardIds = listOf(pending.entityId),
-                        playerIds = transition.state.turnOrder.toSet(),
-                        includeLibraryPositions = true,
-                    )
-                checkForMore(
-                    revealed,
-                    events + SpellCounteredEvent(pending.entityId, spellName) + transition.events,
-                )
+                // "The owner of target spell puts it on … their library" moves the spell; it is
+                // not a counter, so no SpellCounteredEvent (same as the synchronous path in
+                // LibraryAndZoneContinuationResumer.resumePutSpellOnTopOrBottom).
+                val transition = services.zones.performPendingZoneChange(state, pending)
+                checkForMore(markRevealedIfInLibrary(transition.state, pending), events + transition.events)
             }
             is PendingGameEvent.StackSpellDispositionZoneChangeCompletion -> {
-                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                    .performPendingZoneChange(state, pending)
+                val transition = services.zones.performPendingZoneChange(state, pending)
                 val disposition = if (completion.fizzled) {
                     SpellFizzledEvent(
                         spellEntityId = pending.entityId,
@@ -248,17 +221,22 @@ class ReplacementContinuationResumer(
                 checkForMore(transition.state, events + disposition + transition.events)
             }
             is PendingGameEvent.ResumePendingDecisionZoneChangeCompletion -> {
-                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                    .performPendingZoneChange(state, pending)
-                ExecutionResult.paused(
-                    transition.state,
-                    completion.pendingDecision,
-                    events + transition.events,
-                )
+                val transition = services.zones.performPendingZoneChange(state, pending)
+                // The original question's suspension stays below the replacement frames; once the
+                // physical move finishes it is the top of the stack again and is re-exposed as is.
+                // A bare decision cannot be re-installed without its answer, so a missing
+                // suspension fails closed instead of inventing one.
+                if (transition.state.pendingDecision?.id == completion.pendingDecision.id) {
+                    ExecutionResult.propagatePause(transition.state, events + transition.events)
+                } else {
+                    ExecutionResult.error(
+                        transition.state,
+                        "Preserved decision ${completion.pendingDecision.id} is no longer pending",
+                    )
+                }
             }
             is PendingGameEvent.CostPaymentZoneChangeCompletion -> {
-                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                    .performPendingZoneChange(state, pending)
+                val transition = services.zones.performPendingZoneChange(state, pending)
                 costPaymentContinuationResumer.resumeAfterCommanderZoneChange(
                     state = transition.state,
                     completion = completion,
@@ -267,8 +245,7 @@ class ReplacementContinuationResumer(
                 )
             }
             is PendingGameEvent.MoveCollectionZoneChangeCompletion -> {
-                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                    .performPendingZoneChange(state, pending)
+                val transition = services.zones.performPendingZoneChange(state, pending)
                 val result = moveCollectionExecutor.moveCardsToZone(
                     state = transition.state,
                     context = completion.context,
@@ -292,7 +269,7 @@ class ReplacementContinuationResumer(
                     clearMovedLibraryReveals = completion.clearMovedLibraryReveals,
                     orderCompletion = completion.orderCompletion,
                 )
-                if (result.isPaused) {
+                if (result.outcome is Outcome.Paused) {
                     return result.toExecutionResult().copy(
                         events = events + transition.events + result.events,
                     )
@@ -363,9 +340,31 @@ class ReplacementContinuationResumer(
                 checkForMore(
                     stateWithCollections,
                     events + transition.events + withOrderKnowledge.events,
-                )
+                ).withDiagnosticsFrom(withOrderKnowledge.diagnostics)
             }
         }
+    }
+
+    /**
+     * Everyone watched where a publicly moved card went, so mark it revealed at its new library
+     * slot, but only when it really landed in a library: Commander 903.9b may have sent it to the
+     * command zone instead.
+     */
+    private fun markRevealedIfInLibrary(
+        state: GameState,
+        pending: PendingGameEvent.ZoneChangePending,
+    ): GameState {
+        val inLibrary = state.zones.any { (key, ids) ->
+            key.zoneType == com.wingedsheep.sdk.core.Zone.LIBRARY && pending.entityId in ids
+        }
+        if (!inLibrary) return state
+        return com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
+            .markRevealed(
+                state = state,
+                cardIds = listOf(pending.entityId),
+                playerIds = state.turnOrder.toSet(),
+                includeLibraryPositions = true,
+            )
     }
 
     /**
@@ -432,17 +431,13 @@ class ReplacementContinuationResumer(
         // before applySingle() is allowed to modify the event.
         if (continuation.pendingEvent.isOptionalReplacement(chosen, state)) {
             val promptResult = continuation.pendingEvent.createOptionalPrompt(
-                decisionId = java.util.UUID.randomUUID().toString(),
                 gathered = chosen,
-                state = state,
+                state = state.copy(activeReplacementChain = continuation.alreadyApplied),
                 context = context,
                 alreadyApplied = continuation.alreadyApplied,
             )
             if (promptResult != null) {
-                val stateWithDecision = state
-                    .withPendingDecision(promptResult.decision)
-                    .pushContinuation(promptResult.continuation)
-                return ExecutionResult.paused(stateWithDecision, promptResult.decision)
+                return state.suspendForDecision(promptResult.question, promptResult.continuation)
             }
         }
 
@@ -492,7 +487,7 @@ class ReplacementContinuationResumer(
                 }
             }
             is ProcessorResult.Paused -> {
-                ExecutionResult.paused(result.state, result.decision)
+                ExecutionResult.propagatePause(result.state, result.events)
             }
             is ProcessorResult.Pass -> {
                 // Shouldn't happen — the chosen effect was matched
@@ -528,9 +523,7 @@ class ReplacementContinuationResumer(
         context: EffectContext?,
         checkForMore: CheckForMore
     ): ExecutionResult {
-        val resumeContinuation = ReplacementResolveContinuation(
-            decisionId = "pending"
-        )
+        val resumeContinuation = ReplacementResolveContinuation
 
         val stateWithResumeFrame = state.pushContinuation(resumeContinuation)
 
@@ -541,16 +534,14 @@ class ReplacementContinuationResumer(
             // won't re-trigger them. Clear the chain after execution so the
             // ReplacementResolveContinuation and any remaining draws resume fresh.
             val effectResult = services.effectExecutorRegistry.execute(stateWithResumeFrame, outcome.newEffect, context)
-            if (effectResult.isPaused) {
+            if (effectResult.outcome is Outcome.Paused) {
                 // Clear chain on pause so subsequent execution is unaffected.
                 val clearedState = effectResult.state.copy(activeReplacementChain = null)
                 return ExecutionResult(
-                    state = clearedState,
-                    events = effectResult.events,
-                    error = effectResult.error,
-                    pendingDecision = effectResult.pendingDecision,
-                    triggersAlreadyProcessed = effectResult.triggersAlreadyProcessed,
-                    diagnostics = effectResult.diagnostics,
+                    clearedState,
+                    effectResult.events,
+                    effectResult.outcome,
+                    effectResult.diagnostics,
                 )
             }
             val clearedState = effectResult.state.copy(activeReplacementChain = null)

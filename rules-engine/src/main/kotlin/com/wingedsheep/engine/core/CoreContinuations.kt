@@ -23,10 +23,9 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class EffectContinuation(
-    override val decisionId: String,
     val remainingEffects: List<Effect>,
     val effectContext: EffectContext
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Resume placing a triggered ability on the stack after targets have been selected.
@@ -43,9 +42,11 @@ data class EffectContinuation(
  */
 @Serializable
 data class TriggeredAbilityContinuation(
-    override val decisionId: String,
     val sourceId: EntityId,
     val sourceName: String,
+    val sourceBattlefieldTimestamp: Long? = null,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment =
+        com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
     val controllerId: EntityId,
     val effect: Effect,
     val description: String,
@@ -58,86 +59,31 @@ data class TriggeredAbilityContinuation(
      *  [com.wingedsheep.sdk.scripting.AbilityIdentity]); preserved across target selection so the
      *  stack object built on resume carries it. Null for sources with no card definition. */
     val abilityIdentity: com.wingedsheep.sdk.scripting.AbilityIdentity? = null,
-    val triggerDamageAmount: Int? = null,
-    val triggeringEntityId: EntityId? = null,
-    /** Battlefield-entry object identity captured for the triggering occurrence. */
-    val triggeringEntityEntryTimestamp: Long? = null,
-    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
-    val triggeringEntityName: String? = null,
-    /** Whether [triggeringEntityName] was known when this trigger occurrence was captured. */
-    val triggeringEntityNameKnown: Boolean = false,
-    val triggeringPlayerId: EntityId? = null,
-    val defendingPlayerId: EntityId? = null,
-    val damageSourceEntityId: EntityId? = null,
-    val damageRecipientEntityId: EntityId? = null,
-    val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
-    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
-    val damageSourceLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
-    val damageRecipientLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
+    /** Everything the trigger event said about why this ability fired — damage amount, last-known
+     *  power, scry count, clash outcome, captured batch, the trigger's own X, … — carried whole across
+     *  target selection so the stack object built on resume sees exactly what an untargeted trigger
+     *  would (see [com.wingedsheep.engine.event.TriggerContext]). */
+    val triggerContext: com.wingedsheep.engine.event.TriggerContext? = null,
     val elseEffect: Effect? = null,
     val targetRequirements: List<TargetRequirement> = emptyList(),
-    val triggerCounterCount: Int? = null,
-    val triggerTotalCounterCount: Int? = null,
-    val triggerLastKnownCounters: Map<String, Int>? = null,
-    /** Projected subtypes / card types the triggering permanent had as it left the battlefield
-     *  (CR 603.10), preserved across target selection for the intervening-"if"'s second check. */
-    val triggerLastKnownSubtypes: Set<String>? = null,
-    val triggerLastKnownCardTypes: Set<String>? = null,
-    val triggerLastKnownDamageDealtByPlayers: Map<EntityId, Int>? = null,
-    /** Creatures blocking/blocked by the trigger's source on leave-battlefield (CR 509 LKI, Abu Ja'far). */
-    val triggerLastKnownBlockingOrBlockedByIds: List<EntityId>? = null,
-    val lastKnownPower: Int? = null,
-    val lastKnownToughness: Int? = null,
-    /** Total last-known power of a creatures-died batch (CR 603.2c). Null for non-batch triggers. */
-    val diedBatchTotalPower: Int? = null,
-    val triggerModesChosenCount: Int? = null,
-    /** Power of the aura/equipment's attached creature, captured at trigger time (CR 608.2h LKI). */
-    val enchantedCreatureLastKnownPower: Int? = null,
-    /** Cards looked at by the scry that fired this trigger (CR 701.22). Null for non-scry triggers. */
-    val triggerScryCount: Int? = null,
-    /** Cards discarded in the batch that fired this trigger (CR 603.2c). Read via
-     *  `ContextPropertyKey.TRIGGER_DISCARD_COUNT` (Magmakin Artillerist). Null for non-discard triggers. */
-    val triggerDiscardCount: Int? = null,
-    /** Discover value N of the discover that fired this trigger (CR 701.57). Null for non-discover triggers. */
-    val triggerDiscoverValue: Int? = null,
-    /** Damage past lethal dealt to the trigger's creature recipient (CR 120.4a). Null for non-damage triggers. */
-    val triggerExcessDamageAmount: Int? = null,
-    /** Recipient creature's toughness when the triggering damage was dealt (CR 603.10 LKI). Read via
-     *  `ContextPropertyKey.TRIGGER_RECIPIENT_TOUGHNESS` (Taii Wakeen). Null for non-creature recipients. */
-    val triggerRecipientToughness: Int? = null,
-    /** Total mana spent to cast the spell that fired this trigger (Aberrant Manawurm, Expressive
-     *  Firedancer). Read via `ContextPropertyKey.MANA_SPENT_ON_TRIGGERING_SPELL`. Null for non-cast triggers. */
-    val triggerManaSpentOnTriggeringSpell: Int? = null,
-    /** Distinct colors of mana spent to cast the spell that fired this trigger (Magmablood Archaic).
-     *  Read via `ContextPropertyKey.COLORS_SPENT_ON_TRIGGERING_SPELL`. Null for non-cast triggers. */
-    val triggerColorsSpentOnTriggeringSpell: Int? = null,
-    /** Mana value of the spell that fired this trigger (Kellan, the Kid). Read via
-     *  `ContextPropertyKey.TRIGGERING_SPELL_MANA_VALUE`. Null for non-cast triggers. */
-    val triggerManaValueOfTriggeringSpell: Int? = null,
-    /** Value chosen for {X} on the spell that fired this trigger (Geometer's Arthropod). Read via
-     *  `ContextPropertyKey.X_VALUE_OF_TRIGGERING_SPELL`. Null for non-cast / no-{X} triggers. */
-    val triggerXValueOfTriggeringSpell: Int? = null,
-    /** The trigger's own X — the value announced for an `{X}` cost on the *action that fired it*
-     *  (an `{X}` cycling cost, a megamorph turn-up), as opposed to
-     *  [triggerXValueOfTriggeringSpell], which is a *cast spell's* X. Read as
-     *  `DynamicAmount.XValue` and by X-relative target filters (`manaValueEqualsX()`), so it must
-     *  survive target selection or the ability fizzles its own legal target on resolution. */
-    val xValue: Int? = null,
+    /** Non-null while dependent targets are being chosen, one requirement at a time — the targets
+     *  chosen so far, one list per requirement slot (a trailing "up to five" slot holds several). */
+    val sequentialTargets: List<List<EntityId>>? = null,
     /** Pipeline state carried from a `ReflexiveTriggerEffect`'s action half, preserved across target
      *  selection so the stack object built on resume carries it (CR 603.12). Null otherwise. */
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
     /** The ability's intervening-"if" (CR 603.4), preserved across target selection so the stack
      *  object built on resume can re-check it as it resolves. See
      *  [com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent.interveningIf]. */
-    val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null
-) : ContinuationFrame
+    val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null,
+    /** The ability is a backup ability — see
+     *  [com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent.isBackup]. */
+    val isBackup: Boolean = false
+) : AnswerContinuation
 
+/** The captured damage-recipient roles of the trigger occurrence, read off its [TriggeredAbilityContinuation.triggerContext]. */
 val TriggeredAbilityContinuation.effectiveDamageRecipientKinds: DamageRecipientKindSet
-    get() = when {
-        !damageRecipientKinds.isUnknown -> damageRecipientKinds
-        damageRecipientKind != DamageRecipientKind.UNKNOWN -> DamageRecipientKindSet.of(damageRecipientKind)
-        else -> DamageRecipientKindSet.UNKNOWN
-    }
+    get() = triggerContext?.effectiveDamageRecipientKinds ?: DamageRecipientKindSet.UNKNOWN
 
 /**
  * Resume placing a triggered ability on the stack after the player distributes damage.
@@ -158,9 +104,11 @@ val TriggeredAbilityContinuation.effectiveDamageRecipientKinds: DamageRecipientK
  */
 @Serializable
 data class TriggerDamageDistributionContinuation(
-    override val decisionId: String,
     val sourceId: EntityId,
     val sourceName: String,
+    val sourceBattlefieldTimestamp: Long? = null,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment =
+        com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
     val controllerId: EntityId,
     val effect: Effect,
     val description: String,
@@ -173,48 +121,21 @@ data class TriggerDamageDistributionContinuation(
      *  [com.wingedsheep.sdk.scripting.AbilityIdentity]); preserved across damage distribution so
      *  the stack object built on resume carries it. Null for sources with no card definition. */
     val abilityIdentity: com.wingedsheep.sdk.scripting.AbilityIdentity? = null,
-    val triggerDamageAmount: Int? = null,
-    val triggeringEntityId: EntityId? = null,
-    /** Battlefield-entry object identity captured for the triggering occurrence. */
-    val triggeringEntityEntryTimestamp: Long? = null,
-    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
-    val triggeringEntityName: String? = null,
-    /** Whether [triggeringEntityName] was known when this trigger occurrence was captured. */
-    val triggeringEntityNameKnown: Boolean = false,
-    val triggeringPlayerId: EntityId? = null,
-    val defendingPlayerId: EntityId? = null,
-    val damageSourceEntityId: EntityId? = null,
-    val damageRecipientEntityId: EntityId? = null,
-    val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
-    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
-    val damageSourceLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
-    val damageRecipientLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
-    val triggerCounterCount: Int? = null,
-    val triggerTotalCounterCount: Int? = null,
-    val triggerLastKnownCounters: Map<String, Int>? = null,
-    /** Projected subtypes / card types the triggering permanent had as it left the battlefield
-     *  (CR 603.10), preserved across target selection for the intervening-"if"'s second check. */
-    val triggerLastKnownSubtypes: Set<String>? = null,
-    val triggerLastKnownCardTypes: Set<String>? = null,
-    val triggerLastKnownDamageDealtByPlayers: Map<EntityId, Int>? = null,
-    /** Creatures blocking/blocked by the trigger's source on leave-battlefield (CR 509 LKI, Abu Ja'far). */
-    val triggerLastKnownBlockingOrBlockedByIds: List<EntityId>? = null,
+    /** The trigger's whole [com.wingedsheep.engine.event.TriggerContext], carried on through this
+     *  second pause so it reaches the stack object alongside the distribution. */
+    val triggerContext: com.wingedsheep.engine.event.TriggerContext? = null,
     val selectedTargets: List<ChosenTarget>,
     val targetRequirements: List<TargetRequirement>,
     val totalDamage: Int,
-    val lastKnownPower: Int? = null,
-    val lastKnownToughness: Int? = null,
     /** The ability's intervening-"if" (CR 603.4), preserved across the distribution decision so the
      *  stack object built on resume can re-check it as it resolves. */
-    val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null
-) : ContinuationFrame
+    val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null,
+    val isBackup: Boolean = false
+) : AnswerContinuation
 
+/** The captured damage-recipient roles of the trigger occurrence, read off its [TriggerDamageDistributionContinuation.triggerContext]. */
 val TriggerDamageDistributionContinuation.effectiveDamageRecipientKinds: DamageRecipientKindSet
-    get() = when {
-        !damageRecipientKinds.isUnknown -> damageRecipientKinds
-        damageRecipientKind != DamageRecipientKind.UNKNOWN -> DamageRecipientKindSet.of(damageRecipientKind)
-        else -> DamageRecipientKindSet.UNKNOWN
-    }
+    get() = triggerContext?.effectiveDamageRecipientKinds ?: DamageRecipientKindSet.UNKNOWN
 
 /**
  * Stores remaining pending triggers that still need to be processed.
@@ -226,7 +147,6 @@ val TriggerDamageDistributionContinuation.effectiveDamageRecipientKinds: DamageR
  */
 @Serializable
 data class PendingTriggersContinuation(
-    override val decisionId: String,
     val remainingTriggers: List<PendingTrigger>,
     /**
      * Number of leading entries in [remainingTriggers] whose relative order was already chosen
@@ -234,7 +154,7 @@ data class PendingTriggersContinuation(
      * must survive target/may/batch pauses without asking the same ordering question again.
      */
     val preorderedTriggerCount: Int = 0
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Resumes the controller's CR 603.3b choice for one same-controller trigger group.
@@ -246,11 +166,10 @@ data class PendingTriggersContinuation(
  */
 @Serializable
 data class TriggerOrderingContinuation(
-    override val decisionId: String,
     val objectIds: List<EntityId>,
     val triggers: List<PendingTrigger>,
     val remainingTriggers: List<PendingTrigger>
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume a controller's CR 603.7b choice when one fire-once delayed ability matched several
@@ -260,12 +179,11 @@ data class TriggerOrderingContinuation(
  */
 @Serializable
 data class DelayedTriggerOccurrenceChoiceContinuation(
-    override val decisionId: String,
     val candidates: List<PendingTrigger>,
     val remainingTriggers: List<PendingTrigger> = emptyList(),
     /** Number of already-ordered entries in the selected occurrence plus [remainingTriggers] after resumption. */
     val preorderedTriggerCount: Int = 0
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume spell resolution after target or mode selection.
@@ -275,27 +193,9 @@ data class DelayedTriggerOccurrenceChoiceContinuation(
  */
 @Serializable
 data class ResolveSpellContinuation(
-    override val decisionId: String,
     val spellId: EntityId,
     val casterId: EntityId
-) : ContinuationFrame
-
-/**
- * Completes a non-permanent spell's final disposition after its resolution effect has drained.
- *
- * This marker sits below the effect-owned continuation frames. It is not a player decision: it
- * auto-resumes only after those frames have completed, so a resolving spell is not moved to a
- * destination zone while one of its own resolution decisions is pending.
- */
-@Serializable
-data class SpellResolutionContinuation(
-    override val decisionId: String,
-    val spellId: EntityId,
-    val continuationBoundaryDepth: Int,
-    val cardName: String,
-    /** True after the final zone transition paused and completed on a later continuation. */
-    val dispositionPending: Boolean = false,
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Pre-pushed by [com.wingedsheep.engine.handlers.effects.composite.GatedEffectExecutor] for a
@@ -314,13 +214,12 @@ data class SpellResolutionContinuation(
  */
 @Serializable
 data class GatedActionContinuation(
-    override val decisionId: String,
     val then: Effect,
     val otherwise: Effect?,
     val successCriterion: SuccessCriterion,
     val snapshot: GatedActionSnapshot,
     val effectContext: EffectContext
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Probe data captured before [GatedActionContinuation]'s action ran.
@@ -352,13 +251,12 @@ data class GatedActionSnapshot(
  */
 @Serializable
 data class MayAbilityContinuation(
-    override val decisionId: String,
     val playerId: EntityId,
     val sourceName: String?,
     val effectIfYes: Effect?,
     val effectIfNo: Effect?,
     val effectContext: EffectContext
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume a [com.wingedsheep.sdk.scripting.effects.GatedEffect] after its gate has been
@@ -379,12 +277,11 @@ data class MayAbilityContinuation(
  */
 @Serializable
 data class GatedEffectContinuation(
-    override val decisionId: String,
     val gate: Gate,
     val then: Effect,
     val otherwise: Effect?,
     val effectContext: EffectContext
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume after the player picks a card (or declines) for [MayRevealCardFromHandEffect].
@@ -398,13 +295,12 @@ data class GatedEffectContinuation(
  */
 @Serializable
 data class MayRevealCardFromHandContinuation(
-    override val decisionId: String,
     val revealerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
     val otherwise: Effect?,
     val effectContext: EffectContext,
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume after the player chooses to behold (or declines) for
@@ -415,23 +311,24 @@ data class MayRevealCardFromHandContinuation(
  * @property handOptionIds The subset of the decision options that live in the beholder's hand
  *                          (revealed when chosen); battlefield options are merely chosen.
  * @property ifBeheld Effect to run when the player successfully beholds
- * @property effectContext Effect context propagated to [ifBeheld]
+ * @property effectContext Effect context propagated to [ifBeheld] / [otherwise]
+ * @property otherwise Effect to run when the player declines to behold
  */
 @Serializable
 data class BeholdContinuation(
-    override val decisionId: String,
     val beholderId: EntityId,
     val sourceName: String?,
     val handOptionIds: Set<EntityId>,
     val ifBeheld: Effect?,
     val effectContext: EffectContext,
-) : ContinuationFrame
+    val otherwise: Effect? = null,
+) : AnswerContinuation
 
 /**
  * Resume placing a triggered ability on the stack after the player answers a "may" question.
  *
  * When a triggered ability has both a bare "may" gate (a [Gate.MayDecide] with no `otherwise` —
- * the lowered `MayEffect`, recognized via `Effect.asMayDecide`) and targets (like Invigorating
+ * the lowered `Effects.May`, recognized via `Effect.asMayDecide`) and targets (like Invigorating
  * Boon's "you may put a +1/+1 counter on target creature"), the may question is asked FIRST.
  * If the player says yes, we then proceed to target selection.
  * If the player says no, the trigger is skipped entirely.
@@ -441,10 +338,33 @@ data class BeholdContinuation(
  */
 @Serializable
 data class MayTriggerContinuation(
-    override val decisionId: String,
     val trigger: PendingTrigger,
     val targetRequirement: TargetRequirement
-) : ContinuationFrame
+) : AnswerContinuation
+
+/**
+ * Resume a triggered ability after its controller picks *which* opponent chooses its
+ * "… of an opponent's choice" target (Mausoleum Turnkey: "return target creature card of an
+ * opponent's choice from your graveyard to your hand").
+ *
+ * The multiplayer-only half of the flow: with a single opponent `TriggerProcessor` pins the decider
+ * outright and never raises this frame, exactly as `ActivateAbilityHandler` does for the activated
+ * twin ([ActivateAbilityOpponentChooserContinuation]). The resumer pins the chosen opponent onto
+ * the trigger and re-enters target selection, so the target decision itself is raised by the one
+ * ordinary code path.
+ *
+ * @property trigger The pending trigger, still unpinned.
+ * @property targetRequirement The trigger's primary target requirement, as `processTargetedTrigger`
+ *   takes it.
+ * @property opponentIds The opponents offered, in the order their names were listed — the response
+ *   is an index into this list.
+ */
+@Serializable
+data class TriggerOpponentChooserContinuation(
+    val trigger: PendingTrigger,
+    val targetRequirement: TargetRequirement,
+    val opponentIds: List<EntityId>
+) : AnswerContinuation
 
 /**
  * Resume after the controller answers a [com.wingedsheep.engine.core.BatchYesNoDecision] raised on
@@ -462,9 +382,8 @@ data class MayTriggerContinuation(
  */
 @Serializable
 data class BatchMayTriggerContinuation(
-    override val decisionId: String,
     val triggers: List<PendingTrigger>,
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * One snapshotted iteration item of a [com.wingedsheep.sdk.scripting.effects.ForEachEffect].
@@ -504,11 +423,10 @@ sealed interface ForEachItem {
  */
 @Serializable
 data class ForEachContinuation(
-    override val decisionId: String,
     val remainingItems: List<ForEachItem>,
     val effect: com.wingedsheep.sdk.scripting.effects.ForEachEffect,
     val effectContext: EffectContext
-) : ContinuationFrame
+) : AutomaticContinuation
 
 /**
  * Continuation for RepeatWhileEffect.
@@ -538,29 +456,85 @@ data class ForEachContinuation(
  *   on purpose: [effectContext] must stay the pristine pre-loop context so the *next* iteration
  *   re-gathers fresh (a stale collection leaking forward would mask the next pass and the loop
  *   would never terminate — see RepeatWhileExecutor.executeIteration).
+ * @property collectCollections The effect's body-collection → aggregate map
+ *   ([com.wingedsheep.sdk.scripting.effects.RepeatWhileEffect.collectCollections]).
+ * @property accumulatedCollections The aggregates folded from every *completed* pass before this
+ *   one. It rides the frame rather than [effectContext] for the same reason [bodyCollections] does:
+ *   the body must never see it. Published to the frame beneath once the loop stops.
  */
 @Serializable
 data class RepeatWhileContinuation(
-    override val decisionId: String,
     val body: Effect,
     val repeatCondition: com.wingedsheep.sdk.scripting.effects.RepeatCondition,
     val resolvedDeciderId: EntityId? = null,
     val sourceName: String?,
-    val phase: RepeatWhilePhase,
     val effectContext: EffectContext,
-    val bodyCollections: Map<String, List<EntityId>> = emptyMap()
-) : ContinuationFrame
+    val bodyCollections: Map<String, List<EntityId>> = emptyMap(),
+    val collectCollections: Map<String, String> = emptyMap(),
+    val accumulatedCollections: Map<String, List<EntityId>> = emptyMap()
+) : AutomaticContinuation
+
+/** The loop's player-choice phase; the body tail itself is automatic work. */
+@Serializable
+data class RepeatWhileDecisionContinuation(
+    val loop: RepeatWhileContinuation,
+) : AnswerContinuation
 
 /**
- * Phase discriminator for RepeatWhileContinuation.
+ * Resume after the flipper answers "flip another coin?" during a
+ * [com.wingedsheep.sdk.scripting.effects.FlipCoinsUntilLossEffect] (Fiery Gambit).
+ *
+ * [winsSoFar] is the whole reason this frame exists. The tally cannot ride the pipeline between
+ * flips: pipeline `storedNumbers` only reach a consumer on the result that publishes them, so a
+ * per-flip tally would be dropped at each pause and the card would pay out differently depending on
+ * whether a prompt was raised — the "pipeline numbers lost across pause" shape. Carrying it in the
+ * frame, and publishing once when the run ends, is the same idiom as
+ * [PayManaCostRepeatedlyContinuation]'s count.
+ *
+ * @property flipperId The player flipping — resolved once, so the run stays with them.
+ * @property storeWinsAs Pipeline variable the final tally is published under.
+ * @property winsSoFar Flips won *before* the next flip; the answer "stop" publishes exactly this.
+ * @property sourceId The spell or ability doing the flipping, for the coin-flip events' source.
  */
 @Serializable
-enum class RepeatWhilePhase {
-    /** Pre-pushed before body executes; found in checkForMoreContinuations after body completes */
-    AFTER_BODY,
-    /** Waiting for the player's yes/no decision (PlayerChooses only) */
-    AFTER_DECISION
-}
+data class FlipCoinsUntilLossContinuation(
+    val flipperId: EntityId,
+    val storeWinsAs: String,
+    val winsSoFar: Int,
+    val sourceId: EntityId?,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
+) : AnswerContinuation
+
+/**
+ * Resume a coin flip after the flipper says which of the coins to keep — the pause a
+ * [com.wingedsheep.sdk.scripting.FlipAdditionalCoins] replacement (Krark's Thumb) introduces into
+ * every coin-flip executor.
+ *
+ * One frame serves all four flip effects because the *only* thing the pause interrupts is producing
+ * the results; what each effect does with them afterwards is decided from [effect] on resume. That
+ * is why [effect] and [effectContext] are carried whole rather than the four executors each getting
+ * a frame of their own: the sub-effect a [com.wingedsheep.sdk.scripting.effects.FlipCoinEffect]
+ * runs on a win needs the original context's targets, and re-deriving them field by field is how
+ * continuations lose them.
+ *
+ * A batch can owe several answers (one per coin whose replacement came up mixed), so resuming may
+ * push this same frame again — [pending] carries how far the batch got.
+ *
+ * @property effect The flip effect that was executing; decides what happens once the coins settle.
+ * @property effectContext The context that effect was running under, restored verbatim on resume.
+ * @property pending The batch part-way through being resolved (see
+ *   [com.wingedsheep.engine.handlers.effects.CoinFlipService.PendingCoinFlipChoice]).
+ * @property winsSoFar Only meaningful for
+ *   [com.wingedsheep.sdk.scripting.effects.FlipCoinsUntilLossEffect]: flips won before this one, so
+ *   the run's tally survives the extra pause exactly as it survives the "flip again?" one.
+ */
+@Serializable
+data class CoinFlipChoiceContinuation(
+    val effect: Effect,
+    val effectContext: EffectContext,
+    val pending: com.wingedsheep.engine.handlers.effects.CoinFlipService.PendingCoinFlipChoice,
+    val winsSoFar: Int = 0
+) : AnswerContinuation
 
 /**
  * Pre-pushed before executing a `ReflexiveTriggerEffect`'s action half. Auto-resumed after the
@@ -579,11 +553,10 @@ enum class RepeatWhilePhase {
  */
 @Serializable
 data class ReflexiveTriggerTargetContinuation(
-    override val decisionId: String,
     val reflexiveEffect: Effect,
     val reflexiveTargetRequirements: List<TargetRequirement>,
     val effectContext: EffectContext,
     /** Optional human-readable description override, carried through to the emitted
      *  [com.wingedsheep.engine.core.ReflexiveAbilityTriggeredEvent]. */
     val descriptionOverride: String? = null
-) : ContinuationFrame
+) : AutomaticContinuation

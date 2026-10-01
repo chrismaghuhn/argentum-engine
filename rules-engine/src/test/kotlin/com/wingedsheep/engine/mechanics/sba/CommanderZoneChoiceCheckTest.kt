@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.mechanics.sba
 
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.core.CommanderZoneChoiceContinuation
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.handlers.DecisionHandler
@@ -25,6 +26,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * CR 903.9a state-based action — when the format is Commander (and the
@@ -66,18 +68,21 @@ class CommanderZoneChoiceCheckTest : FunSpec({
             .copy(turnOrder = listOf(ownerId))
     }
 
-    val check = CommanderZoneChoiceCheck(DecisionHandler())
+    val check = CommanderZoneChoiceCheck(
+        com.wingedsheep.engine.core.EngineServices(com.wingedsheep.engine.registry.CardRegistry()).zones,
+        DecisionHandler(),
+    )
 
     test("pauses with a YesNoDecision when a commander is in the graveyard") {
         val state = stateWithCommanderIn(Zone.GRAVEYARD)
         val result = check.check(state)
 
-        result.isPaused shouldBe true
+        (result.outcome is Outcome.Paused) shouldBe true
         val decision = result.pendingDecision
         decision.shouldBeInstanceOf<YesNoDecision>()
         decision.playerId shouldBe ownerId
 
-        val frame = result.state.continuationStack.last()
+        val frame = result.state.continuationStack.last().shouldBeInstanceOf<Suspension>().answer
         frame.shouldBeInstanceOf<CommanderZoneChoiceContinuation>()
         frame.commanderId shouldBe cmdrId
         frame.ownerId shouldBe ownerId
@@ -87,8 +92,8 @@ class CommanderZoneChoiceCheckTest : FunSpec({
     test("pauses for a commander in exile too") {
         for (zone in listOf(Zone.EXILE)) {
             val result = check.check(stateWithCommanderIn(zone))
-            result.isPaused shouldBe true
-            (result.state.continuationStack.last() as CommanderZoneChoiceContinuation)
+            (result.outcome is Outcome.Paused) shouldBe true
+            (result.state.continuationStack.last().shouldBeInstanceOf<Suspension>().answer as CommanderZoneChoiceContinuation)
                 .currentZone shouldBe zone
         }
     }
@@ -96,26 +101,26 @@ class CommanderZoneChoiceCheckTest : FunSpec({
     test("does not run the 903.9a SBA for a commander already in hand or library") {
         for (zone in listOf(Zone.HAND, Zone.LIBRARY)) {
             val result = check.check(stateWithCommanderIn(zone))
-            result.isPaused shouldBe false
+            (result.outcome is Outcome.Paused) shouldBe false
             result.state.continuationStack shouldBe emptyList()
         }
     }
 
     test("does not pause when the commander is in the command zone") {
         val result = check.check(stateWithCommanderIn(Zone.COMMAND))
-        result.isPaused shouldBe false
+        (result.outcome is Outcome.Paused) shouldBe false
     }
 
     test("does not pause when the commander is on the battlefield") {
         val result = check.check(stateWithCommanderIn(Zone.BATTLEFIELD))
-        result.isPaused shouldBe false
+        (result.outcome is Outcome.Paused) shouldBe false
     }
 
     test("does not pause when the asked marker is already attached") {
         val state = stateWithCommanderIn(Zone.GRAVEYARD)
             .updateEntity(cmdrId) { c -> c.with(CommanderZoneChoiceAskedComponent) }
         val result = check.check(state)
-        result.isPaused shouldBe false
+        (result.outcome is Outcome.Paused) shouldBe false
     }
 
     test("alwaysDivertToCommand answers the post-move graveyard choice automatically") {
@@ -124,7 +129,7 @@ class CommanderZoneChoiceCheckTest : FunSpec({
             format = Format.Commander(alwaysDivertToCommand = true),
         )
         val result = check.check(state)
-        result.isPaused shouldBe false
+        (result.outcome is Outcome.Paused) shouldBe false
         result.state.getZone(ZoneKey(ownerId, Zone.GRAVEYARD)) shouldBe emptyList()
         result.state.getZone(ZoneKey(ownerId, Zone.COMMAND)) shouldBe listOf(cmdrId)
         result.events.filterIsInstance<com.wingedsheep.engine.core.ZoneChangeEvent>()
@@ -134,7 +139,7 @@ class CommanderZoneChoiceCheckTest : FunSpec({
     test("does not pause when the format is not Commander") {
         val state = stateWithCommanderIn(Zone.GRAVEYARD, format = Format.Standard)
         val result = check.check(state)
-        result.isPaused shouldBe false
+        (result.outcome is Outcome.Paused) shouldBe false
     }
 
     test("Team vs Team prompts when Commander rules are enabled") {
@@ -145,7 +150,7 @@ class CommanderZoneChoiceCheckTest : FunSpec({
         )
         val result = check.check(stateWithCommanderIn(Zone.GRAVEYARD, format))
 
-        result.isPaused shouldBe true
+        (result.outcome is Outcome.Paused) shouldBe true
         result.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
     }
 
@@ -166,7 +171,7 @@ class CommanderZoneChoiceCheckTest : FunSpec({
             .addToZone(ZoneKey(ownerId, Zone.GRAVEYARD), cmdrB)
 
         val result = check.check(state)
-        result.isPaused shouldBe true
+        (result.outcome is Outcome.Paused) shouldBe true
         result.state.continuationStack.size shouldBe 1
     }
 
@@ -183,7 +188,7 @@ class CommanderZoneChoiceCheckTest : FunSpec({
             .copy(turnOrder = listOf(otherPlayer, ownerId))
 
         val result = check.check(state)
-        result.isPaused shouldBe true
+        (result.outcome is Outcome.Paused) shouldBe true
         (result.pendingDecision as YesNoDecision).playerId shouldBe ownerId
     }
 
@@ -193,7 +198,7 @@ class CommanderZoneChoiceCheckTest : FunSpec({
         val state = stateWithCommanderIn(Zone.EXILE)
             .updateEntity(cmdrId) { c -> c.with(CommanderZoneChoiceAskedComponent) }
         val result = check.check(state)
-        result.isPaused shouldBe false
+        (result.outcome is Outcome.Paused) shouldBe false
         result.events shouldBe emptyList()
         result.newState.getEntity(cmdrId)!!.has<CommanderZoneChoiceAskedComponent>() shouldBe true
     }
@@ -227,14 +232,14 @@ class CommanderZoneChoiceCheckTest : FunSpec({
             .copy(turnOrder = listOf(ownerId))
 
         val result = check.check(state)
-        result.isPaused shouldBe false
+        (result.outcome is Outcome.Paused) shouldBe false
     }
 
     test("commander already on the stack is not prompted (CR 903.9 entry zones only)") {
         // Stack is for resolving spells; the SBA only fires on graveyard/exile/hand/library.
         val state = stateWithCommanderIn(Zone.STACK)
         val result = check.check(state)
-        result.isPaused shouldBe false
+        (result.outcome is Outcome.Paused) shouldBe false
     }
 
     test("commander entry is later 'forgotten' once the marker is stripped") {
@@ -242,12 +247,12 @@ class CommanderZoneChoiceCheckTest : FunSpec({
         // does on every commander zone change), the SBA prompts again from scratch.
         val asked = stateWithCommanderIn(Zone.GRAVEYARD)
             .updateEntity(cmdrId) { c -> c.with(CommanderZoneChoiceAskedComponent) }
-        check.check(asked).isPaused shouldBe false
+        (check.check(asked).outcome is Outcome.Paused) shouldBe false
 
         val stripped = asked.updateEntity(cmdrId) { c ->
             c.without<CommanderZoneChoiceAskedComponent>()
         }
-        check.check(stripped).isPaused shouldBe true
+        (check.check(stripped).outcome is Outcome.Paused) shouldBe true
     }
 
     test("a commander that's been registered but has no zone slot is skipped silently") {
@@ -259,7 +264,7 @@ class CommanderZoneChoiceCheckTest : FunSpec({
             .copy(turnOrder = listOf(ownerId))
 
         val result = check.check(state)
-        result.isPaused shouldBe false
+        (result.outcome is Outcome.Paused) shouldBe false
         result.newState shouldBe state
     }
 
@@ -269,7 +274,7 @@ class CommanderZoneChoiceCheckTest : FunSpec({
             .copy(turnOrder = listOf(ownerId))
 
         val result = check.check(state)
-        result.isPaused shouldBe false
+        (result.outcome is Outcome.Paused) shouldBe false
         result.newState.continuationStack shouldBe state.continuationStack
         result.newState.getEntity(cmdrId) shouldBe null
         // Sanity — turn order survives unchanged (we don't mutate state on the no-op path)

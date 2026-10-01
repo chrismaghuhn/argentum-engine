@@ -2,6 +2,7 @@ package com.wingedsheep.ai.engine.advisor.modules
 
 import com.wingedsheep.ai.engine.advisor.*
 import com.wingedsheep.ai.engine.evaluation.BoardPresence
+import com.wingedsheep.ai.engine.scoreOrRankLast
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.ai.engine.anyOpponent
@@ -51,11 +52,11 @@ private fun isCombatStep(state: GameState): Boolean =
 
 /** True when it's the AI's own main phase. */
 private fun isOwnMainPhase(state: GameState, playerId: EntityId): Boolean =
-    state.activePlayerId == playerId && state.step.isMainPhase
+    state.isActiveTurnFor(playerId) && state.step.isMainPhase
 
 /** True when it's the opponent's turn. */
 private fun isOpponentsTurn(state: GameState, playerId: EntityId): Boolean =
-    state.activePlayerId != playerId
+    !state.isActiveTurnFor(playerId)
 
 /** Sum of creature board value for a player. */
 private fun creatureBoardValue(state: GameState, projected: ProjectedState, playerId: EntityId): Double {
@@ -107,7 +108,9 @@ private fun pickBestGiftMode(context: AdvisorDecisionContext, decision: ChooseMo
             context.state,
             ModesChosenResponse(decision.id, listOf(mode.index))
         )
-        val score = context.evaluator.evaluate(result.state, result.state.projectedState, context.playerId)
+        val score = result.scoreOrRankLast {
+            context.evaluator.evaluate(it, it.projectedState, context.playerId)
+        }
         // Apply gift penalty to mode 2 (gift mode is always index 1)
         val adjusted = if (mode.index == 1) score - penalty else score
         mode to adjusted
@@ -309,7 +312,7 @@ object CounterspellAdvisor : CardAdvisor {
         if (isOpponentsTurn(state, playerId) && state.stack.isNotEmpty()) return null
 
         // Own turn: heavily penalize — hold it
-        if (state.activePlayerId == playerId) {
+        if (state.isActiveTurnFor(playerId)) {
             return context.passScore - 2.0
         }
 
@@ -756,9 +759,9 @@ object BiteSpellAdvisor : CardAdvisor {
                     mapOf(req0.index to listOf(mine), req1.index to listOf(theirs))
                 )
                 val result = context.simulator.simulateDecision(context.state, response)
-                val score = context.evaluator.evaluate(
-                    result.state, result.state.projectedState, context.playerId
-                )
+                val score = result.scoreOrRankLast {
+                    context.evaluator.evaluate(it, it.projectedState, context.playerId)
+                }
                 if (score > bestScore) {
                     bestScore = score
                     bestMine = mine

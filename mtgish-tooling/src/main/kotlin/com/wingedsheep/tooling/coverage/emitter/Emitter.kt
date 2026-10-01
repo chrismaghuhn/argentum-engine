@@ -256,6 +256,14 @@ object Emitter {
                 rname == "CDA_Toughness" ->
                     if (jsonContains(card["Rules"], "_Rule", "CDA_Power")) continue  // emitted with CDA_Power
                     else block = ctx.cdaToughnessBlock(rule)
+                // Devoid (CR 702.114) — the characteristic-defining colour rule. `keywordLines` has
+                // already stamped `keywords(Keyword.DEVOID)` from the nested `_SettableColor` (see
+                // there), and the keyword IS the whole mechanic, so there is nothing left to render.
+                // Only the `Devoid` flavour: `SimpleColorList` / `AllColors` / `Colorless` /
+                // `TheChosenColor` are colour-setting CDAs the emitter can't express and must
+                // scaffold, so they fall through to the gap branch below.
+                rname == "CDA_Color" && "DEVOID" in keywords &&
+                    rule["args"].strField("_SettableColor") == "Devoid" -> continue
                 rname == "Activated" || rname == "ActivatedWithModifiers" -> block = ctx.activatedBlock(rule)
                 rname == "Cycling" -> block = manaKeywordCost(rule)?.let { listOf(Eval(call("keywordAbility", arg(call("KeywordAbility.cycling", arg("\"$it\"")))))) }
                 // Typecycling (CR 702.29) — the land-type "Forestcycling"/"Swampcycling"/… forms carry
@@ -282,6 +290,9 @@ object Emitter {
                 // declines -> SCAFFOLD rather than guess.
                 rname == "FlashForCasters" -> block = ctx.conditionalFlashLines(rule)
                 rname == "Flashback" -> block = manaKeywordCost(rule)?.let { listOf(Eval(call("keywordAbility", arg(call("KeywordAbility.flashback", arg("\"$it\"")))))) }
+                rname == "Dredge" -> block = (findInteger(rule["args"]) as? Int)?.takeIf { it >= 0 }?.let {
+                    listOf(Eval(call("keywordAbility", arg(call("KeywordAbility.dredge", arg("$it"))))))
+                }
                 rname == "Crew" -> block = rule["args"].asInt()?.let { listOf(Eval(call("keywordAbility", arg(call("KeywordAbility.crew", arg("$it")))))) }
                 // "Crew N. Activate only once each turn." (Luxurious Locomotive) — CrewOnceEachTurn carries
                 // the crew power N. Renders `KeywordAbility.crew(N, onceEachTurn = true)`; the engine enforces
@@ -364,7 +375,7 @@ object Emitter {
                 // Station keyword ability (CR 702.184a) — fully fixed, renders the no-arg builder.
                 rname == "Station" -> block = listOf(Eval(call("station")))
                 // Start your engines! (CR 702.179a, Aetherdrift) — the keyword is the whole card-side
-                // mechanic: the CR 704.5z state-based action starts the controller's speed at 1. Render
+                // mechanic: the CR 704.5aa state-based action starts the controller's speed at 1. Render
                 // the `startYourEngines()` builder call (like `station()`); it carries no args.
                 rname == "StartYourEngines" -> block = listOf(Eval(call("startYourEngines")))
                 // Max speed — [Ability] (CR 702.178a). Delegates the nested ability to its normal
@@ -409,15 +420,6 @@ object Emitter {
             if (block == null) { gap(rname)?.let { return it }; continue }
             parts++
             body.addAll(block)
-        }
-
-        // Banishing Light / O-Ring: an `ExilePermanentUntil … UntilPermanentLeavesBattlefield` action
-        // (rendered above as `Effects.ExileUntilLeaves`) needs the paired "when this leaves, return the
-        // linked exiled card" trigger, which mtgish leaves implicit in the expiration. Synthesize it once
-        // here so the exile is reversible exactly as the hand-authored card wires it.
-        if (hasLinkedExileUntilLeaves(card)) {
-            body.addAll(linkedExileReturnTrigger())
-            parts++
         }
 
         if (!permanent && !jsonContains(card["Rules"], "_Rule", "SpellActions") &&
@@ -497,7 +499,8 @@ object Emitter {
 
     private fun incomplete(ctx: EmitCtx, pre: List<String>, header: String, body: List<Stmt>, scryfall: JsonObject?, pkg: String): RenderResult {
         val b = body.toMutableList()
-        b.add(RawLine("    // STRUCTURE needs human wiring: ${ctx.reasons.sorted().joinToString(", ")}"))
+        val reasonText = ctx.reasons.sorted().joinToString(", ").ifEmpty { "unsupported card structure" }
+        b.add(RawLine("    // STRUCTURE needs human wiring: $reasonText"))
         b.addAll(metadataLines(scryfall).map { RawLine(it) })
         return RenderResult(assemble(pre + renderBlock(Block(header, b)), pkg, complete = false), false, ctx.reasons)
     }

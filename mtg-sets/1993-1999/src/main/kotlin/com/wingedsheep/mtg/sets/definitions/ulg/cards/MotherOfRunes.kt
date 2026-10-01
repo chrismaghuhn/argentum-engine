@@ -2,9 +2,9 @@ package com.wingedsheep.mtg.sets.definitions.ulg.cards
 
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
  * Mother of Runes — Urza's Legacy #14
@@ -21,7 +21,7 @@ val MotherOfRunes = card("Mother of Runes") {
 
     activatedAbility {
         cost = Costs.Tap
-        val creature = target("target creature you control", Targets.CreatureYouControl)
+        val creature = target(TargetFilter.CreatureYouControl)
         effect = Effects.ChooseColorThen(
             Effects.GrantProtectionFromChosenColor(creature)
         )

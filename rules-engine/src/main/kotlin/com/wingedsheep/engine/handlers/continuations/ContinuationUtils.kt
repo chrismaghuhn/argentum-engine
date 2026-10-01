@@ -8,6 +8,7 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Converts an entity ID to the appropriate [ChosenTarget] subtype
@@ -50,20 +51,19 @@ fun mergeAndContinue(
     events: List<GameEvent>,
     checkForMore: CheckForMore? = null
 ): ExecutionResult {
-    if (result.isPaused) {
-        return ExecutionResult.paused(
+    if (result.outcome is Outcome.Paused) {
+        return ExecutionResult.propagatePause(
             result.state,
-            result.pendingDecision!!,
             events + result.events,
             diagnostics = result.diagnostics,
         )
     }
 
-    if (!result.isSuccess) {
+    if (result.outcome is Outcome.Rejected) {
         return ExecutionResult(
-            state = result.state,
-            events = events + result.events,
-            error = result.error,
+            result.state,
+            events + result.events,
+            result.outcome,
             diagnostics = result.diagnostics,
         )
     }

@@ -7,12 +7,11 @@ import com.wingedsheep.engine.core.CrewOrSaddleKind
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.SaddleMount
 import com.wingedsheep.engine.core.tap
-import com.wingedsheep.engine.event.TriggerDetector
-import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.handlers.actions.ActionHandler
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.CrewSaddleContributorsComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -37,13 +36,11 @@ import kotlin.reflect.KClass
 class SaddleMountHandler(
     private val cardRegistry: CardRegistry,
     private val stackResolver: StackResolver,
-    private val triggerDetector: TriggerDetector,
-    private val triggerProcessor: TriggerProcessor
 ) : ActionHandler<SaddleMount> {
     override val actionType: KClass<SaddleMount> = SaddleMount::class
 
     override fun validate(state: GameState, action: SaddleMount): String? {
-        if (state.priorityPlayerId != action.playerId) {
+        if (!state.hasPriority(action.playerId)) {
             return "You don't have priority"
         }
 
@@ -152,7 +149,9 @@ class SaddleMountHandler(
         // Union across activations: saddle may be activated again even while already saddled.
         currentState = currentState.updateEntity(action.mountId) { c ->
             val existing = c.get<CrewSaddleContributorsComponent>()
-            c.with(
+            // Crew and saddle are activated abilities too — "was activated this turn".
+            val activated = c.get<AbilityActivatedThisTurnComponent>() ?: AbilityActivatedThisTurnComponent()
+            c.with(activated.withAnyActivated()).with(
                 CrewSaddleContributorsComponent(
                     creatureIds = (existing?.creatureIds ?: emptySet()) + action.saddleCreatures,
                     crewActivations = existing?.crewActivations ?: 0
@@ -163,6 +162,7 @@ class SaddleMountHandler(
         // Put the saddle ability on the stack: this permanent becomes saddled until end of turn.
         val abilityOnStack = ActivatedAbilityOnStackComponent(
             sourceId = action.mountId,
+            objectReferences = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(captured = true, origin = state.objectRef(action.mountId), source = state.objectRef(action.mountId)),
             sourceName = mountCard.name,
             controllerId = action.playerId,
             effect = BecomeSaddledEffect(target = EffectTarget.Self)
@@ -174,26 +174,6 @@ class SaddleMountHandler(
 
         // Detect and process triggers from tapping creatures.
         val allEvents = events.toList()
-        val triggers = triggerDetector.detectTriggers(currentState, allEvents)
-        if (triggers.isNotEmpty()) {
-            val triggerResult = triggerProcessor.processTriggers(currentState, triggers)
-
-            if (triggerResult.isPaused) {
-                return ExecutionResult.paused(
-                    triggerResult.state.withPriority(action.playerId),
-                    triggerResult.pendingDecision!!,
-                    allEvents + triggerResult.events,
-                    diagnostics = stackResult.diagnostics + triggerResult.diagnostics,
-                )
-            }
-
-            return ExecutionResult.success(
-                triggerResult.newState.withPriority(action.playerId),
-                allEvents + triggerResult.events,
-                stackResult.diagnostics + triggerResult.diagnostics,
-            )
-        }
-
         return ExecutionResult.success(
             currentState.withPriority(action.playerId),
             allEvents,
@@ -206,8 +186,6 @@ class SaddleMountHandler(
             return SaddleMountHandler(
                 services.cardRegistry,
                 services.stackResolver,
-                services.triggerDetector,
-                services.triggerProcessor
             )
         }
     }

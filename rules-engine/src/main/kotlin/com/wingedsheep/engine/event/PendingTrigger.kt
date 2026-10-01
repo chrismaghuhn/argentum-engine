@@ -50,12 +50,19 @@ data class DelayedTriggerOccurrenceCandidate(
     val ability: TriggeredAbility,
     val sourceId: EntityId,
     val sourceName: String,
+    /** Mirrors [PendingTrigger.sourceBattlefieldTimestamp]: the source visit captured at detection. */
+    val sourceBattlefieldTimestamp: Long? = null,
+    /** Mirrors [PendingTrigger.objectReferences]: the object identities captured at detection. */
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment =
+        com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
     val controllerId: EntityId,
     val granterId: EntityId? = null,
     val triggerContext: TriggerContext,
     val consumesDelayedTriggerId: String? = null,
     val sagaChapterInfo: SagaChapterInfo? = null,
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
+    /** Mirrors [PendingTrigger.opponentTargetChooserId]. */
+    val opponentTargetChooserId: EntityId? = null,
     /** Semantic kind; [TriggerStage.COST_LINKED] marks a cast-time cost-linked ability. */
     val stage: TriggerStage = TriggerStage.NORMAL,
     /**
@@ -74,12 +81,15 @@ data class DelayedTriggerOccurrenceCandidate(
         ability = ability,
         sourceId = sourceId,
         sourceName = sourceName,
+        sourceBattlefieldTimestamp = sourceBattlefieldTimestamp,
+        objectReferences = objectReferences,
         controllerId = controllerId,
         granterId = granterId,
         triggerContext = triggerContext,
         consumesDelayedTriggerId = consumesDelayedTriggerId,
         sagaChapterInfo = sagaChapterInfo,
         carriedPipeline = carriedPipeline,
+        opponentTargetChooserId = opponentTargetChooserId,
         stage = stage,
         observedPlacementStage = observedPlacementStage,
         sourceObjectIncarnationStamp = sourceObjectIncarnationStamp,
@@ -94,6 +104,10 @@ data class PendingTrigger(
     val ability: TriggeredAbility,
     val sourceId: EntityId,
     val sourceName: String,
+    /** Source battlefield visit captured at detection, before target or ordering decisions. */
+    val sourceBattlefieldTimestamp: Long? = null,
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment =
+        com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
     val controllerId: EntityId,
     /**
      * The permanent whose `GrantTriggeredAbility` static granted this triggered ability, when it is
@@ -123,6 +137,20 @@ data class PendingTrigger(
      * when this pending trigger is placed on the stack. Null for ordinary triggered abilities.
      */
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
+    /**
+     * Which opponent answers this trigger's target decision, when a requirement carries
+     * [com.wingedsheep.sdk.scripting.targets.TargetChooser.Opponent] ("target creature card of an
+     * opponent's choice" — Mausoleum Turnkey).
+     *
+     * Pinned by `TriggerProcessor` once the deciding opponent is known — immediately in a
+     * two-player game, and after the controller picks one in multiplayer — and read back by
+     * `resolveTargetChooser`. It has to live on the trigger rather than be recomputed, because the
+     * multiplayer pick is a decision of its own and the resumer re-enters target selection with
+     * nothing else to carry the answer.
+     *
+     * Null on every other trigger, which is every trigger without an opponent chooser.
+     */
+    val opponentTargetChooserId: EntityId? = null,
     /** Semantic kind; [TriggerStage.COST_LINKED] marks a cast-time cost-linked ability. */
     val stage: TriggerStage = TriggerStage.NORMAL,
     @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
@@ -131,7 +159,8 @@ data class PendingTrigger(
      * CR 603.7b marker emitted by the delayed-trigger detector when several matching occurrences
      * happen simultaneously. The marker is converted into a normal pending decision by
      * [com.wingedsheep.engine.event.TriggerProcessor]. It is intentionally serializable because
-     * callers may queue detected triggers below another continuation before processing them.
+     * the settle boundary parks detected triggers in [com.wingedsheep.engine.state.GameState.pendingTriggers]
+     * (and queues them below other continuations) before processing them.
      */
     val occurrenceChoice: List<DelayedTriggerOccurrenceCandidate> = emptyList(),
     /** Rules-owned source object incarnation captured at trigger detection time, when available. */
@@ -199,12 +228,15 @@ fun PendingTrigger.toOccurrenceCandidate(): DelayedTriggerOccurrenceCandidate =
         ability = ability,
         sourceId = sourceId,
         sourceName = sourceName,
+        sourceBattlefieldTimestamp = sourceBattlefieldTimestamp,
+        objectReferences = objectReferences,
         controllerId = controllerId,
         granterId = granterId,
         triggerContext = triggerContext,
         consumesDelayedTriggerId = consumesDelayedTriggerId,
         sagaChapterInfo = sagaChapterInfo,
         carriedPipeline = carriedPipeline,
+        opponentTargetChooserId = opponentTargetChooserId,
         stage = stage,
         observedPlacementStage = observedPlacementStage,
         sourceObjectIncarnationStamp = sourceObjectIncarnationStamp,

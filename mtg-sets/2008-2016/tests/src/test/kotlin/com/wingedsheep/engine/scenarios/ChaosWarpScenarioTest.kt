@@ -12,6 +12,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Chaos Warp — current Oracle behavior against the existing generic library pipeline.
@@ -92,7 +93,7 @@ class ChaosWarpScenarioTest : FunSpec({
         driver.giveColorlessMana(caster, 2)
         val result = driver.castSpell(caster, warp, listOf(nonpermanent))
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.findCardInHand(caster, "Chaos Warp") shouldNotBe null
         driver.state.getHand(owner) shouldContain nonpermanent
     }

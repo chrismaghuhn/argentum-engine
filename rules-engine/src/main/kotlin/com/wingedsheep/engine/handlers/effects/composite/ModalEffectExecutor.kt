@@ -1,5 +1,7 @@
 package com.wingedsheep.engine.handlers.effects.composite
 
+import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
+import com.wingedsheep.engine.handlers.TargetingSourceType
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
@@ -11,7 +13,6 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -48,12 +49,12 @@ import kotlin.reflect.KClass
  * @param effectExecutor Function to execute a sub-effect (provided by registry)
  */
 class ModalEffectExecutor(
-    private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult
+    private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult,
+    private val amountEvaluator: DynamicAmountEvaluator,
+    private val targetValidator: TargetValidator
 ) : EffectExecutor<ModalEffect> {
 
     override val effectType: KClass<ModalEffect> = ModalEffect::class
-
-    private val targetValidator = TargetValidator()
 
     override fun execute(
         state: GameState,
@@ -77,14 +78,32 @@ class ModalEffectExecutor(
             state.getEntity(sourceId)?.get<CardComponent>()?.name
         }
 
-        // Resolve "choose up to <DynamicAmount>" at runtime. minChooseCount is treated
-        // as 0 (player may always decline picks once the dynamic-evaluated cap is
-        // exhausted); chooseCount becomes min(evaluated, modes.size).
+        // Resolve "choose up to <DynamicAmount>" at runtime.
+        //
+        // The floor comes from [ModalEffect.dynamicMinChooseCount] when the card set one, and only
+        // falls back to 0 — "you may decline every pick" — when it didn't. Forcing 0 here made the
+        // synthetic "Don't choose a mode" option appear on a *mandatory* dynamic modal
+        // (Frankenstein's Monster: exactly X counters, one per card exiled), letting the player
+        // walk away from picks the card doesn't let them skip. `ModalChooseCounts.forCast` has
+        // always read the floor for modal *spells*; this is the resolution-time path that a modal
+        // nested inside another effect takes, and it had drifted from it.
+        //
+        // The ceiling is capped by the mode list only when each mode can be picked once. With
+        // [ModalEffect.allowRepeat] the same mode stays on the menu every pick (CR 700.2d), so
+        // three modes can absorb any number of picks and capping at `modes.size` would silently
+        // shrink X. `forCast` makes the same distinction, so the two paths now agree on both bounds.
         val (effectiveChooseCount, effectiveMinChooseCount) = if (effect.dynamicChooseCount != null) {
-            val evaluator = com.wingedsheep.engine.handlers.DynamicAmountEvaluator()
+            val evaluator = amountEvaluator
             val raw = evaluator.evaluate(state, effect.dynamicChooseCount!!, context)
-            val capped = raw.coerceIn(0, effect.modes.size)
-            capped to 0
+            val capped = if (effect.allowRepeat) {
+                raw.coerceAtLeast(0)
+            } else {
+                raw.coerceIn(0, effect.modes.size)
+            }
+            val floor = effect.dynamicMinChooseCount
+                ?.let { evaluator.evaluate(state, it, context).coerceIn(0, capped) }
+                ?: 0
+            capped to floor
         } else {
             effect.chooseCount to effect.minChooseCount
         }
@@ -113,8 +132,7 @@ class ModalEffectExecutor(
         val basePrompt = "Choose a mode for ${sourceName ?: "modal spell"}"
         val prompt = if (effectiveChooseCount > 1) "$basePrompt (1 of $effectiveChooseCount)" else basePrompt
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = ChooseOptionDecision(
+        val decision = { decisionId: String -> ChooseOptionDecision(
             id = decisionId,
             playerId = playerId,
             prompt = prompt,
@@ -124,16 +142,16 @@ class ModalEffectExecutor(
                 phase = DecisionPhase.RESOLUTION
             ),
             options = modeDescriptions
-        )
+        ) }
 
         // Preserve outer-scope targets so no-target modes can resolve ContextTarget
         // references to targets chosen by the enclosing spell/ability (e.g.,
         // Manifold Mouse's BeginCombat trigger targets a Mouse, then picks a
         // keyword mode that grants the keyword to that outer target).
         val continuation = ModalContinuation(
-            decisionId = decisionId,
             controllerId = context.controllerId,
             sourceId = context.sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             modes = effect.modes,
             xValue = context.xValue,
@@ -142,28 +160,16 @@ class ModalEffectExecutor(
             minChooseCount = effectiveMinChooseCount,
             selectedModeIndices = emptyList(),
             availableIndices = availableIndices,
+            allowRepeat = effect.allowRepeat,
             outerTargets = context.targets,
             outerAlignedTargets = context.alignedTargets,
+            pipeline = context.pipeline,
             outerNamedTargets = context.pipeline.namedTargets,
             recordChosenModesOnSource = effect.excludePreviouslyChosenModes,
             recordChosenModesThisTurn = effect.excludeModesChosenThisTurn
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = playerId,
-                    decisionType = "CHOOSE_OPTION",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 
     /**
@@ -195,11 +201,17 @@ class ModalEffectExecutor(
             xValue = context.xValue,
             triggeringEntityId = context.triggeringEntityId,
             triggeringPlayerId = context.triggeringPlayerId,
-            storedCollections = context.pipeline.storedCollections,
+            triggerContext = context.triggerContext,
+            // The resolution so far, carried into each mode. A mode's effect can read what an
+            // earlier step of the same resolution stored — Cemetery Desecrator's two modes both
+            // spell X as `StoredCardManaValue("exiledCard")`, the collection its reflexive
+            // trigger's action half filled. Dropping it made every such amount read 0.
+            pipeline = context.pipeline,
             targetingSourceType = context.targetingSourceType,
             outerTargets = outerAlignedTargets.filterNotNull(),
             outerAlignedTargets = outerAlignedTargets,
-            outerNamedTargets = context.pipeline.namedTargets
+            outerNamedTargets = context.pipeline.namedTargets,
+            objectReferences = context.objectReferences
         )
         return processPreTargetedEffectQueue(state, entries, baseCtx, effectExecutor, targetValidator, emptyList())
     }
@@ -211,7 +223,15 @@ class ModalEffectExecutor(
          */
         const val DECLINE_MODE_LABEL: String = "Don't choose a mode"
 
-        /** Build the drain queue from pre-chosen modes / targets. */
+        /**
+         * Build the drain queue from pre-chosen modes / targets.
+         *
+         * Each entry's slot metadata (its slice of the original flat target payload, the
+         * position-preserving aligned targets and the CR 608.2b legality mask) is derived in pick
+         * order, because that is the order the flat payload was laid out in. The returned queue is
+         * then ordered for execution in printed mode order, each pick keeping its own target slice
+         * and metadata.
+         */
         fun buildModeEntries(
             effect: ModalEffect,
             chosenModes: List<Int>,
@@ -225,7 +245,7 @@ class ModalEffectExecutor(
             var derivedFlatSlotStart = 0
             var previousExplicitEnd = 0
             var prefixMetadataLocked = true
-            return chosenModes.mapIndexed { ordinal, modeIndex ->
+            val entriesInPickOrder = chosenModes.mapIndexed { ordinal, modeIndex ->
                 val mode = effect.modes.getOrNull(modeIndex)
                 val rawTargets = modeTargetsOrdered.getOrNull(ordinal) ?: emptyList()
                 val hasLockedRequirements = modeTargetRequirementsOrdered.size == chosenModes.size ||
@@ -278,6 +298,10 @@ class ModalEffectExecutor(
                 }
                 entry
             }
+            // Execute in printed mode order while retaining each pick's own target slice.
+            return chosenModes.indices
+                .sortedBy { ordinal -> chosenModes[ordinal] }
+                .map { ordinal -> entriesInPickOrder[ordinal] }
         }
 
         /** Convenience overload reading from a [SpellOnStackComponent]. */
@@ -300,12 +324,21 @@ internal data class PreTargetedEffectContext(
     val xValue: Int?,
     val triggeringEntityId: com.wingedsheep.sdk.model.EntityId?,
     val triggeringPlayerId: com.wingedsheep.sdk.model.EntityId? = null,
-    val storedCollections: Map<String, List<com.wingedsheep.sdk.model.EntityId>> = emptyMap(),
-    val targetingSourceType: com.wingedsheep.engine.handlers.TargetingSourceType =
-        com.wingedsheep.engine.handlers.TargetingSourceType.ANY,
+    val triggerContext: com.wingedsheep.engine.event.TriggerContext? = null,
+    /**
+     * Pipeline state the enclosing resolution had already built — stored collections, numbers,
+     * chosen values — which each mode's own [EffectContext] inherits. Only the per-mode
+     * `namedTargets` are rebuilt on top of it, because those *are* per mode.
+     *
+     * Defaults to empty for the callers that genuinely have no enclosing pipeline (splice, CR
+     * 702.47b: each spliced card's text is its own resolution).
+     */
+    val pipeline: PipelineState = PipelineState.EMPTY,
+    val targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
     val outerTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget> = emptyList(),
     val outerAlignedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget?> = emptyList(),
-    val outerNamedTargets: Map<String, com.wingedsheep.engine.state.components.stack.ChosenTarget> = emptyMap()
+    val outerNamedTargets: Map<String, com.wingedsheep.engine.state.components.stack.ChosenTarget> = emptyMap(),
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment()
 )
 
 /**
@@ -365,13 +398,19 @@ internal fun processPreTargetedEffectQueue(
             sourceColors = sourceColors,
             sourceSubtypes = sourceSubtypes,
             sourceId = ctx.sourceId,
+            // The chosen X, threaded exactly as the cast and activation paths do. Without it an
+            // X-clamped mode ("up to X target creatures", Profane Command) re-validates against
+            // the *static* placeholder count of 1, so every legal cast declaring two or more
+            // targets fails this re-check.
             xValue = ctx.xValue,
             allowedTargetSlots = head.alignedTargets,
             targetEntryStamps = head.targetEntryStamps,
+            // The resolving object's own kind, recorded on the context by the resolver (spell,
+            // activated or triggered ability); ANY when the caller could not say.
             targetingSourceType = ctx.targetingSourceType,
             triggeringEntityId = ctx.triggeringEntityId,
             triggeringPlayerId = ctx.triggeringPlayerId,
-            storedCollections = ctx.storedCollections
+            storedCollections = ctx.pipeline.storedCollections
         )
     } else TargetValidator.ResolutionTargetPayload(emptyList(), List(head.targets.size) { null })
 
@@ -391,25 +430,31 @@ internal fun processPreTargetedEffectQueue(
     } else {
         ctx.outerAlignedTargets
     }
+    // The enclosing resolution's named targets, with this mode's own named targets laid over them
+    // for a targeted mode. Slots dropped by CR 608.2b stay unmapped.
+    val enclosingNamedTargets = ctx.pipeline.namedTargets + ctx.outerNamedTargets
     val modeNamedTargets = if (targetedEntry) {
-        EffectContext.buildNamedTargets(head.targetRequirements, resolutionTargets.alignedTargets)
+        enclosingNamedTargets +
+            EffectContext.buildNamedTargets(head.targetRequirements, resolutionTargets.alignedTargets)
     } else {
-        ctx.outerNamedTargets
+        enclosingNamedTargets
     }
     val effectContext = EffectContext(
         sourceId = ctx.sourceId,
+        objectReferences = ctx.objectReferences,
         controllerId = ctx.controllerId,
         xValue = ctx.xValue,
         targets = modeTargets,
         alignedTargets = modeAlignedTargets,
         targetEntryStamps = head.targetEntryStamps,
         targetingSourceType = ctx.targetingSourceType,
-        pipeline = PipelineState(
-            namedTargets = modeNamedTargets,
-            storedCollections = ctx.storedCollections
-        ),
+        // The enclosing resolution's pipeline, with this mode's own named targets laid over it.
+        // A bare `PipelineState(namedTargets = …)` here dropped every stored collection, number
+        // and chosen value the resolution had accumulated before the modal.
+        pipeline = ctx.pipeline.copy(namedTargets = modeNamedTargets),
         triggeringEntityId = ctx.triggeringEntityId,
-        triggeringPlayerId = ctx.triggeringPlayerId
+        triggeringPlayerId = ctx.triggeringPlayerId ?: ctx.triggerContext?.triggeringPlayerId,
+        triggerContext = ctx.triggerContext
     )
 
     // Pre-push the tail continuation so that if the effect pauses, our frame sits
@@ -417,14 +462,15 @@ internal fun processPreTargetedEffectQueue(
     val stateForExecution = if (tail.isNotEmpty()) {
         state.pushContinuation(
             ModalPreChosenContinuation(
-                decisionId = "modal-pre-chosen-${UUID.randomUUID()}",
                 controllerId = ctx.controllerId,
                 sourceId = ctx.sourceId,
+                objectReferences = ctx.objectReferences,
                 sourceName = ctx.sourceName,
                 xValue = ctx.xValue,
                 triggeringEntityId = ctx.triggeringEntityId,
                 triggeringPlayerId = ctx.triggeringPlayerId,
-                storedCollections = ctx.storedCollections,
+                triggerContext = ctx.triggerContext,
+                pipeline = ctx.pipeline,
                 targetingSourceType = ctx.targetingSourceType,
                 outerTargets = ctx.outerTargets,
                 outerAlignedTargets = ctx.outerAlignedTargets,
@@ -437,6 +483,7 @@ internal fun processPreTargetedEffectQueue(
     val result = effectExecutor(stateForExecution, head.effect, effectContext)
     val nextEvents = accumulatedEvents + result.events
     val nextDiagnostics = accumulatedDiagnostics + result.diagnostics
+    val nextCtx = ctx.copy(objectReferences = ctx.objectReferences.authorize(result.events))
 
     if (result.diagnostics.isNotEmpty()) {
         val cleanState = if (tail.isNotEmpty()) {
@@ -448,20 +495,16 @@ internal fun processPreTargetedEffectQueue(
         return EffectResult(
             state = cleanState,
             events = nextEvents,
-            error = result.error ?: "Unsupported path during modal resolution",
+            outcome = result.outcome as? Outcome.Rejected
+                ?: Outcome.Rejected(Rejection.ExecutionFailed("Unsupported path during modal resolution")),
             diagnostics = nextDiagnostics,
         )
     }
 
-    if (result.isPaused) {
-        return EffectResult.paused(
-            result.state,
-            result.pendingDecision!!,
-            nextEvents,
-            diagnostics = nextDiagnostics,
-        )
+    if (result.outcome is Outcome.Paused) {
+        return EffectResult.propagatePause(result.state, nextEvents, diagnostics = nextDiagnostics)
     }
-    if (result.error != null) {
+    if (result.outcome is Outcome.Rejected) {
         if (hasIllegalTargetPortion) {
             val nextState = if (tail.isNotEmpty()) {
                 val (_, afterPop) = result.state.popContinuation()
@@ -472,7 +515,7 @@ internal fun processPreTargetedEffectQueue(
             return processPreTargetedEffectQueue(
                 nextState,
                 tail,
-                ctx,
+                nextCtx,
                 effectExecutor,
                 targetValidator,
                 nextEvents,
@@ -482,8 +525,8 @@ internal fun processPreTargetedEffectQueue(
         return EffectResult(
             state = result.state,
             events = nextEvents,
-            error = result.error,
-            diagnostics = result.diagnostics,
+            outcome = result.outcome,
+            diagnostics = nextDiagnostics,
         )
     }
 
@@ -496,7 +539,7 @@ internal fun processPreTargetedEffectQueue(
     return processPreTargetedEffectQueue(
         nextState,
         tail,
-        ctx,
+        nextCtx,
         effectExecutor,
         targetValidator,
         nextEvents,

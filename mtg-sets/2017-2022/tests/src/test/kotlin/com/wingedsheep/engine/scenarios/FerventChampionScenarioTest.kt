@@ -18,6 +18,8 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Fervent Champion (ELD #124).
@@ -131,7 +133,7 @@ class FerventChampionScenarioTest : FunSpec({
                     equipId,
                     targets = listOf(com.wingedsheep.engine.state.components.stack.ChosenTarget.Permanent(champion)),
                 )
-            ).isSuccess shouldBe true
+            ).outcome shouldBe Outcome.Done
             driver.bothPass()
             driver.state.getEntity(blade)?.get<AttachedToComponent>()?.targetId shouldBe champion
         }
@@ -146,7 +148,7 @@ class FerventChampionScenarioTest : FunSpec({
                     equipId,
                     targets = listOf(com.wingedsheep.engine.state.components.stack.ChosenTarget.Permanent(otherCreature)),
                 )
-            ).isSuccess shouldBe false
+            ).outcome shouldNotBe Outcome.Done
         }
     }
 })

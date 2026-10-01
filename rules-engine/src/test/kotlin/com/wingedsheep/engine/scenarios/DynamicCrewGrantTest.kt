@@ -21,6 +21,8 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 private val CrewGrantAbility = GrantKeywordAbility(
     ability = KeywordAbility.crew(1),
@@ -116,7 +118,7 @@ class DynamicCrewGrantTest : FunSpec({
 
         val result = driver.submit(CrewVehicle(player, vehicle, listOf(crewer)))
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.isTapped(crewer) shouldBe true
         driver.stackSize shouldBe 1
     }
@@ -134,7 +136,7 @@ class DynamicCrewGrantTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         result.error shouldBe "Crew ability is stale or ambiguous"
     }
 
@@ -145,7 +147,7 @@ class DynamicCrewGrantTest : FunSpec({
 
         val result = driver.submit(CrewVehicle(player, vehicle, listOf(largeCrew)))
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         result.error shouldBe "Crew ability identity is required"
     }
 

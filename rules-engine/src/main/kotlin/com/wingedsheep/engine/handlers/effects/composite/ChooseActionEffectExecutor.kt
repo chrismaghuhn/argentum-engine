@@ -15,7 +15,6 @@ import com.wingedsheep.sdk.scripting.effects.ChooseActionEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.EffectChoice
 import com.wingedsheep.sdk.scripting.effects.FeasibilityCheck
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -26,12 +25,11 @@ import kotlin.reflect.KClass
  * If zero remain, nothing happens.
  */
 class ChooseActionEffectExecutor(
-    private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult
+    private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult,
+    private val predicateEvaluator: PredicateEvaluator
 ) : EffectExecutor<ChooseActionEffect> {
 
     override val effectType: KClass<ChooseActionEffect> = ChooseActionEffect::class
-
-    private val predicateEvaluator = PredicateEvaluator()
 
     override fun execute(
         state: GameState,
@@ -64,8 +62,7 @@ class ChooseActionEffectExecutor(
             state.getEntity(sourceId)?.get<CardComponent>()?.name
         }
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = ChooseOptionDecision(
+        val decision = { decisionId: String -> ChooseOptionDecision(
             id = decisionId,
             playerId = choosingPlayerId,
             prompt = "Choose one for ${sourceName ?: "ability"}",
@@ -75,13 +72,13 @@ class ChooseActionEffectExecutor(
                 phase = DecisionPhase.RESOLUTION
             ),
             options = feasibleChoices.map { it.label }
-        )
+        ) }
 
         val continuation = ChooseActionContinuation(
-            decisionId = decisionId,
             choosingPlayerId = choosingPlayerId,
             controllerId = context.controllerId,
             sourceId = context.sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             choices = feasibleChoices,
             targets = context.targets,
@@ -89,21 +86,7 @@ class ChooseActionEffectExecutor(
             triggeringEntityId = context.triggeringEntityId
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = choosingPlayerId,
-                    decisionType = "CHOOSE_OPTION",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 
     private fun isFeasible(
@@ -121,7 +104,7 @@ internal fun checkFeasibility(
     state: GameState,
     playerId: com.wingedsheep.sdk.model.EntityId,
     check: FeasibilityCheck?,
-    predicateEvaluator: PredicateEvaluator = PredicateEvaluator()
+    predicateEvaluator: PredicateEvaluator
 ): Boolean {
     if (check == null) return true
 
@@ -130,7 +113,8 @@ internal fun checkFeasibility(
             val matching = BattlefieldFilterUtils.findMatchingOnBattlefield(
                 state,
                 check.filter.youControl(),
-                PredicateContext(controllerId = playerId)
+                PredicateContext(controllerId = playerId),
+                predicateEvaluator = predicateEvaluator
             )
             matching.size >= check.count
         }

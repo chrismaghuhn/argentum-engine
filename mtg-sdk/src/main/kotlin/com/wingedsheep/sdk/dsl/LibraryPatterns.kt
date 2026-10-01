@@ -9,7 +9,6 @@ import com.wingedsheep.sdk.scripting.effects.ChoosePileEffect
 import com.wingedsheep.sdk.scripting.effects.Chooser
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
 import com.wingedsheep.sdk.scripting.effects.DealDamageEffect
-import com.wingedsheep.sdk.scripting.effects.CollectionFilter
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.FaceDownMode
 import com.wingedsheep.sdk.scripting.effects.FilterCollectionEffect
@@ -40,6 +39,9 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
  * reveal-until, look-at-top, shuffle-graveyard, and reorder operations.
  */
 object LibraryPatterns {
+
+    /** The cards the most recent [mill] put into the graveyard, as a typed handle. */
+    val milled: CollectionSlot = CollectionSlot("milled")
 
     fun lookAtTopAndKeep(
         count: Int,
@@ -195,27 +197,49 @@ object LibraryPatterns {
     }
 
     /**
-     * "Look at the top [count] cards of your library. You may reveal a card matching [filter] from
-     * among them and put it into your hand. Put the rest [restDestination] (defaults to the bottom
-     * of your library) [restOrder] (defaults to a random order)." — Radagast the Brown / Star
-     * Charter shape. The reveal is optional ([SelectionMode.ChooseUpTo] of 1), filtered, and the
-     * selected card is revealed as it moves to hand.
+     * "[Look at|Reveal] the top [count] cards of your library. You may put [selection] card(s)
+     * matching [filter] from among them [keepDestination]. Put the rest [restDestination]
+     * [restOrder]." — Elvish Rejuvenator, Summoning Trap, Gather the Pack, Mayael the Anima, and
+     * the ~90 other printings of the most-printed shape in the whole look-at-the-top family.
+     *
+     * One pipeline, and **every printed word that varies between those cards is a parameter of it**:
+     *
+     * | Printed words | Parameter |
+     * |---|---|
+     * | "Look at" / "Reveal" the top N | [revealed] — a public reveal or a private look |
+     * | "a creature card" / "any number of Equipment cards" / "up to two permanent cards" | [selection] + [filter] |
+     * | "into your hand" / "onto the battlefield" / "onto the battlefield tapped" | [keepDestination] |
+     * | "and put **it**" — the kept card turned face up as it moves | [keepRevealed] |
+     * | "Put the rest into your graveyard" / "on the bottom … in a random order" | [restDestination] + [restOrder] |
+     *
+     * [lookAtTopRevealMatchingToHand] is one point in that space and delegates here; it is kept
+     * under its own name because "You may **reveal** a creature card from among them **and put it
+     * into your hand**" is a distinct printed sentence, not because it is a distinct recipe.
+     *
+     * Both halves of the choice are shown ([SelectFromCollectionEffect.showAllCards]): the card told
+     * the player to look at all [count] of them, so cards that do not match [filter] are displayed
+     * and merely unselectable.
      */
-    fun lookAtTopRevealMatchingToHand(
+    fun lookAtTopAndTakeMatching(
         count: DynamicAmount,
         filter: GameObjectFilter,
         prompt: String,
+        selection: SelectionMode = SelectionMode.ChooseUpTo(DynamicAmount.Fixed(1)),
+        revealed: Boolean = false,
+        keepDestination: CardDestination = CardDestination.ToZone(Zone.HAND),
+        keepRevealed: Boolean = false,
         restDestination: CardDestination = CardDestination.ToZone(Zone.LIBRARY, placement = ZonePlacement.Bottom),
         restOrder: CardOrder = CardOrder.Random
     ): CompositeEffect = CompositeEffect(
         listOf(
             GatherCardsEffect(
                 source = CardSource.TopOfLibrary(count),
-                storeAs = "looked"
+                storeAs = "looked",
+                revealed = revealed
             ),
             SelectFromCollectionEffect(
                 from = "looked",
-                selection = SelectionMode.ChooseUpTo(DynamicAmount.Fixed(1)),
+                selection = selection,
                 filter = filter,
                 storeSelected = "kept",
                 storeRemainder = "rest",
@@ -224,8 +248,8 @@ object LibraryPatterns {
             ),
             MoveCollectionEffect(
                 from = "kept",
-                destination = CardDestination.ToZone(Zone.HAND),
-                revealed = true
+                destination = keepDestination,
+                revealed = keepRevealed
             ),
             MoveCollectionEffect(
                 from = "rest",
@@ -233,6 +257,41 @@ object LibraryPatterns {
                 order = restOrder
             )
         )
+    )
+
+    /**
+     * "Look at the top [count] cards of your library. You may reveal a card matching [filter] from
+     * among them and put it into your hand. Put the rest [restDestination] (defaults to the bottom
+     * of your library) [restOrder] (defaults to a random order)." — Radagast the Brown / Star
+     * Charter shape. The reveal is optional ([SelectionMode.ChooseUpTo] of 1), filtered, and the
+     * selected card is revealed as it moves to hand.
+     *
+     * The "reveal it as it goes to hand" spelling of [lookAtTopAndTakeMatching], which is where
+     * every other word of the sentence is a parameter. It builds the identical pipeline it always
+     * has.
+     */
+    fun lookAtTopRevealMatchingToHand(
+        count: Int,
+        filter: GameObjectFilter,
+        prompt: String,
+        restDestination: CardDestination = CardDestination.ToZone(Zone.LIBRARY, placement = ZonePlacement.Bottom),
+        restOrder: CardOrder = CardOrder.Random
+    ): CompositeEffect = lookAtTopRevealMatchingToHand(DynamicAmount.Fixed(count), filter, prompt, restDestination, restOrder)
+
+    /** [lookAtTopRevealMatchingToHand] with a count evaluated at resolution. */
+    fun lookAtTopRevealMatchingToHand(
+        count: DynamicAmount,
+        filter: GameObjectFilter,
+        prompt: String,
+        restDestination: CardDestination = CardDestination.ToZone(Zone.LIBRARY, placement = ZonePlacement.Bottom),
+        restOrder: CardOrder = CardOrder.Random
+    ): CompositeEffect = lookAtTopAndTakeMatching(
+        count = count,
+        filter = filter,
+        prompt = prompt,
+        keepRevealed = true,
+        restDestination = restDestination,
+        restOrder = restOrder
     )
 
     /**
@@ -245,6 +304,14 @@ object LibraryPatterns {
      * choice-free [FilterCollectionEffect] partition. The remainder keeps its original gather order
      * unless [restOrder] reshuffles it.
      */
+    fun revealTopPutAllMatchingToHand(
+        count: Int,
+        filter: GameObjectFilter,
+        restDestination: CardDestination = CardDestination.ToZone(Zone.LIBRARY, placement = ZonePlacement.Bottom),
+        restOrder: CardOrder = CardOrder.Random
+    ): CompositeEffect = revealTopPutAllMatchingToHand(DynamicAmount.Fixed(count), filter, restDestination, restOrder)
+
+    /** [revealTopPutAllMatchingToHand] with a count evaluated at resolution. */
     fun revealTopPutAllMatchingToHand(
         count: DynamicAmount,
         filter: GameObjectFilter,
@@ -259,7 +326,7 @@ object LibraryPatterns {
             RevealCollectionEffect(from = "looked"),
             FilterCollectionEffect(
                 from = "looked",
-                filter = CollectionFilter.MatchesFilter(filter),
+                filter = filter,
                 storeMatching = "kept",
                 storeNonMatching = "rest"
             ),
@@ -327,7 +394,7 @@ object LibraryPatterns {
     private fun scryPlayer(target: EffectTarget): Player = when (target) {
         EffectTarget.Controller -> Player.You
         is EffectTarget.ContextTarget -> Player.ContextPlayer(target.index)
-        is EffectTarget.BoundVariable -> Player.ContextPlayer(0)
+        is EffectTarget.BoundVariable -> Player.BoundVariable(target.name)
         is EffectTarget.PlayerRef -> target.player
         else -> Player.You
     }
@@ -347,6 +414,15 @@ object LibraryPatterns {
      * overload.
      */
     fun surveil(count: DynamicAmount): CompositeEffect = surveilPipeline(count)
+
+    /**
+     * "Surveil [count]" that remembers which cards it put into the graveyard, stored under
+     * [storeGraveyardAs] for a later "if you put a card … into your graveyard this way" clause
+     * (Enlightened Confidant). Same expanded pipeline as [surveilPipeline] — `SurveiledEvent`
+     * included — with the graveyard move recording the cards it moved.
+     */
+    fun surveil(count: Int, storeGraveyardAs: String): CompositeEffect =
+        surveilPipeline(count, storeGraveyardAs)
 
     /**
      * Expand a library *macro effect* ([ScryEffect] / [SurveilEffect]) to its underlying
@@ -411,7 +487,7 @@ object LibraryPatterns {
      * Public so the engine's surveil macro executor can build and delegate to it; card definitions
      * should use [surveil] / [com.wingedsheep.sdk.dsl.Effects.Surveil] instead.
      */
-    fun surveilPipeline(count: Int): CompositeEffect = CompositeEffect(
+    fun surveilPipeline(count: Int, storeGraveyardAs: String? = null): CompositeEffect = CompositeEffect(
         listOfNotNull(
             GatherCardsEffect(
                 source = CardSource.TopOfLibrary(DynamicAmount.Fixed(count)),
@@ -427,7 +503,8 @@ object LibraryPatterns {
             ),
             MoveCollectionEffect(
                 from = "toGraveyard",
-                destination = CardDestination.ToZone(Zone.GRAVEYARD)
+                destination = CardDestination.ToZone(Zone.GRAVEYARD),
+                storeMovedAs = storeGraveyardAs
             ),
             MoveCollectionEffect(
                 from = "toTop",
@@ -500,7 +577,8 @@ object LibraryPatterns {
         effects.add(
             GatherCardsEffect(
                 source = CardSource.FromZone(Zone.LIBRARY, Player.You, filter),
-                storeAs = "searchable"
+                storeAs = "searchable",
+                search = true
             )
         )
 
@@ -560,7 +638,8 @@ object LibraryPatterns {
         effects.add(
             GatherCardsEffect(
                 source = CardSource.FromMultipleZones(zones, Player.You, filter),
-                storeAs = "searchable"
+                storeAs = "searchable",
+                search = Zone.LIBRARY in zones
             )
         )
 
@@ -622,32 +701,35 @@ object LibraryPatterns {
     )
 
     /**
-     * "Reveal cards from the top of your library until you reveal a card matching [filter].
-     * Put that card into your hand and the rest [restDestination] (defaults to the bottom of
-     * your library) [restOrder] (defaults to a random order)." — Spinner of Souls / Wirewood
-     * Herald shape.
+     * "Reveal cards from the top of your library until you reveal [count] card(s) matching
+     * [filter]. Put those cards into your hand and the rest [restDestination] (defaults to the
+     * bottom of your library) [restOrder] (defaults to a random order)." — Spinner of Souls /
+     * Wirewood Herald at the default `count = 1`, Fathom Trawl at three.
      *
-     * The [filter] partition is reused twice: [GatherUntilMatchEffect] stops the reveal at the
-     * first match, then a [FilterCollectionEffect] over every revealed card splits the single
-     * match (→ hand) from the cards revealed before it (→ [restDestination]). If the library
-     * empties before a match is found, nothing goes to hand and every revealed card goes to the
-     * rest destination.
+     * The [filter] partition is reused twice: [GatherUntilMatchEffect] stops the reveal once
+     * [count] matches have been revealed, then a [FilterCollectionEffect] over every revealed
+     * card splits the matches (→ hand) from the cards revealed alongside them
+     * (→ [restDestination]). If the library empties before [count] matches are found, every
+     * match found so far still goes to hand and the rest go to the rest destination — Fathom
+     * Trawl's 2007-10-01 ruling.
      */
     fun revealUntilMatchToHand(
         filter: GameObjectFilter,
         restDestination: CardDestination = CardDestination.ToZone(Zone.LIBRARY, placement = ZonePlacement.Bottom),
-        restOrder: CardOrder = CardOrder.Random
+        restOrder: CardOrder = CardOrder.Random,
+        count: DynamicAmount = DynamicAmount.Fixed(1)
     ): CompositeEffect = CompositeEffect(
         listOf(
             GatherUntilMatchEffect(
                 filter = filter,
                 storeMatch = "ignored",
-                storeRevealed = "revealed"
+                storeRevealed = "revealed",
+                count = count
             ),
             RevealCollectionEffect(from = "revealed"),
             FilterCollectionEffect(
                 from = "revealed",
-                filter = CollectionFilter.MatchesFilter(filter),
+                filter = filter,
                 storeMatching = "matchedToHand",
                 storeNonMatching = "rest"
             ),
@@ -750,13 +832,7 @@ object LibraryPatterns {
         mill(DynamicAmount.Fixed(count), target)
 
     fun mill(count: DynamicAmount, target: EffectTarget = EffectTarget.Controller): CompositeEffect {
-        val player = when (target) {
-            EffectTarget.Controller -> Player.You
-            is EffectTarget.ContextTarget -> Player.ContextPlayer(target.index)
-            is EffectTarget.BoundVariable -> Player.ContextPlayer(0)
-            is EffectTarget.PlayerRef -> target.player
-            else -> Player.You
-        }
+        val player = effectTargetToPlayer(target)
         return CompositeEffect(
             listOf(
                 GatherCardsEffect(
@@ -782,13 +858,7 @@ object LibraryPatterns {
         exileTop(DynamicAmount.Fixed(count), target)
 
     fun exileTop(count: DynamicAmount, target: EffectTarget = EffectTarget.Controller): CompositeEffect {
-        val player = when (target) {
-            EffectTarget.Controller -> Player.You
-            is EffectTarget.ContextTarget -> Player.ContextPlayer(target.index)
-            is EffectTarget.BoundVariable -> Player.ContextPlayer(0)
-            is EffectTarget.PlayerRef -> target.player
-            else -> Player.You
-        }
+        val player = effectTargetToPlayer(target)
         return CompositeEffect(
             listOf(
                 GatherCardsEffect(
@@ -803,7 +873,7 @@ object LibraryPatterns {
         )
     }
 
-    fun shuffleGraveyardIntoLibrary(target: EffectTarget = EffectTarget.ContextTarget(0)): CompositeEffect {
+    fun shuffleGraveyardIntoLibrary(target: EffectTarget): CompositeEffect {
         val player = effectTargetToPlayer(target)
         return CompositeEffect(
             listOf(
@@ -831,7 +901,8 @@ object LibraryPatterns {
         effects = listOf(
             GatherCardsEffect(
                 source = CardSource.FromZone(Zone.LIBRARY, Player.You, filter),
-                storeAs = "searchable"
+                storeAs = "searchable",
+                search = true
             ),
             SelectFromCollectionEffect(
                 from = "searchable",

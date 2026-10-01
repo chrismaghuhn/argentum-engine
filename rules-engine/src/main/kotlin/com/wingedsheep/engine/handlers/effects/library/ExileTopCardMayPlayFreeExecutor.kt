@@ -8,7 +8,7 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
-import com.wingedsheep.engine.state.components.identity.ExileAfterResolveComponent
+import com.wingedsheep.engine.state.components.identity.AfterResolveDestinationComponent
 import com.wingedsheep.engine.state.components.identity.PlayWithCostIncreaseComponent
 import com.wingedsheep.engine.state.components.identity.PlayWithFixedAlternativeManaCostComponent
 import com.wingedsheep.engine.state.components.identity.PlayWithoutPayingCostComponent
@@ -22,6 +22,7 @@ import com.wingedsheep.sdk.scripting.TriggerSpec
 import com.wingedsheep.sdk.scripting.effects.DelayedTriggerExpiry
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.conditions.SourcePlottedOnPriorTurn
+import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.sdk.scripting.effects.GrantMayPlayFromExileEffect
 import com.wingedsheep.sdk.scripting.effects.GrantPlayWithCostIncreaseEffect
 import com.wingedsheep.sdk.scripting.effects.GrantPlayWithoutPayingCostEffect
@@ -58,11 +59,28 @@ class GrantMayPlayFromExileExecutor : EffectExecutor<GrantMayPlayFromExileEffect
         // survives the per-player rebinding (the source itself may already be in exile from a
         // cost, so it can't be read off the source's ControllerComponent).
         val activatingPlayer = context.effectControllerId ?: controllerId
-        // "Until you exile another card with this permanent" persists across turns like a
-        // permanent grant, so it is exempt from end-of-turn cleanup; the superseding revocation
-        // (below) is what ends it, not a turn boundary.
-        val supersedesSameSource = effect.expiry is MayPlayExpiry.UntilSourceExilesAnother
-        val isPermanent = effect.expiry is MayPlayExpiry.Permanent || supersedesSameSource
+
+        val (isPermanent, supersedesSameSource, endsWhenSourceUncontrolled,
+            endsWhenSourceLeavesBattlefield) = cleanupBehaviorFor(effect.expiry)
+
+        // CR 611.2b: a "for as long as ..." duration that is already over when the effect would
+        // first be applied means the effect does nothing at all — the rule's own Master Thief
+        // example. If the granting permanent has left the battlefield, or been stolen, while this
+        // ability sat on the stack, the window never opens and no permission is created. Without
+        // this the grant would be born already-dead and merely revoked on the next SBA pass, which
+        // is observably different: the card would be castable during that window.
+        if (endsWhenSourceUncontrolled || endsWhenSourceLeavesBattlefield) {
+            val sourceId = context.sourceId
+            val sourceGone = sourceId == null || !state.getBattlefield().contains(sourceId)
+            // The controller half applies only to "for as long as you control it"; the
+            // battlefield-only window is deliberately blind to who holds the source, because the
+            // grantee often isn't its controller at all (Shared Fate grants to opponents).
+            val sourceStolen = endsWhenSourceUncontrolled && !sourceGone &&
+                state.projectedState.getController(sourceId!!) != activatingPlayer
+            if (sourceGone || sourceStolen) {
+                return EffectResult.success(state)
+            }
+        }
 
         var newState = state
 
@@ -76,11 +94,11 @@ class GrantMayPlayFromExileExecutor : EffectExecutor<GrantMayPlayFromExileEffect
 
         // "If a spell cast this way would be put into a graveyard, exile it instead" (Nita,
         // Forum Conciliator). Stamp the granted cards now; StackResolver honors
-        // ExileAfterResolveComponent on resolution / counter / fizzle, redirecting to exile.
-        if (effect.exileAfterResolve) {
+        // AfterResolveDestinationComponent on resolution / counter / fizzle, redirecting it.
+        effect.insteadOfGraveyard?.let { destination ->
             for (cardId in collection) {
                 newState = newState.updateEntity(cardId) { container ->
-                    container.with(ExileAfterResolveComponent())
+                    container.with(AfterResolveDestinationComponent(destination = destination))
                 }
             }
         }
@@ -110,7 +128,18 @@ class GrantMayPlayFromExileExecutor : EffectExecutor<GrantMayPlayFromExileEffect
             // controller grant they follow the activating player (Memory Vessel rebinding).
             val expiryAnchor = if (effect.ownerControls) grantee else activatingPlayer
             val expiresAfterTurn = expiresAfterTurnFor(newState, expiryAnchor, effect.expiry)
-            val expiryControllerId = if (expiryAnchor != grantee) expiryAnchor else null
+            // The window's "you" is stored only when it differs from the grantee, EXCEPT for a
+            // source-keyed window: "for as long as **you** control this" always means the player
+            // whose ability granted it, even under `ownerControls`, where the anchor would
+            // otherwise collapse to each card's owner and revoke the grant on the first SBA pass
+            // (the owner does not control the source). Pinning it here is what makes
+            // EndedDurationExpiryCheck's `expiryControllerId ?: controllerId` resolve to the
+            // granting player in every grouping.
+            val expiryControllerId = when {
+                endsWhenSourceUncontrolled -> activatingPlayer
+                expiryAnchor != grantee -> expiryAnchor
+                else -> null
+            }
 
             val (permId, stateWithPerm) = newState.newEntity()
             newState = stateWithPerm
@@ -127,6 +156,7 @@ class GrantMayPlayFromExileExecutor : EffectExecutor<GrantMayPlayFromExileEffect
                     DelayedTriggeredAbility(
                         id = linkId,
                         effect = rider,
+                        objectReferences = context.objectReferences,
                         sourceId = sourceId,
                         sourceName = state.getEntity(sourceId)?.get<CardComponent>()?.name ?: "",
                         controllerId = controllerId,
@@ -153,12 +183,29 @@ class GrantMayPlayFromExileExecutor : EffectExecutor<GrantMayPlayFromExileEffect
                     riderLinkId = riderLinkId,
                     expiryControllerId = expiryControllerId,
                     supersededBySameSource = supersedesSameSource,
+                    endsWhenSourceUncontrolled = endsWhenSourceUncontrolled,
+                    endsWhenSourceLeavesBattlefield = endsWhenSourceLeavesBattlefield,
                     nonLandOnly = effect.nonLandOnly,
                     castFaceIndex = effect.castFaceIndex,
                     castColorRestriction = effect.castColorRestriction,
+                    singleUse = effect.singleUse,
                     timestamp = state.timestamp,
                 )
             )
+
+            // A card you may play is a card you may look at. Face-down exile (Shared Fate's
+            // "exiles the top card of one of their opponents' libraries face down instead") hides
+            // the card from everyone, so without this the grantee would hold a permission over an
+            // object they cannot identify — and every printed card of this shape says both halves
+            // in one breath ("Each player may look at cards they exiled with this enchantment, and
+            // they may play … from among those cards"; hideaway; foretell). Additive, so a card
+            // already visible to other players stays visible to them.
+            for (cardId in cardIds) {
+                newState = newState.updateEntity(cardId) { container ->
+                    val revealed = container.get<RevealedToComponent>()
+                    container.with(revealed?.withPlayer(grantee) ?: RevealedToComponent.to(grantee))
+                }
+            }
 
             // Airbend: each granted card is castable for a fixed cost (e.g. {2}) instead of its
             // printed mana cost, by the grantee, for as long as it stays exiled. Stamp the cost
@@ -191,10 +238,54 @@ class GrantMayPlayFromExileExecutor : EffectExecutor<GrantMayPlayFromExileEffect
     }
 
     /**
+     * The [MayPlayPermission] lifecycle flags implied by a [MayPlayExpiry].
+     *
+     * @param permanent exempt from end-of-turn cleanup ([MayPlayPermission.permanent]).
+     * @param supersededBySameSource ended when the same source grants again
+     *   ([MayPlayPermission.supersededBySameSource]).
+     * @param endsWhenSourceUncontrolled ended when its "you" stops controlling the source
+     *   ([MayPlayPermission.endsWhenSourceUncontrolled]).
+     * @param endsWhenSourceLeavesBattlefield ended when the source leaves the battlefield, whoever
+     *   controls it ([MayPlayPermission.endsWhenSourceLeavesBattlefield]).
+     */
+    private data class CleanupBehavior(
+        val permanent: Boolean,
+        val supersededBySameSource: Boolean,
+        val endsWhenSourceUncontrolled: Boolean,
+        val endsWhenSourceLeavesBattlefield: Boolean = false,
+    )
+
+    /**
+     * Derived by one exhaustive `when` rather than a chain of independent `is` checks, because the
+     * flags are not independent: every expiry that is *not* turn-keyed must set `permanent`
+     * or the cleanup pass takes the permission before its real end condition can. Deriving them
+     * separately let a new variant default silently to "expires this turn"; here the compiler
+     * rejects a new [MayPlayExpiry] until its cleanup behaviour is stated.
+     */
+    private fun cleanupBehaviorFor(expiry: MayPlayExpiry): CleanupBehavior = when (expiry) {
+        // Turn-keyed: cleanup owns them, so none of the revocation flags apply.
+        MayPlayExpiry.EndOfTurn,
+        is MayPlayExpiry.UntilControllerStep -> CleanupBehavior(false, false, false)
+        // "for as long as it remains exiled" — nothing but casting the card ends it.
+        MayPlayExpiry.Permanent -> CleanupBehavior(true, false, false)
+        // "Until you exile another card with this permanent" persists across turns like a
+        // permanent grant, so it is exempt from end-of-turn cleanup; the superseding revocation
+        // is what ends it, not a turn boundary.
+        MayPlayExpiry.UntilSourceExilesAnother -> CleanupBehavior(true, true, false)
+        // "for as long as you control this [permanent]" — not turn-keyed, so cleanup must skip it;
+        // EndedDurationExpiryCheck revokes it instead.
+        is MayPlayExpiry.WhileYouControlSource -> CleanupBehavior(true, false, true)
+        // "for as long as this permanent remains on the battlefield" — same shape, minus the
+        // controller half, so a grant held by someone who never controls the source survives.
+        is MayPlayExpiry.WhileSourceOnBattlefield -> CleanupBehavior(true, false, false, true)
+    }
+
+    /**
      * Translate a [MayPlayExpiry] into the turn whose cleanup will remove the permission.
      * Returns `null` for [MayPlayExpiry.EndOfTurn] (default handling: cleared this cleanup),
-     * for [MayPlayExpiry.Permanent], and for [MayPlayExpiry.UntilSourceExilesAnother] (both
-     * flagged permanent and skipped by cleanup — the latter is ended by same-source revocation).
+     * for [MayPlayExpiry.Permanent], for [MayPlayExpiry.UntilSourceExilesAnother], and for
+     * [MayPlayExpiry.WhileYouControlSource] (all flagged permanent and skipped by cleanup — the
+     * last two are ended by revocation, on same-source exile and on losing the source respectively).
      */
     private fun expiresAfterTurnFor(
         state: GameState,
@@ -204,6 +295,9 @@ class GrantMayPlayFromExileExecutor : EffectExecutor<GrantMayPlayFromExileEffect
         MayPlayExpiry.EndOfTurn,
         MayPlayExpiry.Permanent,
         MayPlayExpiry.UntilSourceExilesAnother -> null
+        // Source-keyed, not turn-keyed: revoked by EndedDurationExpiryCheck, never by cleanup.
+        is MayPlayExpiry.WhileYouControlSource,
+        is MayPlayExpiry.WhileSourceOnBattlefield -> null
         is MayPlayExpiry.UntilControllerStep -> resolveStepTurn(state, controllerId, expiry)
     }
 
@@ -213,7 +307,7 @@ class GrantMayPlayFromExileExecutor : EffectExecutor<GrantMayPlayFromExileEffect
      * at cleanup — so we map any step in the turn to that turn's cleanup.
      *
      * This is a *floor*, not an exact turn: the expiry check in [CleanupPhaseManager] also requires
-     * `activePlayerId == controllerId`, so the permission dies at the cleanup of the first turn the
+     * `isActiveTurnFor(controllerId)`, so the permission dies at the cleanup of the first turn the
      * controller actually takes at or after this number. That pairing is what keeps the answer right
      * across skipped turns, extra turns and eliminated seats — none of which a turn count computed
      * from seat positions would survive.
@@ -228,7 +322,7 @@ class GrantMayPlayFromExileExecutor : EffectExecutor<GrantMayPlayFromExileEffect
         controllerId: EntityId,
         expiry: MayPlayExpiry.UntilControllerStep
     ): Int {
-        val onControllerTurn = state.activePlayerId == controllerId
+        val onControllerTurn = state.isActiveTurnFor(controllerId)
         val targetReachedThisTurn = state.step.ordinal >= expiry.step.ordinal
         val thisTurnStillCounts = onControllerTurn && expiry.includeCurrentTurn && !targetReachedThisTurn
 

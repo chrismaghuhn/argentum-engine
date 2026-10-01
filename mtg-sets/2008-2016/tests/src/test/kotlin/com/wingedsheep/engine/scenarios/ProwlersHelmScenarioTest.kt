@@ -14,6 +14,7 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Prowler's Helm (THS #219): equipped creatures can be blocked only by Walls;
@@ -41,7 +42,7 @@ class ProwlersHelmScenarioTest : ScenarioTestBase() {
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -102,7 +103,7 @@ class ProwlersHelmScenarioTest : ScenarioTestBase() {
                     abilityId = equipAbilityId,
                     targets = listOf(ChosenTarget.Permanent(opponentCreature)),
                 )
-            ).isSuccess shouldBe false
+            ).outcome shouldNotBe Outcome.Done
             driver.state.getEntity(helm)?.get<AttachedToComponent>() shouldBe null
 
             equip(driver, player, helm, ownCreature)
@@ -117,7 +118,7 @@ class ProwlersHelmScenarioTest : ScenarioTestBase() {
                     abilityId = equipAbilityId,
                     targets = listOf(ChosenTarget.Permanent(ownCreature)),
                 )
-            ).isSuccess shouldBe false
+            ).outcome shouldNotBe Outcome.Done
             driver.state.getEntity(helm)?.get<AttachedToComponent>()?.targetId shouldBe ownCreature
         }
     }

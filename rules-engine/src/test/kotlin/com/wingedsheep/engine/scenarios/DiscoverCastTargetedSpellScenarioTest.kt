@@ -39,7 +39,6 @@ class DiscoverCastTargetedSpellScenarioTest : ScenarioTestBase() {
         oracleText = "Return target creature card with total mana value X or less from a graveyard to the battlefield."
         spell {
             val target = target(
-                "target creature card in a graveyard",
                 TargetObject(
                     filter = TargetFilter.CreatureInGraveyard,
                     totalManaValueAtMost = DynamicAmount.XValue,

@@ -80,6 +80,8 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
             startingPlayerIndex = 1,
             format = Format.Commander(),
             seed = 2L,
+            // The pinned trajectory predates upstream-sync-05's shuffled deck ids.
+            shuffledDeckIds = false,
         )
         val environment = GameEnvironment.create(
             cardRegistry = registry,
@@ -169,12 +171,16 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
             sourceStepCount = environment.stepCount,
         )
         val eventNames = failingEvents.map { it::class.simpleName ?: "UnknownGameEvent" }
-        eventNames shouldBe listOf("StepChangedEvent", "CardsDrawnEvent", "StepChangedEvent")
+        // Since upstream-sync-05 a draw also reports its library-to-hand move as a ZoneChangeEvent.
+        eventNames shouldBe listOf("StepChangedEvent", "CardsDrawnEvent", "ZoneChangeEvent", "StepChangedEvent")
         val drawnEvent = failingEvents.filterIsInstance<CardsDrawnEvent>().single()
         drawnEvent.playerId shouldBe EntityId("e1")
         drawnEvent.count shouldBe 1
         drawnEvent.cardIds shouldBe listOf(EntityId("e175"))
-        failingEvents.filterIsInstance<ZoneChangeEvent>().isEmpty() shouldBe true
+        val drawMove = failingEvents.filterIsInstance<ZoneChangeEvent>().single()
+        drawMove.entityId shouldBe EntityId("e175")
+        drawMove.fromZone shouldBe com.wingedsheep.sdk.core.Zone.LIBRARY
+        drawMove.toZone shouldBe com.wingedsheep.sdk.core.Zone.HAND
         before.getLibrary(EntityId("e1")).first() shouldBe EntityId("e175")
         val perspectives = environment.playerIds.map { perspectivePlayerId ->
             val projection = checkNotNull(gym.lastCommittedPerspectiveEventProjection(perspectivePlayerId))
@@ -210,18 +216,25 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
 
         perspectives.forEach { characterization ->
             characterization.projection.isComplete shouldBe true
-            characterization.projection.batch.entries.map { it.eventFamily.name } shouldBe listOf(
-                "STEP_CHANGED",
-                "CARDS_DRAWN",
-                "STEP_CHANGED",
+            // The drawer sees its hand gain the card; the move stays hidden from the opponent.
+            val drawer = characterization.perspectivePlayerId == EntityId("e1")
+            characterization.projection.batch.entries.map { it.eventFamily.name } shouldBe
+                if (drawer) {
+                    listOf("STEP_CHANGED", "CARDS_DRAWN", "ZONE_CHANGED", "STEP_CHANGED")
+                } else {
+                    listOf("STEP_CHANGED", "CARDS_DRAWN", "STEP_CHANGED")
+                }
+            characterization.projection.classifications.map { it.disposition } shouldBe listOf(
+                PerspectiveEventDisposition.EMITTED,
+                PerspectiveEventDisposition.EMITTED,
+                if (drawer) PerspectiveEventDisposition.EMITTED else PerspectiveEventDisposition.INTENTIONALLY_HIDDEN,
+                PerspectiveEventDisposition.EMITTED,
             )
-            characterization.projection.classifications.map { it.disposition } shouldBe
-                List(3) { PerspectiveEventDisposition.EMITTED }
             characterization.produced.shouldBeInstanceOfAccepted()
             (characterization.authority as? HistoryCReferenceAuthorityResult.Accepted) shouldNotBe null
             val acceptedEnvelope = characterization.produced as HistoryCReferenceEnvelopeProducerResult.Accepted
-            acceptedEnvelope.envelope.candidates.size shouldBe 1
-            val candidate = acceptedEnvelope.envelope.candidates.single()
+            acceptedEnvelope.envelope.candidates.size shouldBe if (drawer) 2 else 1
+            val candidate = acceptedEnvelope.envelope.candidates.single { it.slot.eventOrdinal == 1 }
             candidate.slot.eventOrdinal shouldBe 1
             candidate.slot.role.name shouldBe "EVENT_SUBJECT"
             candidate.referenceKind shouldBe HistoryCReferenceKind.CARD_OR_RULES_OBJECT
@@ -242,9 +255,11 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
             val previousWitness = HistoryCObjectWitness(currentWitness.entityId, beforeStamp)
             previousWitnesses shouldBe listOf(previousWitness)
             val previousBinding = characterization.registry.activeBindings.getValue(previousWitness)
+            // One alias later than before upstream-sync-05: each draw's library-to-hand ZoneChangeEvent
+            // gives the registry one more object reference before this point.
             previousBinding.alias.canonical() shouldBe when (characterization.perspectivePlayerId.value) {
-                "e0" -> "o97"
-                "e1" -> "o84"
+                "e0" -> "o98"
+                "e1" -> "o85"
                 else -> error("Unexpected perspective")
             }
             witnessLocation(before, after, currentWitness.entityId) shouldBe

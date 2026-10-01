@@ -1,5 +1,6 @@
 package com.wingedsheep.ai.engine
 
+import com.wingedsheep.ai.engine.rollout.FastDecisionResponder
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.legalactions.EnumerationMode
 import com.wingedsheep.engine.legalactions.LegalAction
@@ -40,7 +41,19 @@ class GameSimulator(
      * `GameSimulator` built anywhere else keeps its historical horizon.
      */
     private val resolveThroughCombatDamage: Boolean = false,
+    /**
+     * How many automatic transitions — auto-passed priorities and auto-answered trivial decisions —
+     * one `simulate` call may spend before it gives up and reports [SimulationResult.StoppedAtLimit].
+     *
+     * The shipped value is an order of magnitude above any real resolution; it is a parameter only
+     * so a test can reach the guard deterministically instead of building a board that loops.
+     */
+    private val maxAutomaticTransitions: Int = DEFAULT_MAX_AUTOMATIC_TRANSITIONS,
 ) {
+    init {
+        require(maxAutomaticTransitions > 0) { "maxAutomaticTransitions must be positive" }
+    }
+
     /**
      * Optional resolver for non-trivial decisions encountered during simulation.
      * Set after constructing the [DecisionResponder] to enable full spell resolution
@@ -55,13 +68,23 @@ class GameSimulator(
     /** Guard against recursive resolution — inner simulations (from DecisionResponder
      *  evaluating alternatives) should NOT re-enter the resolver. */
     private var isResolving = false
+
+    /**
+     * The constant-time policy used while [isResolving] blocks the strategic resolver.
+     *
+     * Only reached from inside a resolver's own simulation, where the choice is between one cheap
+     * heuristic answer and abandoning the resolution entirely.
+     */
+    private val fallbackResponder = FastDecisionResponder()
     /**
      * Simulate an action and resolve the stack to completion.
      *
      * After executing the action, both players auto-pass priority until
      * the stack is empty (spells resolve) or a non-trivial decision is needed.
      * This ensures the evaluator sees the actual effect of casting a spell,
-     * not just "spell on stack, lands tapped".
+     * not just "spell on stack, lands tapped". If automatic resolution still has work after
+     * [maxAutomaticTransitions], the unfinished state is returned as
+     * [SimulationResult.StoppedAtLimit], never as successful completion.
      *
      * [onTransition], when supplied, is told every [ActionProcessor] input this call processed, in
      * order, with the result it produced — the submitted action first, then each automatic pass and
@@ -131,22 +154,30 @@ class GameSimulator(
         var current = result
         var allEvents = result.events
         var iterations = 0
-        val maxIterations = 100
         // Where the action's own resolution came to rest, before any pass below carries the game
         // on into combat damage. See [SimulationResult.settledState].
         var settled: GameState? = null
 
-        while (iterations < maxIterations) {
+        while (true) {
             val error = current.error
             if (error != null) {
                 return SimulationResult.Illegal(current.state, allEvents, error)
             }
 
+            // Terminal means the simulator has reached its stopping boundary. A real game end is
+            // one such boundary and remains distinguishable through GameState.gameOver.
+            if (current.state.gameOver) {
+                return SimulationResult.Terminal(current.state, allEvents, settledState = settled ?: current.state)
+            }
+
             // Auto-resolve trivial decisions; use decisionResolver for non-trivial ones
-            if (current.isPaused) {
+            if (current.outcome is Outcome.Paused) {
                 val decision = current.pendingDecision!!
                 val trivialResponse = trivialResponseFor(decision)
                 if (trivialResponse != null) {
+                    if (iterations >= maxAutomaticTransitions) {
+                        return stoppedAtLimit(current, allEvents, iterations)
+                    }
                     val submitAction = SubmitDecision(decision.playerId, trivialResponse)
                     current = processor.process(current.state, submitAction).result
                     onTransition?.invoke(submitAction, current)
@@ -154,24 +185,36 @@ class GameSimulator(
                     iterations++
                     continue
                 }
-                // Non-trivial decision: try the pluggable resolver (but not recursively —
-                // inner simulations from DecisionResponder evaluating alternatives break here)
+                // Non-trivial decision: hand it to the pluggable resolver.
                 val resolver = decisionResolver
-                if (resolver != null && !isResolving) {
-                    try {
-                        isResolving = true
-                        val response = resolver(current.state, decision)
-                        val submitAction = SubmitDecision(decision.playerId, response)
-                        current = processor.process(current.state, submitAction).result
-                        onTransition?.invoke(submitAction, current)
-                        allEvents = allEvents + current.events
-                        iterations++
-                    } finally {
-                        isResolving = false
+                if (resolver != null) {
+                    if (iterations >= maxAutomaticTransitions) {
+                        return stoppedAtLimit(current, allEvents, iterations)
                     }
+                    val response = if (isResolving) {
+                        // The strategic resolver scores its alternatives by simulating them, so it
+                        // cannot be re-entered from inside one of its own simulations. Answering
+                        // with the O(1) rollout policy is what the playout path already does, and
+                        // it beats stopping: an abandoned resolution scores a board with the ward
+                        // unpaid or the combat damage unassigned — a position the game never
+                        // actually reaches.
+                        fallbackResponder.respond(current.state, decision, decision.playerId)
+                    } else {
+                        try {
+                            isResolving = true
+                            resolver(current.state, decision)
+                        } finally {
+                            isResolving = false
+                        }
+                    }
+                    val submitAction = SubmitDecision(decision.playerId, response)
+                    current = processor.process(current.state, submitAction).result
+                    onTransition?.invoke(submitAction, current)
+                    allEvents = allEvents + current.events
+                    iterations++
                     continue
                 }
-                break
+                return SimulationResult.NeedsDecision(current.state, decision, allEvents)
             }
 
             // Stack is non-empty — auto-pass priority for whoever has it
@@ -180,6 +223,9 @@ class GameSimulator(
             val state = current.state
             val priorityPlayerId = state.priorityPlayerId
             if (state.stack.isNotEmpty() && priorityPlayerId != null && !state.gameOver) {
+                if (iterations >= maxAutomaticTransitions) {
+                    return stoppedAtLimit(current, allEvents, iterations)
+                }
                 val passAction = PassPriority(priorityPlayerId)
                 current = processor.process(state, passAction).result
                 onTransition?.invoke(passAction, current)
@@ -192,7 +238,12 @@ class GameSimulator(
             // blockers already declared it is a *pre-damage* state, and the whole point of the
             // candidate may be the damage; pass priority to advance the step and look again.
             if (resolveThroughCombatDamage && isPreDamageCombatState(state)) {
-                if (priorityPlayerId == null || state.gameOver) break
+                if (priorityPlayerId == null || state.gameOver) {
+                    return SimulationResult.Terminal(state, allEvents, settledState = settled ?: state)
+                }
+                if (iterations >= maxAutomaticTransitions) {
+                    return stoppedAtLimit(current, allEvents, iterations)
+                }
                 if (settled == null) settled = state
                 val passAction = PassPriority(priorityPlayerId)
                 current = processor.process(state, passAction).result
@@ -202,19 +253,20 @@ class GameSimulator(
                 continue
             }
 
-            break
-        }
-
-        val finalError = current.error
-        return when {
-            finalError != null ->
-                SimulationResult.Illegal(current.state, allEvents, finalError)
-            current.isPaused ->
-                SimulationResult.NeedsDecision(current.state, current.pendingDecision!!, allEvents)
-            else ->
-                SimulationResult.Terminal(current.state, allEvents, settledState = settled ?: current.state)
+            return SimulationResult.Terminal(state, allEvents, settledState = settled ?: state)
         }
     }
+
+    private fun stoppedAtLimit(
+        current: ExecutionResult,
+        events: List<GameEvent>,
+        automaticTransitions: Int,
+    ): SimulationResult.StoppedAtLimit = SimulationResult.StoppedAtLimit(
+        state = current.state,
+        events = events,
+        automaticTransitions = automaticTransitions,
+        limit = maxAutomaticTransitions,
+    )
 
     /**
      * Returns a trivial response if there's exactly one legal choice, null otherwise.
@@ -243,6 +295,16 @@ class GameSimulator(
             return false
         }
         return state.getBattlefield().any { state.getEntity(it)?.has<AttackingComponent>() == true }
+    }
+
+    companion object {
+        /**
+         * The shipped bound on automatic transitions per `simulate` call.
+         *
+         * Chosen the same way the server's `GameStallGuard` thresholds are: far above anything a
+         * real resolution reaches, so only a genuinely stuck automatic resolution ever meets it.
+         */
+        const val DEFAULT_MAX_AUTOMATIC_TRANSITIONS = 100
     }
 }
 

@@ -12,6 +12,8 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.nulls.shouldBeNull
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Shadowspear (THB #236).
@@ -43,8 +45,8 @@ class ShadowspearScenarioTest : FunSpec({
                 abilityId = abilityId(driver, equip = true),
                 targets = listOf(ChosenTarget.Permanent(creature)),
             )
-        ).isSuccess shouldBe true
-        driver.bothPass().isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
+        driver.bothPass().outcome shouldBe Outcome.Done
     }
 
     test("equip grants +1/+1, trample, and lifelink only to its current host") {
@@ -92,7 +94,7 @@ class ShadowspearScenarioTest : FunSpec({
                 abilityId = abilityId(driver, equip = true),
                 targets = listOf(ChosenTarget.Permanent(opponentCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(spear)?.get<AttachedToComponent>().shouldBeNull()
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
@@ -104,7 +106,7 @@ class ShadowspearScenarioTest : FunSpec({
                 abilityId = abilityId(driver, equip = true),
                 targets = listOf(ChosenTarget.Permanent(ownCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(spear)?.get<AttachedToComponent>().shouldBeNull()
     }
 
@@ -126,8 +128,8 @@ class ShadowspearScenarioTest : FunSpec({
                 abilityId = abilityId(driver, equip = false),
                 targets = emptyList(),
             )
-        ).isSuccess shouldBe true
-        driver.bothPass().isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
+        driver.bothPass().outcome shouldBe Outcome.Done
 
         driver.state.projectedState.hasKeyword(opponentHexproof, Keyword.HEXPROOF) shouldBe false
         driver.state.projectedState.hasKeyword(opponentIndestructible, Keyword.INDESTRUCTIBLE) shouldBe false
@@ -152,8 +154,8 @@ class ShadowspearScenarioTest : FunSpec({
                 abilityId = abilityId(driver, equip = false),
                 targets = emptyList(),
             )
-        ).isSuccess shouldBe true
-        driver.bothPass().isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
+        driver.bothPass().outcome shouldBe Outcome.Done
 
         val laterHexproof = driver.putCreatureOnBattlefield(opponent, "Sagu Mauler")
         val laterIndestructible = driver.putCreatureOnBattlefield(opponent, "Darksteel Gargoyle")
@@ -180,15 +182,15 @@ class ShadowspearScenarioTest : FunSpec({
         driver.removeSummoningSickness(attacker)
         equip(driver, player, spear, attacker)
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(player, listOf(attacker), opponent).isSuccess shouldBe true
+        driver.declareAttackers(player, listOf(attacker), opponent).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
-        driver.declareBlockers(opponent, mapOf(blocker to listOf(attacker))).isSuccess shouldBe true
+        driver.declareBlockers(opponent, mapOf(blocker to listOf(attacker))).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.COMBAT_DAMAGE)
         if (driver.pendingDecision != null) {
-            driver.confirmCombatDamage().isSuccess shouldBe true
+            driver.confirmCombatDamage().outcome shouldBe Outcome.Done
         }
         while (driver.stackSize > 0) {
-            driver.bothPass().isSuccess shouldBe true
+            driver.bothPass().outcome shouldBe Outcome.Done
         }
 
         driver.getLifeTotal(opponent) shouldBe 17

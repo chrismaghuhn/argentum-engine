@@ -3,6 +3,7 @@ import { useGameStore } from '@/store/gameStore.ts'
 import type { DecisionSelectionState } from '@/store/slices'
 import type { SelectCardsDecision } from '@/types'
 import { DraggableBanner } from './DraggableBanner'
+import { AbilityText } from '../ui/ManaSymbols'
 import styles from './DecisionUI.module.css'
 
 /**
@@ -33,7 +34,7 @@ export function BattlefieldSelectionUI({
 
     // Cleanup when unmounting
     return () => {
-      cancelDecisionSelection()
+      cancelDecisionSelection(decision.id)
     }
   }, [decision.id])
 
@@ -56,21 +57,24 @@ export function BattlefieldSelectionUI({
 
   const handleConfirm = () => {
     if (canConfirm && decisionSelectionState) {
-      submitDecision(decisionSelectionState.selectedOptions)
-      cancelDecisionSelection()
+      submitDecision(decision.id, decisionSelectionState.selectedOptions)
+      cancelDecisionSelection(decision.id)
     }
   }
 
   const handleSkip = () => {
-    submitDecision([])
-    cancelDecisionSelection()
+    submitDecision(decision.id, [])
+    cancelDecisionSelection(decision.id)
   }
 
   // Side banner (similar to ChooseTargetsDecision)
   return (
     <DraggableBanner className={styles.sideBannerSelection}>
       <div className={styles.bannerTitleSelection}>
-        {decision.prompt}
+        {/* The prompt is effect-authored text and may name a cost — Thelon's Curse and Magnetic
+            Mountain both price their untap per creature ("pay {U} for each"). Render it through
+            AbilityText so those braces become symbols instead of literal "{U}". */}
+        <AbilityText text={decision.prompt} size={13} />
       </div>
       <div className={styles.hint}>
         {selectedCount > 0

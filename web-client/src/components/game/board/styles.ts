@@ -20,15 +20,23 @@ export const styles: Record<string, React.CSSProperties> = {
     // Five-row grid (template provided inline in GameBoard.tsx since rows 1
     // and 5 are sized from responsive values):
     //   1. opp-hand reservation     (px — keeps battlefield clear of fixed hand)
-    //   2. opp-board                (1fr — equal to row 4)
+    //   2. opp-board                (fr — weighted by what the opponent's rows need)
     //   3. center HUD               (auto — uncrossable partition)
-    //   4. player-board             (1fr — equal to row 2)
+    //   4. player-board             (fr — weighted by what the player's rows need)
     //   5. player-hand reservation  (px — keeps battlefield clear of fixed hand)
-    // Equal 1fr battlefield rows mean both players get the same card size
-    // via useSlotSizedResponsive, regardless of asymmetric hand sizes.
+    // Rows 2 and 4 are solved together (usePooledBattlefieldLayout): both
+    // players render at one card width, and each side gets the height its
+    // wrap lines need — equal until the first measurement, and clamped so
+    // the HUD stays near the middle (battlefieldLayout.ts, SLOT_SPLIT_MIN).
     display: 'grid',
     gridTemplateColumns: '100%',
-    backgroundColor: '#0a0a15',
+    // A faint cool pool of light behind the centre HUD, falling off to the corners, so the table
+    // has depth instead of reading as a flat void. Static gradients only — painted once, never
+    // animated, so it costs nothing per frame.
+    backgroundColor: '#090a12',
+    backgroundImage:
+      'radial-gradient(ellipse 70% 55% at 50% 50%, rgba(70, 86, 150, 0.16) 0%, rgba(70, 86, 150, 0) 70%), ' +
+      'radial-gradient(ellipse 140% 100% at 50% 50%, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.45) 100%)',
     overflow: 'hidden',
   },
   opponentArea: {
@@ -90,12 +98,12 @@ export const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     fontSize: 12,
     fontWeight: 500,
-    backgroundColor: 'rgba(40, 40, 40, 0.8)',
-    borderRadius: 4,
+    backgroundColor: 'var(--chrome-bg)',
+    borderRadius: 6,
     cursor: 'pointer',
     padding: 0,
     lineHeight: 1,
-    border: '1px solid #555',
+    border: '1px solid var(--chrome-border)',
   },
   combatButtonContainer: {
     position: 'fixed',
@@ -191,7 +199,7 @@ export const styles: Record<string, React.CSSProperties> = {
     position: 'relative',
     overflow: 'hidden',
     boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
-    backgroundColor: '#1a1a2e',
+    backgroundColor: 'rgba(255, 255, 255, 0.025)',
   },
   pileImage: {
     width: '100%',
@@ -201,26 +209,30 @@ export const styles: Record<string, React.CSSProperties> = {
   emptyPile: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#1a1a2e',
-    border: '2px dashed #333',
+    backgroundColor: 'rgba(255, 255, 255, 0.025)',
+    border: '1px dashed rgba(255, 255, 255, 0.14)',
     borderRadius: 6,
+    boxSizing: 'border-box',
   },
   pileCount: {
     position: 'absolute',
     bottom: 4,
     right: 4,
-    backgroundColor: 'rgba(0,0,0,0.8)',
+    backgroundColor: 'rgba(8, 9, 16, 0.82)',
+    border: '1px solid rgba(255, 255, 255, 0.12)',
     color: 'white',
     fontSize: 12,
     fontWeight: 700,
-    padding: '2px 6px',
-    borderRadius: 4,
+    fontVariantNumeric: 'tabular-nums',
+    padding: '1px 6px',
+    borderRadius: 999,
   },
   zoneLabel: {
-    color: '#666',
+    color: '#6b7183',
     fontSize: 10,
+    fontWeight: 600,
     textTransform: 'uppercase',
-    letterSpacing: 1,
+    letterSpacing: 1.2,
   },
   graveyardOverlay: {
     position: 'fixed',
@@ -271,9 +283,9 @@ export const styles: Record<string, React.CSSProperties> = {
   exilePile: {
     position: 'relative',
     overflow: 'hidden',
-    boxShadow: '0 2px 8px rgba(124, 58, 237, 0.4)',
-    backgroundColor: '#1a1a2e',
-    border: '1px solid rgba(124, 58, 237, 0.5)',
+    boxShadow: '0 2px 10px rgba(124, 58, 237, 0.22)',
+    backgroundColor: 'rgba(124, 58, 237, 0.05)',
+    border: '1px solid rgba(124, 58, 237, 0.38)',
   },
   exileOverlay: {
     position: 'fixed',
@@ -1224,6 +1236,41 @@ export const styles: Record<string, React.CSSProperties> = {
     height: '100%',
     objectFit: 'cover',
   } as React.CSSProperties,
+  /** Full counter inventory panel in the hover preview — every type on the card, with counts. */
+  cardPreviewCounters: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.88)',
+    padding: '10px 12px',
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.12)',
+  } as React.CSSProperties,
+  cardPreviewCountersHeading: {
+    color: '#888888',
+    fontSize: 11,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  } as React.CSSProperties,
+  cardPreviewCounterRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+    fontSize: 13,
+  } as React.CSSProperties,
+  cardPreviewCounterLabel: {
+    color: '#dddddd',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
+  } as React.CSSProperties,
+  cardPreviewCounterValue: {
+    color: '#ffffff',
+    fontWeight: 700,
+    fontFamily: 'monospace',
+  } as React.CSSProperties,
   cardPreviewKeywords: {
     display: 'flex',
     flexDirection: 'column',
@@ -2167,6 +2214,55 @@ export const styles: Record<string, React.CSSProperties> = {
     zIndex: 6,
   } as React.CSSProperties,
 
+  // Saddle (CR 702.171) — a Mount's designation cue, in two states sharing one slot so the eye
+  // reads them as the same fact switching on and off.
+  //
+  // `saddledBadge` is the live one: warm saddle-leather, lit, readable across the board, because
+  // every Mount payoff is gated on it and it silently expires at cleanup — a saddled Mount and an
+  // unsaddled one are otherwise identical permanents.
+  saddledBadge: {
+    position: 'absolute',
+    bottom: 4,
+    left: 4,
+    borderRadius: 4,
+    padding: '1px 5px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 3,
+    fontWeight: 700,
+    fontSize: 10,
+    color: '#2b1706',
+    background: 'linear-gradient(135deg, #d99a4e, #f2c98a)',
+    border: '1px solid #ffe1b8',
+    boxShadow: '0 0 6px rgba(217, 154, 78, 0.9)',
+    textShadow: 'none',
+    pointerEvents: 'none',
+    zIndex: 6,
+  } as React.CSSProperties,
+
+  // `saddleAvailableBadge` is the dormant one: the printed Saddle N on a Mount nobody has saddled
+  // yet. Deliberately muted — it is a standing fact about the permanent, not an event — but present
+  // for every player, since how much power the controller needs to switch the Mount on is exactly
+  // what the rest of the table plays around.
+  saddleAvailableBadge: {
+    position: 'absolute',
+    bottom: 4,
+    left: 4,
+    borderRadius: 4,
+    padding: '1px 5px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 3,
+    fontWeight: 600,
+    fontSize: 10,
+    color: '#d8c0a4',
+    background: 'rgba(60, 40, 22, 0.78)',
+    border: '1px solid rgba(217, 154, 78, 0.55)',
+    textShadow: 'none',
+    pointerEvents: 'none',
+    zIndex: 6,
+  } as React.CSSProperties,
+
   // Dash (CR 702.109, Khans of Tarkir) — a permanent cast for its dash cost: hasty and returned to
   // its owner's hand at the next end step. Unlike warp (multi-turn exile-then-recast, cosmic ring
   // treatment), dash resolves within the same turn, so a plain amber "hasty" badge is enough — no
@@ -2208,8 +2304,11 @@ const passiveCounterPalette: Record<string, CounterBadgePalette> = {
   WIND: { bg: 'rgba(20, 60, 55, 0.95)', border: 'rgba(120, 220, 200, 0.6)', color: '#9ce0d0' },
   NEST: { bg: 'rgba(25, 55, 25, 0.95)', border: 'rgba(120, 200, 110, 0.65)', color: '#a8e090', glow: 'rgba(120, 200, 110, 0.55)' },
   PAGE: { bg: 'rgba(35, 30, 55, 0.95)', border: 'rgba(160, 150, 220, 0.65)', color: '#bcb4e8', glow: 'rgba(160, 150, 220, 0.5)' },
+  HOOFPRINT: { bg: 'rgba(46, 38, 26, 0.95)', border: 'rgba(210, 180, 120, 0.65)', color: '#e2c894', glow: 'rgba(210, 180, 120, 0.5)' },
+  MANNEQUIN: { bg: 'rgba(38, 32, 44, 0.95)', border: 'rgba(180, 160, 200, 0.65)', color: '#cfc0dc', glow: 'rgba(180, 160, 200, 0.5)' },
   REV: { bg: 'rgba(60, 30, 15, 0.95)', border: 'rgba(230, 140, 70, 0.7)', color: '#f0b070', glow: 'rgba(230, 140, 70, 0.55)' },
   BLOODSTAIN: { bg: 'rgba(56, 14, 18, 0.95)', border: 'rgba(212, 78, 82, 0.72)', color: '#f0a0a2', glow: 'rgba(212, 78, 82, 0.55)' },
+  BLOOD: { bg: 'rgba(70, 10, 14, 0.95)', border: 'rgba(224, 60, 64, 0.75)', color: '#f2908f', glow: 'rgba(224, 60, 64, 0.55)' },
   SOUL: { bg: 'rgba(30, 20, 40, 0.95)', border: 'rgba(150, 110, 190, 0.7)', color: '#c0a0e0', glow: 'rgba(150, 110, 190, 0.55)' },
   DIVINITY: { bg: 'rgba(48, 38, 70, 0.95)', border: 'rgba(190, 165, 235, 0.75)', color: '#d8c8f5', glow: 'rgba(190, 165, 235, 0.6)' },
   POSSESSION: { bg: 'rgba(45, 20, 60, 0.95)', border: 'rgba(180, 110, 220, 0.7)', color: '#cda0e8', glow: 'rgba(180, 110, 220, 0.55)' },
@@ -2230,10 +2329,38 @@ const passiveCounterPalette: Record<string, CounterBadgePalette> = {
   HARNESS: { bg: 'rgba(48, 26, 12, 0.95)', border: 'rgba(240, 180, 80, 0.8)', color: '#ffc860', glow: 'rgba(240, 180, 80, 0.7)' },
   PLAN: { bg: 'rgba(24, 40, 62, 0.95)', border: 'rgba(120, 175, 230, 0.7)', color: '#a8cdee', glow: 'rgba(120, 175, 230, 0.55)' },
   INVASION: { bg: 'rgba(52, 22, 20, 0.95)', border: 'rgba(230, 110, 90, 0.7)', color: '#f0a090', glow: 'rgba(230, 110, 90, 0.55)' },
+  UNLOCK: { bg: 'rgba(44, 36, 16, 0.95)', border: 'rgba(214, 182, 96, 0.75)', color: '#efd694', glow: 'rgba(214, 182, 96, 0.6)' },
   HONE: { bg: 'rgba(36, 42, 50, 0.95)', border: 'rgba(196, 214, 228, 0.8)', color: '#e4eef8', glow: 'rgba(196, 214, 228, 0.65)' },
+  STORAGE: { bg: 'rgba(34, 40, 52, 0.95)', border: 'rgba(150, 170, 200, 0.7)', color: '#c8d6ea', glow: 'rgba(150, 170, 200, 0.55)' },
+  OIL: { bg: 'rgba(18, 26, 22, 0.95)', border: 'rgba(120, 190, 150, 0.7)', color: '#b8e6c8', glow: 'rgba(120, 190, 150, 0.55)' },
+  HUNGER: { bg: 'rgba(48, 26, 26, 0.95)', border: 'rgba(200, 120, 100, 0.7)', color: '#e8b0a0', glow: 'rgba(200, 120, 100, 0.55)' },
+  DOOM: { bg: 'rgba(26, 18, 30, 0.95)', border: 'rgba(150, 100, 170, 0.7)', color: '#c8a0d8', glow: 'rgba(150, 100, 170, 0.55)' },
+  FIRE: { bg: 'rgba(58, 24, 12, 0.95)', border: 'rgba(240, 140, 60, 0.75)', color: '#ffb070', glow: 'rgba(240, 140, 60, 0.6)' },
+  CONQUEROR: { bg: 'rgba(50, 42, 18, 0.95)', border: 'rgba(220, 190, 100, 0.7)', color: '#eed890', glow: 'rgba(220, 190, 100, 0.55)' },
+  NET: { bg: 'rgba(20, 46, 42, 0.95)', border: 'rgba(110, 190, 175, 0.7)', color: '#a0dccc', glow: 'rgba(110, 190, 175, 0.5)' },
+  SILVER: { bg: 'rgba(42, 46, 52, 0.95)', border: 'rgba(200, 210, 220, 0.75)', color: '#e4ecf4', glow: 'rgba(200, 210, 220, 0.6)' },
+  FATE: { bg: 'rgba(24, 34, 54, 0.95)', border: 'rgba(130, 165, 225, 0.7)', color: '#b0c8ee', glow: 'rgba(130, 165, 225, 0.55)' },
+  AIM: { bg: 'rgba(46, 20, 24, 0.95)', border: 'rgba(220, 110, 110, 0.7)', color: '#eea0a0', glow: 'rgba(220, 110, 110, 0.55)' },
+  SPORE: { bg: 'rgba(26, 44, 26, 0.95)', border: 'rgba(140, 195, 130, 0.7)', color: '#b4dcaa', glow: 'rgba(140, 195, 130, 0.55)' },
   PLUS_ONE_PLUS_ZERO: { bg: 'rgba(20, 60, 25, 0.95)', border: 'rgba(120, 220, 130, 0.7)', color: '#9ce0a8' },
   PLUS_ZERO_PLUS_ONE: { bg: 'rgba(20, 60, 25, 0.95)', border: 'rgba(120, 220, 130, 0.7)', color: '#9ce0a8' },
+  PLUS_TWO_PLUS_ZERO: { bg: 'rgba(20, 60, 25, 0.95)', border: 'rgba(120, 220, 130, 0.7)', color: '#9ce0a8' },
+  PLUS_ZERO_PLUS_TWO: { bg: 'rgba(20, 60, 25, 0.95)', border: 'rgba(120, 220, 130, 0.7)', color: '#9ce0a8' },
   MINUS_ONE_MINUS_ZERO: { bg: 'rgba(60, 20, 20, 0.95)', border: 'rgba(220, 120, 120, 0.7)', color: '#e09c9c' },
+  PLUS_ONE_PLUS_TWO: { bg: 'rgba(20, 60, 25, 0.95)', border: 'rgba(120, 220, 130, 0.7)', color: '#9ce0a8' },
+  PLUS_TWO_PLUS_TWO: { bg: 'rgba(20, 60, 25, 0.95)', border: 'rgba(120, 220, 130, 0.7)', color: '#9ce0a8' },
+  MINUS_TWO_MINUS_TWO: { bg: 'rgba(60, 20, 20, 0.95)', border: 'rgba(220, 120, 120, 0.7)', color: '#e09c9c' },
+  TIDE: { bg: 'rgba(18, 38, 56, 0.95)', border: 'rgba(110, 180, 230, 0.7)', color: '#9fd0f0', glow: 'rgba(110, 180, 230, 0.55)' },
+  JAVELIN: { bg: 'rgba(44, 38, 26, 0.95)', border: 'rgba(210, 180, 120, 0.7)', color: '#e0cba0' },
+  CREDIT: { bg: 'rgba(48, 42, 18, 0.95)', border: 'rgba(226, 196, 96, 0.7)', color: '#ecd98a' },
+  CUBE: { bg: 'rgba(34, 30, 52, 0.95)', border: 'rgba(168, 150, 220, 0.7)', color: '#c6b6ea' },
+  JUDGMENT: { bg: 'rgba(52, 46, 24, 0.95)', border: 'rgba(232, 208, 132, 0.75)', color: '#f2e2a4', glow: 'rgba(232, 208, 132, 0.6)' },
+  BLOODLINE: { bg: 'rgba(56, 16, 22, 0.95)', border: 'rgba(210, 80, 100, 0.75)', color: '#eaa0ae', glow: 'rgba(210, 80, 100, 0.55)' },
+  INVITATION: { bg: 'rgba(50, 40, 50, 0.95)', border: 'rgba(225, 190, 225, 0.7)', color: '#efd6ef' },
+  IMPOSTOR: { bg: 'rgba(36, 30, 44, 0.95)', border: 'rgba(170, 140, 200, 0.7)', color: '#cdb8e6' },
+  DEVOTION: { bg: 'rgba(40, 18, 30, 0.95)', border: 'rgba(190, 90, 140, 0.7)', color: '#e3a9c8' },
+  THEFT: { bg: 'rgba(24, 22, 30, 0.95)', border: 'rgba(150, 140, 110, 0.7)', color: '#d8cfa8' },
+  TRAINING: { bg: 'rgba(48, 40, 22, 0.95)', border: 'rgba(214, 170, 90, 0.7)', color: '#ecd09a' },
   MINUS_ZERO_MINUS_ONE: { bg: 'rgba(60, 20, 20, 0.95)', border: 'rgba(220, 120, 120, 0.7)', color: '#e09c9c' },
 }
 

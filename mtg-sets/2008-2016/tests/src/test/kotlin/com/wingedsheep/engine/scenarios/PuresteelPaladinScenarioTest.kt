@@ -18,6 +18,7 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Puresteel Paladin (NPH #20).
@@ -233,7 +234,7 @@ class PuresteelPaladinScenarioTest : FunSpec({
                 abilityId = freeEquipAbility.abilityId,
                 targets = listOf(ChosenTarget.Permanent(opponentCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
 
         driver.submit(
             ActivateAbility(
@@ -242,7 +243,7 @@ class PuresteelPaladinScenarioTest : FunSpec({
                 abilityId = freeEquipAbility.abilityId,
                 targets = listOf(ChosenTarget.Permanent(ownCreature)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe ownCreature
     }

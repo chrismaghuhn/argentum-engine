@@ -11,8 +11,6 @@ import com.wingedsheep.sdk.scripting.Duration
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.CardSource
 import com.wingedsheep.sdk.scripting.effects.FeasibilityCheck
-import com.wingedsheep.sdk.scripting.effects.ForEachInCollectionEffect
-import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.scripting.effects.SuccessCriterion
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
@@ -41,16 +39,14 @@ val AkiriFearlessVoyager = card("Akiri, Fearless Voyager") {
         "creature and it gains indestructible until end of turn."
 
     triggeredAbility {
-        trigger = Triggers.YouAttackPlayerWithFilter(
-            GameObjectFilter.Creature.youControl().equipped()
-        )
+        trigger = Triggers.you.attacksAPlayer(with = GameObjectFilter.Creature.youControl().equipped())
         effect = Effects.DrawCards(1)
         description = "Whenever you attack a player with one or more equipped creatures, draw a card."
     }
 
     activatedAbility {
         cost = Costs.Mana("{W}")
-        effect = MayEffect(
+        effect = Effects.May(
             effect = Effects.IfYouDo(
                 action = Effects.Pipeline {
                     val hosts = gather(
@@ -79,20 +75,18 @@ val AkiriFearlessVoyager = card("Akiri, Fearless Voyager") {
                         name = "chosenEquipment",
                     )
                     run(
-                        ForEachInCollectionEffect(
-                            collection = chosenEquipment.key,
-                            effect = Effects.UnattachEquipment(EffectTarget.Self),
+                        Effects.ForEachInCollection(
+                            chosenEquipment,
+                            Effects.UnattachEquipment(EffectTarget.IterationEntity),
                         )
                     )
                 },
-                ifYouDo = Effects.Composite(
-                    Effects.Tap(EffectTarget.PipelineTarget("host")),
+                then = Effects.Tap(EffectTarget.PipelineTarget("host")) then
                     Effects.GrantKeyword(
                         Keyword.INDESTRUCTIBLE,
                         EffectTarget.PipelineTarget("host"),
                         Duration.EndOfTurn,
                     ),
-                ),
                 successCriterion = SuccessCriterion.CollectionNonEmpty("chosenEquipment"),
             ),
             feasibility = FeasibilityCheck.ControlsPermanentMatching(

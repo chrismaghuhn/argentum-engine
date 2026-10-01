@@ -18,7 +18,7 @@ import kotlinx.serialization.encodeToString
 
 class AttackDeclarationReplayWireAuditTest : FunSpec({
     test("current CompactReplay v6 carries GameAction choices but no Gym observation contract") {
-        CompactReplay.CURRENT_VERSION shouldBe 6
+        CompactReplay.CURRENT_VERSION shouldBe 7
         val replay = replay()
         val json = persistenceJson.encodeToString(CompactReplay.serializer(), replay)
 

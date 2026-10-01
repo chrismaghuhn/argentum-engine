@@ -15,6 +15,8 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Embercleave (ELD #120) — {4}{R}{R} Legendary Artifact — Equipment.
@@ -51,7 +53,7 @@ class EmbercleaveScenarioTest : FunSpec({
             .also(driver::removeSummoningSickness)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(me, attackers, opponent).isSuccess shouldBe true
+        driver.declareAttackers(me, attackers, opponent).outcome shouldBe Outcome.Done
 
         val cleave = driver.putCardInHand(me, "Embercleave")
         driver.giveMana(me, Color.RED, 6)
@@ -85,8 +87,8 @@ class EmbercleaveScenarioTest : FunSpec({
         driver.bothPass()
         driver.bothPass()
 
-        driver.submitTargetSelection(me, listOf(opponentCreature)).isSuccess shouldBe false
-        driver.submitTargetSelection(me, listOf(host)).isSuccess shouldBe true
+        driver.submitTargetSelection(me, listOf(opponentCreature)).outcome shouldNotBe Outcome.Done
+        driver.submitTargetSelection(me, listOf(host)).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val equipment = driver.findPermanent(me, "Embercleave")!!
@@ -118,7 +120,7 @@ class EmbercleaveScenarioTest : FunSpec({
         )
         driver.bothPass()
         driver.bothPass()
-        driver.submitTargetSelection(me, listOf(firstHost)).isSuccess shouldBe true
+        driver.submitTargetSelection(me, listOf(firstHost)).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val equipment = driver.findPermanent(me, "Embercleave")!!
@@ -138,7 +140,7 @@ class EmbercleaveScenarioTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(opponentCreature)),
                 paymentStrategy = PaymentStrategy.FromPool,
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
 
         driver.submitSuccess(
             ActivateAbility(

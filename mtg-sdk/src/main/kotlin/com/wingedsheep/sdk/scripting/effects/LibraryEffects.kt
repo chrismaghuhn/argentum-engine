@@ -30,7 +30,7 @@ data class ShuffleLibraryEffect(
 /**
  * Emit a `ScriedEvent` after a scry pipeline finishes resolving. Appended internally
  * by [com.wingedsheep.sdk.dsl.LibraryPatterns.scry] so that "Whenever you scry"
- * triggers ([com.wingedsheep.sdk.dsl.Triggers.WheneverYouScry]) fire exactly once
+ * triggers (`Triggers.you.scries()`) fire exactly once
  * per scry, carrying the actual number of cards looked at.
  *
  * The count is the size of the named gather collection (`"scried"` by default) at
@@ -56,8 +56,8 @@ data class EmitScriedEventEffect(
  * Emit a `SurveiledEvent` after a surveil pipeline finishes resolving — the surveil twin of
  * [EmitScriedEventEffect]. Appended internally by [com.wingedsheep.sdk.dsl.LibraryPatterns.surveil]
  * so "Whenever you surveil" / "Whenever you scry or surveil" triggers
- * ([com.wingedsheep.sdk.dsl.Triggers.WheneverYouSurveil],
- * [com.wingedsheep.sdk.dsl.Triggers.WheneverYouScryOrSurveil]) fire exactly once per surveil,
+ * (`Triggers.you.surveils()`,
+ * `Triggers.you.scriesOrSurveils()`) fire exactly once per surveil,
  * carrying the actual number of cards looked at.
  *
  * The count is the size of the named gather collection (`"surveiled"` by default) at resolution
@@ -82,7 +82,7 @@ data class EmitSurveiledEventEffect(
  * Emit a `DiscoveredEvent` after a discover finishes resolving — the discover twin of
  * [EmitSurveiledEventEffect]. Appended internally by the discover executor to the tail of the
  * discover's follow-up so "Whenever you discover" triggers
- * ([com.wingedsheep.sdk.dsl.Triggers.WheneverYouDiscover]) fire exactly once per discover (CR
+ * (`Triggers.you.discovers()`) fire exactly once per discover (CR
  * 701.57), *after* the whole process — including the cast/hand decision — completes (CR 701.57b).
  *
  * Carries [value], the discover threshold N used, so the event can surface it via
@@ -103,7 +103,7 @@ data class EmitDiscoveredEventEffect(
  * Emit a `ManifestedDreadEvent` after a manifest-dread pipeline finishes resolving — the
  * manifest-dread twin of [EmitScriedEventEffect]. Appended internally by
  * [com.wingedsheep.sdk.dsl.LibraryPatterns.manifestDread] so "Whenever you manifest dread"
- * triggers ([com.wingedsheep.sdk.dsl.Triggers.WheneverYouManifestDread]) fire exactly once per
+ * triggers (`Triggers.you.manifestsDread()`) fire exactly once per
  * manifest-dread (CR 701.60), after the chosen card has been manifested and the other put into
  * the graveyard.
  *
@@ -130,8 +130,8 @@ data class EmitManifestedDreadEventEffect(
  * [com.wingedsheep.sdk.dsl.LibraryPatterns.searchLibrary] /
  * [com.wingedsheep.sdk.dsl.LibraryPatterns.searchMultipleZones] /
  * [com.wingedsheep.sdk.dsl.LibraryPatterns.eachPlayerSearchesLibrary] so "Whenever a player
- * searches their library" triggers ([com.wingedsheep.sdk.dsl.Triggers.WheneverYouSearchYourLibrary],
- * [com.wingedsheep.sdk.dsl.Triggers.WheneverAnOpponentSearchesTheirLibrary]) fire exactly once per
+ * searches their library" triggers (`Triggers.you.searchesLibrary()`,
+ * `Triggers.anOpponent.searchesLibrary()`) fire exactly once per
  * search (CR 701.23), after the found cards have moved and the library has shuffled.
  *
  * The searching player is the effect's controller at resolution time — for a per-player
@@ -236,6 +236,43 @@ data class ExileFromTopRepeatingEffect(
 }
 
 /**
+ * Each player in [players] exiles the top card of their library face up; the one who exiled the
+ * card with the **greatest mana value** wins, and their player entity id is published as the only
+ * member of the pipeline collection [storeWinnerAs]. Ties repeat: the tied players — and only they
+ * — exile another card each, until one of them is alone at the top (Timesifter).
+ *
+ * Deliberately *open* rather than owning the payoff. The effect answers "who won" and stops; the
+ * card composes the reward itself off [storeWinnerAs] through
+ * [com.wingedsheep.sdk.scripting.targets.EffectTarget.PipelineTarget], which keeps "take an extra
+ * turn", "draws a card", or anything else out of a library primitive.
+ *
+ * **There may be no winner**, and the collection is then empty: a player whose library is empty
+ * exiles nothing and so can never have exiled the greatest mana value, and if no contender can
+ * exile at all the contest ends undecided. Guard the payoff on the collection being non-empty
+ * (`Conditions.Compare(DynamicAmount.DistinctEntitiesInCollections(listOf(name)), GTE, Fixed(1))`)
+ * — an unguarded `PipelineTarget` falls back to the ability's controller.
+ *
+ * Every card exiled by the contest — losers' and winner's alike, from every round — stays in exile
+ * and is published under [storeExiledAs] for a card that wants to name them.
+ *
+ * Terminates: a round that exiles nothing ends the contest, so every further round shrinks at least
+ * one library.
+ */
+@SerialName("ExileTopCardContest")
+@Serializable
+data class ExileTopCardContestEffect(
+    val players: Player = Player.Each,
+    val storeWinnerAs: String,
+    val storeExiledAs: String = "contestExiledCards"
+) : Effect {
+    override val description: String =
+        "${players.description.replaceFirstChar { it.uppercase() }} exiles the top card of their " +
+            "library. The player who exiled the card with the greatest mana value wins; if two or " +
+            "more players' cards are tied for greatest, the tied players repeat this process until " +
+            "the tie is broken"
+}
+
+/**
  * For each matching player, exile cards from the top of their library until
  * the total mana value of cards exiled this way for that player reaches at
  * least [threshold]. All exiled card entity IDs (across every matched player)
@@ -314,10 +351,24 @@ data class ExileLibraryUntilManaValueEffect(
  *
  * **Gating a follow-up on whether the cast happened.** Set [storeCastTo] to publish the cast
  * card's id into that pipeline collection once the cast successfully initiates (synchronously or
- * after a target / X pause). Pair it with `IfYouDoEffect(this, then, SuccessCriterion
+ * after a target / X pause). Pair it with `Effects.IfYouDo(this, then, SuccessCriterion
  * .CollectionNonEmpty(storeCastTo))` for "you may cast … . If you do, [then]" — the follow-up is
  * skipped when the player declines or the cast can't be paid for (Kaervek's "If you do, you lose
  * 2 life"). The collection is left empty when nothing was cast.
+ *
+ * **Where the spell goes afterwards.** [insteadOfGraveyard] is the cast-this-way rider: the card
+ * is stamped so that when the spell would leave the stack for its owner's graveyard it goes to
+ * that destination instead. `EXILE` is the common "exile it instead" clause (Jetsam);
+ * `BOTTOM_OF_LIBRARY` is Kylox's Voltstrider's "put it on the bottom of its owner's library
+ * instead". The stamp is applied only to the card actually being cast, and only when the cast
+ * initiates — a declined or impossible cast leaves nothing behind on cards still in the
+ * collection.
+ *
+ * **Who casts it.** [caster] answers the one question a per-player iteration raises: inside
+ * `ForEachPlayerEffect` the context's controller is rebound to the iterated player, so a spell
+ * cast from *each opponent's* graveyard by *you* (Jetsam) needs [Chooser.SourceController] to
+ * name the spell's own controller instead. The default [Chooser.Controller] is the ordinary case
+ * and is what every non-iterated card wants.
  */
 @SerialName("CastFromCollectionWithoutPayingCost")
 @Serializable
@@ -331,18 +382,39 @@ data class CastFromCollectionWithoutPayingCostEffect(
      * Cast the card **transformed** — back face up (CR 712.8c), the way disturb casts a card from
      * the graveyard. The back face supplies the spell's characteristics: its card types, targets,
      * and the permanent it becomes. Set for "exile it, then you may cast it transformed" (CR
-     * 310.11b, the Siege defeat trigger).
+     * 310.12b, the Siege defeat trigger).
      *
      * A card with no back face is cast normally, so this is safe to set on a collection that may
      * hold single-faced cards.
      */
     val castTransformed: Boolean = false,
+    /**
+     * Where the spell goes instead of its owner's graveyard when it leaves the stack, or null
+     * (the default) to leave the ordinary destination alone.
+     */
+    val insteadOfGraveyard: AfterResolveDestination? = null,
+    /** Who casts the card. Only matters inside a per-player iteration — see the class KDoc. */
+    val caster: Chooser = Chooser.Controller,
 ) : Effect {
     override val description: String = buildString {
         append("Cast that card")
         if (castTransformed) append(" transformed")
         if (!payManaCost) append(" without paying its mana cost")
+        insteadOfGraveyard?.let { append(it.riderText) }
     }
+}
+
+/**
+ * Play the first card in [from] during this effect's resolution without paying its mana cost.
+ * Spells use the ordinary synthesized-cast pipeline; lands are played as a special action and
+ * still consume one of the controller's land plays for the turn.
+ */
+@SerialName("PlayFromCollectionWithoutPayingCost")
+@Serializable
+data class PlayFromCollectionWithoutPayingCostEffect(
+    val from: String,
+) : Effect {
+    override val description: String = "Play that card without paying its mana cost"
 }
 
 /**
@@ -370,18 +442,53 @@ data class CastFromCollectionWithoutPayingCostEffect(
  * You may cast any number of the copies."). Each chosen card is then cast paying its normal cost
  * (an {X} spell prompts for X, Rule 601.2b); with the default `false` each is cast for free.
  *
+ * **Capping the number of casts.** [maxCasts] bounds the loop for the "you may cast **up to N**
+ * spells from among them" wording (Doom Reigns Supreme — "up to two"). It is a ceiling, never a
+ * floor: the controller may still stop early, and the loop also ends when the collection runs
+ * out. `null` (the default) is the uncapped "any number" form. The remaining budget is carried
+ * through each loop iteration by the engine's continuation, so a cast that pauses for
+ * targets / X / modes resumes with the count already spent. The budget is spent on a cast that
+ * *initiates*, not on the pick: choosing a card whose required target has no legal choice
+ * (CR 601.2c) casts nothing and leaves the count untouched, though that card is out of the pool
+ * for the rest of the loop.
+ *
+ * **[maxCasts] is only wired for the free form.** No printed card pairs "up to N" with "paying
+ * their mana costs", so the facade ([com.wingedsheep.sdk.dsl.Effects.CastUpToNFromCollectionWithoutPayingCost])
+ * only offers the `payManaCost = false` combination. The raw constructor does allow both together,
+ * but the engine's "did the cast initiate" precondition asks only about legal targets — not about
+ * whether the controller can afford the cost — so a pick that is abandoned for want of mana would
+ * still spend one of the N. Don't author that combination without wiring the affordability check
+ * to match.
+ *
+ * **Capping the total mana value.** [maxTotalManaValue] is the "any number of spells with **total
+ * mana value N or less** from among them" wording (Uldaros Theorix). It is a budget, spent by the
+ * mana value of each spell whose cast *initiates* (the same precondition as [maxCasts]): each
+ * iteration offers only the cards whose mana value still fits in what is left, and the loop ends
+ * once nothing fits. A free cast has X = 0 (CR 107.3b), so a card's mana value off the stack is the
+ * mana value it is cast with. Like [maxCasts], it is only wired for the free form.
+ *
  * @property from Name of the collection of already-exiled candidate cards.
  * @property payManaCost When true, each chosen card is cast paying its normal mana cost.
+ * @property maxCasts Maximum number of cards that may still be cast by this loop, or `null`
+ *   for no cap. A value of `0` or less makes the effect a no-op. Only meaningful alongside the
+ *   default `payManaCost = false` — see above.
+ * @property maxTotalManaValue Remaining total-mana-value budget for the casts, or `null` for no
+ *   cap. Only meaningful alongside the default `payManaCost = false`.
  */
 @SerialName("CastAnyNumberFromCollectionWithoutPayingCost")
 @Serializable
 data class CastAnyNumberFromCollectionWithoutPayingCostEffect(
     val from: String,
     val payManaCost: Boolean = false,
+    val maxCasts: Int? = null,
+    val maxTotalManaValue: Int? = null,
 ) : Effect {
-    override val description: String =
-        if (payManaCost) "Cast any number of those cards"
-        else "Cast any number of those cards without paying their mana costs"
+    override val description: String = buildString {
+        append("Cast ")
+        append(if (maxCasts == null) "any number of those cards" else "up to $maxCasts of those cards")
+        if (maxTotalManaValue != null) append(" with total mana value $maxTotalManaValue or less")
+        if (!payManaCost) append(" without paying their mana costs")
+    }
 }
 
 @SerialName("Cascade")
@@ -428,4 +535,3 @@ data class DiscoverEffect(
 ) : Effect {
     override val description: String = "Discover ${amount.description}"
 }
-

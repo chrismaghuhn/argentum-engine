@@ -1,12 +1,15 @@
 package com.wingedsheep.engine.state
 
 import com.wingedsheep.engine.core.ContinuationFrame
+import com.wingedsheep.engine.core.AutomaticContinuation
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.event.DelayedTriggeredAbility
 import com.wingedsheep.engine.event.GlobalGrantedTriggeredAbility
 import com.wingedsheep.engine.event.GrantedActivatedAbility
 import com.wingedsheep.engine.event.GrantedKeywordAbility
 import com.wingedsheep.engine.event.GrantedReplacementEffect
 import com.wingedsheep.engine.event.GrantedStaticAbility
+import com.wingedsheep.engine.event.GrantedStateTriggeredAbility
 import com.wingedsheep.engine.event.GrantedTriggeredAbility
 import com.wingedsheep.engine.mechanics.layers.ActiveFloatingEffect
 import com.wingedsheep.sdk.core.Color
@@ -14,6 +17,7 @@ import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.TypeLine
+import com.wingedsheep.engine.state.components.battlefield.LinkedExileComponent
 import com.wingedsheep.engine.state.components.battlefield.GraveyardEntryTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.PhasedOutComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
@@ -26,6 +30,8 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.GameRng
 import com.wingedsheep.sdk.scripting.AbilityIdentity
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.KeepGeneratedSerializer
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Transient
 
 /**
@@ -34,13 +40,21 @@ import kotlinx.serialization.Transient
  * The GameState is the single source of truth for the game.
  * All game operations are pure functions: (GameState, Action) -> (GameState, Events)
  */
-@Serializable
+@OptIn(ExperimentalSerializationApi::class)
+@KeepGeneratedSerializer
+@Serializable(with = LegacyGameStateSerializer::class)
 data class GameState(
     /** All entities in the game, keyed by their ID */
     val entities: Map<EntityId, ComponentContainer> = emptyMap(),
 
     /** Zone contents - maps zone keys to lists of entity IDs */
     val zones: Map<ZoneKey, List<EntityId>> = emptyMap(),
+
+    /** Exile piles of departed battlefield visits, keyed by their unique entry timestamp. */
+    val departedLinkedExile: Map<Long, List<EntityId>> = emptyMap(),
+
+    /** Outstanding zone-return one-shot effects, independent of the source's current abilities. */
+    val zoneReturns: List<ZoneReturn> = emptyList(),
 
     /**
      * Current turn number, counting **player turns** — every turn the game begins gets its own
@@ -59,6 +73,9 @@ data class GameState(
     /** ID of the player whose turn it is */
     val activePlayerId: EntityId? = null,
 
+    /** Uninterrupted battlefield visits from the start of this turn; null for a fresh imported board. */
+    val controlAtTurnStart: Map<EntityId, TurnStartControl>? = null,
+
     /** Current phase */
     val phase: Phase = Phase.BEGINNING,
 
@@ -70,6 +87,15 @@ data class GameState(
 
     /** The stack (spells and abilities waiting to resolve) */
     val stack: List<EntityId> = emptyList(),
+
+    /**
+     * Current visits, independent of components. Defaults initialize fresh raw fixtures/imports
+     * exactly once; copy() and serialized stamped states preserve their recorded identities.
+     */
+    val objectIdentities: Map<EntityId, ObjectIdentity> = initialObjectIdentities(entities, zones, stack),
+
+    /** Monotonic allocator, independent of continuous-effect timestamps. */
+    val nextObjectGeneration: Long = (objectIdentities.values.maxOfOrNull { it.generation } ?: 0) + 1,
 
     /** Players who have passed priority in sequence */
     val priorityPassedBy: Set<EntityId> = emptySet(),
@@ -86,9 +112,6 @@ data class GameState(
     /** Whether the game has ended */
     val gameOver: Boolean = false,
 
-    /** Current pending decision awaiting player input (null if engine is not paused) */
-    val pendingDecision: com.wingedsheep.engine.core.PendingDecision? = null,
-
     /** Active floating effects (temporary effects from spells like Giant Growth) */
     val floatingEffects: List<ActiveFloatingEffect> = emptyList(),
 
@@ -98,8 +121,14 @@ data class GameState(
     /** Triggered abilities granted to entities temporarily (e.g., Commando Raid) */
     val grantedTriggeredAbilities: List<GrantedTriggeredAbility> = emptyList(),
 
+    /** State-triggered abilities (CR 603.8) granted to entities (e.g., Olivia, Crimson Bride) */
+    val grantedStateTriggeredAbilities: List<GrantedStateTriggeredAbility> = emptyList(),
+
     /** Activated abilities granted to entities temporarily (e.g., Run Wild) */
     val grantedActivatedAbilities: List<GrantedActivatedAbility> = emptyList(),
+
+    /** Repeatable special actions created by resolved effects, retaining captured references. */
+    val playerActionPermissions: List<com.wingedsheep.engine.event.PlayerActionPermission> = emptyList(),
 
     /** Static abilities granted to entities temporarily (e.g., Full Steam Ahead) */
     val grantedStaticAbilities: List<GrantedStaticAbility> = emptyList(),
@@ -115,6 +144,15 @@ data class GameState(
 
     /** Continuation stack for resuming after player decisions */
     val continuationStack: List<ContinuationFrame> = emptyList(),
+
+    /**
+     * Triggered abilities that have triggered but are not on the stack yet (CR 603.3): they wait
+     * until the next time a player would receive priority. Only [com.wingedsheep.engine.core.Settler]
+     * fills and drains this. It detects triggers once per action at the engine boundary, parks them
+     * here while a decision is pending, and puts them on the stack when the game settles. Nothing
+     * else detects triggers from events, so no trigger is detected twice.
+     */
+    val pendingTriggers: List<com.wingedsheep.engine.event.PendingTrigger> = emptyList(),
 
     /** Number of spells cast this turn (by all players), used for Storm count */
     val spellsCastThisTurn: Int = 0,
@@ -164,11 +202,22 @@ data class GameState(
     val pendingNextSpellAffinities: List<PendingNextSpellAffinity> = emptyList(),
 
     /**
-     * Turn-scoped "spells you cast this turn that match … cost {N} less" discounts (the Scion
-     * cycle). Unlike [pendingNextSpellAffinities] these are not consumed by the spell they
-     * discount — they apply to every matching spell until the turn ends.
+     * Pending "the next matching spell you cast this turn can be cast without paying its mana cost"
+     * riders (World War Hulk I). Read by
+     * [com.wingedsheep.engine.mechanics.mana.CostCalculator.hasFreeCastPermission] and consumed by
+     * the next matching cast, whether or not the free cast was taken.
      */
-    val turnSpellCostReductions: List<TurnSpellCostReduction> = emptyList(),
+    val pendingFreeCastSpells: List<PendingFreeCastSpell> = emptyList(),
+
+    /**
+     * Duration-bounded "spells you cast [this turn | until your next turn] that match … cost {N}
+     * less" discounts (the Scion cycle; Ral, Leyline Prodigy). Unlike [pendingNextSpellAffinities]
+     * these are not consumed by the spell they discount — they apply to every matching spell until
+     * their [SpellCostReduction.duration] ends. Serialized under its pre-duration name so recorded
+     * states keep decoding.
+     */
+    @kotlinx.serialization.SerialName("turnSpellCostReductions")
+    val spellCostReductions: List<SpellCostReduction> = emptyList(),
 
     /** Whether a spell was warped this turn (for Void condition: "a spell was warped this turn") */
     val spellWarpedThisTurn: Boolean = false,
@@ -181,6 +230,31 @@ data class GameState(
      * Reset to false at every turn boundary.
      */
     val damageCantBePreventedThisTurn: Boolean = false,
+
+    /**
+     * Turn numbers during which **no player** may activate a power-up ability (CR 702.193). Written
+     * by [com.wingedsheep.engine.handlers.effects.player.TakeExtraTurnExecutor] when the resolving
+     * [com.wingedsheep.sdk.scripting.effects.TakeExtraTurnEffect] carries
+     * `powerUpAbilitiesCantBeActivated` — Kang the Conqueror's "Take an extra turn after this one.
+     * During that turn, power-up abilities can't be activated."
+     *
+     * The stamp is `turnNumber + 1`, the number of the next turn to actually *begin*: [turnNumber]
+     * counts turns that begin, and a turn skipped via
+     * [com.wingedsheep.engine.state.components.player.SkipNextTurnComponent] never reaches
+     * `TurnManager.startTurn`, so the skips that model the extra turn consume no numbers. That is
+     * the extra turn **in a two-player game**. With three or more players it may not be:
+     * `TurnManager.endTurn` consumes at most one pending skip per turn boundary, so a second
+     * skipped opponent takes `turnNumber + 1` anyway and the lockout lands on their ordinary turn.
+     * The limitation is in the pre-existing skip-based extra-turn model, not here.
+     *
+     * Recorded against the turn rather than against a player or the source permanent because the
+     * prohibition is global, applies on a turn that has not started yet (so it must *not* bind for
+     * the rest of the current turn), and survives the source leaving the battlefield. A set, so two
+     * riders in the same turn are idempotent; entries earlier than the current turn are pruned at
+     * each turn boundary. Read through
+     * [com.wingedsheep.engine.legalactions.utils.CastPermissionUtils.isPowerUpActivationRestricted].
+     */
+    val powerUpRestrictedTurns: Set<Int> = emptySet(),
 
     /** Whether a nonland permanent left the battlefield this turn (for the Void ability word). */
     val nonlandPermanentLeftBattlefieldThisTurn: Boolean = false,
@@ -248,6 +322,26 @@ data class GameState(
      * the `PlayerCommittedCrimeThisTurn` condition (e.g. Seize the Secrets' cost reduction).
      */
     val playersWhoCommittedCrimeThisTurn: Set<EntityId> = emptySet(),
+    /**
+     * Players (by entity id) who were dealt noncombat damage this turn — more than zero damage
+     * after prevention, from any source. Populated in `DamageUtils.dealDamageToTarget` and cleared
+     * at every turn boundary. Backs `TurnTracker.DEALT_NONCOMBAT_DAMAGE`.
+     */
+    val playersDealtNoncombatDamageThisTurn: Set<EntityId> = emptySet(),
+    /**
+     * [playersDealtNoncombatDamageThisTurn] as it stood when the previous turn ended, rolled over by
+     * `TurnManager.startTurn`. "Last turn" is the previous turn in the game, not the reader's own
+     * last turn. Backs `TurnTracker.DEALT_NONCOMBAT_DAMAGE_LAST_TURN` (Command the Stage).
+     */
+    val playersDealtNoncombatDamageLastTurn: Set<EntityId> = emptySet(),
+    /**
+     * Players (by entity id) who have been dealt combat damage since their own last turn ended.
+     * Populated at the combat-damage-to-a-player sites in `CombatDamageManager`; a player leaves
+     * the set only when their own turn ends (`TurnManager.startTurn` drops the outgoing turn's
+     * active player, or the whole team on a shared team turn). Backs
+     * `TurnTracker.DEALT_COMBAT_DAMAGE_SINCE_YOUR_LAST_TURN` (Marchesa, Resolute Monarch).
+     */
+    val playersDealtCombatDamageSinceTheirLastTurn: Set<EntityId> = emptySet(),
 
     /**
      * Colors of the spell most recently cast this turn (by any player), or null if no spell has
@@ -337,6 +431,14 @@ data class GameState(
     val objectIdentityStamps: Map<EntityId, Long> = emptyMap(),
 
     /**
+     * Game-local correlation IDs for decisions, continuations, delayed triggers, and combat bands.
+     * Independent of entity allocation and gameplay RNG; persisted so restore and replay resume
+     * the same sequence. Older snapshots omit this field and start the new sequence at zero;
+     * their existing UUID routing IDs remain valid and cannot collide with the `r` namespace.
+     */
+    val nextRoutingId: Long = 0L,
+
+    /**
      * Per-player persistent "yield" preferences keyed by [com.wingedsheep.sdk.scripting.AbilityIdentity]
      * (MTGO right-click yields — see `backlog/stack-collapse-and-batch-decisions.md` §C). Lives on
      * [GameState] (not the server session) so it survives serialization, replays deterministically,
@@ -357,6 +459,32 @@ data class GameState(
      * would be independently checked against the processor.
      */
     val activeReplacementChain: Set<ReplacementEffectIdentity>? = null,
+
+    /**
+     * Results of prevention effects that are still owed — Purity's "You gain life equal to the
+     * damage prevented this way", Vigor's counters, Hostility's tokens. The prevention itself
+     * happens inside the damage arithmetic, which can't run an [com.wingedsheep.sdk.scripting.effects.Effect];
+     * it queues the result here instead, and
+     * [com.wingedsheep.engine.replacement.ReplacementRiders.drain] runs it as soon as the effect that
+     * dealt the damage finishes, or at the settle boundary for combat damage. Either way it runs
+     * before state-based actions and before trigger detection, and it never uses the stack.
+     */
+    val pendingReplacementRiders: List<com.wingedsheep.engine.replacement.PendingReplacementRider> = emptyList(),
+
+    /**
+     * Answers to the "**you may** have that damage dealt to you instead" prompts of an optional
+     * damage-redirection shield (Blood of the Martyr), for the damage event currently being applied.
+     *
+     * Keyed by shield + damage source + recipient (see
+     * [com.wingedsheep.engine.handlers.effects.damage.OptionalDamageRedirect.choiceKey]) so each
+     * damage instance in a simultaneous batch is answered on its own. Entries are written by the
+     * choice pre-pass that runs *before* any of that damage is dealt, consumed by
+     * [com.wingedsheep.engine.handlers.effects.DamageUtils.checkDamageRedirection] as each instance
+     * is applied, and pruned when the next pre-pass finds them stale (the recipient died first, a
+     * shield counter ate the damage). A missing entry means "declined" — the shield never redirects
+     * on its controller's behalf without having asked.
+     */
+    val optionalDamageRedirectChoices: Map<String, Boolean> = emptyMap(),
 ) {
     /**
      * Cached projection of the game state with all continuous effects (Rule 613) applied.
@@ -397,7 +525,7 @@ data class GameState(
      * Remove an entity (returns new state).
      */
     fun withoutEntity(id: EntityId): GameState =
-        copy(entities = entities - id)
+        copy(entities = entities - id, objectIdentities = objectIdentities - id)
 
     /**
      * Update an entity's components (returns new state).
@@ -507,10 +635,12 @@ data class GameState(
      */
     fun addToZone(key: ZoneKey, entityId: EntityId): GameState {
         val current = zones[key] ?: emptyList()
+        if (entityId in current) return this
+        requireDetachedForInsertion(entityId)
         // Every zone entry creates a new object, including non-battlefield cards. Keeping this
         // stamp at the state boundary prevents resolution from confusing an id that returned to
         // the same graveyard/hand/exile zone with the object that was originally targeted.
-        var newState = copy(zones = zones + (key to current + entityId))
+        var newState = enterObjectZone(key, entityId).copy(zones = zones + (key to current + entityId))
             .reincarnateObject(entityId)
         if (key.zoneType == Zone.LIBRARY) {
             newState = newState.copy(
@@ -537,12 +667,82 @@ data class GameState(
         return newState
     }
 
+    /** Positional real entry, also usable for a same-library reorder after removal. */
+    fun insertIntoZone(key: ZoneKey, entityId: EntityId, index: Int): GameState {
+        if (entityId in getZone(key)) return this
+        val inserted = addToZone(key, entityId)
+        val contents = inserted.getZone(key).toMutableList()
+        contents.remove(entityId)
+        contents.add(index.coerceIn(0, contents.size), entityId)
+        return inserted.copy(zones = inserted.zones + (key to contents))
+    }
+
+    fun objectRef(entityId: EntityId): ObjectRef? =
+        if (entityId in entities) objectIdentities[entityId]?.let { ObjectRef(entityId, it.generation) }
+        else null
+
+    fun isCurrentObject(ref: ObjectRef): Boolean = objectRef(ref.entityId) == ref
+
+    /** Retains STACK while a popped spell resolves, and the origin during source-list removal. */
+    fun logicalZone(entityId: EntityId): ZoneKey? = objectIdentities[entityId]?.logicalZone
+
+    /** Reject duplicate membership without scanning every card in every unrelated zone. */
+    private fun requireDetachedForInsertion(entityId: EntityId) {
+        val origin = logicalZone(entityId)
+        require(entityId !in stack && (origin == null || entityId !in getZone(origin))) {
+            "Remove $entityId from its current zone before inserting it into another zone"
+        }
+    }
+
+    private fun enterObjectZone(key: ZoneKey, entityId: EntityId): GameState {
+        val old = objectIdentities[entityId]
+        val sameZone = old != null && old.logicalZone.zoneType == key.zoneType &&
+            (key.zoneType in SHARED_OBJECT_ZONES || old.logicalZone.ownerId == key.ownerId)
+        if (sameZone && key.zoneType != Zone.EXILE) {
+            return if (old!!.logicalZone == key) this else copy(
+                objectIdentities = objectIdentities + (entityId to old.copy(logicalZone = key))
+            )
+        }
+        return copy(
+            objectIdentities = objectIdentities + (entityId to ObjectIdentity(nextObjectGeneration, key)),
+            nextObjectGeneration = nextObjectGeneration + 1
+        )
+    }
+
+    /**
+     * Explicit import/fixture migration. Existing recorded visits and allocator survive unchanged;
+     * unstamped members get their first identity without pretending they moved between zones.
+     * Normal execution must use destination insertion, never this reconstruction boundary.
+     */
+    fun initializeObjectIdentities(): GameState {
+        var initialized = this
+        for ((key, ids) in zones) for (id in ids) {
+            if (id !in initialized.objectIdentities && id in entities) {
+                initialized = initialized.enterObjectZone(key, id)
+            }
+        }
+        for (id in stack) {
+            if (id !in initialized.objectIdentities && id in entities) {
+                initialized = initialized.enterObjectZone(ZoneKey(id, Zone.STACK), id)
+            }
+        }
+        return initialized
+    }
+
+    /** Replace storage order only; reconstruction must preserve membership and every visit. */
+    fun reorderZone(key: ZoneKey, orderedIds: List<EntityId>): GameState {
+        require(orderedIds.size == orderedIds.toSet().size &&
+            orderedIds.size == getZone(key).size && orderedIds.toSet() == getZone(key).toSet())
+        return copy(zones = zones + (key to orderedIds))
+    }
+
     /**
      * Remove an entity from a zone (returns new state).
      */
     fun removeFromZone(key: ZoneKey, entityId: EntityId): GameState {
         val current = zones[key] ?: return this
-        val removed = copy(zones = zones + (key to current - entityId))
+        val unlinked = if (key.zoneType == Zone.EXILE && entityId in current) forgetExileLinks(entityId) else this
+        val removed = unlinked.copy(zones = unlinked.zones + (key to current - entityId))
         return if (key.zoneType == Zone.LIBRARY) {
             removed.copy(
                 pendingLibraryOrderReacquisitionOwners =
@@ -551,6 +751,28 @@ data class GameState(
         } else {
             removed
         }
+    }
+
+    /** A card leaving exile loses every old link, even if the same entity later returns to exile. */
+    private fun forgetExileLinks(cardId: EntityId): GameState {
+        val state = this
+        var result = state
+        val affectedHistory = state.departedLinkedExile.filterValues { cardId in it }
+        if (affectedHistory.isNotEmpty()) {
+            var history = state.departedLinkedExile
+            for ((timestamp, ids) in affectedHistory) {
+                val remaining = ids - cardId
+                history = if (remaining.isEmpty()) history - timestamp else history + (timestamp to remaining)
+            }
+            result = result.copy(departedLinkedExile = history)
+        }
+        for ((sourceId, container) in state.entities) {
+            val linked = container.get<LinkedExileComponent>() ?: continue
+            if (cardId in linked.exiledIds) {
+                result = result.updateEntity(sourceId) { it.with(LinkedExileComponent(linked.exiledIds - cardId)) }
+            }
+        }
+        return result
     }
 
     /**
@@ -623,6 +845,16 @@ data class GameState(
         val ownTeam = teamOf(playerId).toHashSet()
         return activePlayers.filter { it !in ownTeam }
     }
+
+    /**
+     * Whether [playerId] is an opponent of [ofPlayerId] (CR 102.3) — the predicate form of
+     * [getOpponents], for the `Player.EachOpponent` branch of every "does this player match the
+     * pattern?" check. Never spell that branch as `playerId != controllerId`: in a team game the
+     * controller's teammate is not their opponent, and "your opponents can't gain life" must not
+     * lock your own partner. A player who has left the game is nobody's opponent any more.
+     */
+    fun isOpponentOf(playerId: EntityId, ofPlayerId: EntityId): Boolean =
+        playerId in getOpponents(ofPlayerId)
 
     // =========================================================================
     // Teams (Two-Headed Giant and other team variants — CR 810)
@@ -730,10 +962,47 @@ data class GameState(
     // play a land (805.4c), and either may take sorcery-speed actions while it is the team's turn
     // (805.5a — a player may act when their team has priority). The engine keeps a single
     // [activePlayerId] (CR 805.9 — "active player" is one specific player), but turn *ownership* —
-    // "is it this player's turn?" — is a team question answered by [isActiveTurnFor]. Priority still
-    // cycles per player, so each teammate gets their own window and the phase advances only once
-    // everyone has passed; that already yields the shared-turn outcome.
+    // "is it this player's turn?" — is a team question answered by [isActiveTurnFor].
+    //
+    // Priority is likewise a team question (CR 805.5: "Teams have priority, not individual
+    // players"). [priorityPlayerId] stays a single seat — it is the baton: who the server nudges,
+    // whose auto-pass runs, which board the UI focuses. But *permission* to act is
+    // [hasPriority], which admits the baton holder's whole team. The phase still advances only
+    // once every seat has passed ([allPlayersPassed]), so each player is still guaranteed their
+    // own window; what changes is that a teammate no longer has to wait for the baton to reach
+    // them before they can respond to what their partner just did.
     // =========================================================================
+
+    /**
+     * True when [playerId] may take a priority action right now — cast a spell, activate an
+     * ability, take a special action, or pass (CR 805.5a). **The team-aware replacement for
+     * `priorityPlayerId == playerId` at every action-legality gate.**
+     *
+     * In a shared-team-turns format the whole of the baton holder's team may act while their team
+     * holds priority (CR 805.5). Everywhere else — 1v1, Free-for-All, Commander, Team vs. Team
+     * (CR 808.4, individual turns) — [sharedTurnTeam] is the singleton `[playerId]`, so this is
+     * literally `priorityPlayerId == playerId` and no non-2HG game changes behaviour.
+     *
+     * Note this is permission, not obligation: [priorityPlayerId] is still one seat, and the
+     * auto-pass / AI paths deliberately keep following it so a bot teammate takes its window in
+     * baton order instead of racing its human partner for every response.
+     */
+    fun hasPriority(playerId: EntityId): Boolean {
+        val holder = priorityPlayerId ?: return false
+        // Read the team off the *holder*, not off [playerId]: [sharedTurnTeam] drops members who
+        // have left the game, so asking the holder is what keeps a departed teammate (CR 800.4a)
+        // from inheriting a window they can no longer take.
+        return holder == playerId || playerId in sharedTurnTeam(holder)
+    }
+
+    /**
+     * Every player who may act in the current priority window — the baton holder's shared-turn
+     * team (CR 805.5), or just the baton holder outside a shared-team-turns format. Empty when
+     * nobody holds priority. The list form of [hasPriority], for the client DTO and for callers
+     * that need to pick an acting seat rather than test one.
+     */
+    val priorityTeam: List<EntityId>
+        get() = priorityPlayerId?.let { sharedTurnTeam(it) } ?: emptyList()
 
     /**
      * True when it is [playerId]'s team's turn — i.e. [playerId] is on the active team. The
@@ -806,6 +1075,26 @@ data class GameState(
             ?.get<com.wingedsheep.engine.state.components.identity.LifeTotalComponent>()?.life ?: 0
 
     /**
+     * Whether [playerId] can't lose life (CR 119.8) — a `CantLoseLifeComponent` lock on them, or in a
+     * shared-life team game on any teammate (CR 810.9h). Damage and life loss leave the total
+     * unchanged; a lowering exchange or redistribution doesn't happen.
+     */
+    fun isLifeLossLocked(playerId: EntityId): Boolean {
+        val seats = if (format.sharesTeamLife) teamOf(playerId) else listOf(playerId)
+        return seats.any {
+            getEntity(it)?.has<com.wingedsheep.engine.state.components.player.CantLoseLifeComponent>() == true
+        }
+    }
+
+    /**
+     * Whether [playerId] can pay [amount] life: paying 0 always can (CR 119.4 / 118.3); otherwise
+     * the (team's, CR 810.9a) life total must be at least the amount and the player must be able to
+     * lose life (CR 119.8 — "a cost that involves having that player pay life can't be paid").
+     */
+    fun canPayLife(playerId: EntityId, amount: Int): Boolean =
+        amount <= 0 || (lifeTotal(playerId) >= amount && !isLifeLossLocked(playerId))
+
+    /**
      * [playerId]'s **speed** (Aetherdrift, CR 702.179), 0–[com.wingedsheep.sdk.core.Speed.MAX].
      *
      * A player who has no speed reads as 0 per CR 702.179f, so every consumer — dynamic amounts, the
@@ -820,7 +1109,7 @@ data class GameState(
             ?: com.wingedsheep.sdk.core.Speed.NONE
 
     /**
-     * Whether [playerId] has a speed at all (CR 702.179b). False means the CR 704.5z state-based
+     * Whether [playerId] has a speed at all (CR 702.179b). False means the CR 704.5aa state-based
      * action may still start their speed at 1, and that they have no inherent speed trigger yet
      * (CR 702.179d).
      */
@@ -853,8 +1142,9 @@ data class GameState(
      * itself; during a Mindslaver-style hijacked turn this resolves to the hijacker.
      *
      * Resource ownership (mana, cards, life) is unaffected — it always stays with
-     * [playerId]. This helper is only consulted at the input-routing seam: legal
-     * action enumeration, decision validation, and per-action seat checks.
+     * [playerId]. This helper is consulted at input and private-view routing seams: legal action
+     * enumeration, decision validation, per-action seat checks, and the information shown to the
+     * connection acting for that seat.
      *
      * A session-level [com.wingedsheep.engine.state.components.player.HotseatControlComponent]
      * (play-against-yourself) takes precedence over a per-turn hijack: it permanently routes
@@ -879,12 +1169,14 @@ data class GameState(
      * Push an entity onto the stack (returns new state).
      */
     fun pushToStack(entityId: EntityId): GameState {
+        if (entityId in stack) return this
+        requireDetachedForInsertion(entityId)
+        val pushed = enterObjectZone(ZoneKey(entityId, Zone.STACK), entityId).copy(stack = stack + entityId)
         // A card is stamped when the cast path removes it from its origin zone; a newly-created
         // ability or spell copy has no prior zone stamp and receives one here. Re-pushing an
         // already-stamped object (for example while a paused resolution keeps it coherent on the
         // stack) must not manufacture a new object identity.
-        if (entityId in objectIdentityStamps) return copy(stack = stack + entityId)
-        return copy(stack = stack + entityId).reincarnateObject(entityId)
+        return if (entityId in objectIdentityStamps) pushed else pushed.reincarnateObject(entityId)
     }
 
     /**
@@ -1059,6 +1351,16 @@ data class GameState(
         EntityId("e$nextEntityId") to copy(nextEntityId = nextEntityId + 1)
 
     /**
+     * Allocate an opaque, game-local routing token and carry the returned state forward.
+     * Equal snapshots allocate equal tokens; distinct allocations along one timeline are unique.
+     * These tokens are neither globally unique game IDs nor semantic action identities.
+     */
+    fun newRoutingId(): Pair<String, GameState> {
+        check(nextRoutingId >= 0 && nextRoutingId < Long.MAX_VALUE) { "Routing ID counter exhausted" }
+        return "r$nextRoutingId" to copy(nextRoutingId = nextRoutingId + 1)
+    }
+
+    /**
      * Set the priority player (returns new state).
      *
      * CR 800.4a / 800.4j: priority that would be given to a player who has left the game
@@ -1096,23 +1398,19 @@ data class GameState(
     fun isPaused(): Boolean = pendingDecision != null
 
     /**
-     * Set a pending decision (pauses the engine).
+     * The question is stored once, with its answer continuation at the top of the stack.
      */
-    fun withPendingDecision(decision: com.wingedsheep.engine.core.PendingDecision): GameState =
-        copy(pendingDecision = decision)
+    val pendingDecision: com.wingedsheep.engine.core.PendingDecision?
+        get() = (continuationStack.lastOrNull() as? Suspension)?.question
 
     /**
-     * Clear the pending decision (resumes the engine).
+     * Queue automatic work before running its nested execution. Player questions must be installed
+     * with suspendForDecision so their answer continuation cannot be separated from the question.
      */
-    fun clearPendingDecision(): GameState =
-        copy(pendingDecision = null)
-
-    /**
-     * Push a continuation frame onto the stack.
-     * Used when pausing for a decision to remember how to resume.
-     */
-    fun pushContinuation(frame: ContinuationFrame): GameState =
-        copy(continuationStack = continuationStack + frame)
+    fun pushContinuation(frame: AutomaticContinuation): GameState {
+        check(pendingDecision == null) { "Automatic work cannot cover an unanswered suspension" }
+        return copy(continuationStack = continuationStack + frame)
+    }
 
     /**
      * Pop the top continuation frame from the stack.
@@ -1194,6 +1492,56 @@ data class GameState(
             }
         }
         return afterPlayer
+    }
+
+    /**
+     * The next player still in the game, in turn order after [afterPlayer], who has **not already
+     * passed** in the current priority round — i.e. the seat the priority baton should visit next.
+     *
+     * Identical to [getNextPlayer] whenever passing is strictly round-robin, which is every
+     * non-team game: each seat passes in turn, so the seat after the passer is by construction one
+     * that hasn't passed. It only diverges under team priority ([hasPriority]), where a teammate
+     * may act — and therefore pass — out of baton order, leaving a seat behind the baton that
+     * still owes a pass. Handing the baton to someone who already passed is harmless (they simply
+     * pass again) but it costs a real click, so skip them.
+     *
+     * Falls back to [getNextPlayer] when every other seat has already passed — the caller only
+     * reaches here when [allPlayersPassed] is false, so a seat that still owes a pass exists.
+     */
+    fun nextUnpassedPriorityAfter(afterPlayer: EntityId): EntityId {
+        val size = turnOrder.size
+        if (size == 0) return afterPlayer
+        val start = turnOrder.indexOf(afterPlayer)
+        for (step in 1..size) {
+            val candidate = turnOrder[((start + step) % size + size) % size]
+            if (candidate in priorityPassedBy) continue
+            if (getEntity(candidate)
+                    ?.has<com.wingedsheep.engine.state.components.player.PlayerLostComponent>() != true
+            ) {
+                return candidate
+            }
+        }
+        return getNextPlayer(afterPlayer)
+    }
+
+    /**
+     * Where the priority baton goes once [passer] has passed — the seat rule behind
+     * [com.wingedsheep.engine.handlers.actions.priority.PassPriorityHandler].
+     *
+     * Identical to [getNextPlayer] in every non-team game: the only seat allowed to pass is the
+     * baton holder, so `passer` is the holder and the seat after them has by construction not
+     * passed. Under team priority (CR 805.5) a teammate may pass **out of baton order**, and then
+     * two things differ:
+     *
+     * - the baton doesn't move at all — its holder hasn't passed yet, and taking their window away
+     *   because their partner declined theirs would be exactly backwards;
+     * - once it does move, it skips the seats that already passed this round rather than handing
+     *   them a window they just declined.
+     */
+    fun nextPriorityAfterPass(passer: EntityId): EntityId {
+        val holder = priorityPlayerId
+        if (holder != null && holder != passer && holder !in priorityPassedBy) return holder
+        return nextUnpassedPriorityAfter(passer)
     }
 
     /**
@@ -1318,7 +1666,25 @@ data class CastSpellRecord(
 data class ActiveCounterPlacementModifier(
     val modifier: Int,
     val controllerId: EntityId,
-    val counterType: com.wingedsheep.sdk.scripting.events.CounterTypeFilter,
-    val recipient: com.wingedsheep.sdk.scripting.events.RecipientFilter,
+    val counterType: com.wingedsheep.sdk.core.CounterType,
+    val recipient: com.wingedsheep.sdk.scripting.events.Recipient,
     val duration: com.wingedsheep.sdk.scripting.Duration,
 )
+
+private val SHARED_OBJECT_ZONES = setOf(Zone.BATTLEFIELD, Zone.STACK, Zone.EXILE, Zone.COMMAND)
+
+private fun initialObjectIdentities(
+    entities: Map<EntityId, ComponentContainer>,
+    zones: Map<ZoneKey, List<EntityId>>,
+    stack: List<EntityId>
+): Map<EntityId, ObjectIdentity> {
+    val identities = linkedMapOf<EntityId, ObjectIdentity>()
+    var generation = 1L
+    for ((zone, ids) in zones) for (id in ids) {
+        if (id in entities && id !in identities) identities[id] = ObjectIdentity(generation++, zone)
+    }
+    for (id in stack) {
+        if (id in entities && id !in identities) identities[id] = ObjectIdentity(generation++, ZoneKey(id, Zone.STACK))
+    }
+    return identities
+}

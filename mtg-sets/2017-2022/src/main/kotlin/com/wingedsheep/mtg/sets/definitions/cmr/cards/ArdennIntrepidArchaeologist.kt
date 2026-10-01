@@ -1,5 +1,6 @@
 package com.wingedsheep.mtg.sets.definitions.cmr.cards
 
+import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.Triggers
@@ -9,7 +10,6 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.CardSource
 import com.wingedsheep.sdk.scripting.effects.CollectionFilter
 import com.wingedsheep.sdk.scripting.references.Player
-import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
 /**
  * Ardenn, Intrepid Archaeologist (Commander Legends #10).
@@ -29,9 +29,9 @@ val ArdennIntrepidArchaeologist = card("Ardenn, Intrepid Archaeologist") {
     toughness = 2
 
     triggeredAbility {
-        trigger = Triggers.BeginCombat
+        trigger = Triggers.you.beginningOf(Step.BEGIN_COMBAT)
         optional = true
-        target = Targets.PermanentOrPlayer
+        val host = target(Targets.PermanentOrPlayer)
         effect = Effects.Pipeline {
             val candidates = gather(
                 source = CardSource.ControlledPermanents(
@@ -43,7 +43,7 @@ val ArdennIntrepidArchaeologist = card("Ardenn, Intrepid Archaeologist") {
             )
             val legal = filter(
                 candidates,
-                CollectionFilter.AttachableTo(EffectTarget.ContextTarget(0)),
+                CollectionFilter.AttachableTo(host),
                 name = "ardenn_legal",
             )
             val selected = chooseAnyNumber(
@@ -52,7 +52,7 @@ val ArdennIntrepidArchaeologist = card("Ardenn, Intrepid Archaeologist") {
                 alwaysPrompt = true,
                 name = "ardenn_selected",
             )
-            attach(selected, EffectTarget.ContextTarget(0))
+            attach(selected, host)
         }
     }
 

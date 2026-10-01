@@ -1,23 +1,12 @@
 package com.wingedsheep.ai.engine.hidden
 
-import com.wingedsheep.engine.core.CardEntityFactory
+import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.hidden.HiddenSlotRewrite
 import com.wingedsheep.engine.registry.CardRegistry
-import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
-import com.wingedsheep.engine.state.components.identity.CantBeCopiedComponent
-import com.wingedsheep.engine.state.components.identity.CantBeCounteredComponent
-import com.wingedsheep.engine.state.components.identity.ControllerComponent
-import com.wingedsheep.engine.state.components.identity.HasMorphAbilityComponent
-import com.wingedsheep.engine.state.components.identity.HexproofFromComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
-import com.wingedsheep.engine.state.components.identity.ProtectionComponent
-import com.wingedsheep.engine.state.components.identity.RevealedToComponent
-import com.wingedsheep.engine.state.components.identity.SelfZoneRedirectComponent
-import com.wingedsheep.engine.state.components.identity.ToxicComponent
-import com.wingedsheep.engine.state.components.stack.ChosenTarget
-import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.CardDefinition
@@ -31,11 +20,26 @@ import com.wingedsheep.sdk.model.GameRng
  * ordering are sampled, which keeps continuations, targets and pending decisions structurally
  * valid. Cards carrying runtime components are pinned because changing their definition could make
  * those components nonsensical.
+ *
+ * Pinning is a coherence guarantee, not an information one, and the two pull in opposite
+ * directions: a slot pinned because in-flight execution references it keeps its **real** identity
+ * in the sampled world even when that identity is hidden from [viewerId]. That is accepted because
+ * the alternative is a world whose paused decision or continuation points at a card that was never
+ * there. It stays sound for search because the Strategist determinizes at roots where the AI holds
+ * priority, so a paused root is one the AI itself must answer — the referenced slots are its own.
+ * A caller that determinizes at someone else's pause would be handing its search the truth.
  */
-class Determinizer(
+class Determinizer internal constructor(
     private val cardRegistry: CardRegistry,
-    private val visibility: Visibility = Visibility(cardRegistry),
+    private val visibility: Visibility,
+    /** Test-only seam: inject the shared final analysis, never reference traversal rules. */
+    private val inFlightPinAnalysis: (GameState) -> HiddenSlotRewrite.IdentitySensitiveInFlightPins,
 ) {
+    constructor(
+        cardRegistry: CardRegistry,
+        visibility: Visibility = Visibility(cardRegistry, conditionEvaluator = PredicateEvaluator(cardRegistry).conditions),
+    ) : this(cardRegistry, visibility, HiddenSlotRewrite::identitySensitiveInFlightPins)
+
     /** Pure per-position entry point used by the Strategist before it simulates any candidate. */
     fun sampleForSearch(
         state: GameState,
@@ -67,13 +71,20 @@ class Determinizer(
         rng: GameRng,
         fallback: OpponentModel = OpponentModel.IdentityPermutation,
     ): GameState {
+        if (state.turnOrder.isEmpty()) return state
+        // Every player is sampled from this same source position, so analyze its references once.
+        val inFlightPins = when (val pins = inFlightPinAnalysis(state)) {
+            is HiddenSlotRewrite.IdentitySensitiveInFlightPins.Complete -> pins.entityIds
+            // An incomplete traversal cannot justify sampling any hidden identity.
+            is HiddenSlotRewrite.IdentitySensitiveInFlightPins.Incomplete -> return state
+        }
         var sampled = state
         var currentRng = rng
 
         // Even the viewer's own library order is hidden. Teammate hands are visible, but teammate
         // libraries are not. Walk every player and let Visibility decide which cards are hidden.
         for (opponentId in state.turnOrder) {
-            val hidden = hiddenCards(state, opponentId, viewerId)
+            val hidden = hiddenCards(state, opponentId, viewerId, inFlightPins)
             if (hidden.isEmpty()) continue
 
             val definitions = when (val model = models[opponentId] ?: fallback) {
@@ -89,24 +100,28 @@ class Determinizer(
             }
 
             if (definitions.size != hidden.size) continue
+            // No caller observes intermediate identities. Copy once for this player and publish
+            // only after all replacements, without mutating an input or previously sampled world.
+            val sampledEntities = sampled.entities.toMutableMap()
             for ((entityId, cardDef) in hidden.zip(definitions)) {
-                val old = sampled.getEntity(entityId) ?: continue
+                val old = sampledEntities[entityId] ?: continue
                 val ownerId = old.get<OwnerComponent>()?.playerId ?: opponentId
-                var replacement = CardEntityFactory.create(cardDef, ownerId)
-                old.get<RevealedToComponent>()?.let { replacement = replacement.with(it) }
-                sampled = sampled.withEntity(entityId, replacement)
+                sampledEntities[entityId] = HiddenSlotRewrite.rewrite(old, cardDef, ownerId)
             }
 
             val libraryKey = ZoneKey(opponentId, Zone.LIBRARY)
             val library = sampled.getZone(libraryKey)
-            val hiddenLibraryIds = hidden.filterTo(mutableSetOf()) { it in library }
-            val (shuffledHidden, next) = currentRng.shuffle(library.filter { it in hiddenLibraryIds })
+            val hiddenIds = hidden.toHashSet()
+            val (shuffledHidden, next) = currentRng.shuffle(library.filter { it in hiddenIds })
             currentRng = next
             val iterator = shuffledHidden.iterator()
             val shuffledLibrary = library.map { id ->
-                if (id in hiddenLibraryIds) iterator.next() else id
+                if (id in hiddenIds) iterator.next() else id
             }
-            sampled = sampled.copy(zones = sampled.zones + (libraryKey to shuffledLibrary))
+            sampled = sampled.copy(
+                entities = sampledEntities,
+                zones = sampled.zones + (libraryKey to shuffledLibrary),
+            )
         }
         return sampled
     }
@@ -115,59 +130,35 @@ class Determinizer(
         state: GameState,
         opponentId: EntityId,
         viewerId: EntityId,
+        inFlightPins: Set<EntityId>,
     ): List<EntityId> {
         val handKey = ZoneKey(opponentId, Zone.HAND)
-        val handHidden = !visibility.isZoneVisibleTo(state, handKey, viewerId)
-        val candidates = buildList {
-            addAll(state.getLibrary(opponentId))
-            if (handHidden) addAll(state.getHand(opponentId))
-        }
-        val visibleTop = state.getLibrary(opponentId).firstOrNull()?.takeIf {
-            visibility.revealsTopOfLibraryPublicly(state, opponentId) ||
-                (opponentId == viewerId && visibility.hasLookAtTopOfLibrary(state, viewerId))
-        }
-        val referencedByStack = state.stack.flatMapTo(mutableSetOf()) { stackId ->
-            state.getEntity(stackId)?.get<TargetsComponent>()?.targets.orEmpty().mapNotNull {
-                when (it) {
-                    is ChosenTarget.Card -> it.cardId
-                    is ChosenTarget.Permanent -> it.entityId
-                    is ChosenTarget.Spell -> it.spellEntityId
-                    is ChosenTarget.Player -> null
-                }
-            }
-        }
+        val libraryKey = ZoneKey(opponentId, Zone.LIBRARY)
+        val library = state.getLibrary(opponentId)
+        val candidates = library + state.getHand(opponentId)
+        val libraryIds = library.toHashSet()
         return candidates.filter { id ->
-            id != visibleTop &&
-                id !in referencedByStack &&
-                // Continuation frames carry entity references in several different shapes.
-                // Quiet search roots normally have none; pinning while one exists is the safe
-                // fallback until those shapes share a common reference visitor.
-                state.continuationStack.isEmpty() &&
-                !visibility.isCardRevealedTo(state, id, viewerId) &&
-                isSafeToRewrite(state.getEntity(id))
+            val zoneKey = if (id in libraryIds) libraryKey else handKey
+            !visibility.isCardIdentityVisibleTo(state, zoneKey, id, viewerId) &&
+                id !in inFlightPins &&
+                isSafeToRewrite(state, id)
         }
     }
 
     /**
-     * A normal hidden card has only definition-derived identity/ownership components. Anything
-     * else may be referenced by an in-flight effect or carry state that a different definition
-     * cannot legally inherit, so it is pinned.
+     * A normal hidden card has only components [com.wingedsheep.engine.core.CardEntityFactory]
+     * derives from its printed definition. Anything else may be referenced by an in-flight effect
+     * or carry state that a different definition cannot legally inherit, so the slot is pinned.
+     * A card whose definition is no longer registered is pinned too: without it there is nothing to
+     * compare the slot against.
      */
-    private fun isSafeToRewrite(container: ComponentContainer?): Boolean {
-        if (container == null) return false
-        return container.all().all {
-            it is CardComponent ||
-                it is OwnerComponent ||
-                it is ControllerComponent ||
-                it is RevealedToComponent ||
-                it is CantBeCounteredComponent ||
-                it is CantBeCopiedComponent ||
-                it is HasMorphAbilityComponent ||
-                it is ProtectionComponent ||
-                it is SelfZoneRedirectComponent ||
-                it is HexproofFromComponent ||
-                it is ToxicComponent
-        }
+    private fun isSafeToRewrite(state: GameState, entityId: EntityId): Boolean {
+        val container = state.getEntity(entityId) ?: return false
+        val ownerId = container.get<OwnerComponent>()?.playerId ?: return false
+        val definition = container.get<CardComponent>()
+            ?.let { cardRegistry.getCard(it.cardDefinitionId) }
+            ?: return false
+        return HiddenSlotRewrite.runtimeBlockers(container, definition, ownerId).isEmpty()
     }
 
     private fun fromKnownDecklist(

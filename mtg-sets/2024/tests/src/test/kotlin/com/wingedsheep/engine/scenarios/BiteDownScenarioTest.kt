@@ -13,6 +13,8 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Bite Down (DMU #155) — {1}{G} Instant.
@@ -57,7 +59,7 @@ class BiteDownScenarioTest : FunSpec({
     ) {
         val bite = putCardInHand(sourceController, "Bite Down")
         giveMana(sourceController, Color.GREEN, 2)
-        castSpell(sourceController, bite, listOf(source, target)).isSuccess shouldBe true
+        castSpell(sourceController, bite, listOf(source, target)).outcome shouldBe Outcome.Done
     }
 
     test("uses the source creature's power against an opponent's creature and is one-sided") {
@@ -94,7 +96,7 @@ class BiteDownScenarioTest : FunSpec({
         val bite = driver.putCardInHand(driver.player1, "Bite Down")
         driver.giveMana(driver.player1, Color.GREEN, 2)
 
-        driver.castSpell(driver.player1, bite, listOf(opponentSource, opponentTarget)).isSuccess shouldBe false
+        driver.castSpell(driver.player1, bite, listOf(opponentSource, opponentTarget)).outcome shouldNotBe Outcome.Done
     }
 
     test("rejects a second target controlled by the caster") {
@@ -104,7 +106,7 @@ class BiteDownScenarioTest : FunSpec({
         val bite = driver.putCardInHand(driver.player1, "Bite Down")
         driver.giveMana(driver.player1, Color.GREEN, 2)
 
-        driver.castSpell(driver.player1, bite, listOf(source, ownTarget)).isSuccess shouldBe false
+        driver.castSpell(driver.player1, bite, listOf(source, ownTarget)).outcome shouldNotBe Outcome.Done
     }
 
     test("deals no damage when a target becomes illegal before resolution") {

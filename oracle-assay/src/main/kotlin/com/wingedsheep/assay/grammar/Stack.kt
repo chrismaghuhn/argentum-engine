@@ -9,7 +9,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.scripting.effects.CounterEffect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetSpell
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Clauses about the stack — countering a spell.
@@ -35,14 +35,19 @@ object Stack {
         constant("spell", TargetFilter.SpellOnStack),
         constant("creature or sorcery spell", TargetFilter.CreatureOrSorcerySpellOnStack),
         constant("creature spell", TargetFilter(com.wingedsheep.sdk.scripting.GameObjectFilter.Creature, zone = Zone.STACK)),
+        // The two-type nouns come before their one-type prefixes: "instant or sorcery spell" starts
+        // with the same word as "instant spell", and `oneOf` commits to the first row that reads.
+        constant("instant or sorcery spell", TargetFilter.InstantOrSorcerySpellOnStack),
         constant("instant spell", TargetFilter.InstantSpellOnStack),
+        constant("sorcery spell", TargetFilter.SorcerySpellOnStack),
+        constant("noncreature spell", TargetFilter.NoncreatureSpellOnStack),
     )
 
     /** "Counter target creature or sorcery spell." — Mystic Denial. */
     private val counter: Phrase<CardScript> = run {
         fun scriptFor(filter: TargetFilter) = CardScript(
             spellEffect = CounterEffect(),
-            targetRequirements = listOf(TargetSpell(filter = filter, id = Targets.SLOT)),
+            targetRequirements = listOf(TargetObject(filter = filter, id = Targets.SLOT)),
         )
         phrase("counter target {filter}", name = "counter a spell") {
             slot("filter", spellFilter)

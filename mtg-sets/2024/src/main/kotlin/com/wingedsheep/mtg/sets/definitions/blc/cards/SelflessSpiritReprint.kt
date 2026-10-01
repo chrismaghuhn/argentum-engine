@@ -4,8 +4,8 @@ import com.wingedsheep.sdk.model.Printing
 import com.wingedsheep.sdk.model.Rarity
 
 /**
- * Selfless Spirit reprint in BLC. Canonical CardDefinition lives in Eldritch Moon (its earliest real printing),
- * `com.wingedsheep.mtg.sets.definitions.emn.cards.SelflessSpirit`.
+ * Selfless Spirit reprint in BLC. Canonical CardDefinition lives in EMN, the card's earliest
+ * real printing; this file contributes only the BLC presentation row.
  */
 val SelflessSpiritReprint = Printing(
     oracleId = "71d785a9-ddc8-472e-a778-a551b444a4bd",

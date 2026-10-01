@@ -20,6 +20,16 @@ class GameBeansConfigBoosterPoolTest : FunSpec({
     val setCoverageService = SetCoverageService()
     val boosterGenerator = config.boosterGenerator(cardRegistry, setCoverageService)
 
+    test("Reality Fracture is selectable as a complete set and generates a nonempty pack") {
+        val fra = boosterGenerator.availableSets["FRA"].shouldNotBeNull()
+        fra.setName shouldBe "Reality Fracture"
+        fra.fullyImplemented shouldBe true
+        fra.cards.map { it.name } shouldContain "Rank Rat"
+        fra.cards.map { it.name } shouldContain "Unsummon"
+        fra.cards.all { it.metadata.inBooster } shouldBe true
+        boosterGenerator.generateBooster("FRA").size shouldBeGreaterThan 0
+    }
+
     test("Eighth Edition appears as a selectable set") {
         boosterGenerator.availableSets shouldContainKey "8ED"
     }
@@ -49,6 +59,14 @@ class GameBeansConfigBoosterPoolTest : FunSpec({
         com.wingedsheep.engine.limited.BoosterGenerator.withCardArt(
             mapOf("Raging Goblin" to 1), listOf(ragingGoblin),
         ) shouldBe mapOf("Raging Goblin#POR-145" to 1)
+    }
+
+    test("The Dark offers Portal basic lands for sealed deckbuilding") {
+        val drk = boosterGenerator.availableSets["DRK"].shouldNotBeNull()
+
+        drk.basicLands.map { it.name }.toSet() shouldBe
+            setOf("Plains", "Island", "Swamp", "Mountain", "Forest")
+        drk.basicLands.all { it.setCode == "POR" } shouldBe true
     }
 
     test("Foundations includes its own cards and its reprints in the booster pool") {

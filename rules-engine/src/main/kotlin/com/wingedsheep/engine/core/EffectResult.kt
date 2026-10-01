@@ -15,8 +15,7 @@ import com.wingedsheep.sdk.model.EntityId
 data class EffectResult(
     val state: GameState,
     val events: List<GameEvent> = emptyList(),
-    val error: String? = null,
-    val pendingDecision: PendingDecision? = null,
+    val outcome: Outcome = Outcome.Done,
     /** Card collections produced by pipeline effects (GatherCards, SelectFromCollection, etc.) */
     val updatedCollections: Map<String, List<EntityId>> = emptyMap(),
     /** Subtype-group lists produced by pipeline effects (GatherSubtypes, etc.) */
@@ -33,41 +32,23 @@ data class EffectResult(
      * the cost-sacrifice path, which captures the same snapshots at cost-payment time.
      */
     val updatedSacrificedPermanents: List<EntitySnapshot> = emptyList(),
-    /**
-     * True when this effect already ran trigger detection + processing on its own emitted events
-     * (e.g. a nested cast via [com.wingedsheep.sdk.scripting.effects.CastFromCollectionWithoutPayingCostEffect],
-     * which routes through `CastSpellHandler` and stacks cast-triggers itself). Callers that re-scan
-     * a resumed continuation's events for triggers must honor this flag and skip those events, or a
-     * "whenever you cast a spell" trigger fires twice (Vaan, Street Thief casting an opponent's card).
-     * Mirrors [ExecutionResult.triggersAlreadyProcessed].
-     */
-    val triggersAlreadyProcessed: Boolean = false,
     /** Internal rules diagnostics carried through effect and continuation composition. */
     val diagnostics: List<DiagnosticSignal> = emptyList()
 ) {
-    val isSuccess: Boolean get() = error == null && pendingDecision == null
-    val isPaused: Boolean get() = pendingDecision != null
+    /** The rejection's message, or null when the effect was not rejected. */
+    val error: String? get() = (outcome as? Outcome.Rejected)?.reason?.message
+
+    /** The question the effect stopped on, or null when it did not pause. */
+    val pendingDecision: PendingDecision? get() = (outcome as? Outcome.Paused)?.decision
     val newState: GameState get() = state
 
-    fun toExecutionResult() = ExecutionResult(
-        state = state,
-        events = events,
-        error = error,
-        pendingDecision = pendingDecision,
-        triggersAlreadyProcessed = triggersAlreadyProcessed,
-        diagnostics = diagnostics,
-    )
+    fun toExecutionResult() =
+        ExecutionResult(state, events, outcome, diagnostics)
 
     companion object {
         /** Wrap an [ExecutionResult] from a non-effect subsystem (e.g., StackResolver). */
-        fun from(result: ExecutionResult) = EffectResult(
-            state = result.state,
-            events = result.events,
-            error = result.error,
-            pendingDecision = result.pendingDecision,
-            triggersAlreadyProcessed = result.triggersAlreadyProcessed,
-            diagnostics = result.diagnostics,
-        )
+        fun from(result: ExecutionResult) =
+            EffectResult(result.state, result.events, result.outcome, diagnostics = result.diagnostics)
 
         fun success(
             state: GameState,
@@ -76,19 +57,24 @@ data class EffectResult(
         ): EffectResult =
             EffectResult(state, events, diagnostics = diagnostics)
 
+        /** See [ExecutionResult.error]. */
         fun error(
             state: GameState,
             message: String,
             diagnostics: List<DiagnosticSignal> = emptyList(),
         ): EffectResult =
-            EffectResult(state, error = message, diagnostics = diagnostics)
+            EffectResult(
+                state,
+                outcome = Outcome.Rejected(Rejection.ExecutionFailed(message)),
+                diagnostics = diagnostics,
+            )
 
-        fun paused(
+        /** Propagate an existing suspension without allocating or installing another question. */
+        fun propagatePause(
             state: GameState,
-            decision: PendingDecision,
             events: List<GameEvent> = emptyList(),
             diagnostics: List<DiagnosticSignal> = emptyList(),
         ): EffectResult =
-            EffectResult(state, events, pendingDecision = decision, diagnostics = diagnostics)
+            from(ExecutionResult.propagatePause(state, events, diagnostics))
     }
 }

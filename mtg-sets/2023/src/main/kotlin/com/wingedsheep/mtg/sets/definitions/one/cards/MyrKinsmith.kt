@@ -23,10 +23,10 @@ val MyrKinsmith = card("Myr Kinsmith") {
     oracleText = "When this creature enters, you may search your library for a Myr card, reveal it, put it into your hand, then shuffle."
 
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
+        trigger = Triggers.self.enters()
         optional = true
         effect = Patterns.Library.searchLibrary(
-            filter = GameObjectFilter.Permanent.withSubtype("Myr"),
+            filter = GameObjectFilter.Any.withSubtype("Myr"),
             destination = SearchDestination.HAND,
             reveal = true
         )

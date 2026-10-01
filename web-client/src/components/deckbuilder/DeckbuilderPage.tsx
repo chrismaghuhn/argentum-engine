@@ -22,7 +22,7 @@ import type { PrintingRef } from '@/types'
 import { PrintingPicker, type PrintingDTO } from './PrintingPicker'
 import { ManaCost, ManaSymbol } from '@/components/ui/ManaSymbols'
 import { useDfcHoverFlip } from '@/components/ui/useDfcHoverFlip'
-import { getCardImageUrl, landscapeImageRotateDeg } from '@/utils/cardImages'
+import { getCardImageUrl } from '@/utils/cardImages'
 import {
   DeckTile,
   DeckTileActionButton,
@@ -328,6 +328,10 @@ export function DeckbuilderPage() {
       setDeckName(existing.name)
       setDeckCards(mergeCommanderIntoCards(existing.cards, existing.commander ?? null))
       setCommander(existing.commander ?? null)
+      // Without this a refresh (or a deep link to /deckbuilder/<id>) rehydrates the deck with an
+      // empty sideboard, and the next Save writes that emptiness back — `saveDeck` replaces the
+      // stored record wholesale rather than merging, so the sideboard is destroyed.
+      setSideboardCards(existing.sideboard ? { ...existing.sideboard } : {})
       setActiveDeckId(existing.id)
       setPinnedPrintings(pinnedPrintingsFromEntries(existing.entries))
       if (existing.format) {
@@ -393,6 +397,9 @@ export function DeckbuilderPage() {
         setDeckName(shared.name || 'Shared deck')
         setDeckCards(mergeCommanderIntoCards(shared.cards, shared.commander ?? null))
         setCommander(shared.commander ?? null)
+        // Reset rather than leave in place: a deck loaded without one has no sideboard, and a
+        // stale board from the previously open deck would otherwise follow it.
+        setSideboardCards(shared.sideboard ? { ...shared.sideboard } : {})
         setActiveDeckId(null)
         const pins: Record<string, PrintingRef> = { ...(shared.printings ?? {}) }
         if (shared.commander && shared.commanderPrinting) pins[shared.commander] = shared.commanderPrinting
@@ -892,8 +899,10 @@ export function DeckbuilderPage() {
       ...(activeFormat ? { format: activeFormat } : {}),
       ...(designated ? { commander: designated } : {}),
       ...(commanderPrinting ? { commanderPrinting } : {}),
+      // Carried for the account save; the v2 share code has no field for it and drops it.
+      ...(Object.keys(sideboardCards).length > 0 ? { sideboard: sideboardCards } : {}),
     }
-  }, [isCommanderFormat, commander, deckCards, pinnedPrintings, deckName, activeFormat])
+  }, [isCommanderFormat, commander, deckCards, pinnedPrintings, deckName, activeFormat, sideboardCards])
 
   // Apply a SharedDeck into the builder (account load / deep link). Mirrors the share-URL decode
   // path: schedules format + commander in one transition so the "clear commander" guard never sees
@@ -914,6 +923,9 @@ export function DeckbuilderPage() {
         setDeckName(shared.name || 'Saved deck')
         setDeckCards(mergeCommanderIntoCards(shared.cards, shared.commander ?? null))
         setCommander(shared.commander ?? null)
+        // Reset rather than leave in place: a deck loaded without one has no sideboard, and a
+        // stale board from the previously open deck would otherwise follow it.
+        setSideboardCards(shared.sideboard ? { ...shared.sideboard } : {})
         setActiveDeckId(null)
         const pins: Record<string, PrintingRef> = { ...(shared.printings ?? {}) }
         if (shared.commander && shared.commanderPrinting) pins[shared.commander] = shared.commanderPrinting
@@ -1023,6 +1035,9 @@ export function DeckbuilderPage() {
     }
     setDeckCards({ ...ex.cards })
     setCommander(ex.commander ?? null)
+    // Examples carry no sideboard; clear rather than leave the previous deck's attached, which
+    // would follow the example into a save and into a game.
+    setSideboardCards({})
     setActiveDeckId(null)
     // Pre-fill pinned printings from the example. The commander's pin is keyed by name
     // alongside the rest — same shape `pinnedPrintingsFromEntries` produces on saved-deck
@@ -1262,8 +1277,8 @@ export function DeckbuilderPage() {
                 ? (deckHoverDfc.displayImageUri ?? effectiveDeckHoverCard?.imageUri ?? null)
                 : null
             }
-            overlay={deckHoverDfc.hint}
-            imageRotateDeg={landscapeImageRotateDeg(effectiveDeckHoverCard)}
+            hint={deckHoverDfc.hint}
+            imageRotateDeg={deckHoverDfc.imageRotateDeg(effectiveDeckHoverCard)}
           />
         ) : (
           <FilterSection
@@ -1774,7 +1789,7 @@ function ImportPreview({
         </span>
         {parsed.sideboard.length > 0 && (
           <span className={styles.importMutedBadge}>
-            sideboard ignored ({parsed.sideboard.reduce((a, e) => a + e.count, 0)})
+            sideboard ({parsed.sideboard.reduce((a, e) => a + e.count, 0)})
           </span>
         )}
         {issueCount > 0 && <span className={styles.importBadBadge}>{issueCount} issue{issueCount === 1 ? '' : 's'}</span>}
@@ -2484,12 +2499,12 @@ function DeckFormatPicker({
 function DeckHoverPreview({
   name,
   imageUri,
-  overlay,
+  hint,
   imageRotateDeg = 0,
 }: {
   name: string | null
   imageUri: string | null
-  overlay?: React.ReactNode
+  hint?: React.ReactNode
   imageRotateDeg?: 0 | 90
 }) {
   if (!name) {
@@ -2528,8 +2543,8 @@ function DeckHoverPreview({
               : undefined
           }
         />
-        {overlay}
       </div>
+      {hint}
     </div>
   )
 }
@@ -2705,8 +2720,8 @@ function DeckListPanel({
       <HoverFollowPreview
         name={hoverName ? (dfc.displayName ?? hoverName) : null}
         imageUri={hoverName ? (dfc.displayImageUri ?? effectiveHoverCard?.imageUri ?? null) : null}
-        overlay={dfc.hint}
-        imageRotateDeg={landscapeImageRotateDeg(effectiveHoverCard)}
+        hint={dfc.hint}
+        imageRotateDeg={dfc.imageRotateDeg(effectiveHoverCard)}
       />
     </div>
   )
@@ -3167,8 +3182,8 @@ function AddCardSearch({
       <HoverFollowPreview
         name={hoverCard ? (dfc.displayName ?? hoverCard.name) : null}
         imageUri={hoverCard ? (dfc.displayImageUri ?? hoverCard.imageUri ?? null) : null}
-        overlay={dfc.hint}
-        imageRotateDeg={landscapeImageRotateDeg(hoverCard)}
+        hint={dfc.hint}
+        imageRotateDeg={dfc.imageRotateDeg(hoverCard)}
       />
     </div>
   )

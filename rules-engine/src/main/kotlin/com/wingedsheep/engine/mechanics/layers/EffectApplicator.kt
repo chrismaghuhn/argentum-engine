@@ -5,32 +5,57 @@ import com.wingedsheep.engine.state.components.battlefield.chosenColor
 import com.wingedsheep.engine.state.components.battlefield.chosenCreatureType
 import com.wingedsheep.engine.handlers.ConditionEvaluationContext
 import com.wingedsheep.engine.handlers.ConditionEvaluator
-import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
-import com.wingedsheep.engine.handlers.PredicateContext
-import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.effects.linkedexile.LinkedExileLookup
+import com.wingedsheep.engine.mechanics.targeting.ColorProtection
+import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.ProtectionComponent
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.model.EntityId
-import com.wingedsheep.sdk.scripting.conditions.ComparisonOperator
 
 /**
  * Applies continuous effects and counters to mutable projected values.
  */
 internal class EffectApplicator(
-    private val dynamicAmountEvaluator: DynamicAmountEvaluator
+    /**
+     * Source conditions are evaluated while the projection is still being built, so this is
+     * [StateProjector]'s non-reentrant evaluator: reaching for the canonical lazy
+     * GameState.projectedState here would re-enter the projector's initializer and recurse until
+     * the stack overflows (e.g. a Layer-7 conditional P/T static ability whose source condition
+     * counts creatures via a battlefield aggregate). Its empty default projection falls back to
+     * base CardComponent values, exactly as CDA resolution does.
+     */
+    private val conditionEvaluator: ConditionEvaluator
 ) {
+    private val dynamicAmountEvaluator = conditionEvaluator.amounts
 
-    // Source conditions are evaluated while the projection is still being built. Hand the
-    // ConditionEvaluator a non-reentrant projection (mirroring StateProjector's own evaluator):
-    // reaching for the canonical lazy GameState.projectedState here would re-enter our own
-    // initializer and recurse until the stack overflows (e.g. a Layer-7 conditional P/T static
-    // ability whose source condition counts creatures via a battlefield aggregate). The empty
-    // projection falls back to base CardComponent values, exactly as CDA resolution does.
-    private val conditionEvaluator = ConditionEvaluator(defaultProjection = { ProjectedState(it, emptyMap()) })
+    /**
+     * Adds a granted keyword string. A numeric grant `<KEYWORD>_<n>` (granted toxic, granted
+     * bushido) is *summed* into any `<KEYWORD>_<m>` already there rather than added beside it: the
+     * projected keyword set can't hold two equal strings, so two "gains toxic 1" grants — or a
+     * printed toxic 2 plus a granted toxic 2 — would otherwise collapse to one and lose the N the
+     * readers sum (CR 702.164b's total toxic value, `KeywordValue`).
+     */
+    private fun addKeyword(keywords: MutableSet<String>, keyword: String) {
+        val split = keyword.lastIndexOf('_')
+        val n = if (split > 0) keyword.substring(split + 1).toIntOrNull() else null
+        if (n == null) {
+            keywords.add(keyword)
+            return
+        }
+        val prefix = keyword.substring(0, split + 1)
+        val existing = keywords.firstOrNull { it.startsWith(prefix) && it.substring(prefix.length).toIntOrNull() != null }
+        if (existing == null) {
+            keywords.add(keyword)
+        } else {
+            keywords.remove(existing)
+            keywords.add(prefix + (existing.substring(prefix.length).toInt() + n))
+        }
+    }
 
     fun applyEffect(
         effect: ContinuousEffect,
@@ -118,7 +143,7 @@ internal class EffectApplicator(
                     values.name = mod.name
                 }
                 is Modification.GrantKeyword -> {
-                    values.keywords.add(mod.keyword)
+                    addKeyword(values.keywords, mod.keyword)
                     // Changeling grants all creature types (Rule 702.73)
                     if (mod.keyword == Keyword.CHANGELING.name) {
                         values.subtypes.addAll(com.wingedsheep.sdk.core.Subtype.ALL_CREATURE_TYPES)
@@ -187,6 +212,43 @@ internal class EffectApplicator(
                     values.subtypes.addAll(mod.subtypes)
                     values.types.addAll(mod.subtypes)
                 }
+                is Modification.SetCreatureSubtypesFrom -> {
+                    // "Has the creature types of [that object]" (Duplicant). Same replace-only-the-
+                    // creature-types semantics as SetCreatureSubtypes above (CR 205.1b — non-creature
+                    // subtypes are untouched), but the set is read from the referenced object on every
+                    // projection pass instead of being baked in at conversion time.
+                    //
+                    // The reference is resolved against a bare EffectContext rooted at the *effect's*
+                    // source, which is all LinkedExiledCard needs — see ProjectionScopedAmounts for
+                    // why the context-scoped references can't be used here. The referenced card is in
+                    // exile and has no projection entry, so its printed creature types are the right
+                    // (and only) read.
+                    val creatureTypes = com.wingedsheep.sdk.core.Subtype.ALL_CREATURE_TYPES.toSet()
+                    val controllerId = projectedValues[effect.sourceId]?.controllerId
+                        ?: state.getEntity(effect.sourceId)?.get<ControllerComponent>()?.playerId
+                        ?: effect.controllerId
+                    val donorId = controllerId?.let {
+                        com.wingedsheep.engine.handlers.effects.TargetResolutionUtils.resolveEntity(
+                            mod.source,
+                            EffectContext(
+                                sourceId = effect.sourceId,
+                                controllerId = it,
+                                affectedEntityId = entityId
+                            ),
+                            state
+                        )
+                    }
+                    val donorTypes = donorId
+                        ?.let { state.getEntity(it)?.get<CardComponent>() }
+                        ?.typeLine?.subtypes.orEmpty()
+                        .map { it.value }
+                        .filter { it in creatureTypes }
+                    val newTypes = donorTypes.toSet() + mod.retainedTypes
+                    values.subtypes.removeAll { it in creatureTypes }
+                    values.types.removeAll { it in creatureTypes }
+                    values.subtypes.addAll(newTypes)
+                    values.types.addAll(newTypes)
+                }
                 is Modification.SetBasicLandTypes -> {
                     val basicLandTypes = com.wingedsheep.sdk.core.Subtype.ALL_BASIC_LAND_TYPES
                     values.subtypes.removeAll { it in basicLandTypes }
@@ -249,6 +311,9 @@ internal class EffectApplicator(
                 is Modification.GrantHexproofFromMonocolored -> {
                     values.keywords.add("HEXPROOF_FROM_MONOCOLORED")
                 }
+                is Modification.GrantHexproofFromMulticolored -> {
+                    values.keywords.add("HEXPROOF_FROM_MULTICOLORED")
+                }
                 is Modification.GrantProtectionFromControlledColors -> {
                     // Protection from the colors of permanents the source's controller controls
                     // (e.g., Pledge of Loyalty). Read the projected controller + projected colors
@@ -261,6 +326,49 @@ internal class EffectApplicator(
                             if (other.controllerId != sourceController) continue
                             for (colorName in other.colors) {
                                 values.keywords.add("PROTECTION_FROM_$colorName")
+                            }
+                        }
+                    }
+                }
+                is Modification.GrantProtectionFromLinkedExiledCardTypes -> {
+                    // Protection from each card type of the cards exiled with the source (Imprint,
+                    // CR 702.15 — Mirror Golem). The card-type twin of the controlled-colors branch
+                    // above: the *set* of qualities comes from game state rather than the card text.
+                    // Card types are read off the exiled card's own type line — an exiled card is
+                    // never on the battlefield, so there is no projection entry to consult, and no
+                    // layer rewrites a card's types in exile.
+                    for (exiledId in LinkedExileLookup.exiledCards(state, effect.sourceId)) {
+                        val typeLine = state.getEntity(exiledId)?.get<CardComponent>()?.typeLine ?: continue
+                        for (cardType in typeLine.cardTypes) {
+                            values.keywords.add("PROTECTION_FROM_CARDTYPE_${cardType.name}")
+                        }
+                    }
+                }
+                is Modification.GrantKeywordsOfGraveyardCreatureCards -> {
+                    // Cairn Wanderer. A card in a graveyard has no projection entry and nothing on
+                    // the battlefield can grant it an ability, so its keywords are its printed ones:
+                    // the same base keywords and printed protections the projector starts a
+                    // permanent from.
+                    for (playerId in state.turnOrder) {
+                        for (cardId in state.getGraveyard(playerId)) {
+                            val container = state.getEntity(cardId) ?: continue
+                            val card = container.get<CardComponent>() ?: continue
+                            if (!card.typeLine.isCreature) continue
+                            for (keyword in card.baseKeywords) {
+                                if (keyword.name in mod.keywords ||
+                                    (mod.anyLandwalk && keyword.name.endsWith("WALK"))
+                                ) {
+                                    values.keywords.add(keyword.name)
+                                }
+                            }
+                            if (mod.anyProtection) {
+                                container.get<ProtectionComponent>()?.let { protection ->
+                                    protection.colors.forEach { values.keywords.add("PROTECTION_FROM_${it.name}") }
+                                    protection.subtypes.forEach { values.keywords.add("PROTECTION_FROM_SUBTYPE_${it.uppercase()}") }
+                                    protection.supertypes.forEach { values.keywords.add("PROTECTION_FROM_SUPERTYPE_${it.uppercase()}") }
+                                    protection.cardTypes.forEach { values.keywords.add("PROTECTION_FROM_CARDTYPE_$it") }
+                                    if (protection.multicolored) values.keywords.add(ColorProtection.PROTECTION_FROM_MULTICOLORED)
+                                }
                             }
                         }
                     }
@@ -279,6 +387,10 @@ internal class EffectApplicator(
                 }
                 is Modification.SetMustAttack -> {
                     values.mustAttack = true
+                }
+                is Modification.SetMustAttackPlayer -> {
+                    values.mustAttack = true
+                    values.mustAttackPlayer = true
                 }
                 is Modification.SetMustBlock -> {
                     values.mustBlock = true
@@ -339,9 +451,22 @@ internal class EffectApplicator(
             val plusZeroPlusOne = counters.getCount(CounterType.PLUS_ZERO_PLUS_ONE)
             val minusOneMinusZero = counters.getCount(CounterType.MINUS_ONE_MINUS_ZERO)
             val minusZeroMinusOne = counters.getCount(CounterType.MINUS_ZERO_MINUS_ONE)
+            // Frankenstein's Monster's +2/+0 and +0/+2 — a distinct counter kind, not two +1/+0s.
+            val plusTwoPlusZero = counters.getCount(CounterType.PLUS_TWO_PLUS_ZERO)
+            val plusZeroPlusTwo = counters.getCount(CounterType.PLUS_ZERO_PLUS_TWO)
 
-            val powerMod = (plusOneCounters - minusOneCounters) + plusOnePlusZero - minusOneMinusZero
-            val toughnessMod = (plusOneCounters - minusOneCounters) + plusZeroPlusOne - minusZeroMinusOne
+            // The Fallen Empires sizes — +1/+2 (Armor Thrull), +2/+2 (Soul Exchange),
+            // -2/-2 (Ebon Praetor). Same rule (CR 122.1a), different X and Y.
+            val plusOnePlusTwo = counters.getCount(CounterType.PLUS_ONE_PLUS_TWO)
+            val plusTwoPlusTwo = counters.getCount(CounterType.PLUS_TWO_PLUS_TWO)
+            val minusTwoMinusTwo = counters.getCount(CounterType.MINUS_TWO_MINUS_TWO)
+
+            val powerMod = (plusOneCounters - minusOneCounters) +
+                plusOnePlusZero - minusOneMinusZero + (2 * plusTwoPlusZero) +
+                plusOnePlusTwo + (2 * plusTwoPlusTwo) - (2 * minusTwoMinusTwo)
+            val toughnessMod = (plusOneCounters - minusOneCounters) +
+                plusZeroPlusOne - minusZeroMinusOne + (2 * plusZeroPlusTwo) +
+                (2 * plusOnePlusTwo) + (2 * plusTwoPlusTwo) - (2 * minusTwoMinusTwo)
 
             if (powerMod != 0) {
                 values.power = (values.power ?: 0) + powerMod

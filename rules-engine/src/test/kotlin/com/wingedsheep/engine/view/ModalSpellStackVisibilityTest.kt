@@ -1,8 +1,10 @@
 package com.wingedsheep.engine.view
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.support.GameTestDriver
@@ -20,6 +22,7 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Tests B1 / B2 from [`backlog/modal-cast-time-choices-plan.md`]:
@@ -47,7 +50,7 @@ class ModalSpellStackVisibilityTest : FunSpec({
     }
 
     fun transformer(d: GameTestDriver): ClientStateTransformer =
-        ClientStateTransformer(cardRegistry = d.cardRegistry)
+        ClientStateTransformer(cardRegistry = d.cardRegistry, predicateEvaluator = PredicateEvaluator(cardRegistry = null))
 
     fun nameOf(d: GameTestDriver, id: EntityId): String? =
         d.state.getEntity(id)?.get<CardComponent>()?.name
@@ -86,7 +89,7 @@ class ModalSpellStackVisibilityTest : FunSpec({
                     listOf(ChosenTarget.Permanent(centaur), ChosenTarget.Permanent(goblin))
                 )
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         // Transform from the opponent's viewpoint — they must see everything the caster does
         // for the modes/targets, so they can knowingly decide whether to counter.
@@ -197,7 +200,7 @@ class ModalSpellStackVisibilityTest : FunSpec({
                     listOf(ChosenTarget.Permanent(centaur), ChosenTarget.Permanent(goblin))
                 )
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         // Now splice in a hidden-zone target on the second mode's target list. The DTO
         // transformer doesn't validate; it renders what's on the component. That gives us a
@@ -233,6 +236,19 @@ class ModalSpellStackVisibilityTest : FunSpec({
         redactedName shouldNotContain "Savannah Lions"
         redactedName.lowercase() shouldContain "card in"
         redactedName.lowercase() shouldContain "hand"
+
+        // A per-card reveal changes the semantic identity answer without making the whole hand
+        // public. Stack target presentation must follow that answer rather than the old owner-only
+        // shortcut.
+        d.replaceState(d.state.updateEntity(secret) { container ->
+            container.with(RevealedToComponent.to(p2))
+        })
+        val revealedOpponentGroups = transformer(d)
+            .transform(d.state, viewingPlayerId = p2)
+            .cards[stackSpellId]
+            ?.perModeTargets
+        revealedOpponentGroups.shouldNotBeNull()
+        revealedOpponentGroups[1].targetNames shouldBe listOf("Savannah Lions")
 
         // Mode descriptions are still public to the opponent — only the card identity is hidden.
         opponentView.cards[stackSpellId]?.chosenModeDescriptions?.size shouldBe 2

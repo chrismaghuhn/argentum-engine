@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { LegalActionInfo } from '../types'
+import type { ClientPlayer, LegalActionInfo } from '../types'
 
 // selectors.ts transitively imports gameStore.ts, whose gameplay slice reads
 // localStorage.getItem(...) at module-init time to seed autoTapEnabled — a browser global
@@ -12,8 +12,8 @@ vi.stubGlobal('localStorage', {
   removeItem: () => {},
 })
 
-const { cardIdForAction, isHighlightable } = await import('./selectors')
-const { entityId } = await import('../types')
+const { cardIdForAction, isHighlightable, turnQueueHintFor, librarySlots } = await import('./selectors')
+const { entityId, library } = await import('../types')
 
 // --- Fixture builders -------------------------------------------------------
 // Minimal LegalActionInfo objects — cardIdForAction/isHighlightable only read
@@ -112,10 +112,59 @@ describe('isHighlightable', () => {
     ))).toBe(false)
   })
 
+  it('is highlightable for a mana ability with an X the player must choose (storage lands)', () => {
+    expect(isHighlightable(actionInfo(
+      { type: 'ActivateAbility', playerId: PLAYER, sourceId: SOURCE, abilityId: 'tap', targets: [] },
+      { isManaAbility: true, hasXCost: true, maxAffordableX: 3 },
+    ))).toBe(true)
+  })
+
   it('is highlightable for a mana ability that carries a mana cost (e.g. a filter land)', () => {
     expect(isHighlightable(actionInfo(
       { type: 'ActivateAbility', playerId: PLAYER, sourceId: SOURCE, abilityId: 'tap', targets: [] },
       { isManaAbility: true, manaCostString: '{U}' },
     ))).toBe(true)
+  })
+})
+
+describe('turnQueueHintFor', () => {
+  const seat = (id: string, hasLost = false) => ({ playerId: entityId(id), hasLost }) as unknown as ClientPlayer
+  const table = [seat('a'), seat('b'), seat('c'), seat('d')]
+
+  it('counts living seats from the active player to the viewer', () => {
+    expect(turnQueueHintFor(table, entityId('a'), entityId('b'))).toBe("You're next")
+    expect(turnQueueHintFor(table, entityId('a'), entityId('c'))).toBe('You in 2')
+    expect(turnQueueHintFor(table, entityId('a'), entityId('d'))).toBe('You in 3')
+  })
+
+  it('wraps around the end of the turn order', () => {
+    expect(turnQueueHintFor(table, entityId('d'), entityId('a'))).toBe("You're next")
+    expect(turnQueueHintFor(table, entityId('c'), entityId('b'))).toBe('You in 3')
+  })
+
+  it('skips eliminated seats', () => {
+    const withTomb = [seat('a'), seat('b', true), seat('c'), seat('d')]
+    expect(turnQueueHintFor(withTomb, entityId('a'), entityId('c'))).toBe("You're next")
+  })
+
+  it('says nothing on your own turn, for an eliminated viewer, or for an unknown seat', () => {
+    expect(turnQueueHintFor(table, entityId('a'), entityId('a'))).toBeUndefined()
+    expect(turnQueueHintFor([seat('a'), seat('b', true), seat('c')], entityId('a'), entityId('b'))).toBeUndefined()
+    expect(turnQueueHintFor(table, entityId('a'), entityId('zz'))).toBeUndefined()
+    expect(turnQueueHintFor(table, null, entityId('b'))).toBeUndefined()
+  })
+})
+
+describe('librarySlots', () => {
+  const owner = entityId('p1')
+
+  it('places each known card at its position and leaves the rest as card backs', () => {
+    const zone = { zoneId: library(owner), cardIds: [entityId('bottom'), entityId('top')], positions: [3, 0], size: 4, isVisible: true }
+    expect(librarySlots(zone)).toEqual([entityId('top'), null, null, entityId('bottom')])
+  })
+
+  it('reads a library with no known cards as all card backs', () => {
+    const zone = { zoneId: library(owner), cardIds: [], positions: [], size: 2, isVisible: true }
+    expect(librarySlots(zone)).toEqual([null, null])
   })
 })

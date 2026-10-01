@@ -14,6 +14,8 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.nulls.shouldBeNull
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Fireshrieker (MRD #171) — "Equipped creature has double strike. Equip {2}."
@@ -39,7 +41,7 @@ class FireshriekerScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature))
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -93,7 +95,7 @@ class FireshriekerScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(opponentCreature))
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.attachedTo(fireshrieker) shouldBe null
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
@@ -105,7 +107,7 @@ class FireshriekerScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(ownCreature))
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.attachedTo(fireshrieker) shouldBe null
     }
 
@@ -120,7 +122,7 @@ class FireshriekerScenarioTest : FunSpec({
         driver.giveMana(player, com.wingedsheep.sdk.core.Color.BLACK, 1)
         driver.giveColorlessMana(player, 1)
         driver.castSpellWithTargets(player, doomBlade, listOf(ChosenTarget.Permanent(creature)))
-            .isSuccess shouldBe true
+            .outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.findPermanent(player, "Fireshrieker") shouldBe fireshrieker
@@ -141,7 +143,7 @@ class FireshriekerScenarioTest : FunSpec({
         driver.giveMana(player, com.wingedsheep.sdk.core.Color.WHITE, 1)
         driver.giveColorlessMana(player, 1)
         driver.castSpellWithTargets(player, disenchant, listOf(ChosenTarget.Permanent(fireshrieker))
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.getPermanents(player) shouldNotContain fireshrieker

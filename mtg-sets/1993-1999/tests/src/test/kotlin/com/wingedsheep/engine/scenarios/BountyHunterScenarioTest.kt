@@ -13,6 +13,7 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Bounty Hunter (TMP #110).
@@ -88,7 +89,7 @@ class BountyHunterScenarioTest : io.kotest.core.spec.style.FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.bountyCount(blackCreature) shouldBe 0
     }
 
@@ -110,7 +111,7 @@ class BountyHunterScenarioTest : io.kotest.core.spec.style.FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.findPermanent(opponent, "Grizzly Bears") shouldNotBe null
     }
 

@@ -8,7 +8,6 @@ import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
@@ -22,6 +21,8 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.string.shouldContain
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
  * Regression coverage for source-aware protection during activated-ability target enumeration.
@@ -37,7 +38,7 @@ class TargetProtectionEnumerationTest : FunSpec({
         oracleText = "{T}: Target creature gets +1/+0 until end of turn."
         activatedAbility {
             cost = Costs.Tap
-            target = Targets.Creature
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
         }
     }

@@ -47,11 +47,20 @@ class CommandZoneAbilityEnumerator : ActionEnumerator {
                 // action is never offered at instant speed (the handler would reject it anyway).
                 if (ability.timing == TimingRule.SorcerySpeed && !context.canPlaySorcerySpeed) continue
 
-                // Activation restrictions (e.g. once each turn).
-                if (ability.restrictions.any {
-                        !context.castPermissionUtils.checkActivationRestriction(state, playerId, it, entityId, ability.id, ability.isExhaust)
-                    }
+                // Kang the Conqueror's turn-scoped power-up lockout is zone-independent, and so is
+                // the matching check in `ActivateAbilityHandler.validate` — which sits before the
+                // zone split and so would reject a command-zone power-up the same way. Guard here
+                // too, or the action would be offered and then refused.
+                if (context.castPermissionUtils.isPowerUpActivationRestricted(state, ability)) continue
+
+                // An any-zone "players can't activate abilities" (Yuriko, Blade of the Mighty).
+                if (context.castPermissionUtils.isActivationPreventedForPlayer(
+                        state, entityId, playerId, abilityIsManaAbility = ability.isManaAbility
+                    )
                 ) continue
+
+                // Activation restrictions (e.g. once each turn).
+                if (!context.legality.activationRestrictionsMet(state, playerId, entityId, ability)) continue
 
                 // Cost payability — Mana, Discard, and PayLife, atom or composite (the avatar's
                 // "{X}{X}{X}, Discard a card"). Other atoms are validated by the handler at
@@ -66,7 +75,7 @@ class CommandZoneAbilityEnumerator : ActionEnumerator {
                 val resolvedPayLifeTotal = context.costUtils.resolvePayLifeCostTotal(
                     state, playerId, entityId, effectiveCost
                 ) ?: continue
-                if (state.lifeTotal(playerId) < resolvedPayLifeTotal) continue
+                if (!state.canPayLife(playerId, resolvedPayLifeTotal)) continue
 
                 val aggregateManaCost = when (effectiveCost) {
                     is AbilityCost.Atom -> effectiveCost.manaCostOrNull ?: ManaCost.ZERO
@@ -100,6 +109,8 @@ class CommandZoneAbilityEnumerator : ActionEnumerator {
                     }
                 }
 
+                if (!com.wingedsheep.engine.mechanics.cost.PlayerCounterPayment.canAffordAbility(state, playerId, effectiveCost)) continue
+
                 when (effectiveCost) {
                     is AbilityCost.Atom -> checkAtom(effectiveCost.atom)
                     is AbilityCost.Composite -> effectiveCost.costs.forEach { sub ->
@@ -123,10 +134,10 @@ class CommandZoneAbilityEnumerator : ActionEnumerator {
                     is AbilityCost.Composite -> effectiveCost.costs.firstNotNullOfOrNull { it.manaCostOrNull }
                     else -> null
                 }
-                val hasXCost = abilityManaCost?.hasX == true
+                val hasXCost = abilityManaCost?.hasX == true || context.costUtils.hasPlayerChosenNonManaX(effectiveCost)
                 val maxAffordableX = if (hasXCost) {
                     context.costUtils.calculateMaxAffordableX(
-                        state, playerId, ability.cost, abilityManaCost,
+                        state, playerId, effectiveCost, abilityManaCost,
                         precomputedSources = context.availableManaSources,
                         // Same source scoping the battlefield enumerator passes: cost filters
                         // routinely resolve against the ability's own permanent.

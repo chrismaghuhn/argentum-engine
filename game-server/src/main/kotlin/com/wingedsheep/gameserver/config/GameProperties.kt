@@ -10,6 +10,7 @@ data class GameProperties(
     val ai: AiProperties = AiProperties(),
     val mlPolicy: MlPolicyProperties = MlPolicyProperties(),
     val easterEggs: EasterEggProperties = EasterEggProperties(),
+    val tournament: TournamentProperties = TournamentProperties(),
     val debugMode: Boolean = false
 )
 
@@ -20,6 +21,26 @@ data class GameProperties(
  */
 data class EasterEggProperties(
     val enabled: Boolean = false
+)
+
+/**
+ * Bracket tournament behaviour.
+ */
+data class TournamentProperties(
+    /**
+     * Decide an AI-vs-AI bracket match by simulation instead of actually playing it.
+     *
+     * A round-robin bracket with one human and N AI seats schedules O(N²) matches, and all but N of
+     * them are AI against AI — games nobody is in, each one running a full engine game plus two AI
+     * controllers on the server. On a shared box that is the bulk of the tournament's CPU, spent on
+     * results the human only ever reads off the standings table.
+     *
+     * On by default; set `GAME_TOURNAMENT_SIMULATE_AI_MATCHES=false` to play every match out (which is
+     * what you want on a box where somebody is spectating the AI games). An all-AI bracket — the AI
+     * Sandbox, a model-comparison run — is never simulated whatever this says: it was built to be
+     * watched, and there would be nothing left of it.
+     */
+    val simulateAiMatches: Boolean = true,
 )
 
 data class HandSmootherProperties(
@@ -63,7 +84,7 @@ data class AdminProperties(
 
 data class AiProperties(
     val enabled: Boolean = false,
-    /** AI mode: "engine" (built-in rules engine AI, default) or "llm" (LLM-based AI via API). */
+    /** AI mode: a built-in mode (`engine` or `llm`) or a registered external provider mode. */
     val mode: String = "engine",
     val baseUrl: String = "https://openrouter.ai/api/v1",
     val apiKey: String = "",
@@ -99,8 +120,8 @@ data class AiProperties(
     /** Whether we're using the built-in engine AI (no API key required). */
     val isEngineMode: Boolean get() = mode.equals("engine", ignoreCase = true)
 
-    /** Whether we're using the LLM-based AI. */
-    val isLlmMode: Boolean get() = !isEngineMode
+    /** Whether we're using the built-in LLM-based AI. */
+    val isLlmMode: Boolean get() = mode.equals("llm", ignoreCase = true)
 }
 
 /** Server-owned operational locator/settings for the C1_07B worker; never client-selectable. */

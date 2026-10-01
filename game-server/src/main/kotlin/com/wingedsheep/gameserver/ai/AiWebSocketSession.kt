@@ -47,10 +47,21 @@ class AiWebSocketSession(
      * on every decision, so a change takes effect on the AI's next move.
      */
     @Volatile var thinkingDelayMs: Long = 500,
-    private val onActionReady: (EntityId, GameAction) -> Unit,
+    private val onActionReady: (EntityId, GameAction, String?) -> Unit,
+    /**
+     * Mulligan callbacks carry no interaction epoch because mulligan does not go through
+     * `GameSession.executeAction`, so it takes no undo checkpoint and `executeUndo` cannot reach
+     * back into it. Give them an origin the moment that stops being true.
+     */
     private val onMulliganKeep: (EntityId) -> Unit,
     private val onMulliganTake: (EntityId) -> Unit,
     private val onBottomCards: (EntityId, List<EntityId>) -> Unit,
+    /**
+     * Built-in AI controllers retain legacy game-server strategic recovery. External controller
+     * providers set this false so the server never chooses an action on their behalf, either when
+     * transport state is unsynchronized or after the controller's own response is rejected.
+     */
+    internal val allowActionsOnlyFallback: Boolean = true,
     /**
      * Local testing mode: the last word on what this seat submits. Given the move the AI chose, it
      * may hold the decision until a human approves it and may hand back a different move entirely
@@ -114,7 +125,7 @@ class AiWebSocketSession(
         }
     }
 
-    private suspend fun handleServerMessage(message: ServerMessage) {
+    internal suspend fun handleServerMessage(message: ServerMessage) {
         when (message) {
             is ServerMessage.StateUpdate -> {
                 logger.info("AI received StateUpdate: phase={}, step={}, priority={}, legalActions={}, pendingDecision={}",
@@ -124,7 +135,7 @@ class AiWebSocketSession(
                     message.pendingDecision?.let { it::class.simpleName })
                 lastFullState = message.state
                 accumulateEvents(message.events.map { it.description })
-                handleStateUpdate(message.state, message.legalActions, message.pendingDecision)
+                handleStateUpdate(message.state, message.legalActions, message.pendingDecision, message.interactionEpoch)
             }
 
             is ServerMessage.StateDeltaUpdate -> {
@@ -139,10 +150,16 @@ class AiWebSocketSession(
                     applyDelta(cachedState, message.delta).also { lastFullState = it }
                 } else null
                 if (updatedState != null && (message.legalActions.isNotEmpty() || message.pendingDecision != null)) {
-                    handleStateUpdate(updatedState, message.legalActions, message.pendingDecision)
+                    handleStateUpdate(updatedState, message.legalActions, message.pendingDecision, message.interactionEpoch)
                 } else if (message.legalActions.isNotEmpty() || message.pendingDecision != null) {
+                    if (!allowActionsOnlyFallback) {
+                        throw IllegalStateException(
+                            "External AI seat ${aiPlayerId.value} received an actionable state delta before a full state; " +
+                                "refusing server-side strategic fallback"
+                        )
+                    }
                     logger.warn("AI received delta update but has no cached state — falling back to heuristics")
-                    handleActionsOnlyFallback(message.legalActions, message.pendingDecision)
+                    handleActionsOnlyFallback(message.legalActions, message.pendingDecision, message.interactionEpoch)
                 }
             }
 
@@ -266,7 +283,8 @@ class AiWebSocketSession(
     private suspend fun handleStateUpdate(
         state: ClientGameState,
         legalActions: List<LegalActionInfo>,
-        pendingDecision: PendingDecision?
+        pendingDecision: PendingDecision?,
+        interactionEpoch: String?
     ) {
         // If we have legal actions or a pending decision addressed to us, it's our turn.
         // Don't rely on state.priorityPlayerId — it may be stale when using a cached state
@@ -276,6 +294,19 @@ class AiWebSocketSession(
 
         if (!hasLegalActions && !isOurDecision) {
             logger.info("AI skipping — no legal actions and no pending decision for us")
+            return
+        }
+
+        // Team priority (CR 805.5) offers a bot its own actions while its human partner holds the
+        // baton. The bot takes its window in baton order instead — GameState.hasPriority's KDoc:
+        // widening permission never took a window away, and a bot racing its partner for every
+        // response would spend windows the human never got to see. So outside a decision addressed
+        // to us, act only when the seat these actions belong to is the baton holder (a hijacked
+        // seat we drive still qualifies: its actions carry that seat's id, which IS the baton).
+        // `priorityPlayerId` is kept current by applyDelta, so it is safe to read here.
+        val actingSeat = legalActions.firstOrNull()?.action?.playerId
+        if (!isOurDecision && actingSeat != null && actingSeat != state.priorityPlayerId) {
+            logger.info("AI skipping — team priority window belongs to the baton holder {}", state.priorityPlayerId)
             return
         }
 
@@ -307,7 +338,9 @@ class AiWebSocketSession(
         } else {
             response
         }
-        submitResponse(gated)
+        // Retain the snapshot epoch through thinking and approval delays; reading a newer epoch
+        // here would authorize a response chosen from an obsolete interaction.
+        submitResponse(gated, interactionEpoch)
     }
 
     /**
@@ -316,7 +349,8 @@ class AiWebSocketSession(
      */
     private suspend fun handleActionsOnlyFallback(
         legalActions: List<LegalActionInfo>,
-        pendingDecision: PendingDecision?
+        pendingDecision: PendingDecision?,
+        interactionEpoch: String?
     ) {
         if (legalActions.isEmpty() && pendingDecision == null) return
 
@@ -391,12 +425,12 @@ class AiWebSocketSession(
                     }
                 }
             }
-            submitResponse(autoResponse)
+            submitResponse(autoResponse, interactionEpoch)
         } else if (legalActions.isNotEmpty()) {
             logger.info("AI fallback: passing priority (no state available)")
             val passAction = legalActions.find { it.actionType == "PassPriority" }
             if (passAction != null) {
-                submitResponse(ActionResponse.SubmitAction(passAction.action))
+                submitResponse(ActionResponse.SubmitAction(passAction.action), interactionEpoch)
             }
         }
     }
@@ -479,17 +513,17 @@ class AiWebSocketSession(
         callback(aiPlayerId, selection)
     }
 
-    private fun submitResponse(response: ActionResponse) {
+    private fun submitResponse(response: ActionResponse, interactionEpoch: String?) {
         when (response) {
             is ActionResponse.SubmitAction -> {
-                onActionReady(aiPlayerId, response.action)
+                onActionReady(aiPlayerId, response.action, interactionEpoch)
             }
             is ActionResponse.SubmitDecision -> {
                 val action = SubmitDecision(
                     playerId = response.playerId,
                     response = response.response
                 )
-                onActionReady(aiPlayerId, action)
+                onActionReady(aiPlayerId, action, interactionEpoch)
             }
         }
     }

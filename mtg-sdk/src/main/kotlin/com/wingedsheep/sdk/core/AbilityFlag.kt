@@ -32,6 +32,19 @@ enum class AbilityFlag(val displayName: String) {
      */
     CANT_BECOME_UNTAPPED("Can't become untapped"),
 
+    /**
+     * "Can't be the target of spells" — spells only, so abilities may still target this permanent.
+     * That is what separates it from [com.wingedsheep.sdk.core.Keyword.SHROUD], which locks out
+     * both. Read by `TargetValidator`, which is told whether the targeting object is a spell or an
+     * ability via `TargetingSourceType`.
+     *
+     * For the conditional wording — Lurker's "can't be the target of spells **unless** it attacked
+     * or blocked this turn" — grant this through a `ConditionalStaticAbility`, exactly as Goblin
+     * Rock Sled gates `DOESNT_UNTAP`: the projector re-evaluates the gate continuously, so the
+     * creature becomes targetable the moment it attacks or blocks.
+     */
+    CANT_BE_TARGETED_BY_SPELLS("Can't be the target of spells"),
+
     MAY_NOT_UNTAP("You may choose not to untap"),
 
     /**
@@ -50,6 +63,16 @@ enum class AbilityFlag(val displayName: String) {
 
     // ── Sacrifice restriction flags ─────────────────────────────
     CANT_BE_SACRIFICED("Can't be sacrificed"),
+
+    // ── State-based action exemptions ───────────────────────────
+    /**
+     * "Planeswalkers you control aren't put into their owners' graveyards for having 0 loyalty"
+     * (Sanctum Lurker). Exempts the permanent from the 0-loyalty state-based action (CR 704.5i),
+     * which `PlaneswalkerLoyaltyCheck` skips for it. Only that one SBA — the planeswalker still dies
+     * to destruction, sacrifice, or the legend rule, and a planeswalker that stops having the flag
+     * while at 0 loyalty is put into the graveyard the next time state-based actions are checked.
+     */
+    SURVIVES_ZERO_LOYALTY("Isn't put into its owner's graveyard for having 0 loyalty"),
 
     // ── Aura / control restriction flags ────────────────────────
     /**
@@ -74,8 +97,49 @@ enum class AbilityFlag(val displayName: String) {
      */
     CANT_TRANSFORM("Can't transform"),
 
+    // ── Designation restriction flags ───────────────────────────
+    /**
+     * "This creature can't become suspected" (CR 701.60 — Airtight Alibi). Enforced in the single
+     * shared suspect implementation (`SuspectExecutor`), which is why suspect is **one** effect
+     * rather than a composite of status + menace + can't-block: gating only the status half would
+     * still land the menace and can't-block riders, leaving a creature that is not suspected but
+     * carries suspect's downsides.
+     *
+     * Distinct from being un-suspected ([com.wingedsheep.sdk.scripting.effects.RemoveSuspectedEffect]):
+     * this prevents the designation from ever attaching, so no "becomes suspected" trigger fires
+     * either, where un-suspecting takes an existing designation away after the fact.
+     */
+    CANT_BECOME_SUSPECTED("Can't become suspected"),
+
     // ── Combat damage assignment flags ──────────────────────────
     ASSIGNS_COMBAT_DAMAGE_AS_TOUGHNESS("Assigns combat damage equal to its toughness rather than its power"),
+
+    /**
+     * "It assigns no combat damage this turn" — the Fallen Empires rider that trades a creature's
+     * combat damage away for something else (Farrel's Zealot, Farrel's Mantle, Delif's Cone,
+     * Delif's Cube).
+     *
+     * Distinct from preventing the damage: the creature assigns none at all, so nothing is dealt
+     * for a prevention effect to see, no damage triggers fire, and lifelink/deathtouch have nothing
+     * to attach to. Read at the single assignment chokepoint,
+     * `CombatDamageUtils.getAssignedCombatDamage`, so it covers first strike, trample and the
+     * ordered-blockers assignment alike. Grant it with a duration — the cards that print it all say
+     * "this turn".
+     */
+    ASSIGNS_NO_COMBAT_DAMAGE("Assigns no combat damage this turn"),
+
+    /**
+     * "If this creature's power is negative, it assigns combat damage as though its power were
+     * positive" (Loot, the Anomaly). A creature normally assigns combat damage equal to its power
+     * and assigns none at all when that is 0 or less (CR 510.1a); with this flag a negative power
+     * is read as its absolute value instead, so a -2/4 assigns 2. Only the amount *assigned* is
+     * rewritten — the creature's power itself stays negative for every other purpose.
+     *
+     * Read at the single assignment chokepoint, `CombatDamageUtils.getAssignedCombatDamage`, so it
+     * covers first strike, trample and ordered blockers alike. A projected flag, so "loses all
+     * abilities" removes it.
+     */
+    ASSIGNS_COMBAT_DAMAGE_AS_ABSOLUTE_POWER("Assigns combat damage as though its power were positive"),
 
     // ── Summoning-sickness flags ────────────────────────────────
     /**

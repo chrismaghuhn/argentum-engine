@@ -5,7 +5,6 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.targets.TargetPermanent
 
 /**
  * Nature's Claim
@@ -20,9 +19,9 @@ val NaturesClaim = card("Nature's Claim") {
     oracleText = "Destroy target artifact or enchantment. Its controller gains 4 life."
 
     spell {
-        val target = target("target", TargetPermanent(filter = TargetFilter.ArtifactOrEnchantment))
-        effect = Effects.Destroy(target)
-            .then(Effects.GainLife(4, EffectTarget.TargetController))
+        val target = target(TargetFilter.ArtifactOrEnchantment)
+        effect = Effects.Destroy(target) then
+            Effects.GainLife(4, EffectTarget.TargetController)
     }
 
     metadata {

@@ -1,7 +1,11 @@
 package com.wingedsheep.engine.handlers.effects
 
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.core.EffectResult
+import com.wingedsheep.engine.core.Outcome
 import com.wingedsheep.engine.handlers.DecisionHandler
+import com.wingedsheep.engine.handlers.actions.land.PlayLandHandler
+import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
@@ -24,6 +28,7 @@ import com.wingedsheep.engine.handlers.effects.stack.StackExecutors
 import com.wingedsheep.engine.handlers.effects.token.TokenExecutors
 import com.wingedsheep.engine.handlers.effects.zones.ZonesExecutors
 import com.wingedsheep.engine.mechanics.layers.StaticAbilityHandler
+import com.wingedsheep.engine.mechanics.stack.SpellCounterer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.scripting.effects.Effect
 import kotlin.reflect.KClass
@@ -39,77 +44,74 @@ import kotlin.reflect.KClass
  * dynamic executor registration.
  */
 class EffectExecutorRegistry(
-    private val amountEvaluator: DynamicAmountEvaluator = DynamicAmountEvaluator(),
+    private val zones: ZoneTransitionService,
     private val decisionHandler: DecisionHandler = DecisionHandler(),
     private val cardRegistry: com.wingedsheep.engine.registry.CardRegistry,
     private val tokenArtRegistry: com.wingedsheep.engine.registry.TokenArtRegistry? = null,
-    replacementProcessor: com.wingedsheep.engine.replacement.ReplacementEffectProcessor =
-        com.wingedsheep.engine.replacement.ReplacementEffectProcessor()
+    replacementProcessor: com.wingedsheep.engine.replacement.ReplacementEffectProcessor,
+    spellCounterer: SpellCounterer,
+    /**
+     * The engine's cast and land-play pipelines, for the "cast / play it without paying its mana
+     * cost" executors, and its cost-payment service, for "pay or suffer". Providers, because those
+     * are built from the whole engine graph — this registry included — so
+     * [com.wingedsheep.engine.core.EngineServices] builds them last.
+     */
+    castSpellHandler: () -> CastSpellHandler,
+    playLandHandler: () -> PlayLandHandler,
+    costPaymentService: () -> com.wingedsheep.engine.mechanics.cost.CostPaymentService,
+    private val targetFinder: TargetFinder,
+    private val targetValidator: TargetValidator
 ) {
+    private val predicateEvaluator = zones.predicateEvaluator
     private val executors = mutableMapOf<KClass<out Effect>, EffectExecutor<*>>()
-    private val targetFinder = TargetFinder()
-    private val attachmentLegality = AttachmentLegality(cardRegistry, targetFinder)
-    private val compositeExecutors = CompositeExecutors(cardRegistry, targetFinder, decisionHandler)
-    private val drawingExecutors = DrawingExecutors(
-        amountEvaluator,
-        decisionHandler,
-        cardRegistry = cardRegistry,
-        replacementProcessor = replacementProcessor
-    )
-    private val playerExecutors = PlayerExecutors(decisionHandler, cardRegistry)
-    private val chainExecutors = ChainExecutors()
-    // Held as a field so its recursion (for ModifyExplore's Composite delegation) can be wired
-    // before the module is registered, mirroring libraryExecutors.
-    private val permanentExecutors = PermanentExecutors(
-        decisionHandler,
-        amountEvaluator,
-        cardRegistry,
-        attachmentLegality,
-    )
+    private val amountEvaluator: DynamicAmountEvaluator = predicateEvaluator.amounts
 
     /**
-     * Exposed so [com.wingedsheep.engine.core.EngineServices] can call
-     * [LibraryExecutors.initialize] once the rest of the service graph is wired.
+     * Shared attachment legality (legal Aura / Equipment hosts, player hosts), handed to the
+     * attach executors and to the batch attachment transfer's `CollectionFilter.AttachableTo`.
      */
-    val libraryExecutors: LibraryExecutors = LibraryExecutors(
-        cardRegistry = cardRegistry,
-        targetFinder = targetFinder,
-        attachmentLegality = attachmentLegality,
-    )
+    private val attachmentLegality = AttachmentLegality(cardRegistry, targetFinder)
 
     init {
-        // Register all effect executors by module
-        registerModule(LifeExecutors(amountEvaluator, cardRegistry))
-        registerModule(DamageExecutors(amountEvaluator, decisionHandler))
-        // Wire the recursion (for ModifyExplore's Composite delegation) before registering, so the
-        // ref is read lazily at explore time (order is not load-bearing — see libraryExecutors).
-        permanentExecutors.initializeRecursion(::recurse)
-        registerModule(permanentExecutors)
+        // Every module that runs sub-effects receives [recurse] at construction; the reference is
+        // only invoked once an effect executes, by which point the registry is fully built.
+        registerModule(LifeExecutors(zones, amountEvaluator, cardRegistry))
+        registerModule(DamageExecutors(zones, amountEvaluator, decisionHandler))
+        registerModule(
+            PermanentExecutors(
+                ::recurse, zones, decisionHandler, amountEvaluator, cardRegistry,
+                attachmentLegality = attachmentLegality,
+            )
+        )
         registerModule(ManaExecutors(amountEvaluator, cardRegistry))
-        registerModule(TokenExecutors(amountEvaluator, StaticAbilityHandler(cardRegistry), cardRegistry, tokenArtRegistry))
-        // The scry/surveil macro executors expand to a composite pipeline and delegate back through
-        // [recurse]; wire it in before registering (the ref is read lazily, so order is not load-bearing).
-        libraryExecutors.initializeRecursion(::recurse)
-        registerModule(libraryExecutors)
-        registerModule(StackExecutors(amountEvaluator, cardRegistry))
+        registerModule(TokenExecutors(zones, amountEvaluator, StaticAbilityHandler(cardRegistry), cardRegistry, tokenArtRegistry, targetFinder = targetFinder))
+        registerModule(
+            LibraryExecutors(
+                ::recurse, zones, cardRegistry, castSpellHandler, playLandHandler, targetFinder,
+                attachmentLegality = attachmentLegality,
+            )
+        )
+        registerModule(StackExecutors(zones, amountEvaluator, cardRegistry, spellCounterer, targetFinder = targetFinder))
         registerModule(InformationExecutors())
-        registerModule(CombatExecutors(amountEvaluator))
-        registerModule(ZonesExecutors(cardRegistry))
-        registerModule(LinkedExileExecutors())
+        registerModule(CombatExecutors(amountEvaluator, cardRegistry))
+        registerModule(ZonesExecutors(::recurse, zones, cardRegistry, targetFinder = targetFinder))
+        registerModule(LinkedExileExecutors(zones))
         registerModule(RegenerationExecutors())
         registerModule(BendExecutors())
-
-        // Deferred initialization for recursive executors. They recurse through [recurse], which
-        // deepens [EffectContext.resolutionDepth] by one per nested sub-effect so [execute] can cap
-        // runaway recursion (see GameLimits.MAX_RESOLUTION_DEPTH).
-        compositeExecutors.initialize(::recurse)
-        registerModule(compositeExecutors)
-        drawingExecutors.initialize(::recurse)
-        registerModule(drawingExecutors)
-        playerExecutors.initialize(::recurse)
-        registerModule(playerExecutors)
-        chainExecutors.initialize(::recurse)
-        registerModule(chainExecutors)
+        registerModule(CompositeExecutors(::recurse, cardRegistry, targetFinder, decisionHandler, amountEvaluator = amountEvaluator, targetValidator = targetValidator))
+        registerModule(
+            DrawingExecutors(
+                ::recurse,
+                zones,
+                amountEvaluator,
+                decisionHandler,
+                cardRegistry = cardRegistry,
+                replacementProcessor = replacementProcessor,
+                targetFinder = targetFinder
+            )
+        )
+        registerModule(PlayerExecutors(::recurse, zones, decisionHandler, cardRegistry, costPaymentService))
+        registerModule(ChainExecutors(::recurse, targetFinder = targetFinder, predicateEvaluator = predicateEvaluator))
     }
 
     /**
@@ -170,7 +172,30 @@ class EffectExecutorRegistry(
                     "Register one in the matching *Executors module " +
                     "(EffectExecutorCoverageTest guards this at build time)."
             )
-        return executor.execute(state, effect, context)
+        val instructionContext = context.withCurrentObjectReferences(state)
+        val result = executor.execute(state, effect, instructionContext)
+        val references = instructionContext.objectReferences.authorize(result.events)
+        val finished = result.copy(state = com.wingedsheep.engine.handlers.continuations.propagateObjectReferences(result.state, references))
+        val recorded = finished.copy(state = com.wingedsheep.engine.core.ControlHistory.record(finished.state, finished.events))
+        return runReplacementRiders(recorded, context)
+    }
+
+    /**
+     * A prevention effect that prevented damage during [result] may owe a result of its own
+     * (Purity's life gain, Vigor's counters). Run it now, before the next instruction of the
+     * resolving spell or ability — see [com.wingedsheep.engine.replacement.ReplacementRiders].
+     */
+    private fun runReplacementRiders(result: EffectResult, context: EffectContext): EffectResult {
+        if (result.state.pendingReplacementRiders.isEmpty() || result.outcome !is Outcome.Done) return result
+        val drained = com.wingedsheep.engine.replacement.ReplacementRiders.drain(result.state) { s, e, c ->
+            execute(s, e, c.copy(resolutionDepth = context.resolutionDepth + 1))
+        }
+        return result.copy(
+            state = drained.state,
+            events = result.events + drained.events,
+            outcome = drained.outcome,
+            diagnostics = result.diagnostics + drained.diagnostics,
+        )
     }
 
     /**

@@ -3,6 +3,7 @@ package com.wingedsheep.tooling.coverage.bridge
 /** Evergreen keywords that map straight to a `Keyword` enum member. Most other keywords resolve for
  *  free via the probe's PascalCase→enum auto-resolve; these are the ones worth pinning explicitly. */
 internal fun BridgeBuilder.keywords() {
+    supported("Dredge", "keywordAbility(KeywordAbility.dredge(N)): optional graveyard draw replacement")
     keyword("Flying", "FLYING")
     keyword("Haste", "HASTE")
     keyword("Vigilance", "VIGILANCE")
@@ -19,6 +20,14 @@ internal fun BridgeBuilder.keywords() {
     // so pinning the capability doesn't imply an AUTO render of the whole card.
     keyword("Daybound", "DAYBOUND")
     keyword("Nightbound", "NIGHTBOUND")
+    // Devoid (CR 702.114, Battle for Zendikar / Oath of the Gatewatch). A characteristic-defining
+    // ability — "this object is colorless" — that the IR carries not as a rule name but as the
+    // nested `_SettableColor: Devoid` under a `CDA_Color` envelope. A bare `keywords(Keyword.DEVOID)`
+    // stamp IS the whole mechanic: the SDK derives `CardDefinition.colors` as empty from the keyword,
+    // so it functions in every zone with nothing else to render. It would auto-resolve via
+    // PascalCase->enum (Devoid->DEVOID), but pin it like daybound/nightbound so the capability reads
+    // explicitly and an enum rename surfaces as a MISSING gap rather than silently dropping.
+    keyword("Devoid", "DEVOID")
     // Intimidate (CR 702.13) — `Keyword.INTIMIDATE` exists in the SDK enum, so the PascalCase→enum
     // auto-resolve would accept it, but the rules engine has NO block-evasion handling for it
     // (BlockEvasionRules covers flying/fear/shadow/horsemanship/landwalk only). A bare or granted
@@ -40,6 +49,17 @@ internal fun BridgeBuilder.keywords() {
     // cost was paid, …" trigger; on an instant/sorcery it's `Patterns.Mechanic.giftSpell(…)`. The emitter
     // declines (SCAFFOLD): which GiftKind is listed, and how the card's *other* text branches on
     // `Conditions.GiftWasPromised`, is a per-card read.
+    // Champion an [object] (CR 702.72, Lorwyn) — a PARAMETERIZED keyword: the IR carries the quality
+    // as the rule's `_Permanents` argument (`IsCreatureType: Goblin` for Boggart Mob, `IsCreature` for
+    // the three Changelings), so `supported` rather than a bare `keyword`. `Keyword.CHAMPION` exists but
+    // stamping it alone would print the word and drop the whole mechanic — the two linked triggered
+    // abilities (CR 702.72b / 607.2k) that the `champion(Subtype)` / `champion(filter, description)` /
+    // `championCreature()` CardBuilder helpers compose. Emitter declines (SCAFFOLD): turning an arbitrary
+    // `_Permanents` node into the right helper overload is a per-card read, and the reminder text the
+    // helper writes carries the printed quality noun with its article. The nine hand-authored Lorwyn
+    // champions and `ChampionKeywordTest` are ground truth. See the Champion keyword entry in
+    // card-sdk-language-reference.md.
+    supported("Champion", "keyword ability: Champion an [object] -> champion(Subtype) / champion(filter, description) / championCreature() (CR 702.72)")
     supported("Gift", "keyword ability: Gift a [something] -> gift(GiftKind.…) on permanents / Patterns.Mechanic.giftSpell on instants & sorceries (CR 702.174)")
     // Bargain (CR 702.166, Wilds of Eldraine) — "You may sacrifice an artifact, enchantment, or token
     // as you cast this spell." `composed`, not a bare `keyword`: `Keyword.BARGAIN` exists, but stamping
@@ -108,11 +128,11 @@ internal fun BridgeBuilder.keywords() {
     // Ward (CR 702.21) — a PARAMETERIZED keyword ability: the cost rides in the rule's args
     // (`Ward—Discard a card`, `Ward {2}`, `Ward—Pay N life`, `Ward—Sacrifice <filter>`). Like Saddle,
     // it must be `supported`, not `keyword`: a bare `keywords(Keyword.WARD)` would drop the cost. The
-    // emitter's `rname == "Ward"` branch renders `keywordAbility(KeywordAbility.ward(...)/wardDiscard()/
-    // wardLife(N)/wardLife(DynamicAmounts.sourcePower())/wardSacrifice(filter))` for the cost shapes it
+    // emitter's `rname == "Ward"` branch renders `keywordAbility(KeywordAbility.Ward(WardCost.<cost>))` —
+    // Mana, Discard, Life, DynamicLife(DynamicAmounts.sourcePower()), Sacrifice, Choice — for the cost shapes it
     // can express ("Ward—Pay life equal to ~'s power", Raubahn, renders the dynamic form); richer/compound
     // costs decline -> SCAFFOLD. This entry only marks the capability covered (never blocking).
-    supported("Ward", "keyword ability: Ward—<cost> (CR 702.21) -> keywordAbility(KeywordAbility.ward(...)/wardDiscard()/wardLife(N)/wardSacrifice(filter))")
+    supported("Ward", "keyword ability: Ward—<cost> (CR 702.21) -> keywordAbility(KeywordAbility.Ward(WardCost.<cost>))")
     // Madness [cost] (CR 702.35) — a PARAMETERIZED keyword whose whole mechanic (the discard →
     // exile replacement plus the "may cast it for [cost]" trigger the engine synthesizes on that
     // exile) hangs off the cost. `supported`, not `keyword`: `Keyword.MADNESS` exists, so the

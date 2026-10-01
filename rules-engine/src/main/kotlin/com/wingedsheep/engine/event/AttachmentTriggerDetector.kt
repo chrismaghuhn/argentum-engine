@@ -2,6 +2,7 @@ package com.wingedsheep.engine.event
 
 import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
+import com.wingedsheep.engine.core.BecomesTargetEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.TappedEvent
 import com.wingedsheep.engine.core.TransformedEvent
@@ -44,9 +45,11 @@ class AttachmentTriggerDetector(
         for (entityId in relevantIds) {
             val live = index.aurasByTarget[entityId].orEmpty()
             // When the attached permanent left the battlefield, the live links may already be torn
-            // down — see [lastKnownAttachments].
-            val entries = live + lastKnownAttachments(state, event, index, live)
-            for (entry in entries) {
+            // down — see [lastKnownAttachments]. Those entries come from the event's own snapshot
+            // of what was attached, so the attachment itself is the identity witness for them.
+            val entries = live.map { it to false } +
+                lastKnownAttachments(state, event, entityId, index, live).map { it to true }
+            for ((entry, attachedAtEvent) in entries) {
                 for (ability in entry.abilities) {
                     if (ability.binding != TriggerBinding.ATTACHED) continue
                     // For zone-change events on the attached creature (e.g., creature dies),
@@ -55,7 +58,11 @@ class AttachmentTriggerDetector(
                     // aura's own ZoneChangeEvent. Only equipment stays on the battlefield.
                     if (isZoneChange && ability.trigger is EventPattern.ZoneChangeEvent &&
                         !entry.cardComponent.typeLine.isEquipment) continue
-                    if (matchesAttachedTrigger(ability.trigger, event, entityId, entry.controllerId, state)) {
+                    if (matchesAttachedTrigger(
+                            ability.trigger, event, entityId, entry.controllerId, entry.entityId, state,
+                            attachedAtEvent = attachedAtEvent,
+                        )
+                    ) {
                         val triggerContext = buildTriggerContext(event, entityId, ability.trigger) ?: continue
                         triggers.add(
                             PendingTrigger(
@@ -89,17 +96,32 @@ class AttachmentTriggerDetector(
      * handled from its own [ZoneChangeEvent] by
      * [DeathAndLeaveTriggerDetector.detectDeadAuraAttachmentTriggers].
      *
+     * The same SBA pass strands a damage trigger: an equipped creature that dies to the very combat
+     * damage it dealt (or was dealt) is unattached before detection, yet the ability triggered when
+     * the damage happened (CR 603.2). So a [DamageDealtEvent] carries the attachments its source
+     * and its recipient had at that instant — [DamageDealtEvent.sourceAttachmentIds] for [hostId]
+     * as the source, the recipient's [DamageDealtEvent.targetLastKnown] for [hostId] as the
+     * recipient.
+     *
      * [live] entries are excluded so an attachment the index still knows about is never counted
      * twice.
      */
     private fun lastKnownAttachments(
         state: GameState,
         event: EngineGameEvent,
+        hostId: com.wingedsheep.sdk.model.EntityId,
         index: TriggerIndex,
         live: List<TriggerIndex.IndexedEntity>,
     ): List<TriggerIndex.IndexedEntity> {
-        if (event !is ZoneChangeEvent) return emptyList()
-        val attachmentIds = event.lastKnown?.attachmentIds.orEmpty()
+        val attachmentIds = when (event) {
+            is ZoneChangeEvent -> event.lastKnown?.attachmentIds.orEmpty()
+            is DamageDealtEvent -> when (hostId) {
+                event.sourceId -> event.sourceAttachmentIds
+                event.targetId -> event.targetLastKnown?.attachmentIds.orEmpty()
+                else -> emptyList()
+            }
+            else -> emptyList()
+        }
         if (attachmentIds.isEmpty()) return emptyList()
 
         val alreadyLive = live.mapTo(mutableSetOf()) { it.entityId }
@@ -156,6 +178,9 @@ class AttachmentTriggerDetector(
             // "an ability of enchanted artifact … was activated" (Artifact Possession) — the
             // activated ability's source is the enchanted permanent.
             is AbilityActivatedEvent -> listOf(event.sourceId)
+            // "enchanted creature becomes the target of an Aura spell" (Brinebound Gift). The
+            // targeted object is the aura's host; the targeting source is checked by the matcher.
+            is BecomesTargetEvent -> listOf(event.targetEntityId)
             is ZoneChangeEvent -> {
                 if (event.fromZone == Zone.BATTLEFIELD) listOf(event.entityId) else emptyList()
             }
@@ -172,19 +197,31 @@ class AttachmentTriggerDetector(
         event: EngineGameEvent,
         attachedEntityId: com.wingedsheep.sdk.model.EntityId,
         auraControllerId: com.wingedsheep.sdk.model.EntityId,
-        state: GameState
+        auraId: com.wingedsheep.sdk.model.EntityId,
+        state: GameState,
+        /**
+         * The attachment was read from the damage event's own attachment snapshot
+         * ([lastKnownAttachments]) rather than the live attachment index, so the event itself
+         * proves which object it was attached to.
+         */
+        attachedAtEvent: Boolean = false,
     ): Boolean {
         return when (trigger) {
             is EventPattern.DamageReceivedEvent -> {
                 event is DamageDealtEvent &&
                     event.targetId == attachedEntityId &&
                     matcher.matchesDamageRecipientIdentity(event) &&
-                    matcher.matchesDamageReceivedSource(trigger.source, event)
+                    matcher.matchesDamageReceivedSource(trigger.source, event, state, auraControllerId, auraId)
             }
             is EventPattern.DealsDamageEvent -> {
                 event is DamageDealtEvent &&
-                    matcher.matchesAttachedDamageSourceIdentity(attachedEntityId, event, state) &&
-                    matcher.matchesDealsDamageTrigger(trigger, event, state, auraControllerId)
+                    event.sourceId == attachedEntityId &&
+                    // A live index link is not an object identity: the stamped damage-time source
+                    // must still be that attached incarnation. An attachment read from the event's
+                    // own snapshot needs only the stamped source witness.
+                    (if (attachedAtEvent) matcher.stampedDamageSourceSnapshot(event) != null
+                    else matcher.matchesAttachedDamageSourceIdentity(attachedEntityId, event, state)) &&
+                    matcher.matchesDealsDamageTrigger(trigger, event, state, auraControllerId, auraId)
             }
             is EventPattern.AttackEvent -> {
                 event is AttackersDeclaredEvent && attachedEntityId in event.attackers &&
@@ -203,7 +240,7 @@ class AttachmentTriggerDetector(
                 // the aura/equipment's controller, as everywhere else here.
                 val tapper = trigger.tapper ?: return true
                 val tappedById = event.tappedById ?: return false
-                matcher.matchesPlayer(tapper, tappedById, auraControllerId)
+                matcher.matchesPlayer(state, tapper, tappedById, auraControllerId)
             }
             // "Whenever equipped creature becomes untapped" (Fishing Pole). UntapEvent carries no
             // filter, so identity with the attached permanent is the whole match.
@@ -213,7 +250,7 @@ class AttachmentTriggerDetector(
             is EventPattern.AbilityActivatedEvent -> {
                 if (event !is AbilityActivatedEvent) return false
                 if (event.sourceId != attachedEntityId) return false
-                if (!matcher.matchesPlayer(trigger.player, event.controllerId, auraControllerId)) return false
+                if (!matcher.matchesPlayer(state, trigger.player, event.controllerId, auraControllerId)) return false
                 // Mirror the main matcher's two wordings (see TriggerMatcher.AbilityActivatedEvent):
                 // "without {T} in its activation cost" vs. "isn't a mana ability".
                 when {
@@ -224,6 +261,16 @@ class AttachmentTriggerDetector(
             }
             is EventPattern.TurnFaceUpEvent -> {
                 event is TurnFaceUpEvent && event.entityId == attachedEntityId
+            }
+            // "Whenever enchanted creature becomes the target of an Aura spell" (Brinebound Gift).
+            // Identity with the host settles the binding, then the full SELF matcher runs every
+            // other axis (spellsOnly, sourceFilter, byYou, targetFilter) against the aura's own
+            // controller — reusing it rather than restating it keeps the two paths from drifting.
+            is EventPattern.BecomesTargetEvent -> {
+                event is BecomesTargetEvent && event.targetEntityId == attachedEntityId &&
+                    matcher.matchesBecomesTargetTrigger(
+                        trigger, TriggerBinding.ANY, event, auraId, auraControllerId, state
+                    )
             }
             // "When equipped creature transforms" (Neglected Heirloom). Identity with the attached
             // permanent plus the pattern's direction filter is the whole match — the same two checks
@@ -253,7 +300,7 @@ class AttachmentTriggerDetector(
     ): TriggerContext? {
         return when {
             event is DamageDealtEvent && trigger is EventPattern.DamageReceivedEvent &&
-                trigger.source != com.wingedsheep.sdk.scripting.events.SourceFilter.Any ->
+                trigger.source != com.wingedsheep.sdk.scripting.GameObjectFilter.Any ->
                 TriggerContext.fromSourceFilteredDamageEvent(event)
             event is DamageDealtEvent && trigger is EventPattern.DealsDamageEvent &&
                 trigger.sourceFilter != null -> TriggerContext.fromSourceFilteredDamageEvent(event)

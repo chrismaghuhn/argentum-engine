@@ -25,7 +25,7 @@ class AttackTriggerPatternSerializationTest : FunSpec({
     test("the generic filtered facade constructs the opt-in per-player event") {
         val filter = GameObjectFilter.Creature.equipped().youControl()
 
-        val spec = Triggers.YouAttackPlayerWithFilter(filter)
+        val spec = Triggers.you.attacksAPlayer(with = filter)
 
         spec.event shouldBe EventPattern.YouAttackPlayerEvent(
             minAttackers = 1,

@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.event
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.CardsDiscardedEvent
 import com.wingedsheep.engine.core.ControlChangedEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
@@ -73,12 +74,12 @@ class TriggerDetectorBatchTriggerTest : FunSpec({
     )
 
     // "Whenever a player discards a creature card, that player loses 1 life." Exercises the
-    // cardFilter path of Triggers.discards — no shipped card uses it yet.
+    // cardFilter path of Triggers.<player>.discards(card, batch) — no shipped card uses it yet.
     val creatureDiscardWatcher = card("Creature Discard Watcher") {
         manaCost = "{1}"
         typeLine = "Enchantment"
         triggeredAbility {
-            trigger = Triggers.discards(player = Player.Each, cardFilter = GameObjectFilter.Creature)
+            trigger = Triggers.anyPlayer.discards(GameObjectFilter.Creature)
             effect = LoseLifeEffect(1, EffectTarget.PlayerRef(Player.TriggeringPlayer))
         }
     }
@@ -88,7 +89,7 @@ class TriggerDetectorBatchTriggerTest : FunSpec({
         manaCost = "{1}"
         typeLine = "Enchantment"
         triggeredAbility {
-            trigger = Triggers.discards(player = Player.Each)
+            trigger = Triggers.anyPlayer.discards()
             effect = LoseLifeEffect(1, EffectTarget.PlayerRef(Player.TriggeringPlayer))
         }
     }
@@ -104,7 +105,7 @@ class TriggerDetectorBatchTriggerTest : FunSpec({
         power = 2
         toughness = 2
         triggeredAbility {
-            trigger = Triggers.Dies
+            trigger = Triggers.self.dies()
             triggerZone = Zone.GRAVEYARD
             effect = LoseLifeEffect(1, EffectTarget.PlayerRef(Player.You))
         }
@@ -118,7 +119,7 @@ class TriggerDetectorBatchTriggerTest : FunSpec({
     }
 
     fun detectorFor(driver: GameTestDriver): TriggerDetector =
-        TriggerDetector(driver.cardRegistry)
+        TriggerDetector(driver.cardRegistry, conditionEvaluator = PredicateEvaluator(cardRegistry = null).conditions, predicateEvaluator = PredicateEvaluator(cardRegistry = null))
 
     // --- detectLibraryToGraveyardBatchTriggers ----------------------------------
 
@@ -561,7 +562,7 @@ class TriggerDetectorBatchTriggerTest : FunSpec({
         }
     }
 
-    // --- discard fan-out (Triggers.discards, filtered + unfiltered) -------------
+    // --- discard fan-out (Triggers.<player>.discards(card, batch), filtered + unfiltered) -------------
 
     context("discard batch fan-out") {
 

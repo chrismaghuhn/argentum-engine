@@ -9,7 +9,6 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.ModifyStats
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Cursecloth Wrappings
@@ -52,16 +51,13 @@ val CurseclothWrappings = card("Cursecloth Wrappings") {
         ability = ModifyStats(
             powerBonus = 1,
             toughnessBonus = 1,
-            filter = GroupFilter(GameObjectFilter.Creature.withSubtype(Subtype.ZOMBIE).youControl())
+            filter = GroupFilter(GameObjectFilter.Permanent.withSubtype(Subtype.ZOMBIE).youControl())
         )
     }
 
     activatedAbility {
         cost = Costs.Tap
-        val card = target(
-            "target creature card in your graveyard",
-            TargetObject(filter = TargetFilter.CreatureInGraveyard.ownedByYou())
-        )
+        val card = target(TargetFilter.CreatureInGraveyard.ownedByYou())
         effect = Effects.GrantEmbalm(card)
         description = "{T}: Target creature card in your graveyard gains embalm until end of " +
             "turn. The embalm cost is equal to its mana cost."

@@ -33,6 +33,7 @@ import com.wingedsheep.sdk.core.Zone
  * outer loop in [com.wingedsheep.engine.mechanics.StateBasedActionChecker.checkAndApply].
  */
 class CommanderZoneChoiceCheck(
+    private val zones: ZoneTransitionService,
     private val decisionHandler: DecisionHandler
 ) : StateBasedActionCheck {
     override val name = "903.9a Commander Zone Choice"
@@ -55,7 +56,7 @@ class CommanderZoneChoiceCheck(
                 // this as a normal physical transition preserves dies/LKI/ZoneChangeEvent
                 // semantics instead of turning the pre-move 903.9b replacement into a shortcut.
                 if (format.alwaysDivertToCommand) {
-                    val transition = ZoneTransitionService.moveToZone(
+                    val transition = zones.moveToZone(
                         state = state,
                         entityId = entityId,
                         destinationZone = Zone.COMMAND,
@@ -75,21 +76,18 @@ class CommanderZoneChoiceCheck(
                     prompt = "Put $cardName into the command zone instead of leaving it in $zoneLabel?",
                     yesText = "Command zone",
                     noText = "Leave in $zoneLabel",
-                    phase = DecisionPhase.STATE_BASED
+                    phase = DecisionPhase.STATE_BASED,
+                    answer = CommanderZoneChoiceContinuation(
+                        commanderId = entityId,
+                        ownerId = playerId,
+                        currentZone = zoneKey.zoneType
+                    ),
                 )
 
-                val continuation = CommanderZoneChoiceContinuation(
-                    decisionId = decisionResult.pendingDecision!!.id,
-                    commanderId = entityId,
-                    ownerId = playerId,
-                    currentZone = zoneKey.zoneType
-                )
 
-                val stateWithContinuation = decisionResult.state.pushContinuation(continuation)
 
-                return ExecutionResult.paused(
-                    stateWithContinuation,
-                    decisionResult.pendingDecision,
+                return ExecutionResult.propagatePause(
+                    decisionResult.state,
                     decisionResult.events
                 )
             }

@@ -1,11 +1,13 @@
 package com.wingedsheep.mtg.sets.definitions.blb.cards
 
-import com.wingedsheep.sdk.core.Counters
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
 /**
@@ -26,14 +28,18 @@ val StockingThePantry = card("Stocking the Pantry") {
         "{2}, Remove a supply counter from this enchantment: Draw a card."
 
     triggeredAbility {
-        trigger = Triggers.PlusOneCountersPlacedOnYourCreature
-        effect = Effects.AddCounters(Counters.SUPPLY, 1, EffectTarget.Self)
+        // "Whenever **you** put …" — CR 122.6 makes the placer part of the event, so this needs
+        // `placedBy`. `Triggers.a(GameObjectFilter.Creature.youControl()).getsCounters(CounterType.PLUS_ONE_PLUS_ONE)` leaves it null, which is the
+        // passive "are put on a creature you control" wording and fires on an opponent's placement
+        // too. Found by the differential gate.
+        trigger = Triggers.a(GameObjectFilter.Creature.youControl()).getsCounters(CounterType.PLUS_ONE_PLUS_ONE, by = Player.You)
+        effect = Effects.AddCounters(CounterType.SUPPLY, 1, EffectTarget.Self)
     }
 
     activatedAbility {
         cost = Costs.Composite(
             Costs.Mana("{2}"),
-            Costs.RemoveCounterFromSelf(Counters.SUPPLY)
+            Costs.RemoveCounterFromSelf(CounterType.SUPPLY)
         )
         effect = Effects.DrawCards(1)
     }

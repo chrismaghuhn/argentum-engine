@@ -31,12 +31,8 @@ val PlumbTheForbidden = card("Plumb the Forbidden") {
     )
 
     spell {
-        effect = Effects.Composite(
-            listOf(
-                Effects.DrawCards(1, EffectTarget.Controller),
-                Effects.LoseLife(1, EffectTarget.Controller),
-            )
-        )
+        effect = Effects.DrawCards(1, EffectTarget.Controller) then
+            Effects.LoseLife(1, EffectTarget.Controller)
         costPaidLinkedTrigger(
             effect = Effects.CopyTargetSpell(
                 target = EffectTarget.TriggeringEntity,

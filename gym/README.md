@@ -139,7 +139,9 @@ multi-mode `ChooseModeDecision`, `BudgetModalDecision`) flag
 ### Information hiding by default
 
 `ObservationBuilder` hides opponent hand and every library when building
-a `TrainingObservation`. Only zone sizes are reported for hidden zones.
+a `TrainingObservation`, asking the rules engine's `Visibility` authority what this perspective may
+know. Only zone sizes are reported for fully hidden zones; an individually revealed card or a
+legitimately visible top card may appear.
 There is no production `revealAll` bypass. The observation also distinguishes
 natural termination from a configured Gym horizon through `truncated`.
 
@@ -166,7 +168,8 @@ three are constant-time; the only cost is object allocation.
 - **No training-data persistence.** `:gym-trainer` handles this;
   `:gym` only emits live observations.
 - **No Spring, no threading model assumptions.** Envs are
-  single-threaded by contract; cross-env parallelism is opt-in via
+  single-threaded by contract; `MultiEnvService` serializes calls naming
+  the same env, and cross-env parallelism is opt-in via
   `MultiEnvService.stepBatch`.
 
 ## Tests

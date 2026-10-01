@@ -9,6 +9,7 @@ import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Clifftop Retreat (ISD #238) — enters tapped unless you control a Mountain or Plains;
@@ -32,7 +33,7 @@ class ClifftopRetreatScenarioTest : FunSpec({
         val player = driver.activePlayer!!
         val retreatCard = driver.putCardInHand(player, "Clifftop Retreat")
 
-        driver.playLand(player, retreatCard).isSuccess shouldBe true
+        driver.playLand(player, retreatCard).outcome shouldBe Outcome.Done
         val retreat = driver.findPermanent(player, "Clifftop Retreat")
         retreat shouldNotBe null
         driver.isTapped(retreat!!) shouldBe true
@@ -44,7 +45,7 @@ class ClifftopRetreatScenarioTest : FunSpec({
         driver.putLandOnBattlefield(player, "Mountain")
         val retreatCard = driver.putCardInHand(player, "Clifftop Retreat")
 
-        driver.playLand(player, retreatCard).isSuccess shouldBe true
+        driver.playLand(player, retreatCard).outcome shouldBe Outcome.Done
         val retreat = driver.findPermanent(player, "Clifftop Retreat")
         retreat shouldNotBe null
         driver.isTapped(retreat!!) shouldBe false
@@ -57,13 +58,13 @@ class ClifftopRetreatScenarioTest : FunSpec({
 
         driver.submit(
             ActivateAbility(playerId = player, sourceId = retreat, abilityId = redAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.state.getEntity(player)?.get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()!!.red shouldBe 1
 
         driver.untapPermanent(retreat)
         driver.submit(
             ActivateAbility(playerId = player, sourceId = retreat, abilityId = whiteAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.state.getEntity(player)?.get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()!!.white shouldBe 1
     }
 })

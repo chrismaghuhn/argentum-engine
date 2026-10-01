@@ -22,9 +22,9 @@ import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.Patterns
 import com.wingedsheep.sdk.scripting.targets.AnyTarget
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
-import com.wingedsheep.sdk.scripting.targets.TargetSpell
 import java.util.UUID
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.core.Subtype
 
 /**
  * Test card definitions for unit tests.
@@ -98,6 +98,7 @@ object TestCards {
         oracleText = "When this creature dies, you gain 3 life.",
         script = CardScript.creature(
             TriggeredAbility.create(
+                id = AbilityId("TestCards_1"),
                 trigger = EventPattern.ZoneChangeEvent(from = Zone.BATTLEFIELD, to = Zone.GRAVEYARD),
                 binding = TriggerBinding.SELF,
                 effect = GainLifeEffect(3)
@@ -204,6 +205,20 @@ object TestCards {
     )
 
     /**
+     * 2/2 Shadow for {1}{B}
+     * Test card for shadow evasion — CR 702.28b restricts blocking in *both* directions.
+     */
+    val ShadowCreature = CardDefinition.creature(
+        name = "Shadow Creature",
+        manaCost = ManaCost.parse("{1}{B}"),
+        subtypes = setOf(Subtype("Shade")),
+        power = 2,
+        toughness = 2,
+        oracleText = "Shadow (This creature can block or be blocked by only creatures with shadow.)",
+        keywords = setOf(Keyword.SHADOW)
+    )
+
+    /**
      * 2/2 Artifact Creature for {2}
      * Colorless artifact creature for testing fear blocking.
      */
@@ -252,7 +267,7 @@ object TestCards {
         oracleText = "Target creature gets +3/+3 until end of turn.",
         script = CardScript.spell(
             effect = ModifyStatsEffect(3, 3, EffectTarget.BoundVariable("target"), Duration.EndOfTurn),
-            TargetCreature(id = "target")
+            TargetObject(filter = TargetFilter.Creature, id = "target")
         )
     )
 
@@ -265,7 +280,7 @@ object TestCards {
         oracleText = "Counter target spell.",
         script = CardScript.spell(
             effect = CounterEffect(),
-            TargetSpell()
+            TargetObject(filter = TargetFilter.SpellOnStack)
         )
     )
 
@@ -280,7 +295,7 @@ object TestCards {
         oracleText = "Create a token that's a copy of target creature.",
         script = CardScript.spell(
             effect = CreateTokenCopyOfTargetEffect(target = EffectTarget.BoundVariable("target")),
-            TargetCreature(id = "target")
+            TargetObject(filter = TargetFilter.Creature, id = "target")
         )
     )
 
@@ -293,7 +308,7 @@ object TestCards {
         oracleText = "Counter target noncreature spell unless its controller pays {2}.",
         script = CardScript.spell(
             effect = CounterEffect(),  // Simplified - no tax mechanic for now
-            TargetSpell(filter = TargetFilter.NoncreatureSpellOnStack)
+            TargetObject(filter = TargetFilter.NoncreatureSpellOnStack)
         )
     )
 
@@ -310,7 +325,7 @@ object TestCards {
         oracleText = "Destroy target nonblack creature.",
         script = CardScript.spell(
             effect = MoveToZoneEffect(EffectTarget.BoundVariable("target"), Zone.GRAVEYARD, byDestruction = true),
-            TargetCreature(filter = TargetFilter.Creature.notColor(Color.BLACK), id = "target")
+            TargetObject(filter = TargetFilter.Creature.notColor(Color.BLACK), id = "target")
         )
     )
 
@@ -341,7 +356,7 @@ object TestCards {
         oracleText = "Goad target creature.",
         script = CardScript.spell(
             effect = com.wingedsheep.sdk.scripting.effects.GoadEffect(EffectTarget.BoundVariable("target")),
-            TargetCreature(id = "target")
+            TargetObject(filter = TargetFilter.Creature, id = "target")
         )
     )
 
@@ -676,15 +691,29 @@ object TestCards {
             effect = com.wingedsheep.sdk.scripting.effects.TransformEffect(
                 target = EffectTarget.BoundVariable("target")
             ),
-            TargetCreature(id = "target")
+            TargetObject(filter = TargetFilter.Creature, id = "target")
         )
     )
+
+    /**
+     * "The legend rule doesn't apply to permanents you control." A test needing two copies of a
+     * legendary permanent under one controller puts this out first. Otherwise the legend rule
+     * (CR 704.5j) removes one copy the next time a player would receive priority.
+     */
+    val LegendRuleWaiver = com.wingedsheep.sdk.dsl.card("Legend Rule Waiver") {
+        manaCost = "{3}"
+        typeLine = "Artifact"
+        staticAbility {
+            ability = LegendRuleDoesNotApplyTo(GameObjectFilter.Permanent)
+        }
+    }
 
     // =========================================================================
     // All Test Cards
     // =========================================================================
 
     private val testOnlyCards: List<CardDefinition> = listOf(
+        LegendRuleWaiver,
         // Creatures
         CentaurCourser,
         ForceOfNature,
@@ -698,6 +727,7 @@ object TestCards {
         FirstStrikeKnight,
         BandingScout,
         FearCreature,
+        ShadowCreature,
         ArtifactCreature,
         BlackCreature,
         TrampleBeast,

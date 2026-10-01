@@ -36,6 +36,60 @@
     ]
 }
 
+// Dryad Arbor
+{
+    "name": "Dryad Arbor",
+    "manaCost": "",
+    "typeLine": "Land Creature — Forest Dryad",
+    "oracleText": "(This land isn't a spell, it's affected by summoning sickness, and it has \"{T}: Add {G}.\")",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 1
+    },
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Dryad Arbor:1",
+                "cost": "CostTap",
+                "effect": {
+                    "type": "AddMana",
+                    "color": "GREEN"
+                },
+                "timing": "ManaAbility",
+                "isManaAbility": true,
+                "descriptionOverride": "{T}: Add {G}."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "174",
+        "rarity": "UNCOMMON",
+        "artist": "Eric Fortune",
+        "flavorText": "\"Touch no tree, break no branch, and speak only the question you wish answered.\"\n—Von Yomm, elder druid, to her initiates",
+        "imageUri": "https://cards.scryfall.io/normal/front/8/c/8cee476d-42e1-4997-87af-73e18f542167.jpg?1783943089",
+        "rulings": [
+            {
+                "date": "2021-03-19",
+                "text": "Due to its color indicator (appearing to the left of its type line), Dryad Arbor is green. Color indicators apply in all zones, not just the battlefield."
+            },
+            {
+                "date": "2021-03-19",
+                "text": "If Dryad Arbor is changed into another basic land type, it continues to be a green Dryad creature."
+            },
+            {
+                "date": "2021-03-19",
+                "text": "Dryad Arbor is played as a land. It doesn't use the stack, it's not a spell, it can't be responded to, it has no mana cost, and it counts as your land play for the turn."
+            }
+        ]
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ],
+    "colorIndicator": [
+        "GREEN"
+    ]
+}
+
 // Fomori Nomad
 {
     "name": "Fomori Nomad",
@@ -52,6 +106,41 @@
     },
     "colorIdentityOverride": [
         "RED"
+    ]
+}
+
+// Foresee
+{
+    "name": "Foresee",
+    "manaCost": "{3}{U}",
+    "typeLine": "Sorcery",
+    "oracleText": "Scry 4, then draw two cards.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "Scry",
+                    "count": 4
+                },
+                {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 2
+                    }
+                }
+            ]
+        }
+    },
+    "metadata": {
+        "collectorNumber": "36",
+        "artist": "Ron Spears",
+        "flavorText": "Wind time's watch, and watch time unwind.",
+        "imageUri": "https://cards.scryfall.io/normal/front/c/0/c0bd95b5-1e90-41c5-8a9f-f3009f3f504a.jpg?1783943122"
+    },
+    "colorIdentityOverride": [
+        "BLUE"
     ]
 }
 
@@ -87,6 +176,167 @@
         "collectorNumber": "148",
         "artist": "Vance Kovacs",
         "imageUri": "https://cards.scryfall.io/normal/front/8/8/88b18b70-f656-4426-a3e5-69cf61fdaad1.jpg?1783943095"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
+// New Benalia
+{
+    "name": "New Benalia",
+    "manaCost": "",
+    "typeLine": "Land",
+    "oracleText": "This land enters tapped.\nWhen this land enters, scry 1. (Look at the top card of your library. You may put that card on the bottom.)\n{T}: Add {W}.",
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "New Benalia:1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "to": "Battlefield"
+                },
+                "effect": {
+                    "type": "Scry",
+                    "count": 1
+                }
+            }
+        ],
+        "activatedAbilities": [
+            {
+                "id": "New Benalia:2",
+                "cost": "CostTap",
+                "effect": {
+                    "type": "AddMana",
+                    "color": "WHITE"
+                },
+                "timing": "ManaAbility",
+                "isManaAbility": true
+            }
+        ],
+        "replacementEffects": [
+            "EntersTapped"
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "172",
+        "rarity": "UNCOMMON",
+        "artist": "Richard Wright",
+        "imageUri": "https://cards.scryfall.io/normal/front/1/8/18bde721-8fa0-4f69-9909-b4864929e676.jpg"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
+// Rites of Flourishing
+{
+    "name": "Rites of Flourishing",
+    "manaCost": "{2}{G}",
+    "typeLine": "Enchantment",
+    "oracleText": "At the beginning of each player's draw step, that player draws an additional card.\nEach player may play an additional land on each of their turns.",
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Rites of Flourishing:1",
+                "trigger": {
+                    "type": "StepEvent",
+                    "step": "DRAW",
+                    "player": "Each"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    },
+                    "target": {
+                        "type": "PlayerRef",
+                        "player": "TriggeringPlayer"
+                    }
+                }
+            }
+        ],
+        "staticAbilities": [
+            {
+                "type": "GrantAdditionalLandDrop",
+                "affected": "Each"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "137",
+        "rarity": "RARE",
+        "artist": "Brandon Kitkouski",
+        "flavorText": "\"Dance, and bring forth the coil! It is an umbilical to Gaea herself, fattening us with the earth's rich bounty.\"",
+        "imageUri": "https://cards.scryfall.io/normal/front/8/1/811458c7-dcdc-43ef-8c3e-a90e21ce315e.jpg?1783943097",
+        "rulings": [
+            {
+                "date": "2013-04-15",
+                "text": "The triggered ability is put onto the stack after you have already drawn your card for the turn."
+            }
+        ]
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
+// Tarmogoyf
+{
+    "name": "Tarmogoyf",
+    "manaCost": "{1}{G}",
+    "typeLine": "Creature — Lhurgoyf",
+    "oracleText": "Tarmogoyf's power is equal to the number of card types among cards in all graveyards and its toughness is equal to that number plus 1.",
+    "creatureStats": {
+        "power": {
+            "type": "Dynamic",
+            "source": {
+                "type": "AggregateZone",
+                "player": "Each",
+                "zone": "Graveyard",
+                "aggregation": "DISTINCT_TYPES"
+            }
+        },
+        "toughness": {
+            "type": "DynamicWithOffset",
+            "source": {
+                "type": "AggregateZone",
+                "player": "Each",
+                "zone": "Graveyard",
+                "aggregation": "DISTINCT_TYPES"
+            },
+            "offset": 1
+        }
+    },
+    "metadata": {
+        "collectorNumber": "153",
+        "rarity": "RARE",
+        "artist": "Justin Murray",
+        "imageUri": "https://cards.scryfall.io/normal/front/b/6/b6876d9e-0908-43ac-8542-09c7aa02b5ba.jpg?1783943094",
+        "rulings": [
+            {
+                "date": "2024-06-07",
+                "text": "Some older printings of this card reference the \"tribal\" card type in their reminder text. That card type's name has been replaced with \"kindred\". This change does not affect the gameplay function of those cards or of Tarmogoyf. (The same older printings of this card also fail to reference the \"battle\" card type, which didn't exist at the time, but Tarmogoyf's ability still counts that card type.)"
+            },
+            {
+                "date": "2021-03-19",
+                "text": "The ability that defines Tarmogoyf's power and toughness works in all zones, not just the battlefield. If Tarmogoyf is in your graveyard, it will count itself."
+            },
+            {
+                "date": "2021-03-19",
+                "text": "Tarmogoyf counts card types, not cards. If the only card in all graveyards is a single artifact creature, Tarmogoyf will be 2/3. If the only cards in all graveyards are ten artifact creatures, Tarmogoyf will still be 2/3."
+            },
+            {
+                "date": "2021-03-19",
+                "text": "The card types that can appear on cards in a graveyard are artifact, battle, creature, enchantment, instant, kindred, land, planeswalker, and sorcery. Legendary, basic, and snow are supertypes, not card types."
+            },
+            {
+                "date": "2021-03-19",
+                "text": "If an instant or sorcery spell deals damage to Tarmogoyf or lowers its toughness, that spell is put into its owner's graveyard before state-based actions are performed. If that card is the first of its type to enter a graveyard, it will raise Tarmogoyf's toughness before the game checks to see if Tarmogoyf dies."
+            }
+        ]
     },
     "colorIdentityOverride": [
         "GREEN"

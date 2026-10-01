@@ -2,16 +2,14 @@ package com.wingedsheep.mtg.sets.definitions.conflux.cards
 
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.CardDestination
 import com.wingedsheep.sdk.scripting.effects.CardSource
 import com.wingedsheep.sdk.scripting.effects.Chooser
-import com.wingedsheep.sdk.scripting.effects.MayEffect
-import com.wingedsheep.sdk.scripting.effects.ShuffleLibraryEffect
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
@@ -29,11 +27,11 @@ val PathToExile = card("Path to Exile") {
     oracleText = "Exile target creature. Its controller may search their library for a basic land card, put that card onto the battlefield tapped, then shuffle."
 
     spell {
-        val target = target("target creature", Targets.Creature)
+        val target = target(TargetFilter.Creature)
         effect = Effects.Pipeline {
             run(Effects.Exile(target))
             run(
-                MayEffect(
+                Effects.May(
                     Effects.Pipeline {
                         val searchable = gather(
                             CardSource.FromZone(
@@ -58,7 +56,7 @@ val PathToExile = card("Path to Exile") {
                                 placement = ZonePlacement.Tapped,
                             )
                         )
-                        run(ShuffleLibraryEffect(EffectTarget.PlayerRef(Player.ControllerOf("target creature"))))
+                        run(Effects.ShuffleLibrary(EffectTarget.PlayerRef(Player.ControllerOf("target creature"))))
                     },
                     decisionMaker = EffectTarget.TargetController,
                     descriptionOverride = "Its controller may search their library for a basic land card, put that card onto the battlefield tapped, then shuffle.",

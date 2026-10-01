@@ -2,6 +2,8 @@ package com.wingedsheep.engine.core
 
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.targets.TargetOther
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -60,9 +62,9 @@ data class DecisionContext(
      * "pay X life or sacrifice it" once per creature, and without this the player sees N identical
      * prompts with no way to tell which creature each one covers.
      *
-     * Set from the enclosing per-entity iteration (`pipeline.iterationTarget` — the same binding
-     * `EffectTarget.Self` reads inside a `ForEachInGroup` body), so any gate raised inside such a
-     * loop names its subject for free.
+     * Set from the enclosing per-entity iteration (`EffectContext.iterationEntityId` — the object
+     * `EffectTarget.IterationEntity` names inside a `ForEachInGroup` body), so any gate raised
+     * inside such a loop names its subject for free.
      *
      * Only the id travels: the client resolves the card through its already-masked state map, so a
      * face-down subject can never leak its name through the prompt.
@@ -125,6 +127,12 @@ data class ChooseTargetsDecision(
 
 /**
  * Information about a single target requirement.
+ *
+ * Cardinality ([minTargets] / [maxTargets]) is always stated by the producer. Production paths
+ * build this through [fromRequirement] (or `TargetValidator.pendingTargetRequirementInfo`), which
+ * derives every semantic field from the requirement itself and fails closed when one cannot be
+ * resolved; the semantic defaults describe a plain choice with no cross-target relationship (an
+ * attachment host, a test fixture), never a guess about a real requirement.
  */
 @Serializable
 data class TargetRequirementInfo(
@@ -132,17 +140,23 @@ data class TargetRequirementInfo(
     val description: String,
     val minTargets: Int,
     val maxTargets: Int,
-    val targetZone: String?,
-    val mustDifferFromEarlier: Boolean,
-    val sameController: Boolean,
+    val targetZone: String? = null,
+    /**
+     * When true, a target for this requirement must differ from every target chosen for an
+     * earlier requirement of the same decision — "another target" wording (`TargetOther`).
+     * False by default: separate instances of the word "target" may pick the same object
+     * (Seeds of Strength), so the client must not strip earlier picks from this pool unless set.
+     */
+    val mustDifferFromEarlier: Boolean = false,
+    val sameController: Boolean = false,
     /**
      * When true, every chosen card target for this requirement must be owned by the same
      * player — "from a single graveyard" (Arashin Sunshield). Enforced against each
      * selected card's owner in [DecisionValidators.validateTargets].
      */
-    val sameOwner: Boolean,
-    val sameCreatureType: Boolean,
-    val sameCardType: Boolean,
+    val sameOwner: Boolean = false,
+    val sameCreatureType: Boolean = false,
+    val sameCardType: Boolean = false,
     /**
      * When non-null, the combined mana value of the chosen card targets for this requirement may
      * not exceed this cap — "any number of target creature cards with total mana value X or less"
@@ -151,17 +165,30 @@ data class TargetRequirementInfo(
      * [DecisionValidators.validateTargets] rejects a selection whose summed `manaValue` exceeds it.
      * `null` imposes no aggregate cap.
      */
-    val totalManaValueAtMost: Int?,
+    val totalManaValueAtMost: Int? = null,
     /**
      * When true, no two chosen targets for this requirement may share a name — "target creature
      * cards with different names" (Behold the Sinister Six!). Enforced against each selected
      * target's name in [DecisionValidators.validateTargets].
      */
-    val differentNames: Boolean,
-    val xConstrainsManaValue: Boolean,
-    val xConstrainsManaValueExactly: Boolean,
-    val xConstrainsPower: Boolean,
-    val xConstrainsCount: Boolean
+    val differentNames: Boolean = false,
+    val xConstrainsManaValue: Boolean = false,
+    val xConstrainsManaValueExactly: Boolean = false,
+    val xConstrainsPower: Boolean = false,
+    val xConstrainsCount: Boolean = false,
+    /**
+     * When true, no two chosen targets for this requirement may share a controller — "for each
+     * other player, exile up to one target creature that player controls" (Kaya, Spirits'
+     * Justice). Enforced against each selected permanent's projected controller in
+     * [DecisionValidators.validateTargets].
+     */
+    val differentControllers: Boolean = false,
+    /**
+     * When true, the chosen targets must be at most one of each card type — each paired with a
+     * different card type it has ("up to one target nonland card of each card type", Uldaros
+     * Theorix). Enforced in [DecisionValidators.validateTargets].
+     */
+    val onePerCardType: Boolean = false
 ) {
     companion object {
         /** Build pending metadata from the authoritative target-requirement source. */
@@ -224,7 +251,16 @@ data class TargetRequirementInfo(
                 xConstrainsManaValueExactly = semantics.xConstrainsManaValueExactly,
                 xConstrainsPower = semantics.xConstrainsPower,
                 xConstrainsCount = semantics.xConstrainsCount,
+                differentControllers = semanticSource.objectRequirementOrNull()?.differentControllers == true,
+                onePerCardType = semanticSource.objectRequirementOrNull()?.onePerCardType == true,
             ))
+        }
+
+        /** The [TargetObject] a requirement is built on, seen through `TargetOther` wrappers. */
+        private fun TargetRequirement.objectRequirementOrNull(): TargetObject? = when (this) {
+            is TargetObject -> this
+            is TargetOther -> baseRequirement.objectRequirementOrNull()
+            else -> null
         }
     }
 }
@@ -487,7 +523,13 @@ data class ChooseColorDecision(
     override val playerId: EntityId,
     override val prompt: String,
     override val context: DecisionContext,
-    val availableColors: Set<Color> = Color.entries.toSet()
+    val availableColors: Set<Color> = Color.entries.toSet(),
+    /**
+     * How many distinct colors the answer may name. `1` is the ordinary single-color choice; a
+     * larger value is "the color or colors of your choice" (Quickchange) — the player picks any
+     * nonempty set of up to this many colors and answers with [ColorChosenResponse.colors].
+     */
+    val maxColors: Int = 1
 ) : PendingDecision
 
 /**
@@ -807,8 +849,8 @@ sealed interface DecisionResponse {
     /**
      * The same response retargeted at a different pending-decision id. The id is only a routing
      * nonce — the choice payload is unchanged — so this lets a caller that holds a recorded response
-     * re-bind it to a freshly created decision. Used by replay reconstruction, where decision ids
-     * are minted afresh each run (they are not part of the deterministic state).
+     * re-bind it to a reconstructed decision. Current routing IDs reproduce from serialized game
+     * state; replay retains this operation for historical random or clock-based IDs.
      */
     fun withDecisionId(newId: String): DecisionResponse = when (this) {
         is TargetsResponse -> copy(decisionId = newId)
@@ -894,8 +936,16 @@ data class ModesChosenResponse(
 @SerialName("ColorChosenResponse")
 data class ColorChosenResponse(
     override val decisionId: String,
-    val color: Color
-) : DecisionResponse
+    val color: Color,
+    /**
+     * The full selection for a multi-color [ChooseColorDecision] (`maxColors > 1`); must contain
+     * [color]. Empty for an ordinary single-color answer, where [color] is the whole choice.
+     */
+    val colors: List<Color> = emptyList()
+) : DecisionResponse {
+    /** Every chosen color: [colors] when a multi-color answer was given, otherwise just [color]. */
+    val allColors: Set<Color> get() = if (colors.isEmpty()) setOf(color) else colors.toSet()
+}
 
 /**
  * Response to ChooseNumberDecision.

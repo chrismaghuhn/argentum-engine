@@ -1,13 +1,11 @@
 package com.wingedsheep.mtg.sets.definitions.ogw.cards
 
-import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.ModifyStats
-import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 
 /**
@@ -37,11 +35,7 @@ val StoneHavenOutfitter = card("Stone Haven Outfitter") {
     }
 
     triggeredAbility {
-        trigger = Triggers.leavesBattlefield(
-            filter = GameObjectFilter.Creature.youControl().equipped(),
-            to = Zone.GRAVEYARD,
-            binding = TriggerBinding.ANY,
-        )
+        trigger = Triggers.a(GameObjectFilter.Creature.youControl().equipped()).dies()
         effect = Effects.DrawCards(1)
     }
 
