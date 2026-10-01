@@ -242,7 +242,7 @@ def main(argv=None):
     parser.add_argument("--runs", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--lr", type=float, default=1.5e-4)
     parser.add_argument("--clip", type=float, default=0.2)
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--lam", type=float, default=0.95)
