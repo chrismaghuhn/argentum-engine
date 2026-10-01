@@ -12,6 +12,7 @@ import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.HasBecomeTappedComponent
+import com.wingedsheep.engine.state.components.player.EquipActivationsThisTurnComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -218,6 +219,52 @@ class LoopingActionAiTest : FunSpec({
         val chosen = chooseFor(strategist, registry, driver.state, ai)
 
         chosen.actionType shouldBe "PassPriority"
+    }
+
+    test("the AI moves each Equipment at most twice in a step, however good another move looks") {
+        // Found in engine AI self-play (Commander, `production-candidate-expiring`): with Puresteel
+        // Paladin making every equip {0}, Akiri spent a whole main phase moving five Equipment
+        // around six creatures — 78 different positions, then a cycle longer than the position
+        // memory, so no repetition guard could fire. With that many free candidates one of them
+        // almost always scores a hair above passing. A move and one correction is all a step needs.
+        val freeEquipment = listOf("Test Free Equipment A", "Test Free Equipment B").map { name ->
+            com.wingedsheep.sdk.dsl.card(name) {
+                manaCost = "{0}"
+                typeLine = "Artifact — Equipment"
+                oracleText = "Equip {0}"
+                equipAbility("{0}")
+            }
+        }
+        val registry = registry().apply { register(freeEquipment) }
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all + freeEquipment)
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true, startingPlayer = 0)
+        val ai = driver.player1
+        val equipment = freeEquipment.map { driver.putPermanentOnBattlefield(ai, it.name) }
+        repeat(3) { driver.putCreatureOnBattlefield(ai, "Grizzly Bears") }
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        // Every equip activation counts up, and the position digest ignores the count — so this
+        // evaluator likes every move better than passing, the shape of the noise that fed the walk.
+        val prefersEquipping = BoardEvaluator { state, _, _ ->
+            (state.getEntity(ai)?.get<EquipActivationsThisTurnComponent>()?.count ?: 0).toDouble()
+        }
+        val strategist = Strategist(GameSimulator(registry), prefersEquipping, budgetPolicy = LegacyBudgetPolicy)
+        val simulator = GameSimulator(registry)
+
+        var state = driver.state
+        val moved = mutableListOf<EntityId>()
+        for (decision in 0 until 10) {
+            val chosen = chooseFor(strategist, registry, state, ai)
+            if (chosen.actionType == "PassPriority") break
+            moved += chosen.action.shouldBeInstanceOf<ActivateAbility>().sourceId
+            state = simulator.simulate(state, chosen.action).state
+        }
+
+        withClue("each Equipment is moved, at most twice: $moved") {
+            moved.toSet() shouldBe equipment.toSet()
+            moved.groupingBy { it }.eachCount().values.all { it <= 2 } shouldBe true
+        }
     }
 })
 

@@ -27,6 +27,7 @@ import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.DeclareBlockers
 import com.wingedsheep.engine.core.GameAction
+import com.wingedsheep.engine.core.PermanentAttachedEvent
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.MeaningfulActionFilter
 import com.wingedsheep.engine.state.GameState
@@ -143,6 +144,21 @@ class Strategist(
      */
     private val positionsActedFrom = ArrayDeque<Long>()
 
+    /**
+     * How often this player's own actions have moved each Aura or Equipment to a new host in the
+     * current step, and which step that is ([attachmentStep], as turn and step).
+     *
+     * The second memory, for the treadmill [positionsActedFrom] cannot see: a walk that never
+     * repeats a position, or repeats it only after more than [POSITION_MEMORY] of them. With equip
+     * free (Puresteel Paladin) a board of five Equipment and six creatures has thousands of
+     * arrangements, and with that many free candidates one of them nearly always scores a hair
+     * above passing — so the AI moved Equipment around for an entire main phase. A move and one
+     * correction of it is all a step ever needs; a candidate that would move an attachment a
+     * [MAX_ATTACHMENT_MOVES_PER_STEP]+1th time is dropped.
+     */
+    private var attachmentStep: Pair<Int, Step>? = null
+    private val attachmentMovesThisStep = mutableMapOf<EntityId, Int>()
+
     fun chooseAction(
         state: GameState,
         legalActions: List<LegalAction>,
@@ -182,6 +198,11 @@ class Strategist(
 
         val budget = budgetPolicy.budgetFor(state, playerId, affordable)
         val here = StateProgress.digest(evaluationState)
+        val step = state.turnNumber to state.step
+        if (step != attachmentStep) {
+            attachmentStep = step
+            attachmentMovesThisStep.clear()
+        }
 
         // ── Pass 1: one simulation per candidate, to the quiet state it leads to ──
         // The anytime contract: candidates are simulated in order and the budget only cuts the
@@ -192,6 +213,7 @@ class Strategist(
         // the real option it is rather than as a separately-computed threshold.
         val leaves = mutableListOf<LegalAction>()
         val leafStates = mutableListOf<GameState>()
+        val leafMoves = mutableListOf<Set<EntityId>>()
         // Local testing mode only: the candidates that never reached scoring. Reading the panel
         // without them makes the AI look like it never considered a play it in fact discarded.
         val dropped = if (insightSink != null) mutableListOf<AiActionOption>() else null
@@ -199,15 +221,19 @@ class Strategist(
         if (pass != null) {
             leaves += pass
             leafStates += simulator.simulate(evaluationState, pass.action).state
+            leafMoves.add(emptySet())
         }
         for (action in affordable) {
             searched++
             val (materialized, simulation) = materialize(evaluationState, action, playerId, budget, here)
+            val moves = attachmentsMovedBy(simulation, playerId)
+            val movesAgain = moves.any { (attachmentMovesThisStep[it] ?: 0) >= MAX_ATTACHMENT_MOVES_PER_STEP }
             val usable = when {
                 // LegalAction affordability is necessarily a preview for costs such as convoke and
                 // modal/additional payments. If materializing the concrete action cannot pass the
                 // authoritative processor, it is not a candidate the AI may submit.
                 simulation is SimulationResult.Illegal -> false
+                movesAgain -> false
                 simulation is SimulationResult.NeedsDecision -> true
                 // A line that walks back into a position we have already acted from has accomplished
                 // nothing, whatever the leaf score says — and it is not a one-off mistake, because it
@@ -222,15 +248,16 @@ class Strategist(
             if (usable) {
                 leaves += action.copy(action = materialized)
                 leafStates += simulation.state
+                leafMoves.add(moves)
             } else {
                 val illegal = simulation is SimulationResult.Illegal
                 dropped?.add(
                     droppedOption(
                         evaluationState, action, materialized,
-                        note = if (illegal) {
-                            "dropped — illegal once materialized"
-                        } else {
-                            "dropped — leads back to a position already acted from"
+                        note = when {
+                            illegal -> "dropped — illegal once materialized"
+                            movesAgain -> "dropped — moves an attachment already moved twice this step"
+                            else -> "dropped — leads back to a position already acted from"
                         },
                         submittable = !illegal,
                     )
@@ -287,6 +314,9 @@ class Strategist(
         val takeAction = best != null && best.second > adjustedPassScore
         val chosen = if (takeAction) {
             remember(here)
+            for (moved in leafMoves[leaves.indexOfFirst { it === best.first }]) {
+                attachmentMovesThisStep.merge(moved, 1, Int::plus)
+            }
             // Fill in targets on the returned action so the processor can execute it.
             // The committed target is chosen by simulation (not just the heuristic) so the
             // AI sees the real resolved board, including effects already on the stack.
@@ -434,6 +464,13 @@ class Strategist(
         if (refined == materialized) return materialized to simulation
         return refined to simulator.simulate(state, refined)
     }
+
+    /** The attachments of [playerId]'s that [simulation] moved onto a new host. */
+    private fun attachmentsMovedBy(simulation: SimulationResult, playerId: EntityId): Set<EntityId> =
+        simulation.events.asSequence()
+            .filterIsInstance<PermanentAttachedEvent>()
+            .filter { it.controllerId == playerId }
+            .mapTo(mutableSetOf()) { it.attachmentId }
 
     /**
      * Record a position we are about to act from, so a later candidate that leads back to it is
@@ -972,6 +1009,9 @@ class Strategist(
     private companion object {
         /** How many acted-from positions [remember] keeps. See it for why a short memory suffices. */
         const val POSITION_MEMORY = 32
+
+        /** See [attachmentMovesThisStep]: a move, and one change of mind about it. */
+        const val MAX_ATTACHMENT_MOVES_PER_STEP = 2
 
         /**
          * Targets simulated per requirement when rescuing a candidate the cheap pick made inert.
