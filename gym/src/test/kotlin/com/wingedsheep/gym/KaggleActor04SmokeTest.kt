@@ -57,6 +57,7 @@ import com.wingedsheep.gym.trainer.actor.WorkItemV1
 import com.wingedsheep.gym.trainer.actor.WorkloadJobV1
 import com.wingedsheep.gym.trainer.actor.WorkloadPlanV1
 import com.wingedsheep.gym.trainer.trajectory.CompactReplayLinkV1
+import com.wingedsheep.gym.trainer.trajectory.compactReplaySchemaIdentity
 import com.wingedsheep.gym.trainer.trajectory.DatasetMetadataV1
 import com.wingedsheep.gym.trainer.trajectory.DecisionRecordV1
 import com.wingedsheep.gym.trainer.trajectory.EnvironmentIdentityV1
@@ -779,7 +780,7 @@ private object KaggleActor04SmokeHarness {
             policyProvenance = item.policyProvenance,
             compactReplayLink = CompactReplayLinkV1(
                 replayVersion = decodedReplay.version,
-                replaySchemaIdentity = "argentum-compact-replay@v6",
+                replaySchemaIdentity = compactReplaySchemaIdentity(decodedReplay.version),
                 replayContentIdentity = replayIdentity.value,
                 replayActionCount = decodedReplay.actions.size,
             ),

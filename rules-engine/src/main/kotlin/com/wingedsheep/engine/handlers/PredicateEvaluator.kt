@@ -2794,7 +2794,7 @@ data class PredicateContext(
      */
     fun resolvePlayerTarget(target: EffectTarget): EntityId? {
         val chosen: ChosenTarget? = when (target) {
-            is EffectTarget.BoundVariable -> namedTargets[target.name]
+            is EffectTarget.BoundVariable -> namedTargets.boundTarget(target.name)
             is EffectTarget.ContextTarget -> targets.getOrNull(target.index)
             EffectTarget.Controller -> return controllerId
             is EffectTarget.PlayerRef -> return when (target.player) {

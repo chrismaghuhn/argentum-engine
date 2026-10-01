@@ -52,6 +52,7 @@ import com.wingedsheep.gym.trainer.actor.WorkItemV1
 import com.wingedsheep.gym.trainer.actor.WorkloadJobV1
 import com.wingedsheep.gym.trainer.actor.WorkloadPlanV1
 import com.wingedsheep.gym.trainer.trajectory.CompactReplayLinkV1
+import com.wingedsheep.gym.trainer.trajectory.compactReplaySchemaIdentity
 import com.wingedsheep.gym.trainer.trajectory.DatasetManifestV1
 import com.wingedsheep.gym.trainer.trajectory.DatasetMetadataV1
 import com.wingedsheep.gym.trainer.trajectory.DecisionRecordV1
@@ -114,7 +115,6 @@ internal const val KA06_SEAT1_PLAYER_ID = "ka06-seat-1"
 internal const val KA06_POLICY_IDENTITY = "ka06-transported-replay-reference-policy@v1"
 internal const val KA06_POLICY_RNG_IDENTITY = "explicit-seed/kotlin-policy-state-v1"
 internal const val KA06_COMMANDER_STARTING_LIFE = 40
-internal const val KA06_LINK_REPLAY_SCHEMA_IDENTITY = "argentum-compact-replay@v6"
 
 /** Syntactically valid 40-hex commit for the §20 control F injection (never a real object). */
 internal val KA06_WRONG_ENGINE_COMMIT = "f".repeat(40)
@@ -1379,7 +1379,7 @@ internal object KaggleActor06TransportedReplayHarness {
             policyProvenance = item.policyProvenance,
             compactReplayLink = CompactReplayLinkV1(
                 replayVersion = replay.version,
-                replaySchemaIdentity = KA06_LINK_REPLAY_SCHEMA_IDENTITY,
+                replaySchemaIdentity = compactReplaySchemaIdentity(replay.version),
                 replayContentIdentity = replayIdentity.value,
                 replayActionCount = replay.actions.size,
             ),

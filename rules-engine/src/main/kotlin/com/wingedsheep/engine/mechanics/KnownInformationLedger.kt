@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.HandLookedAtEvent
 import com.wingedsheep.engine.core.HandRevealedEvent
+import com.wingedsheep.engine.core.LibraryReorderedEvent
 import com.wingedsheep.engine.core.LibrarySearchedEvent
 import com.wingedsheep.engine.core.LibraryShuffledEvent
 import com.wingedsheep.engine.core.LookedAtCardsEvent
@@ -195,10 +196,16 @@ object KnownInformationLedger {
         val shuffledLibraryOwners = events.filterIsInstance<LibraryShuffledEvent>()
             .map(LibraryShuffledEvent::playerId)
             .distinct()
-        val libraryMembershipOwners = events.filterIsInstance<ZoneChangeEvent>()
-            .filter { it.fromZone == Zone.LIBRARY || it.toZone == Zone.LIBRARY }
-            .map(ZoneChangeEvent::ownerId)
-            .distinct()
+        // A card put elsewhere in the library it is already in (scry to the bottom) never leaves
+        // its zone, so no ZoneChangeEvent reports it; it still shifts every other position.
+        val libraryMembershipOwners = (
+            events.filterIsInstance<ZoneChangeEvent>()
+                .filter { it.fromZone == Zone.LIBRARY || it.toZone == Zone.LIBRARY }
+                .map(ZoneChangeEvent::ownerId) +
+                events.filterIsInstance<LibraryReorderedEvent>()
+                    .filter(LibraryReorderedEvent::sameZonePlacement)
+                    .map(LibraryReorderedEvent::playerId)
+            ).distinct()
         val producerReacquiredLibraryOwners = state.pendingLibraryOrderReacquisitionOwners
         if (shuffledLibraryOwners.isNotEmpty()) {
             state = reincarnateKnownShuffleObjects(
@@ -339,6 +346,9 @@ object KnownInformationLedger {
         for (event in events) {
             when (event) {
                 is LibraryShuffledEvent -> invalidatedLibraryOwners += event.playerId
+                is LibraryReorderedEvent -> if (event.sameZonePlacement) {
+                    invalidatedLibraryOwners += event.playerId
+                }
                 is ZoneChangeEvent -> {
                     // A candidate is tied to the incarnation observed at its draw event. Any
                     // later move of that same entity means the final state may contain a newer

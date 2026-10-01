@@ -135,7 +135,9 @@ internal class AbilityResolver(
             resolvedEvents = listOf(
                 AbilityResolvedEvent(
                     abilityComponent.sourceId,
-                    abilityComponent.description
+                    abilityComponent.description,
+                    sourceEndpointAuthority = abilityComponent.sourceEndpointAuthority,
+                    sourceObjectIncarnationStamp = abilityComponent.sourceObjectIncarnationStamp,
                 )
             ) + sagaChapterResolvedEvents(abilityComponent)
         )
@@ -204,7 +206,9 @@ internal class AbilityResolver(
             resolvedEvents = listOf(
                 AbilityResolvedEvent(
                     abilityComponent.sourceId,
-                    abilityComponent.sourceName
+                    abilityComponent.sourceName,
+                    sourceEndpointAuthority = abilityComponent.sourceEndpointAuthority,
+                    sourceObjectIncarnationStamp = abilityComponent.sourceObjectIncarnationStamp,
                 )
             )
         )

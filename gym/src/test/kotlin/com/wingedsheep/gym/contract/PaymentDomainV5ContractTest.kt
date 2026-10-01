@@ -475,6 +475,57 @@ class PaymentDomainV5ContractTest : FunSpec({
             .paymentDomainV5For(state, fixture.legalAction) shouldBe null
     }
 
+    fun withFloating(
+        fixture: Fixture,
+        modification: com.wingedsheep.engine.mechanics.layers.SerializableModification,
+        affectedEntities: Set<EntityId>,
+    ): GameState = fixture.environment.state.copy(
+        floatingEffects = listOf(
+            com.wingedsheep.engine.mechanics.layers.ActiveFloatingEffect(
+                id = EntityId("pay106-floating-shield"),
+                effect = com.wingedsheep.engine.mechanics.layers.FloatingEffectData(
+                    layer = com.wingedsheep.engine.mechanics.layers.Layer.ABILITY,
+                    modification = modification,
+                    affectedEntities = affectedEntities,
+                ),
+                duration = Duration.EndOfTurn,
+                sourceId = null,
+                controllerId = fixture.playerId,
+                timestamp = 1L,
+            ),
+        ),
+    )
+
+    test("PAY106-FLOATING-SHIELD-01: protection on a permanent and combat-only shields keep pain certified") {
+        // Mother of Runes' protection floats on a creature and cannot reach the noncombat damage a
+        // pain land deals to its controller; neither can a combat-only shield.
+        val fixture = prepared(listOf(LlanowarWastes))
+        val builder = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+        for ((modification, affected) in listOf(
+            com.wingedsheep.engine.mechanics.layers.SerializableModification
+                .GrantProtectionFromColor("RED") to setOf(fixture.forestId),
+            com.wingedsheep.engine.mechanics.layers.SerializableModification
+                .PreventAllCombatDamage to emptySet(),
+            com.wingedsheep.engine.mechanics.layers.SerializableModification
+                .PreventAllDamageTo(combatOnly = true) to setOf(fixture.playerId),
+        )) {
+            builder.paymentDomainV5For(withFloating(fixture, modification, affected), fixture.legalAction) shouldNotBe null
+        }
+    }
+
+    test("PAY106-FLOATING-SHIELD-02: a shield that can reach the controller still closes pain certification") {
+        val fixture = prepared(listOf(LlanowarWastes))
+        val builder = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+        for ((modification, affected) in listOf(
+            com.wingedsheep.engine.mechanics.layers.SerializableModification
+                .PreventNextDamage(remainingAmount = 1) to setOf(fixture.playerId),
+            com.wingedsheep.engine.mechanics.layers.SerializableModification
+                .GrantProtectionFromColor("RED") to setOf(fixture.playerId),
+        )) {
+            builder.paymentDomainV5For(withFloating(fixture, modification, affected), fixture.legalAction) shouldBe null
+        }
+    }
+
     fun certifiedJointPool(
         fixture: Fixture,
         reverseInsertionOrder: Boolean = false,

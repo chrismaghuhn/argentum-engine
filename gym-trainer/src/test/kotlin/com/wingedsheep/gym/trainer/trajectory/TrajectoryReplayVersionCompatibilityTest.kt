@@ -13,18 +13,19 @@ import java.nio.file.Files
 
 class TrajectoryReplayVersionCompatibilityTest : FunSpec({
 
-    test("only explicit v5 and v6 replay schema pairs are accepted") {
+    test("only explicit v5, v6 and v7 replay schema pairs are accepted") {
         val contentIdentity = "a".repeat(64)
 
         listOf(
             Triple(COMPACT_REPLAY_V5_VERSION, COMPACT_REPLAY_V5_SCHEMA_IDENTITY, true),
             Triple(COMPACT_REPLAY_V6_VERSION, COMPACT_REPLAY_V6_SCHEMA_IDENTITY, true),
+            Triple(COMPACT_REPLAY_V7_VERSION, COMPACT_REPLAY_V7_SCHEMA_IDENTITY, true),
             Triple(COMPACT_REPLAY_V5_VERSION, COMPACT_REPLAY_V6_SCHEMA_IDENTITY, false),
             Triple(COMPACT_REPLAY_V6_VERSION, COMPACT_REPLAY_V5_SCHEMA_IDENTITY, false),
             Triple(4, COMPACT_REPLAY_V5_SCHEMA_IDENTITY, false),
-            Triple(7, COMPACT_REPLAY_V6_SCHEMA_IDENTITY, false),
-            Triple(7, "argentum-compact-replay@v7", false),
-            Triple(COMPACT_REPLAY_V6_VERSION, "argentum-compact-replay@v7", false),
+            Triple(COMPACT_REPLAY_V7_VERSION, COMPACT_REPLAY_V6_SCHEMA_IDENTITY, false),
+            Triple(COMPACT_REPLAY_V6_VERSION, COMPACT_REPLAY_V7_SCHEMA_IDENTITY, false),
+            Triple(8, "argentum-compact-replay@v8", false),
         ).forEach { (replayVersion, replaySchemaIdentity, accepted) ->
             val attempt = runCatching {
                 CompactReplayLinkV1(
@@ -44,10 +45,10 @@ class TrajectoryReplayVersionCompatibilityTest : FunSpec({
         }
 
         SUPPORTED_TRAJECTORY_REPLAY_VERSIONS shouldBe
-            setOf(COMPACT_REPLAY_V5_VERSION, COMPACT_REPLAY_V6_VERSION)
+            setOf(COMPACT_REPLAY_V5_VERSION, COMPACT_REPLAY_V6_VERSION, COMPACT_REPLAY_V7_VERSION)
     }
 
-    test("new replay link and environment defaults are the current v6 pair") {
+    test("new replay link and environment defaults are the current v7 pair") {
         val link = CompactReplayLinkV1(
             replayContentIdentity = "b".repeat(64),
             replayActionCount = 0,
@@ -55,9 +56,15 @@ class TrajectoryReplayVersionCompatibilityTest : FunSpec({
         val environment = defaultEnvironmentIdentity()
 
         link.replayVersion shouldBe CURRENT_TRAJECTORY_REPLAY_VERSION
-        link.replayVersion shouldBe COMPACT_REPLAY_V6_VERSION
-        link.replaySchemaIdentity shouldBe COMPACT_REPLAY_V6_SCHEMA_IDENTITY
-        environment.replaySchemaIdentity shouldBe COMPACT_REPLAY_V6_SCHEMA_IDENTITY
+        link.replayVersion shouldBe COMPACT_REPLAY_V7_VERSION
+        link.replaySchemaIdentity shouldBe COMPACT_REPLAY_V7_SCHEMA_IDENTITY
+        environment.replaySchemaIdentity shouldBe COMPACT_REPLAY_V7_SCHEMA_IDENTITY
+        // A link built for an older recording pairs with that recording's schema identity.
+        CompactReplayLinkV1(
+            replayVersion = COMPACT_REPLAY_V6_VERSION,
+            replayContentIdentity = "b".repeat(64),
+            replayActionCount = 0,
+        ).replaySchemaIdentity shouldBe COMPACT_REPLAY_V6_SCHEMA_IDENTITY
     }
 
     test("environment and replay link schema identities must agree at A5") {

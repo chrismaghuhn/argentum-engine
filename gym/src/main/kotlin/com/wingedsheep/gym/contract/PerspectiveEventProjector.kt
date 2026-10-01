@@ -310,6 +310,15 @@ internal class PerspectiveEventProjector(
             put("playerRole", playerRole(event.playerId, perspectivePlayerId))
         }
 
+        // A card put elsewhere in its own library (scry to the bottom) was reported as a
+        // LIBRARY -> LIBRARY zone change before the Rules engine stopped emitting same-zone moves;
+        // it keeps that hidden-to-hidden classification. A chosen order still waits for B.
+        is LibraryReorderedEvent -> if (event.sameZonePlacement) {
+            hidden("A placement within a library; neither endpoint is visible to this perspective")
+        } else {
+            unsupported(PerspectiveEventUnsupportedReason.REQUIRES_KNOWLEDGE_LEDGER_B)
+        }
+
         is ScriedEvent -> emit(PerspectiveEventFamily.SCRY_COMPLETED) {
             put("playerRole", playerRole(event.playerId, perspectivePlayerId))
             put("count", event.count)
@@ -452,9 +461,6 @@ internal class PerspectiveEventProjector(
     }
 
     private fun unsupportedReasonFor(event: GameEvent): ProjectionDecision = when (event) {
-        is LibraryReorderedEvent,
-        -> unsupported(PerspectiveEventUnsupportedReason.REQUIRES_KNOWLEDGE_LEDGER_B)
-
         is DamagePreventedEvent,
         is CardPlayedFromPermissionEvent,
         is RingTemptedEvent,

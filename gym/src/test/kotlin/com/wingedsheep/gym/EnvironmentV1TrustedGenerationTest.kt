@@ -45,6 +45,7 @@ import com.wingedsheep.gameserver.replay.ReplayCardPin
 import com.wingedsheep.gym.service.DeckResolver
 import com.wingedsheep.gym.service.DeckSpec
 import com.wingedsheep.gym.trainer.trajectory.CompactReplayLinkV1
+import com.wingedsheep.gym.trainer.trajectory.compactReplaySchemaIdentity
 import com.wingedsheep.gym.trainer.trajectory.DatasetManifestV1
 import com.wingedsheep.gym.trainer.trajectory.DatasetMetadataV1
 import com.wingedsheep.gym.trainer.trajectory.DecisionRecordV1
@@ -642,7 +643,7 @@ internal object A9TrustedGenerationHarness {
         val replayContentIdentity = ReplayContentCanonicalizerV1.identity(replay)
         val link = CompactReplayLinkV1(
             replayVersion = replay.version,
-            replaySchemaIdentity = "argentum-compact-replay@v6",
+            replaySchemaIdentity = compactReplaySchemaIdentity(replay.version),
             replayContentIdentity = replayContentIdentity.value,
             replayActionCount = replay.actions.size,
         )
@@ -1034,7 +1035,7 @@ internal data class A9GenerationEvidence(
         appendLine("GAME_TERMINAL=$terminalEpisodes")
         appendLine("INTERRUPTED=$interruptedEpisodes")
         appendLine("COMPACT_REPLAY_VERSION=${CompactReplay.CURRENT_VERSION}")
-        appendLine("COMPACT_REPLAY_SCHEMA_IDENTITY=argentum-compact-replay@v6")
+        appendLine("COMPACT_REPLAY_SCHEMA_IDENTITY=${compactReplaySchemaIdentity(CompactReplay.CURRENT_VERSION)}")
         appendLine("GYM_SCHEMA_IDENTITY=${SchemaHash.CURRENT}")
         appendLine("COMPLETE_LEGAL_DOMAIN_VERSION=$COMPLETE_LEGAL_DOMAIN_VERSION")
         appendLine("COMPLETE_LEGAL_DOMAIN_SCHEMA_IDENTITY=$COMPLETE_LEGAL_DOMAIN_SCHEMA_IDENTITY")

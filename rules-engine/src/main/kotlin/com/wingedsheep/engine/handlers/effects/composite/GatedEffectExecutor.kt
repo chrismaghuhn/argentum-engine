@@ -25,6 +25,7 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.CardDestination
 import com.wingedsheep.sdk.scripting.effects.ChooseActionEffect
+import com.wingedsheep.sdk.scripting.effects.CardSource
 import com.wingedsheep.sdk.scripting.effects.CollectEvidenceEffect
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
@@ -678,6 +679,15 @@ class GatedEffectExecutor(
         if (select.selection !is SelectionMode.ChooseExactly) return true
         val gather = steps.filterIsInstance<GatherCardsEffect>()
             .firstOrNull { it.storeAs == select.from } ?: return true
+        // Sizing the pool means running its gather now, before the action starts. A gather that
+        // follows an earlier choice of the same action (Akiri, Fearless Voyager: the Equipment
+        // attached to the host chosen first) or reads a stored collection would see an empty pool
+        // that proves nothing, so only a pool the action opens with can rule the option out.
+        if (gather.source is CardSource.FromVariable ||
+            steps.subList(0, steps.indexOf(gather)).any { it !is GatherCardsEffect }
+        ) {
+            return true
+        }
         val pool = effectExecutor(state, gather, context).updatedCollections[select.from] ?: return true
         val eligible = if (select.filter == GameObjectFilter.Any) {
             pool

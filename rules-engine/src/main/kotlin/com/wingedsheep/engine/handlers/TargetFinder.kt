@@ -198,10 +198,10 @@ class TargetFinder(
                     ) == null
                 }) return false
             if (namedTargets.any { name ->
-                    (context.namedTargets[name] as? ChosenTarget.Player) == null
+                    (context.namedTargets.boundTarget(name) as? ChosenTarget.Player) == null
                 }) return false
             if (entityTargetIndexes.any { index -> context.targets.getOrNull(index) == null }) return false
-            if (entityNamedTargets.any { name -> context.namedTargets[name] == null }) return false
+            if (entityNamedTargets.any { name -> context.namedTargets.boundTarget(name) == null }) return false
             if (iterationEntityId && context.iterationEntityId == null) return false
             if (storedCollections.any { (name, indices) ->
                     val collection = context.storedCollections[name] ?: return@any true

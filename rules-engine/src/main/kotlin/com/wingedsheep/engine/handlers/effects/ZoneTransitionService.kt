@@ -581,7 +581,9 @@ class ZoneTransitionService(
                         .clearLibraryReveals(retained, ownerId)
                     retainedEvents.add(com.wingedsheep.engine.core.LibraryShuffledEvent(ownerId))
                 } else {
-                    retainedEvents.add(com.wingedsheep.engine.core.LibraryReorderedEvent(ownerId, 1))
+                    retainedEvents.add(
+                        com.wingedsheep.engine.core.LibraryReorderedEvent(ownerId, 1, sameZonePlacement = true)
+                    )
                 }
                 retained = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
                     .setPlacementKnowledge(

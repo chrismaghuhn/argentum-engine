@@ -1,4 +1,5 @@
 package com.wingedsheep.engine.handlers.effects
+import com.wingedsheep.engine.handlers.boundTarget
 import com.wingedsheep.engine.state.components.battlefield.chosenCreatureRef
 import com.wingedsheep.engine.state.components.battlefield.chosenOpponent
 
@@ -127,7 +128,7 @@ object TargetResolutionUtils {
         EffectTarget.GrantingSource -> context.granterId
         EffectTarget.Controller -> context.controllerId
         is EffectTarget.ContextTarget -> context.positionalTarget(target.index)?.toEntityId()
-        is EffectTarget.BoundVariable -> context.pipeline.namedTargets[target.name]?.toEntityId()
+        is EffectTarget.BoundVariable -> context.pipeline.namedTargets.boundTarget(target.name)?.toEntityId()
         is EffectTarget.SpecificEntity -> target.entityId
         EffectTarget.TriggeringEntity -> context.triggeringEntityId
         // The damage roles resolve only through the event-time identity the trigger captured: a
@@ -335,7 +336,7 @@ object TargetResolutionUtils {
             Player.You -> context.controllerId
             Player.TargetPlayer, Player.TargetOpponent, Player.Any -> firstPlayerTarget(context)
             is Player.ContextPlayer -> context.positionalTarget(player.index)?.toEntityId()
-            is Player.BoundVariable -> context.pipeline.namedTargets[player.name]?.toEntityId()
+            is Player.BoundVariable -> context.pipeline.namedTargets.boundTarget(player.name)?.toEntityId()
             Player.TriggeringPlayer -> context.triggeringPlayerId ?: context.triggeringEntityId
             Player.Candidate -> context.candidatePlayerId
             Player.AnOpponent -> state.getOpponents(context.controllerId).firstOrNull()
@@ -435,7 +436,7 @@ object TargetResolutionUtils {
         return when (effectTarget) {
             is EffectTarget.Controller -> context.controllerId
             is EffectTarget.ContextTarget -> context.positionalTarget(effectTarget.index)?.toEntityId()
-            is EffectTarget.BoundVariable -> context.pipeline.namedTargets[effectTarget.name]?.toEntityId()
+            is EffectTarget.BoundVariable -> context.pipeline.namedTargets.boundTarget(effectTarget.name)?.toEntityId()
             // DamageSource has no player role in the generic damage context. DamageRecipient is
             // player-like only when the damage event explicitly captured PLAYER; an entity id
             // alone is never enough to infer that role after LKI/zone changes.
@@ -553,7 +554,7 @@ object TargetResolutionUtils {
     fun resolvePlayerTargets(effectTarget: EffectTarget, state: GameState, context: EffectContext): List<EntityId> {
         return when (effectTarget) {
             is EffectTarget.Controller -> listOf(context.controllerId)
-            is EffectTarget.BoundVariable -> context.pipeline.namedTargets[effectTarget.name]?.toEntityId()?.let { listOf(it) } ?: emptyList()
+            is EffectTarget.BoundVariable -> context.pipeline.namedTargets.boundTarget(effectTarget.name)?.toEntityId()?.let { listOf(it) } ?: emptyList()
             is EffectTarget.PipelineTarget -> {
                 context.pipeline.storedCollections[effectTarget.collectionName]?.getOrNull(effectTarget.index)
                     ?.let { listOf(it) } ?: emptyList()

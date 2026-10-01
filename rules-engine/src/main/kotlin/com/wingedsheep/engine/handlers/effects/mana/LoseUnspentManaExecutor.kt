@@ -28,10 +28,25 @@ class LoseUnspentManaExecutor(private val cardRegistry: CardRegistry) : EffectEx
             val conversion = conversions[playerId]
             val updatedPool = if (conversion == null) pool.empty() else {
                 val plainMana = pool.white + pool.blue + pool.black + pool.red + pool.green + pool.colorless
-                pool.copy(
+                val converted = pool.copy(
                     white = 0, blue = 0, black = 0, red = 0, green = 0, colorless = 0,
                     restrictedMana = pool.restrictedMana.map { it.copy(color = conversion) }
                 ).add(conversion, plainMana)
+                // The conversion replaces the loss (CR 614.1a): the same mana stays in the pool,
+                // recoloured, so its colour-agnostic provenance tags (source, subtype, card type)
+                // survive. `add` is the untracked-mana seam: it resets every tag when the
+                // unrestricted pool was empty, which the zeroing above makes it, and clears the
+                // per-colour detail. Restore the aggregate tags only; the per-colour detail stays
+                // cleared and the pool reads INCOMPLETE, as after any other untracked add.
+                if (plainMana > 0) {
+                    converted.copy(
+                        manaBySubtype = pool.manaBySubtype,
+                        manaBySource = pool.manaBySource,
+                        manaByCardType = pool.manaByCardType,
+                    )
+                } else {
+                    converted
+                }
             }
             if (updatedPool == pool) continue
             newState = newState.updateEntity(playerId) { it.with(updatedPool) }

@@ -44,6 +44,7 @@ class CopyTargetSpellExecutor(
         context: EffectContext
     ): EffectResult {
         val spellEntityId = context.resolveTarget(effect.target)
+            ?: frozenSourceSpell(effect, context, state)
             ?: return EffectResult.error(state, "No target spell to copy")
 
         // "Copy it for each …" clauses resolve their count here (Thousand-Year Storm). Zero
@@ -148,6 +149,26 @@ class CopyTargetSpellExecutor(
             effect.keywordsForCopy.toSet(), effect.removeLegendary, copyCount, tokenRiders,
             resolvingPayload
         )
+    }
+
+    /**
+     * The spell a cost-linked trigger froze when it was put on the stack, when the copy names that
+     * very spell but it has since been countered or has otherwise left the stack. The identity gate
+     * in [EffectContext.resolveTarget] (CR 400.7) then names nothing, yet the trigger still copies
+     * the spell from its frozen payload — the captured card, effect, cast choices and targets — as
+     * last-known information. Null for every other reference, so no other lost object is revived.
+     */
+    private fun frozenSourceSpell(
+        effect: CopyTargetSpellEffect,
+        context: EffectContext,
+        state: GameState
+    ): EntityId? {
+        val payload = context.resolvingSpellCopyPayload ?: return null
+        val reference = effect.target as? com.wingedsheep.sdk.scripting.targets.EffectTarget.SingleEntity
+            ?: return null
+        val named = com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
+            .resolveEntity(reference, context, state)
+        return payload.sourceSpellId.takeIf { it == named }
     }
 
     /**

@@ -203,9 +203,10 @@ data class EntityFeatures(
     val cardDefinitionId: String?,
     /**
      * The projected name — what Layer 3 renamed the object to (Witness Protection), else the
-     * printed one. `"Face-down creature"` / `"Face-down card"` for a face-down object the
-     * perspective player may not look at, whose [oracleText], [manaCost] and [manaValue] are
-     * blanked to match.
+     * printed one. `"Face-down permanent"` (battlefield) / `"Face-down card"` (elsewhere) for a
+     * face-down object the perspective player may not look at, whose [oracleText], [manaCost] and
+     * [manaValue] are blanked to match. These are the fork's placeholder names, kept for the P1
+     * feature set; the engine's own display name for a face-down permanent is "Face-down creature".
      */
     val name: String,
     val zone: Zone,
@@ -269,7 +270,10 @@ data class StackItemView(
     val controllerId: EntityId?,
     /** Public source object for an ability, or the spell object itself for a spell. */
     val sourceEntityId: EntityId? = null,
-    /** The spell's card name, or the source name of an ability. */
+    /**
+     * The spell's card name, or the source name of an ability; `"Face-down spell"` for a spell cast
+     * face down that the perspective player may not look at (its [oracleText] is blanked to match).
+     */
     val name: String,
     val kind: StackItemKind,
     /** Printed oracle text of the card, or an ability's description. */

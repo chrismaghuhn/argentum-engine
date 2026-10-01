@@ -329,7 +329,14 @@ class ActivateAbilityHandler(
      * bounds, determine the total cost, and bind X as far as the action already allows.
      */
     private fun announce(state: GameState, action: ActivateAbility): Announcement {
-        val abilityEntityId = EntityId.generate()
+        // Reproducible, and unique per activation along one timeline: putting an activation on the
+        // stack consumes nextEntityId for its stack object, and a decision that pauses an activation
+        // consumes nextRoutingId, so a later or nested activation reads a different pair. A random
+        // UUID here put a non-reproducible key into every activated ability's stack payload, which
+        // no replay or full-state fingerprint could ever match.
+        val abilityEntityId = EntityId(
+            "activation:${action.sourceId.value}:${state.nextEntityId}:${state.nextRoutingId}"
+        )
         val sourceObject = state.objectRef(action.sourceId)
         val activationReferences = ObjectReferenceEnvironment(
             captured = true, origin = sourceObject, source = sourceObject, resolutionKey = abilityEntityId.value,

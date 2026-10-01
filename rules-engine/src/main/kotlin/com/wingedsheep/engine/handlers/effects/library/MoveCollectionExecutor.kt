@@ -1080,10 +1080,19 @@ class MoveCollectionExecutor(
             val ownerId = newState.getEntity(cardId)?.get<OwnerComponent>()?.playerId
                 ?: newState.getEntity(cardId)?.get<CardComponent>()?.ownerId
                 ?: destPlayerId
-            val reestablishRevealToPlayerIds = newState.getEntity(cardId)
-                ?.get<RevealedToComponent>()
-                ?.playerIds
-                .orEmpty()
+            // A producer-authorized look survives a move to another zone (a library look exiled face
+            // down, Expensive Taste). A library entry is different: ZoneTransitionService's placement
+            // seam (LibraryRevealUtils.placementAudience) decides who knows the new slot and
+            // *replaces* the card's previous audience, so carrying that audience across would undo
+            // it — a card the whole table saw in a hand would stay visible after being tucked away.
+            val reestablishRevealToPlayerIds: Set<EntityId> = if (destZone == Zone.LIBRARY) {
+                emptySet()
+            } else {
+                newState.getEntity(cardId)
+                    ?.get<RevealedToComponent>()
+                    ?.playerIds
+                    .orEmpty()
+            }
 
             // Commander 903.9b is part of this card's physical move, not a collection-wide
             // preflight. The ordered list is already the physical insertion plan (top moves

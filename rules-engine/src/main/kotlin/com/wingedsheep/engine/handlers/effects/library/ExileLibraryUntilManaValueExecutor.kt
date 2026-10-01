@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.effects.library
 
+import com.wingedsheep.engine.handlers.boundTarget
 import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
@@ -111,7 +112,7 @@ class ExileLibraryUntilManaValueExecutor(private val zones: ZoneTransitionServic
             is Player.ContextPlayer -> context.positionalTarget(player.index)?.let {
                 listOf(TargetResolutionUtils.run { it.toEntityId() })
             } ?: emptyList()
-            is Player.BoundVariable -> context.pipeline.namedTargets[player.name]?.let {
+            is Player.BoundVariable -> context.pipeline.namedTargets.boundTarget(player.name)?.let {
                 listOf(TargetResolutionUtils.run { it.toEntityId() })
             } ?: emptyList()
             Player.TriggeringPlayer -> listOfNotNull(context.triggeringEntityId)

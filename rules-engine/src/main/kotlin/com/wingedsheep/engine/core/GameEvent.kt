@@ -1029,12 +1029,22 @@ data class SpellFizzledEvent(
 
 /**
  * An ability resolved.
+ *
+ * The source fields mirror [AbilityFizzledEvent]'s: they bind the resolution to the exact source
+ * object the ability came from, which matters once that source no longer exists — a token that
+ * died for its own dies trigger, a Clue sacrificed to pay for its ability.
  */
 @Serializable
 @SerialName("AbilityResolvedEvent")
 data class AbilityResolvedEvent(
     val sourceId: EntityId,
-    val description: String
+    val description: String,
+    /** Rules-owned lifecycle authority for the source object of the resolving ability. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
+    /** Rules-owned source incarnation captured when the ability occurrence was created. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null,
 ) : GameEvent
 
 /**
@@ -2117,13 +2127,18 @@ data class LookedAtCardsEvent(
 /**
  * A player reordered cards on top of their library.
  * Used for effects like Omen ("put them back in any order").
+ *
+ * [sameZonePlacement] marks the event the zone pipeline emits when one card is put somewhere else
+ * in the library it is already in (scry or "the rest on the bottom"): no order was chosen, and the
+ * card never left its zone. Those placements must not be read as a chosen order.
  */
 @Serializable
 @SerialName("LibraryReorderedEvent")
 data class LibraryReorderedEvent(
     val playerId: EntityId,
     val cardCount: Int,
-    val source: String? = null
+    val source: String? = null,
+    val sameZonePlacement: Boolean = false
 ) : GameEvent
 
 // =============================================================================

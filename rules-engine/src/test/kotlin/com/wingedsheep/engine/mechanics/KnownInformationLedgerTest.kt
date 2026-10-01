@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.HandLookedAtEvent
+import com.wingedsheep.engine.core.LibraryReorderedEvent
 import com.wingedsheep.engine.core.LibrarySearchedEvent
 import com.wingedsheep.engine.core.LibraryShuffledEvent
 import com.wingedsheep.engine.core.LookedAtCardsEvent
@@ -45,6 +46,8 @@ import io.kotest.matchers.shouldNotBe
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.effects.LibraryPlacement
+import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 
 /** Rules-state contract tests for the perspective-scoped known-information ledger. */
@@ -327,6 +330,42 @@ class KnownInformationLedgerTest : FunSpec({
         facts(after, p1).none {
             it.subjectEntityId == second && it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
         } shouldBe true
+    }
+
+    test("a card put on the bottom of its own library invalidates the other cards' stale positions") {
+        // Scry to the bottom: the card never leaves the library, so no ZoneChangeEvent reports
+        // the move, yet every card above it shifts one position.
+        val first = EntityId.of("same-zone-first")
+        val second = EntityId.of("same-zone-second")
+        val initial = stateWith(
+            CardSpec(first, p1, Zone.LIBRARY),
+            CardSpec(second, p1, Zone.LIBRARY),
+        )
+        val known = apply(
+            initial,
+            ExecutionResult.success(
+                KnownInformationLedger.recordLibraryOrder(initial, p1, listOf(first, second)),
+            ),
+        )
+        val moved = zones.moveToZone(
+            state = known,
+            entityId = first,
+            destinationZone = Zone.LIBRARY,
+            options = ZoneEntryOptions(libraryPlacement = LibraryPlacement.Bottom),
+            fromZoneKey = ZoneKey(p1, Zone.LIBRARY),
+        )
+        moved.events.filterIsInstance<ZoneChangeEvent>().shouldBeEmpty()
+        moved.events.filterIsInstance<LibraryReorderedEvent>().single().sameZonePlacement shouldBe true
+        val after = apply(known, ExecutionResult.success(moved.state, moved.events))
+
+        after.getLibrary(p1) shouldBe listOf(second, first)
+        facts(after, p1).none {
+            it.factKind == KnownInformationFactKind.POSITION_OR_ORDER &&
+                it.subjectEntityId in setOf(first, second)
+        } shouldBe true
+        // Still the same card in the same library: its identity moves onto the new incarnation.
+        fact(after, p1, first, KnownInformationFactKind.IDENTITY).objectIdentityStamp shouldBe
+            after.objectIdentityStamps[first]
     }
 
     test("HISTB-05 private search records searched library cards but not to the opponent") {

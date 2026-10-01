@@ -220,10 +220,14 @@ The current accepted schema anchors audited for compatibility are:
 PLAYER_OBSERVATION_V1_SCHEMA_IDENTITY=argentum-gym-player-observation@v1
 COMPLETE_LEGAL_DOMAIN_SCHEMA_IDENTITY=argentum-gym-action-domain@v2
 CANDIDATE_DOMAIN_DIGEST_SCHEMA_IDENTITY=argentum-gym-candidate-domain-digest@v1
-GYM_WIRE_SCHEMA_IDENTITY=argentum-gym-contract@v1.26-repeat-count-domain
+GYM_WIRE_SCHEMA_IDENTITY=argentum-gym-contract@v1.27-upstream-sync-05
 TRAJECTORY_V1_SCHEMA_IDENTITY=argentum-trajectory@v1
-COMPACT_REPLAY_SCHEMA_IDENTITY=argentum-compact-replay@v6 for current new recordings
+COMPACT_REPLAY_SCHEMA_IDENTITY=argentum-compact-replay@v7 for current new recordings
 ```
+
+Upstream-sync-05 moved the current values from `argentum-gym-contract@v1.26-repeat-count-domain`
+and `argentum-compact-replay@v6`: new recordings mint deck entity ids in a seeded shuffled order,
+which only a v7 replay reconstructs. Trajectory V1 still links v5 and v6 recordings.
 
 Historical replay schema identities remain source-dispatched compatibility cases; they do not
 change the model-checkpoint identity rules. Existing replay checkpoints/fingerprints are state-proof

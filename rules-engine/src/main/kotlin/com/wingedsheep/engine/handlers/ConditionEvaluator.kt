@@ -1051,7 +1051,7 @@ class ConditionEvaluator(
         is EffectTarget.BoundVariable ->
             (ctx as? Resolution)?.let {
                 evaluateTargetFilterMatch(
-                    state, condition.filter, it.effectContext.pipeline.namedTargets[entity.name], it.effectContext
+                    state, condition.filter, it.effectContext.pipeline.namedTargets.boundTarget(entity.name), it.effectContext
                 )
             } ?: false
         is EffectTarget.TriggeringEntity ->
