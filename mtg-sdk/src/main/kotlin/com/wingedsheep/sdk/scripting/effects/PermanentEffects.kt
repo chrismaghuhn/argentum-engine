@@ -99,7 +99,7 @@ data class BecomeCreatureEffect(
      * Optional dynamic base power. When non-null, the Layer 7b base-P/T floating effect uses
      * [SerializableModification.SetPowerToughnessDynamic] with this amount instead of the fixed
      * [power], recomputed continuously at projection. Use `DynamicAmount.EntityProperty(
-     * EntityReference.AffectedEntity, EntityNumericProperty.ManaValue)` for "power equal to its
+     * EffectTarget.AffectedEntity, EntityNumericProperty.ManaValue)` for "power equal to its
      * mana value" (Xenic Poltergeist). Both [dynamicPower] and [dynamicToughness] must be supplied
      * together; the fixed [power]/[toughness] then serve only as the rules-text display.
      */
@@ -147,7 +147,11 @@ data class BecomeCreatureEffect(
  *   change (Ultima's blighted land "loses all land types and abilities" but stays a land and keeps
  *   any other card types such as artifact, per its ruling).
  * @property subtypes Subtypes to set, replacing all existing ones (e.g. `setOf("Treasure")`;
- *   `emptySet()` strips all subtypes — "loses all land types")
+ *   `emptySet()` strips all subtypes — "loses all land types"). `null` keeps the permanent's
+ *   existing subtypes unchanged, the sibling of [cardTypes]'s `null` — for a transform that only
+ *   renames or grants ("it becomes a legendary creature named Mileva, the Stalwart", Tenth
+ *   District Hero, which stays whatever creature types it already had). Distinguishing "set to
+ *   nothing" from "don't touch" is why this is nullable rather than defaulting to a no-op.
  * @property colors Colors to set (`emptySet()` = colorless, the default; `null` = keep existing)
  * @property loseAllAbilities Whether the permanent loses all printed/granted-via-projection abilities
  * @property name Name to set, replacing the permanent's own (CR 612.8 — "loses any names it had
@@ -176,7 +180,7 @@ data class BecomeCreatureEffect(
 data class BecomeArtifactEffect(
     val target: EffectTarget = EffectTarget.ContextTarget(0),
     val cardTypes: Set<String>? = setOf("ARTIFACT"),
-    val subtypes: Set<String> = emptySet(),
+    val subtypes: Set<String>? = emptySet(),
     val colors: Set<com.wingedsheep.sdk.core.Color>? = emptySet(),
     val loseAllAbilities: Boolean = true,
     val name: String? = null,
@@ -187,9 +191,9 @@ data class BecomeArtifactEffect(
     override val description: String = buildString {
         append("${target.description} becomes ")
         if (colors?.isEmpty() == true) append("a colorless ")
-        if (subtypes.isNotEmpty()) append(subtypes.joinToString(" "))
+        if (!subtypes.isNullOrEmpty()) append(subtypes.joinToString(" "))
         if (!cardTypes.isNullOrEmpty()) {
-            if (subtypes.isNotEmpty()) append(" ")
+            if (!subtypes.isNullOrEmpty()) append(" ")
             append(cardTypes.joinToString(" ") { it.lowercase() })
         }
         if (name != null) append(" named $name")
@@ -274,6 +278,84 @@ data class BecomeSaddledEffect(
     val target: EffectTarget = EffectTarget.Self
 ) : Effect {
     override val description: String = "${target.description} becomes saddled until end of turn"
+}
+
+/**
+ * Target permanent becomes solved (CR 719.3b) — the resolving effect of a Case's "To solve"
+ * triggered ability. Stamps the engine's `SolvedComponent`, which the Case's "Solved —" abilities
+ * read back through `Conditions.SourceIsSolved` / `StatePredicate.IsSolved`.
+ *
+ * The designation is sticky and one-way: once a permanent is solved it stays solved until it
+ * leaves the battlefield, so re-solving is a harmless no-op and there is no inverse effect.
+ * Like saddled it is engine state rather than a copiable value (CR 719.3b), so copying a solved
+ * Case produces an unsolved one.
+ *
+ * Defaults to [EffectTarget.Self] because a Case's "To solve" trigger always solves its own source;
+ * the [target] is parameterized anyway so an outside effect ("solve target Case you control") can
+ * reuse it.
+ *
+ * @property target The permanent to give the solved designation
+ */
+@SerialName("BecomeSolved")
+@Serializable
+data class BecomeSolvedEffect(
+    val target: EffectTarget = EffectTarget.Self
+) : Effect {
+    override val description: String = "${target.description} becomes solved"
+}
+
+/**
+ * Target permanent becomes renowned (CR 702.112b) — the designation half of the renown trigger
+ * the engine derives from [com.wingedsheep.sdk.core.Keyword.RENOWN]. Stamps the engine's
+ * `RenownedComponent`, which renown payoffs read back through `Conditions.SourceIsRenowned` /
+ * `StatePredicate.IsRenowned`.
+ *
+ * Sticky and one-way like [BecomeSolvedEffect]: once a permanent becomes renowned it stays
+ * renowned until it leaves the battlefield, and there is no "unrenown". Renowned is neither an
+ * ability nor part of the permanent's copiable values (CR 702.112b), so a copy of a renowned
+ * creature is not itself renowned.
+ *
+ * Defaults to [EffectTarget.Self] because renown always renowns its own source; the [target] is
+ * parameterized anyway so an outside effect could reuse it.
+ *
+ * @property target The permanent to give the renowned designation
+ */
+@SerialName("BecomeRenowned")
+@Serializable
+data class BecomeRenownedEffect(
+    val target: EffectTarget = EffectTarget.Self
+) : Effect {
+    override val description: String = "${target.description} becomes renowned"
+}
+
+/**
+ * "You may activate loyalty abilities of [target] [times] times this turn rather than only once"
+ * — a one-shot, per-planeswalker relaxation of the once-per-turn loyalty rule (CR 606.3) for the
+ * rest of the turn (Kaito, Dancing Shadow). The per-permanent sibling of the controller-wide
+ * static [com.wingedsheep.sdk.scripting.ExtraLoyaltyActivation] (Oath of Teferi).
+ *
+ * Not additive: resolving it twice, or alongside Oath of Teferi, still allows [times]
+ * activations — the allowance is the largest one granted, not a sum. Activations already made
+ * this turn count against it, so a grant after one activation allows exactly one more. The
+ * allowance lapses at end of turn and if the permanent leaves the battlefield (it's a new object).
+ *
+ * @property target The planeswalker whose loyalty abilities may be activated more often
+ * @property times The total number of loyalty activations allowed this turn
+ */
+@SerialName("AllowLoyaltyActivationsThisTurn")
+@Serializable
+data class AllowLoyaltyActivationsThisTurnEffect(
+    val target: EffectTarget = EffectTarget.Self,
+    val times: Int = 2
+) : Effect {
+    init {
+        require(times >= 2) { "AllowLoyaltyActivationsThisTurnEffect.times must be at least 2, was $times" }
+    }
+
+    override val description: String =
+        "you may activate loyalty abilities of ${target.description} ${timesWord(times)} this turn rather than only once"
+
+    private fun timesWord(n: Int): String = if (n == 2) "twice" else "$n times"
 }
 
 /**
@@ -401,6 +483,30 @@ data class AttachTargetEquipmentToCreatureEffect(
     val creatureTarget: EffectTarget = EffectTarget.ContextTarget(1)
 ) : Effect {
     override val description: String = "Attach ${equipmentTarget.description} to ${creatureTarget.description}"
+}
+
+/**
+ * Attach an Aura or Equipment that is already on the battlefield to **another** permanent that the
+ * effect's controller chooses at resolution — the new host is not a target. Models "Attach target
+ * Aura attached to a creature to another creature" (Autumn-Tail, Kitsune Sage; Crown of the Ages)
+ * and "Attach it to another permanent it can enchant" (Aura Graft).
+ *
+ * Only hosts the attachment could legally be attached to are offered (CR 701.3a — an Aura's enchant
+ * restriction and protection, an Equipment's "creature" requirement), and the permanent it is
+ * currently attached to is excluded ("another"). With no such host the effect does nothing and the
+ * attachment stays where it is (CR 701.3b). Hexproof and shroud don't matter: the host isn't targeted.
+ *
+ * @property attachment The Aura or Equipment to move (e.g. the ability's target).
+ * @property hostFilter Which permanents are eligible new hosts, before the legality check.
+ */
+@SerialName("AttachToChosenHost")
+@Serializable
+data class AttachToChosenHostEffect(
+    val attachment: EffectTarget = EffectTarget.ContextTarget(0),
+    val hostFilter: GameObjectFilter = GameObjectFilter.Creature
+) : Effect {
+    override val description: String =
+        "Attach ${attachment.description} to another ${hostFilter.description}"
 }
 
 /**
@@ -537,8 +643,8 @@ data class ExploreEffect(
     val target: EffectTarget = EffectTarget.ContextTarget(0),
     /**
      * Recursion guard for explore-replacement effects
-     * ([com.wingedsheep.sdk.scripting.ModifyExplore], CR 614). When a matching `ModifyExplore`
-     * is on the battlefield, `ExploreEffectExecutor` re-issues the explore as
+     * ([com.wingedsheep.sdk.scripting.ModifyKeywordAction] over an `ExploredEvent`, CR 614). When a
+     * matching replacement is on the battlefield, `ExploreEffectExecutor` re-issues the explore as
      * `Composite(prefixEffect, ExploreEffect(target, replacementsApplied = true))`; the flag on
      * the inner explore stops the same replacement from applying a second time. Defaults to
      * `false` (with `encodeDefaults = false`, no existing explore card's snapshot churns).

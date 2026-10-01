@@ -21,6 +21,7 @@ import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /** End-to-end coverage for Astor, Bearer of Blades (DMU #194). */
 class AstorBearerOfBladesScenarioTest : FunSpec({
@@ -94,7 +95,7 @@ class AstorBearerOfBladesScenarioTest : FunSpec({
         driver.giveMana(active, Color.RED)
         driver.giveMana(active, Color.WHITE)
         driver.giveColorlessMana(active, 2)
-        driver.castSpell(active, astor).isSuccess shouldBe true
+        driver.castSpell(active, astor).outcome shouldBe Outcome.Done
         driver.bothPass() // resolve Astor; its ETB trigger is placed on the stack
         driver.bothPass() // resolve the ETB trigger into the explicit look/reveal decision
 
@@ -104,7 +105,7 @@ class AstorBearerOfBladesScenarioTest : FunSpec({
         decision.options shouldContainExactlyInAnyOrder listOf(topEquipment, topVehicle)
         decision.nonSelectableOptions shouldContainExactlyInAnyOrder nonMatching
 
-        driver.submitCardSelection(active, listOf(topVehicle)).isSuccess shouldBe true
+        driver.submitCardSelection(active, listOf(topVehicle)).outcome shouldBe Outcome.Done
         driver.getHand(active) shouldContain topVehicle
         // The unselected matching Equipment is part of the random-order remainder too.
         libraryNames(driver, active).takeLast(6) shouldContainExactlyInAnyOrder
@@ -131,7 +132,7 @@ class AstorBearerOfBladesScenarioTest : FunSpec({
                     com.wingedsheep.engine.state.components.stack.ChosenTarget.Permanent(crewer)
                 ),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe crewer
 
@@ -150,7 +151,7 @@ class AstorBearerOfBladesScenarioTest : FunSpec({
         // Preserve the enumerated origin key: the printed Crew 3 and granted Crew 1 are
         // intentionally distinct legal actions.
         val crewOneAction = crewOne.action.shouldBeInstanceOf<CrewVehicle>()
-        driver.submit(crewOneAction.copy(crewCreatures = listOf(crewer))).isSuccess shouldBe true
+        driver.submit(crewOneAction.copy(crewCreatures = listOf(crewer))).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.projectedState.isCreature(vehicle) shouldBe true
     }

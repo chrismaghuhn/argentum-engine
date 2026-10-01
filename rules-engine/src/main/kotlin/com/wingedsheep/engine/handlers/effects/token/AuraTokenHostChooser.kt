@@ -1,28 +1,26 @@
 package com.wingedsheep.engine.handlers.effects.token
 
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.CreateTokenCopyAuraHostContinuation
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
-import com.wingedsheep.engine.core.EffectResult
-import com.wingedsheep.engine.core.TargetRequirementInfo
-import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DiagnosticSignal
+import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.orReturnUnsupported
 import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
+import com.wingedsheep.engine.mechanics.targeting.PlayerProtectionRules
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
-import com.wingedsheep.engine.mechanics.targeting.PlayerProtectionRules
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.CreateTokenCopyOfTargetEffect
-import java.util.UUID
 
 /**
  * Raises the "what does this Aura token enchant?" choice (CR 303.4f).
@@ -41,11 +39,13 @@ import java.util.UUID
  */
 internal object AuraTokenHostChooser {
 
-    private val targetValidator = TargetValidator()
-
     /**
      * Pause for the controller to pick a host for the next Aura token, or return an unchanged
      * state when there is nothing the Aura could legally enchant (no token is created).
+     *
+     * [effectiveSource] is the copy's effective copiable characteristics (after the effect's copy
+     * exceptions), used for protection-based host legality; null derives them from the printed
+     * Aura definition.
      */
     fun pause(
         state: GameState,
@@ -56,6 +56,8 @@ internal object AuraTokenHostChooser {
         controllerId: EntityId,
         remaining: Int,
         cardRegistry: CardRegistry?,
+        targetFinder: TargetFinder,
+        targetValidator: TargetValidator,
         effectiveSource: PlayerProtectionRules.SourceCharacteristics? = null,
     ): EffectResult {
         if (remaining <= 0) return EffectResult.success(state)
@@ -66,7 +68,7 @@ internal object AuraTokenHostChooser {
                 "Target requirement semantics are unavailable for structured publication",
                 diagnostics = listOf(DiagnosticSignal(DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING))
             )
-        val hosts = legalHosts(state, auraDefinitionId, controllerId, cardRegistry, effectiveSource)
+        val hosts = legalHosts(state, auraDefinitionId, controllerId, cardRegistry, targetFinder, effectiveSource)
         val requirementInfo = targetValidator.pendingTargetRequirementInfo(
             state = state,
             index = 0,
@@ -81,8 +83,7 @@ internal object AuraTokenHostChooser {
             return EffectResult.success(state)
         }
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = ChooseTargetsDecision(
+        val decision = { decisionId: String -> ChooseTargetsDecision(
             id = decisionId,
             playerId = controllerId,
             prompt = "Choose what the $auraName token enchants",
@@ -93,10 +94,9 @@ internal object AuraTokenHostChooser {
             ),
             targetRequirements = listOf(requirementInfo),
             legalTargets = mapOf(0 to hosts),
-        )
+        ) }
 
         val continuation = CreateTokenCopyAuraHostContinuation(
-            decisionId = decisionId,
             effect = effect,
             context = context,
             controllerId = controllerId,
@@ -106,27 +106,25 @@ internal object AuraTokenHostChooser {
             effectiveSource = effectiveSource,
         )
 
-        return EffectResult(
-            state = state.withPendingDecision(decision).pushContinuation(continuation),
-            events = emptyList(),
-            pendingDecision = decision,
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation, emptyList()))
     }
 
     /**
      * Objects the copied Aura could legally enchant. Derived from the Aura card definition's
-     * `auraTarget` — the token copies the printed enchant restriction along with everything else.
-     * An Aura whose definition declares no enchant restriction has no legal host.
+     * `auraTarget` — the token copies the printed enchant restriction along with everything else —
+     * filtered by the attachment restrictions (protection, can't-be-enchanted) that still apply when
+     * nothing is targeted. An Aura whose definition declares no enchant restriction has no legal host.
      */
     private fun legalHosts(
         state: GameState,
         auraDefinitionId: String,
         controllerId: EntityId,
         cardRegistry: CardRegistry?,
+        targetFinder: TargetFinder,
         effectiveSource: PlayerProtectionRules.SourceCharacteristics?,
     ): List<EntityId> {
         val registry = cardRegistry ?: return emptyList()
-        return AuraHostLegality(registry, TargetFinder()).findLegalHostsForDefinition(
+        return AuraHostLegality(registry, targetFinder).findLegalHostsForDefinition(
             state = state,
             auraDefinitionId = auraDefinitionId,
             hostControllerId = controllerId,

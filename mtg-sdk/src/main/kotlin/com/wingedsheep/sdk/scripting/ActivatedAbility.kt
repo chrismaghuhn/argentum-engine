@@ -1,19 +1,23 @@
 package com.wingedsheep.sdk.scripting
 
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.scripting.conditions.Condition
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
 import com.wingedsheep.sdk.scripting.effects.AttachEquipmentEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import com.wingedsheep.sdk.scripting.text.TextReplaceable
 import com.wingedsheep.sdk.scripting.text.TextReplacer
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -23,7 +27,14 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class ActivatedAbility(
-    val id: AbilityId = AbilityId.generate(),
+    /**
+     * Always written: with `encodeDefaults = false` kotlinx decides whether to skip a field by
+     * re-evaluating its default, which here would mint an id (and fail outside a card scope) on
+     * every encode.
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    val id: AbilityId = AbilityId.next(),
     val cost: AbilityCost,
     val effect: Effect,
     val targetRequirements: List<TargetRequirement> = emptyList(),
@@ -50,6 +61,20 @@ data class ActivatedAbility(
      */
     val equipQuality: String? = null,
     val activateFromZone: Zone = Zone.BATTLEFIELD,
+    /**
+     * Count this ability's activations for the turn even though no [restrictions] entry needs the
+     * tally. The engine only bookkeeps activations for abilities gated by `OncePerTurn` /
+     * `MaxPerTurn`, because that is all anything used to read; Fallen Empires' burnout mana
+     * creatures (Farrelite Priest, Initiates of the Ebon Hand) read the count *without* being
+     * limited by it — "{1}: Add {W}. If this ability has been activated four or more times this
+     * turn, sacrifice this creature at the beginning of the next end step." (the Initiates add
+     * {B} rather than {W}; the burnout clause is identical).
+     *
+     * Opt-in rather than always-on so the per-activation bookkeeping stays off the hot path for
+     * the overwhelming majority of abilities that never look at it. Pair with
+     * `Conditions.ThisAbilityActivatedThisTurnAtLeast`.
+     */
+    val trackActivations: Boolean = false,
     val descriptionOverride: String? = null,
     val hasConvoke: Boolean = false,
     /**
@@ -97,6 +122,25 @@ data class ActivatedAbility(
      * be activated") both need to pick power-up abilities out of every other activated ability.
      */
     val isPowerUp: Boolean = false,
+    /**
+     * True for a *boast* ability (Kaldheim, returning in Marvel Super Heroes; CR 702.142).
+     * "Boast — [cost]: [effect]" means "[cost]: [effect]. Activate only if this creature attacked
+     * this turn and only once each turn."
+     *
+     * Like [isExhaust] and [isPowerUp] this flag is only the keyword marker — it drives the
+     * "Boast — " prefix in [description] and lets tooling recognise the mechanic. Both rules
+     * clauses are ordinary [restrictions] the `activatedAbility { isBoast = true }` DSL adds:
+     *  - **"only once each turn"** is [ActivationRestriction.OncePerTurn];
+     *  - **"only if this creature attacked this turn"** is an
+     *    [ActivationRestriction.OnlyIfCondition] over `Conditions.SourceAttackedThisTurn`.
+     *
+     * Nothing bespoke is needed for either: "attacked this turn" is already tracked per creature
+     * for the whole turn (it survives the end of combat, so a boast may be activated in the
+     * postcombat main phase or the end step), and the per-turn activation counter already backs
+     * every other "activate only once each turn" ability. Note boast is *once each turn*, not
+     * exhaust's once ever, which is why it does not reuse [ActivationRestriction.Once].
+     */
+    val isBoast: Boolean = false,
     /** When true, prevents auto-pass whenever this ability is available.
      *  Used for abilities that interact with transient game state the player would miss,
      *  such as copying a spell on the stack. */
@@ -106,6 +150,18 @@ data class ActivatedAbility(
      *  granted activated ability "costs {X} less to activate, where X is this creature's power."
      *  Per Scryfall ruling, the reduced cost is locked in before costs are paid. */
     val genericCostReduction: DynamicAmount? = null,
+    /**
+     * "This ability costs [ConditionalCostReduction.reduction] less to activate if
+     * [ConditionalCostReduction.condition]" — Kami of Jealous Thirst's "{4}{B}: … This ability costs
+     * {4}{B} less to activate if you've drawn three or more cards this turn."
+     *
+     * Unlike [genericCostReduction] the reduction is a whole [ManaCost], subtracted pip-wise per
+     * CR 118.7 ([ManaCost.subtract]): colored pips remove matching colored pips, and anything
+     * unmatched spills onto generic. The condition is evaluated against the ability's source and
+     * controller when the cost is totalled (CR 601.2f via CR 602.2b), so the enumerator's offered
+     * price and the handler's charged price agree.
+     */
+    val conditionalCostReduction: ConditionalCostReduction? = null,
     /**
      * Colors that may be spent on the `{X}` portion of this ability's cost.
      * Empty means no restriction (the default). Used for abilities like Atalya, Samite
@@ -120,6 +176,34 @@ data class ActivatedAbility(
      * bound to this value.
      */
     val minimumXValue: Int = 0,
+    /**
+     * The value of the `{X}` in this ability's activation cost, **defined by the ability's own
+     * text** (CR 107.3c) instead of chosen by its controller (CR 107.3a).
+     *
+     * Soul Foundry's "{X}, {T}: Create a token that's a copy of the exiled card. X is the mana
+     * value of that card." is the shape: the cost is printed as `{X}`, but the player never picks
+     * a number — the imprinted card decides it. Elite Arcanist, Prototype Portal and Caller of the
+     * Untamed are the same template, and any "X is …" clause attached to an activation cost fits.
+     *
+     * Mechanically this is a *substitution*, not a cost reduction and not a new mana atom: the
+     * amount is evaluated against the source permanent and folded into the cost's `{X}` symbols
+     * with [com.wingedsheep.sdk.core.ManaCost.withXAs] before affordability, the X-choice pause,
+     * or payment ever look at it. Three consequences fall out of that and are the contract here:
+     *  - the ability is offered at its *resolved* price (`{3}, {T}` for an imprinted three-drop),
+     *    while its oracle text keeps saying `{X}`;
+     *  - there is no "choose X" prompt, and [minimumXValue] does not apply — a defined X is not a
+     *    choice to clamp;
+     *  - the same number is bound as the activation's X value, so every other X-linked cost
+     *    ([AbilityCost.PayXLife], [AbilityCost.ExileXFromGraveyard],
+     *    `CostAtom.RemoveCounters(count = XValue)`) and any `DynamicAmount.XValue` read in the
+     *    effect see it too (CR 107.3i, 107.3k).
+     *
+     * X is fixed as the ability is activated, which is when it is paid; an amount that resolves to
+     * nothing (Soul Foundry with no imprint, because the controller declined or the card left
+     * exile) evaluates to 0, leaving a `{0}, {T}` ability that is legal to activate and simply
+     * does nothing — the printed behaviour.
+     */
+    val xDefinedAs: DynamicAmount? = null,
     /**
      * When true, this activated ability can't be copied by effects that copy abilities (CR 707.10e).
      * The engine tags the ability instance on the stack with a can't-be-copied marker so a
@@ -185,11 +269,13 @@ data class ActivatedAbility(
             return if (effectiveCost.manaCostOrNull != null) "$keyword $base" else "$keyword—$base"
         }
         val costText = if (hasWaterbend) "Waterbend $base" else base
-        // An exhaust or power-up ability prefixes its keyword before the (already
-        // waterbend-prefixed) cost. The two never co-occur — both mean "activate only once".
+        // An exhaust, power-up or boast ability prefixes its keyword before the (already
+        // waterbend-prefixed) cost. Exhaust and power-up never co-occur — both mean "activate only
+        // once" — and boast is a third, mutually exclusive keyword over the same slot.
         val prefixed = when {
             isExhaust -> "Exhaust — $costText"
             isPowerUp -> "Power-up — $costText"
+            isBoast -> "Boast — $costText"
             else -> costText
         }
         return "$prefixed: ${effect.description}"
@@ -235,14 +321,14 @@ data class ActivatedAbility(
             quality: String? = null,
             targetFilter: TargetFilter = TargetFilter.CreatureYouControl,
             genericCostReduction: DynamicAmount? = null,
-            id: AbilityId = AbilityId.generate(),
+            id: AbilityId = AbilityId.next(),
         ): ActivatedAbility {
             val label = equipTargetLabel(quality)
             return ActivatedAbility(
                 id = id,
                 cost = AbilityCost.Atom(CostAtom.Mana(cost)),
                 effect = AttachEquipmentEffect(EffectTarget.BoundVariable(label)),
-                targetRequirements = listOf(TargetCreature(filter = targetFilter, id = label)),
+                targetRequirements = listOf(TargetObject(filter = targetFilter, id = label)),
                 isManaAbility = false,
                 isEquipAbility = true,
                 equipQuality = quality,
@@ -466,6 +552,29 @@ sealed interface AbilityCost : TextReplaceable<AbilityCost> {
     }
 
     /**
+     * Remove every [counterType] counter from a permanent as part of the activation cost — "Remove
+     * all +1/+1 counters from Molten Hydra" on the ability's own source, or, with
+     * [fromGrantingPermanent], "Remove all aim counters from Hankyu" on the Equipment whose static
+     * ability granted the equipped creature this ability (CR 201.5a: the name refers only to that
+     * specific granter, as with [TapGrantingPermanent]).
+     *
+     * Always payable while the permanent is on the battlefield — removing all of zero counters
+     * removes none, and the ability still resolves. How many came off is read at resolution with
+     * `DynamicAmount.CountersRemovedAsCost` ("the number of aim counters removed this way"); the
+     * counters are gone by then, so reading the permanent's counters would see zero.
+     */
+    @SerialName("CostRemoveAllCounters")
+    @Serializable
+    data class RemoveAllCounters(
+        val counterType: CounterType,
+        val fromGrantingPermanent: Boolean = false,
+    ) : AbilityCost {
+        override val description: String =
+            "Remove all ${counterType.printed} counters from " +
+                if (fromGrantingPermanent) "the granting permanent" else "this permanent"
+    }
+
+    /**
      * Sacrifice a creature of the type chosen when this permanent entered the battlefield.
      * Used by cards like Doom Cannon that choose a creature type on entry and reference it in costs.
      */
@@ -511,6 +620,21 @@ sealed interface AbilityCost : TextReplaceable<AbilityCost> {
         }
     }
 
+    /**
+     * Pay the mana cost of the permanent this Aura/Equipment is attached to — Merseine's
+     * "Pay enchanted creature's mana cost: Remove a net counter from this Aura."
+     *
+     * Lowered to a plain [Atom] mana cost against the attached permanent's printed cost before
+     * anything prices or pays it, the same way `PayCost.OwnManaCost` is lowered against its source,
+     * so every downstream path sees a uniform shape. An unattached source, or one attached to a
+     * permanent with no mana cost, prices as {0}.
+     */
+    @SerialName("AttachedPermanentManaCost")
+    @Serializable
+    data object AttachedPermanentManaCost : AbilityCost {
+        override val description: String = "Pay enchanted permanent's mana cost"
+    }
+
     /** Tap the creature this aura is attached to ({T} enchanted creature) */
     @SerialName("CostTapAttachedCreature")
     @Serializable
@@ -523,6 +647,13 @@ sealed interface AbilityCost : TextReplaceable<AbilityCost> {
     @Serializable
     data class Loyalty(val change: Int) : AbilityCost {
         override val description: String = if (change >= 0) "+$change" else "$change"
+    }
+
+    /** A variable negative loyalty cost (−X), chosen when the ability is activated. */
+    @SerialName("CostLoyaltyX")
+    @Serializable
+    data object LoyaltyX : AbilityCost {
+        override val description: String = "−X"
     }
 
     /**
@@ -641,3 +772,14 @@ sealed interface AbilityCost : TextReplaceable<AbilityCost> {
         }
     }
 }
+
+/**
+ * An activated ability's own conditional cost reduction — see
+ * [ActivatedAbility.conditionalCostReduction]. [reduction] is subtracted pip-wise (CR 118.7) from
+ * the ability's mana cost while [condition] holds for the ability's source and controller.
+ */
+@Serializable
+data class ConditionalCostReduction(
+    val reduction: ManaCost,
+    val condition: Condition
+)

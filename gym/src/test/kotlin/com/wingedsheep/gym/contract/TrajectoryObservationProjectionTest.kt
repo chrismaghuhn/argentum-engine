@@ -3,6 +3,7 @@ package com.wingedsheep.gym.contract
 import com.wingedsheep.engine.core.CardEntityFactory
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.PendingDecision
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.legalactions.LegalAction
@@ -62,8 +63,9 @@ class TrajectoryObservationProjectionTest : FunSpec({
         state: GameState = env.state,
         perspective: EntityId = env.playerIds.first(),
         legalActions: List<LegalAction> = emptyList(),
+        pendingDecisionOverride: PendingDecision? = null,
     ): TrainingObservation = ObservationBuilder(cardRegistry = registry())
-        .build(state, perspective, legalActions)
+        .build(state, perspective, legalActions, pendingDecisionOverride = pendingDecisionOverride)
         .observation as TrainingObservation
 
     fun pendingObservation(
@@ -86,10 +88,13 @@ class TrajectoryObservationProjectionTest : FunSpec({
                 effectHint = effectHint,
             ),
         )
+        // The engine holds a question only inside a Suspension (question + answer continuation).
+        // This projection test presents it through ObservationBuilder's pendingDecisionOverride
+        // seam, which keeps the decision exactly as written here, including [decisionId].
         return observation(
             env,
-            state = env.state.copy(pendingDecision = decision),
             perspective = env.playerIds.first(),
+            pendingDecisionOverride = decision,
         )
     }
 

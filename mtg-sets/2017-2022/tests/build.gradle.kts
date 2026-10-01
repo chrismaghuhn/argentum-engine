@@ -20,6 +20,8 @@ dependencies {
     testImplementation(testFixtures(project(":rules-engine")))
     // The whole card corpus — scenario tests import the definitions they exercise.
     testImplementation(project(":mtg-sets"))
+    // Card JSON round-trips (Akiri, Chevill) go through the tooling loader.
+    testImplementation(project(":mtg-sdk-tooling"))
 
     testImplementation(libs.kotestRunner)
     testImplementation(libs.kotestAssertions)

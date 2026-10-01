@@ -5,11 +5,11 @@
 package com.wingedsheep.mtg.sets.definitions.cmr.cards
 
 import com.wingedsheep.sdk.core.Keyword
+import com.wingedsheep.sdk.dsl.DynamicAmounts
+import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
-import com.wingedsheep.sdk.scripting.effects.DrawCardsEffect
-import com.wingedsheep.sdk.dsl.DynamicAmounts
 
 
 /**
@@ -19,6 +19,9 @@ import com.wingedsheep.sdk.dsl.DynamicAmounts
  * 2/2
  * Trample
  * Whenever Wyleth attacks, draw a card for each Aura and Equipment attached to it.
+ *
+ * The count is the Auras and Equipment attached to Wyleth ([DynamicAmounts.attachmentsOnSelf]);
+ * the generated draft counted every permanent you control.
  */
 val WylethSoulOfSteel = card("Wyleth, Soul of Steel") {
     manaCost = "{1}{R}{W}"
@@ -29,8 +32,8 @@ val WylethSoulOfSteel = card("Wyleth, Soul of Steel") {
     toughness = 2
     keywords(Keyword.TRAMPLE)
     triggeredAbility {
-        trigger = Triggers.Attacks
-        effect = DrawCardsEffect(DynamicAmounts.attachmentsOnSelf())
+        trigger = Triggers.self.attacks()
+        effect = Effects.DrawCards(DynamicAmounts.attachmentsOnSelf())
     }
     metadata {
         rarity = Rarity.MYTHIC

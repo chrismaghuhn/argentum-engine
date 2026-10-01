@@ -1,7 +1,9 @@
 package com.wingedsheep.engine.core
 
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
+import com.wingedsheep.engine.state.nameVisibleToAll
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.HasBecomeTappedComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
@@ -105,7 +107,7 @@ fun tap(
     // CR 701.26a: only untapped permanents can be tapped, so tapping an already-tapped
     // permanent is not a transition — no event.
     if (container.has<TappedComponent>()) return state to null
-    val cardName = container.get<CardComponent>()?.name ?: "Permanent"
+    val cardName = nameVisibleToAll(state, entityId, container.get<CardComponent>()?.name ?: "Permanent")
     val tapper = tappedById
         ?: state.projectedState.getController(entityId)
         ?: container.get<ControllerComponent>()?.playerId
@@ -116,6 +118,45 @@ fun tap(
             .with(HasBecomeTappedComponent(state.turnNumber, priorTapsThisTurn + 1))
     }
     return newState to TappedEvent(entityId, cardName, tapper, reason, priorTapsThisTurn == 0)
+}
+
+/**
+ * Tap [sourceId] as the cost of its mana ability — the [tap] atom plus, when the source is a land,
+ * the [LandTappedForManaEvent] that "whenever you tap a land for mana" triggers watch (Forbidden
+ * Orchard). Every path that taps a source to pay mana routes through here — the manual activation
+ * pipeline, the solver's auto-pay, explicit source lists and the source-selection prompt — so the
+ * trigger fires the same way however the player paid. Land-ness is read off projected state.
+ *
+ * Returns `state` and no events when the source was already tapped (see [tap]).
+ */
+fun tapForMana(
+    state: GameState,
+    sourceId: EntityId,
+    tapperId: EntityId,
+): Pair<GameState, List<GameEvent>> {
+    val (tapped, tapEvent) = tap(state, sourceId)
+    if (tapEvent == null) return state to emptyList()
+    // Tapping for mana activates the source's mana ability, so auto-pay marks it "activated this
+    // turn" exactly as the manual activation pipeline does.
+    val stamped = tapped.updateEntity(sourceId) { c ->
+        c.with((c.get<AbilityActivatedThisTurnComponent>() ?: AbilityActivatedThisTurnComponent()).withAnyActivated())
+    }
+    return stamped to listOfNotNull(tapEvent, landTappedForManaEvent(state, sourceId, tapperId))
+}
+
+/**
+ * The [LandTappedForManaEvent] for [tapperId] tapping [sourceId] for mana, or null when the source
+ * isn't a land. Split out for the manual mana-ability pipeline, which taps as part of paying the
+ * ability's cost and emits this once the mana has been added.
+ */
+fun landTappedForManaEvent(
+    state: GameState,
+    sourceId: EntityId,
+    tapperId: EntityId,
+): LandTappedForManaEvent? {
+    if (!state.projectedState.hasType(sourceId, "LAND")) return null
+    val name = state.getEntity(sourceId)?.get<CardComponent>()?.name ?: return null
+    return LandTappedForManaEvent(tapperId = tapperId, landId = sourceId, landName = name)
 }
 
 /**
@@ -203,7 +244,7 @@ fun untapOrConsumeStun(
         return newState to emptyList()
     }
 
-    val cardName = container.get<CardComponent>()?.name ?: "Permanent"
+    val cardName = nameVisibleToAll(state, entityId, container.get<CardComponent>()?.name ?: "Permanent")
 
     // Granted "remove a +1/+1 counter to untap" replacement (untap-step path only).
     if (projected != null && projected.hasKeyword(entityId, AbilityFlag.REMOVE_COUNTER_TO_UNTAP)) {
@@ -217,7 +258,7 @@ fun untapOrConsumeStun(
             c.with(counters.withRemoved(CounterType.PLUS_ONE_PLUS_ONE, 1)).without<TappedComponent>()
         }
         return newState to listOf(
-            CountersRemovedEvent(entityId, CounterType.PLUS_ONE_PLUS_ONE.name, 1, cardName),
+            CountersRemovedEvent(entityId, CounterType.PLUS_ONE_PLUS_ONE, 1, cardName),
             UntappedEvent(entityId, cardName),
         )
     }

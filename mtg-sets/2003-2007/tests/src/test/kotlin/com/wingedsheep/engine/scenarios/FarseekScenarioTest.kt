@@ -14,6 +14,7 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Farseek (RAV #163)
@@ -51,7 +52,7 @@ class FarseekScenarioTest : FunSpec({
         driver.giveColorlessMana(player, 1)
 
         val cast = driver.castSpell(player, farseek)
-        cast.isSuccess shouldBe true
+        cast.outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val decision = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
@@ -72,7 +73,7 @@ class FarseekScenarioTest : FunSpec({
             it is LibraryShuffledEvent && it.playerId == player
         } shouldBe shufflesBefore
 
-        driver.submitCardSelection(player, listOf(mountain)).isSuccess shouldBe true
+        driver.submitCardSelection(player, listOf(mountain)).outcome shouldBe Outcome.Done
 
         val mountainPermanent = driver.findPermanent(player, "Mountain")
         mountainPermanent shouldNotBe null
@@ -100,7 +101,7 @@ class FarseekScenarioTest : FunSpec({
             it is LibraryShuffledEvent && it.playerId == player
         }
 
-        driver.castSpell(player, farseek).isSuccess shouldBe true
+        driver.castSpell(player, farseek).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.pendingDecision shouldBe null

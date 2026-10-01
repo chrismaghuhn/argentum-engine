@@ -11,6 +11,7 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Overgrown Tomb (RAV #279)
@@ -32,7 +33,7 @@ class OvergrownTombScenarioTest : FunSpec({
         val player = driver.activePlayer!!
         val tomb = driver.putCardInHand(player, "Overgrown Tomb")
 
-        driver.playLand(player, tomb).isPaused shouldBe true
+        driver.playLand(player, tomb).outcome.shouldBeInstanceOf<Outcome.Paused>()
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
         driver.submitYesNo(player, true).error shouldBe null
 
@@ -48,7 +49,7 @@ class OvergrownTombScenarioTest : FunSpec({
         val player = driver.activePlayer!!
         val tomb = driver.putCardInHand(player, "Overgrown Tomb")
 
-        driver.playLand(player, tomb).isPaused shouldBe true
+        driver.playLand(player, tomb).outcome.shouldBeInstanceOf<Outcome.Paused>()
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
         driver.submitYesNo(player, false).error shouldBe null
 

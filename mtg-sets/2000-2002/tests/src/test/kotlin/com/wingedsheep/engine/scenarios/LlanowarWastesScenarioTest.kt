@@ -9,6 +9,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Llanowar Wastes (APC #141) — {T}: Add {C}; or {T}: Add {B}/{G}, and deal 1 damage to you.
@@ -35,7 +36,7 @@ class LlanowarWastesScenarioTest : FunSpec({
 
         driver.submit(
             ActivateAbility(playerId = player, sourceId = wastes, abilityId = colorlessAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.colorless shouldBe 1
@@ -51,7 +52,7 @@ class LlanowarWastesScenarioTest : FunSpec({
 
         driver.submit(
             ActivateAbility(playerId = player, sourceId = wastes, abilityId = blackAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.black shouldBe 1
@@ -67,7 +68,7 @@ class LlanowarWastesScenarioTest : FunSpec({
 
         driver.submit(
             ActivateAbility(playerId = player, sourceId = wastes, abilityId = greenAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.green shouldBe 1

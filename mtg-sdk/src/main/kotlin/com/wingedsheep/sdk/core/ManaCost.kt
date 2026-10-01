@@ -51,6 +51,39 @@ data class ManaCost(val symbols: List<ManaSymbol>) {
     val xCount: Int
         get() = symbols.count { it is ManaSymbol.X }
 
+    /**
+     * The pips payable with 2 life instead of mana (CR 107.4f) — Phyrexian `{B/P}` and hybrid
+     * Phyrexian `{R/G/P}` — in cost order.
+     */
+    val phyrexianSymbols: List<ManaSymbol>
+        get() = symbols.filter { it.phyrexianLifeColor != null }
+
+    /**
+     * Remove the Phyrexian pips the payer chose to satisfy with 2 life instead of mana.
+     * [colors] is a multiset keyed by each pip's [ManaSymbol.phyrexianLifeColor]: `{B/P}{B/P}` paid
+     * entirely with life is `[BLACK, BLACK]`, and `{R/G/P}` is named `RED`.
+     *
+     * When a color names both a `{R/P}` and a `{R/G/P}`, the single-colored pip goes first: the two
+     * cost the same life, and the hybrid one left behind is the easier to pay with mana.
+     * Returns `null` when the choice names more pips of a color than this cost contains.
+     */
+    fun withPhyrexianPaidByLife(colors: List<Color>): ManaCost? {
+        if (colors.isEmpty()) return this
+        val remainingChoices = colors.groupingBy { it }.eachCount().toMutableMap()
+        val removed = BooleanArray(symbols.size)
+        for (pass in listOf<(ManaSymbol) -> Boolean>({ it is ManaSymbol.Phyrexian }, { it is ManaSymbol.HybridPhyrexian })) {
+            symbols.forEachIndexed { index, symbol ->
+                val key = symbol.phyrexianLifeColor
+                if (key != null && pass(symbol) && (remainingChoices[key] ?: 0) > 0) {
+                    remainingChoices[key] = remainingChoices.getValue(key) - 1
+                    removed[index] = true
+                }
+            }
+        }
+        if (remainingChoices.values.any { it != 0 }) return null
+        return ManaCost(symbols.filterIndexed { index, _ -> !removed[index] })
+    }
+
     fun isEmpty(): Boolean = symbols.isEmpty()
 
     /**
@@ -240,7 +273,7 @@ data class ManaCost(val symbols: List<ManaSymbol>) {
      */
     private fun paysFor(reductionSymbol: ManaSymbol, costSymbol: ManaSymbol): Boolean =
         when (reductionSymbol) {
-            is ManaSymbol.Hybrid -> costSymbol is ManaSymbol.Colored &&
+            is ManaSymbol.HybridPair -> costSymbol is ManaSymbol.Colored &&
                 (costSymbol.color == reductionSymbol.color1 || costSymbol.color == reductionSymbol.color2)
             is ManaSymbol.Phyrexian -> costSymbol is ManaSymbol.Colored && costSymbol.color == reductionSymbol.color
             is ManaSymbol.MonocolorHybrid -> costSymbol is ManaSymbol.Colored && costSymbol.color == reductionSymbol.color
@@ -278,6 +311,59 @@ data class ManaCost(val symbols: List<ManaSymbol>) {
     }
 
     /**
+     * Return a relaxed cost where every colored requirement of a color other than [substitute] may
+     * *also* be paid with [substitute] — the narrower "you may spend [color] mana as though it were
+     * mana of any color" relaxation (CR 609.4b), as opposed to [relaxColors]'s "mana of any type
+     * can be spent".
+     *
+     * Modelled by rewriting each `{C}`-style colored pip into a hybrid of its own color and
+     * [substitute]: `{G}` becomes `{G/U}` for Quicksilver Elemental's blue substitution, which is
+     * exactly "pay this with green or with blue" and needs no new payment path — the solver and
+     * affordability checks already understand hybrids (CR 118.7e).
+     *
+     * Deliberately narrower than [relaxColors] in three places, because the printed wording is:
+     * generic and `{C}` requirements are untouched (they are not *colored*), and hybrid/Phyrexian
+     * pips are left alone — each already offers a choice, and no printed card turns on widening one.
+     */
+    fun relaxColorsTo(substitute: Color): ManaCost {
+        if (symbols.none { it is ManaSymbol.Colored && it.color != substitute }) return this
+        return ManaCost(
+            symbols.map { symbol ->
+                if (symbol is ManaSymbol.Colored && symbol.color != substitute)
+                    ManaSymbol.Hybrid(symbol.color, substitute)
+                else symbol
+            }
+        )
+    }
+
+    /**
+     * Return this cost with every [color] mana symbol also payable with 2 life — "For each {B} in a
+     * cost, you may pay 2 life rather than pay that mana" (K'rrik, Son of Yawgmoth).
+     *
+     * Modelled by rewriting each substitutable symbol into the Phyrexian symbol that already means
+     * "this mana or 2 life" (CR 107.4f), so no new payment path is needed:
+     *  - `{B}` becomes `{B/P}`;
+     *  - a two-color hybrid with a [color] half, `{B/R}` or `{R/B}`, becomes the hybrid Phyrexian
+     *    `{B/R/P}` — [color] first, because a hybrid Phyrexian's life choice is keyed by its first
+     *    color ([ManaSymbol.phyrexianLifeColor]) — since K'rrik's ruling lets you choose to pay it
+     *    as `{B}` and then pay life for that.
+     *
+     * Generic, `{C}`, `{X}` and existing Phyrexian symbols are untouched, as is the monocolored
+     * hybrid `{2/B}`: no symbol can say "two generic, one [color], or 2 life", so that choice stays
+     * mana-only. Mana value is unaffected either way — a Phyrexian symbol is still 1.
+     */
+    fun withLifePayable(color: Color): ManaCost {
+        fun substitute(symbol: ManaSymbol): ManaSymbol = when {
+            symbol is ManaSymbol.Colored && symbol.color == color -> ManaSymbol.Phyrexian(color)
+            symbol is ManaSymbol.Hybrid && symbol.color1 == color -> ManaSymbol.HybridPhyrexian(color, symbol.color2)
+            symbol is ManaSymbol.Hybrid && symbol.color2 == color -> ManaSymbol.HybridPhyrexian(color, symbol.color1)
+            else -> symbol
+        }
+        if (symbols.none { substitute(it) != it }) return this
+        return ManaCost(symbols.map(::substitute))
+    }
+
+    /**
      * Return a relaxed cost where every colored, hybrid, phyrexian, and colorless requirement
      * is converted into generic mana — suitable for "mana of any type can be spent" effects
      * (e.g. Taster of Wares, Cruelclaw's Heist).
@@ -287,7 +373,7 @@ data class ManaCost(val symbols: List<ManaSymbol>) {
      */
     fun relaxColors(): ManaCost {
         if (symbols.none { it is ManaSymbol.Colored || it is ManaSymbol.Hybrid ||
-                it is ManaSymbol.Phyrexian || it is ManaSymbol.Colorless ||
+                it is ManaSymbol.Phyrexian || it is ManaSymbol.HybridPhyrexian || it is ManaSymbol.Colorless ||
                 it is ManaSymbol.MonocolorHybrid }) return this
         var addedGeneric = 0
         val keptSymbols = mutableListOf<ManaSymbol>()
@@ -296,7 +382,7 @@ data class ManaCost(val symbols: List<ManaSymbol>) {
                 // Each of these is a single-mana requirement once colors are relaxed: a
                 // monocolored hybrid's colored side ({B} in {2/B}) is 1 mana of any type.
                 is ManaSymbol.Colored, is ManaSymbol.Hybrid, is ManaSymbol.Phyrexian,
-                is ManaSymbol.Colorless, is ManaSymbol.MonocolorHybrid -> addedGeneric++
+                is ManaSymbol.HybridPhyrexian, is ManaSymbol.Colorless, is ManaSymbol.MonocolorHybrid -> addedGeneric++
                 is ManaSymbol.Generic, is ManaSymbol.X -> keptSymbols.add(symbol)
             }
         }
@@ -358,6 +444,17 @@ data class ManaCost(val symbols: List<ManaSymbol>) {
                             ManaSymbol.MonocolorHybrid(generic, color)
                         } else {
                             throw IllegalArgumentException("Unknown monocolored hybrid mana symbol: {$content}")
+                        }
+                    }
+                    // Hybrid Phyrexian mana: {R/G/P}, {W/U/P}, etc. (CR 107.4f)
+                    content.count { it == '/' } == 2 && content.endsWith("/P") -> {
+                        val parts = content.split("/")
+                        val color1 = parts[0].singleOrNull()?.let { Color.fromSymbol(it) }
+                        val color2 = parts[1].singleOrNull()?.let { Color.fromSymbol(it) }
+                        if (color1 != null && color2 != null) {
+                            ManaSymbol.HybridPhyrexian(color1, color2)
+                        } else {
+                            throw IllegalArgumentException("Unknown hybrid Phyrexian mana symbol: {$content}")
                         }
                     }
                     // Hybrid mana: {W/U}, {G/U}, etc.

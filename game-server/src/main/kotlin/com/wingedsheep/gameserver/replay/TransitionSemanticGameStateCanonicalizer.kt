@@ -717,7 +717,15 @@ internal object TransitionSemanticGameStateCanonicalizer {
         val continuationDecisionShapeId = key == "id" &&
             path.contains("continuationStack") &&
             path.getOrNull(path.lastIndex - 1) == "decisionShape"
-        if (!pendingDecisionId && !continuationDecisionId && !continuationDecisionShapeId) return primitive
+        // An open question lives in its Suspension frame (`continuationStack[i].question`, also
+        // nested as `suspension.question` when a reopenable payment window set it aside); its id is
+        // the routing reference. Same narrow parent check as above.
+        val suspensionQuestionId = key == "id" &&
+            path.contains("continuationStack") &&
+            path.getOrNull(path.lastIndex - 1) == "question"
+        if (!pendingDecisionId && !continuationDecisionId && !continuationDecisionShapeId && !suspensionQuestionId) {
+            return primitive
+        }
         return JsonPrimitive(decisionAliases.alias(primitive.content))
     }
 

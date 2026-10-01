@@ -11,14 +11,11 @@ import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.ModifyExplore
+import com.wingedsheep.sdk.scripting.ModifyKeywordAction
 import com.wingedsheep.sdk.scripting.TimingRule
 import com.wingedsheep.sdk.scripting.effects.CardOrder
-import com.wingedsheep.sdk.scripting.effects.TransformEffect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
-import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
 /**
  * Twists and Turns // Mycoid Maze (The Lost Caverns of Ixalan)
@@ -37,13 +34,13 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
  *   random order.
  *
  * Implementation:
- *  - The explore-modifying clause is a [ModifyExplore] replacement (CR 614): "if a creature you
+ *  - The explore-modifying clause is a [ModifyKeywordAction] replacement (CR 614): "if a creature you
  *    control would explore, first [Effects.Scry] 1, then it explores." `ExploreEffectExecutor`
  *    consults it and re-issues the explore as a Composite so the scry's top/bottom decision
  *    resolves before the explore.
- *  - ETB is [Triggers.EntersBattlefield] → [Effects.Explore] on a target creature you control; the
+ *  - ETB is `Triggers.self.enters()` → [Effects.Explore] on a target creature you control; the
  *    replacement applies to that explore too (scry 1 first).
- *  - The transform is [Triggers.LandYouControlEnters] with intervening-if
+ *  - The transform is `Triggers.a(GameObjectFilter.Land.youControl()).enters()` with intervening-if
  *    [Conditions.YouControlAtLeast]`(7, Land)` → [TransformEffect].
  *  - Back's activated ability is [Patterns.Library.lookAtTopRevealMatchingToHand] (count 4,
  *    creature, rest to the bottom in random order).
@@ -61,7 +58,7 @@ private val TwistsAndTurnsFront = card("Twists and Turns") {
 
     // If a creature you control would explore, instead you scry 1, then that creature explores.
     replacementEffect(
-        ModifyExplore(
+        ModifyKeywordAction(
             prefixEffect = Effects.Scry(1),
             appliesTo = EventPattern.ExploredEvent(filter = GameObjectFilter.Creature.youControl()),
         )
@@ -69,19 +66,16 @@ private val TwistsAndTurnsFront = card("Twists and Turns") {
 
     // When Twists and Turns enters, target creature you control explores.
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
-        val creature = target(
-            "target creature you control",
-            TargetCreature(filter = TargetFilter.Creature.youControl()),
-        )
+        trigger = Triggers.self.enters()
+        val creature = target(TargetFilter.Creature.youControl())
         effect = Effects.Explore(creature)
     }
 
     // When a land you control enters, if you control seven or more lands, transform.
     triggeredAbility {
-        trigger = Triggers.LandYouControlEnters
+        trigger = Triggers.a(GameObjectFilter.Land.youControl()).enters()
         interveningIf = Conditions.YouControlAtLeast(7, GameObjectFilter.Land)
-        effect = TransformEffect(EffectTarget.Self)
+        effect = Effects.Transform(EffectTarget.Self)
         description = "When a land you control enters, if you control seven or more lands, " +
             "transform Twists and Turns."
     }
@@ -113,7 +107,7 @@ private val MycoidMaze = card("Mycoid Maze") {
     activatedAbility {
         cost = Costs.Composite(Costs.Mana("{3}{G}"), Costs.Tap)
         effect = Patterns.Library.lookAtTopRevealMatchingToHand(
-            count = DynamicAmount.Fixed(4),
+            count = 4,
             filter = GameObjectFilter.Creature,
             prompt = "You may reveal a creature card and put it into your hand",
             restOrder = CardOrder.Random,

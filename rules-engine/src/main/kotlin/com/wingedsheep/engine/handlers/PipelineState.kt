@@ -5,6 +5,15 @@ import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
 
 /**
+ * The target bound to [name]. The per-slot handle `id[0]` that `targets(...)` hands out also
+ * answers to a requirement the announcement-time target lock narrowed to its one chosen slot
+ * ("up to two", one chosen): [EffectContext.buildNamedTargets] binds such a requirement under
+ * the bare `id`.
+ */
+fun Map<String, ChosenTarget>.boundTarget(name: String): ChosenTarget? =
+    this[name] ?: name.takeIf { it.endsWith("[0]") }?.let { this[it.removeSuffix("[0]")] }
+
+/**
  * State carried through pipeline effect execution (Gather → Select → Move).
  *
  * This groups the fields that are only relevant during pipeline effect chains,
@@ -28,11 +37,12 @@ data class PipelineState(
      * gathered. Consumed by `CardPredicate.HasSubtypeInEachStoredGroup`.
      */
     val storedSubtypeGroups: Map<String, List<Set<String>>> = emptyMap(),
-    /** When inside a ForEachInGroupEffect, the current iteration entity. EffectTarget.Self resolves to this. */
-    val iterationTarget: EntityId? = null
 ) {
     companion object {
         val EMPTY = PipelineState()
+
+        /** Reserved metadata published by ChooseSpell alongside its selected card collection. */
+        fun spellFaceKey(collection: String): String = "$collection:spellFace"
 
         /**
          * Pipeline collection name under which a batch trigger seeds the entities it captured

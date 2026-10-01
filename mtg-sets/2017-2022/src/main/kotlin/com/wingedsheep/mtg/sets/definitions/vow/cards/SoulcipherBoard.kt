@@ -1,8 +1,9 @@
 package com.wingedsheep.mtg.sets.definitions.vow.cards
 
-import com.wingedsheep.sdk.core.Counters
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Conditions
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.DynamicAmounts
 import com.wingedsheep.sdk.dsl.Effects
@@ -14,17 +15,12 @@ import com.wingedsheep.sdk.scripting.CanOnlyBlockCreaturesWith
 import com.wingedsheep.sdk.scripting.EntersWithCounters
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
-import com.wingedsheep.sdk.scripting.TriggerSpec
-import com.wingedsheep.sdk.scripting.conditions.Compare
 import com.wingedsheep.sdk.scripting.conditions.ComparisonOperator
 import com.wingedsheep.sdk.scripting.effects.CardDestination
-import com.wingedsheep.sdk.scripting.effects.ConditionalEffect
-import com.wingedsheep.sdk.scripting.effects.TransformEffect
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
-import com.wingedsheep.sdk.scripting.events.CounterTypeFilter
 import com.wingedsheep.sdk.scripting.EventPattern.ZoneChangeEvent
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.values.DynamicAmount
+import com.wingedsheep.sdk.dsl.Triggers
 
 /**
  * Soulcipher Board // Cipherbound Spirit (Innistrad: Crimson Vow)
@@ -42,7 +38,7 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
  *   This creature can block only creatures with flying.
  *   {3}{U}: Draw two cards, then discard a card.
  *
- * Built from existing primitives. The countdown is the new passive [Counters.OMEN] counter placed
+ * Built from existing primitives. The countdown is the new passive [CounterType.OMEN] counter placed
  * by a self-only [EntersWithCounters]. The tap ability is
  * [Patterns.Library.lookAtTopAndKeep] with the *kept* card going to the graveyard and the
  * remainder back on top of the library — "look at the top two, put one of them into your graveyard"
@@ -50,10 +46,21 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
  *
  * The countdown trigger is a per-card `ZoneChangeEvent(to = GRAVEYARD)` over creature cards you
  * own, with `TriggerBinding.ANY` — deliberately **not** the batching
- * `Triggers.CardsPutIntoYourGraveyard`: two creature cards hitting the graveyard at once remove two
+ * `Triggers.oneOrMore(filter).putIntoYourGraveyard()`: two creature cards hitting the graveyard at once remove two
  * counters, not one. "From anywhere" is expressed by leaving `from` unset. The follow-up
  * "Then if it has no omen counters on it" is an intervening check at resolution, so it is a
- * [ConditionalEffect] over the *current* counter count rather than a second trigger.
+ * [Effects.If] over the *current* counter count rather than a second trigger.
+ *
+ * `nontoken()` is the printed word "**card**": a dying creature *token* is not a card and never
+ * counts down the board (the card's second Gatherer ruling says so outright). The engine's LKI
+ * matcher answers it off the death event's `wasToken` snapshot, since 704.5d has already swept the
+ * token by the time the trigger is matched.
+ *
+ * Two triggers can be waiting on the stack together — two creature cards hitting the graveyard at
+ * once — and the second one finds no counter to remove and a counter count of zero, so its "then
+ * if" check passes. It does *not* flip the permanent back: CR 701.28f ignores an ability's
+ * instruction to transform the permanent it's on once that permanent has transformed since the
+ * ability went on the stack, which the engine enforces in `TransformEffectExecutor`.
  */
 
 private val SoulcipherBoardFront = card("Soulcipher Board") {
@@ -67,7 +74,7 @@ private val SoulcipherBoardFront = card("Soulcipher Board") {
 
     replacementEffect(
         EntersWithCounters(
-            counterType = CounterTypeFilter.Named(Counters.OMEN),
+            counterType = CounterType.OMEN,
             count = 3,
             selfOnly = true,
         )
@@ -85,24 +92,16 @@ private val SoulcipherBoardFront = card("Soulcipher Board") {
     }
 
     triggeredAbility {
-        trigger = TriggerSpec(
-            event = ZoneChangeEvent(
-                filter = GameObjectFilter.Creature.ownedByYou(),
-                to = Zone.GRAVEYARD,
-            ),
-            binding = TriggerBinding.ANY,
-        )
-        effect = Effects.Composite(
-            Effects.RemoveCounters(Counters.OMEN, 1, EffectTarget.Self),
-            ConditionalEffect(
-                condition = Compare(
-                    DynamicAmounts.countersOnSelf(CounterTypeFilter.Named(Counters.OMEN)),
+        trigger = Triggers.a(GameObjectFilter.Creature.ownedByYou().nontoken()).changesZone(to = Zone.GRAVEYARD)
+        effect = Effects.RemoveCounters(CounterType.OMEN, 1, EffectTarget.Self) then
+            Effects.If(
+                condition = Conditions.CompareAmounts(
+                    DynamicAmounts.countersOnSelf(CounterType.OMEN),
                     ComparisonOperator.EQ,
-                    DynamicAmount.Fixed(0),
+                    0,
                 ),
-                effect = TransformEffect(EffectTarget.Self),
-            ),
-        )
+                then = Effects.Transform(EffectTarget.Self),
+            )
         description = "Whenever a creature card is put into your graveyard from anywhere, remove " +
             "an omen counter from this artifact. Then if it has no omen counters on it, transform it."
     }
@@ -136,10 +135,7 @@ private val CipherboundSpirit = card("Cipherbound Spirit") {
 
     activatedAbility {
         cost = Costs.Mana("{3}{U}")
-        effect = Effects.Composite(
-            Effects.DrawCards(2),
-            Patterns.Hand.discardCards(1, EffectTarget.Controller),
-        )
+        effect = Effects.DrawCards(2) then Patterns.Hand.discardCards(1, EffectTarget.Controller)
         description = "Draw two cards, then discard a card."
     }
 

@@ -9,6 +9,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Battlefield Forge (APC #139) — {T}: Add {C}; or {T}: Add {R}/{W}, and deal 1 damage to you.
@@ -35,7 +36,7 @@ class BattlefieldForgeScenarioTest : FunSpec({
 
         driver.submit(
             ActivateAbility(playerId = player, sourceId = forge, abilityId = colorlessAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.colorless shouldBe 1
@@ -51,7 +52,7 @@ class BattlefieldForgeScenarioTest : FunSpec({
 
         driver.submit(
             ActivateAbility(playerId = player, sourceId = forge, abilityId = redAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.red shouldBe 1
@@ -67,7 +68,7 @@ class BattlefieldForgeScenarioTest : FunSpec({
 
         driver.submit(
             ActivateAbility(playerId = player, sourceId = forge, abilityId = whiteAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.white shouldBe 1

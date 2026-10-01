@@ -306,13 +306,89 @@ enum class TappedForManaType {
  *   state from the land controller's perspective, so `youControl()` means "you, the controller of
  *   this static, control the land").
  */
+/**
+ * Creatures dealt damage by this permanent are doomed for the rest of the turn: they can't be
+ * regenerated, and if they would die they are exiled instead. Runesword's two riders, which the
+ * printed card states as separate sentences but which key off the same event and name the same
+ * creature.
+ *
+ * This has to be a static consulted **at damage time**, not a triggered ability. A trigger for
+ * "whenever this deals damage to a creature" only resolves after state-based actions have already
+ * put the dying creature into its graveyard (CR 704.3), so marking it then is too late to change
+ * where it went. Both marks are the same floating effects `Effects.CantBeRegenerated` and
+ * `Effects.MarkExileOnDeath` place — Carbonize can compose those after its own damage because that
+ * all happens in one resolution; combat damage gives no such window.
+ *
+ * The two clauses are flags on one ability rather than two abilities because they are one printed
+ * rider on one card; a future card wanting only half sets only that half.
+ */
+/**
+ * "This Equipment can be attached only to [filter]." — a printed restriction on what the Equipment
+ * carrying it may equip (Konda's Banner: "can be attached only to a legendary creature"; Gate Smasher,
+ * O-Naginata). It narrows CR 301.5's "an Equipment can be attached to a creature" for this Equipment,
+ * so everything that asks whether an Equipment could equip a permanent honours it:
+ *
+ *  - An equip ability (or any other attach effect) aimed at a creature that doesn't match does
+ *    nothing and the Equipment doesn't move (CR 701.3b). The equip ability's *target* is unchanged —
+ *    its "target creature you control" is the keyword's own wording (CR 702.6a).
+ *  - An Equipment attached to a permanent that stops matching becomes unattached as a state-based
+ *    action (CR 704.5n), exactly like one whose host stops being a creature.
+ *
+ * [filter] is matched against the would-be host on the *projected* state, with the Equipment as the
+ * predicate source and its controller as "you". It is a static ability of the Equipment, so a
+ * face-down Equipment or one that has lost all abilities imposes no restriction. Read by
+ * `AttachmentMover.equipRestrictionAllows`, never through projection.
+ */
+@SerialName("EquipmentAttachRestriction")
+@Serializable
+data class EquipmentAttachRestriction(
+    val filter: GameObjectFilter
+) : StaticAbility {
+    override val description: String = "can be attached only to a ${filter.description}"
+
+    override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
+        val newFilter = filter.applyTextReplacement(replacer)
+        return if (newFilter !== filter) copy(filter = newFilter) else this
+    }
+}
+
+@SerialName("CreaturesDamagedBySourceAreDoomed")
+@Serializable
+data class CreaturesDamagedBySourceAreDoomed(
+    val cantBeRegenerated: Boolean = true,
+    val exileInsteadOfDying: Boolean = true
+) : StaticAbility {
+    override val description: String = buildString {
+        append("creatures dealt damage by this ")
+        val clauses = buildList {
+            if (cantBeRegenerated) add("can't be regenerated this turn")
+            if (exileInsteadOfDying) add("are exiled instead of dying this turn")
+        }
+        append(clauses.joinToString(" and "))
+    }
+}
+
 @SerialName("ReplaceLandManaColor")
 @Serializable
 data class ReplaceLandManaColor(
-    val filter: GameObjectFilter
+    val filter: GameObjectFilter,
+    /**
+     * When set, matched lands produce *this* color rather than one of the controller's choice —
+     * Deep Water's "it produces {U} instead of any other type". Null (the default) keeps Pulse of
+     * Llanowar's free choice, which the engine implements by swapping in an add-one-mana-of-any-color
+     * ability.
+     */
+    val color: Color? = null
 ) : StaticAbility {
     override val description: String =
-        "If a ${filter.description} is tapped for mana, it produces mana of a color of its controller's choice instead of any other type"
+        // describeObjectForEvent, not filter.description: it renders the article and puts the
+        // controller clause *after* the noun ("a land you control"), where the raw filter
+        // description would prefix it ("a you control land").
+        if (color != null) {
+            "If ${describeObjectForEvent(filter)} is tapped for mana, it produces {${color.symbol}} instead of any other type"
+        } else {
+            "If ${describeObjectForEvent(filter)} is tapped for mana, it produces mana of a color of its controller's choice instead of any other type"
+        }
     override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
         val newFilter = filter.applyTextReplacement(replacer)
         return if (newFilter !== filter) copy(filter = newFilter) else this
@@ -357,7 +433,8 @@ data class MultiplyManaOnSourceTap(
     val multiplier: Int
 ) : StaticAbility {
     override val description: String =
-        "If you tap a ${sourceFilter.description} for mana, it produces $multiplier times as much of that mana instead"
+        // See ReplaceLandManaColor: the describer keeps "you control" a suffix, not a prefix.
+        "If you tap ${describeObjectForEvent(sourceFilter)} for mana, it produces $multiplier times as much of that mana instead"
 
     override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
         val newFilter = sourceFilter.applyTextReplacement(replacer)
@@ -508,6 +585,23 @@ data class PlotFromTopOfLibrary(
 data object RevealTopOfLibrary : StaticAbility {
     override val description: String =
         "Play with the top card of your library revealed."
+}
+
+/**
+ * **Every** player plays with the top card of their library revealed (to all players), without
+ * granting anyone permission to play it from there. Used for Wizened Snitches.
+ *
+ * The all-players sibling of [RevealTopOfLibrary]. The distinction is which libraries are opened,
+ * not who may look: both reveal publicly, but [RevealTopOfLibrary] opens only the ability's own
+ * controller's library, so it can't spell a symmetric "players play with …" — that wording is one
+ * effect covering every player's library regardless of who controls the permanent. Like its
+ * sibling it is visibility-only, and grants no play-from-top permission.
+ */
+@SerialName("PlayersRevealTopOfLibrary")
+@Serializable
+data object PlayersRevealTopOfLibrary : StaticAbility {
+    override val description: String =
+        "Players play with the top card of their libraries revealed."
 }
 
 /**
@@ -663,7 +757,7 @@ data object MayPlayLandsFromGraveyard : StaticAbility {
  * with an empty stack).
  *
  * @property filter Which exiled cards may be played — e.g.
- *   `GameObjectFilter.Any.ownedByOpponent().withCounter(Counters.STASH)` for "cards you don't own
+ *   `GameObjectFilter.Any.ownedByOpponent().withCounter(CounterType.STASH)` for "cards you don't own
  *   with stash counters on them". Ownership predicates work here because cards in exile carry an
  *   owner but no controller.
  * @property condition Optional gate re-evaluated on every read, so the permission opens and closes
@@ -793,25 +887,43 @@ data class GainActivatedAbilitiesOfPermanents(
 }
 
 /**
- * Mana of any type can be spent to activate the activated abilities of permanents matching
- * [filter] (CR 118.14 / 609.4b — colored, hybrid, Phyrexian, and colorless requirements in the
- * ability's cost may be paid with mana of any color or colorless).
+ * The mana requirements in the activated-ability costs of permanents matching [filter] are relaxed
+ * (CR 118.14 / 609.4b). Two printed strengths, chosen by [substituteColor]:
  *
- * Models Sharkey, Tyrant of the Shire ("Mana of any type can be spent to activate Sharkey's
- * abilities") with `filter = GroupFilter.source()`. The relaxation is applied to the mana
- * portion of the ability's cost only — non-mana cost components (tap, sacrifice, …) are
- * untouched — and is honored by both affordability checks and the mana solver at payment time.
+ *  - `substituteColor = null` — **"mana of any type can be spent"**: every colored, hybrid,
+ *    Phyrexian and colorless requirement may be paid with any mana at all. Sharkey, Tyrant of the
+ *    Shire ("Mana of any type can be spent to activate Sharkey's abilities") and Agatha's Soul
+ *    Cauldron, both with `filter = GroupFilter.source()` / a battlefield filter.
+ *  - a color — **"you may spend [color] mana as though it were mana of any color"**: only that one
+ *    color gains the substitution, and only for *colored* requirements. Quicksilver Elemental
+ *    ("You may spend blue mana as though it were mana of any color to pay the activation costs of
+ *    this creature's abilities") with `filter = GroupFilter.source(), substituteColor = Color.BLUE`.
+ *    Lowered by rewriting each foreign colored pip into a hybrid with the substitute
+ *    ([com.wingedsheep.sdk.core.ManaCost.relaxColorsTo]), so it reuses the existing hybrid payment
+ *    path rather than adding a second one. Generic and `{C}` requirements are untouched — they are
+ *    not colored.
  *
- * @property filter Which permanents' activated-ability mana costs may be paid with any mana
- *   type (use [GroupFilter.source] for "this permanent's abilities").
+ * Either way the relaxation applies to the mana portion of the ability's cost only — non-mana
+ * components (tap, sacrifice, …) are untouched — and is honored by both affordability checks and
+ * the mana solver at payment time, through the single `relaxAbilityCostColorsIfAny` seam.
+ *
+ * @property filter Which permanents' activated-ability mana costs are relaxed (use
+ *   [GroupFilter.source] for "this permanent's abilities").
+ * @property substituteColor When set, only mana of this color may be spent as though it were mana
+ *   of any color. Null (the default) is the stronger "mana of any type can be spent".
  */
 @SerialName("SpendAnyManaTypeForActivatedAbilities")
 @Serializable
 data class SpendAnyManaTypeForActivatedAbilities(
-    val filter: GroupFilter
+    val filter: GroupFilter,
+    val substituteColor: com.wingedsheep.sdk.core.Color? = null
 ) : StaticAbility {
     override val description: String =
-        "Mana of any type can be spent to activate ${filter.description}'s abilities"
+        if (substituteColor == null)
+            "Mana of any type can be spent to activate ${filter.description}'s abilities"
+        else
+            "You may spend ${substituteColor.name.lowercase()} mana as though it were mana of any " +
+                "color to pay the activation costs of ${filter.description}'s abilities"
     override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
         val newFilter = filter.applyTextReplacement(replacer)
         return if (newFilter !== filter) copy(filter = newFilter) else this
@@ -856,6 +968,32 @@ data class SpendAnyManaTypeForSpells(
 }
 
 /**
+ * "For each {[color]} in a cost, you may pay 2 life rather than pay that mana." — the controller of
+ * this permanent may pay each [color] mana symbol in any cost *they* pay with 2 life instead
+ * (K'rrik, Son of Yawgmoth). Applies to the mana costs of spells they cast and to the activation
+ * costs of abilities they activate.
+ *
+ * It changes only *how* the cost is paid, never the cost itself, so mana value and cost
+ * reductions are untouched. Per K'rrik's rulings it never reaches generic mana, and a symbol with a
+ * choice of payments — hybrid `{B/R}`, Phyrexian `{B/P}` — may be paid as its [color] half and then
+ * with life. Lowered by rewriting each substitutable symbol into the Phyrexian symbol that already
+ * means "this mana or 2 life" ([com.wingedsheep.sdk.core.ManaCost.withLifePayable]) once every
+ * reduction has been applied, so the existing Phyrexian payment path — explicit life choices,
+ * auto-pay's fewest-life fallback, the client's "Pay with life" toggles — carries it.
+ *
+ * @property color The mana symbol color that may be paid with life.
+ */
+@SerialName("PayLifeForColoredMana")
+@Serializable
+data class PayLifeForColoredMana(
+    val color: Color
+) : StaticAbility {
+    override val description: String =
+        "For each {${color.symbol}} in a cost, you may pay 2 life rather than pay that mana"
+    override fun applyTextReplacement(replacer: TextReplacer): StaticAbility = this
+}
+
+/**
  * Permanents matching [filter] entering the battlefield don't cause abilities to trigger
  * (CR 603.6 enters-the-battlefield triggers are suppressed).
  *
@@ -884,17 +1022,29 @@ data class SpendAnyManaTypeForSpells(
  *
  * @property filter Which entering permanents have their entry suppressed (matched via projected
  *   state). Defaults to [GameObjectFilter.Creature].
+ * @property abilitiesOf When set, only triggered abilities *of permanents* matching this filter are
+ *   suppressed — matched in projected state against the trigger's source, with this ability's
+ *   controller as the reference player, and only while that source is on the battlefield (a
+ *   graveyard card's "whenever a creature enters" is not an ability of a permanent). `null`
+ *   (default) suppresses every ability, the Torpor Orb shape. Elesh Norn, Mother of Machines —
+ *   "Permanents entering don't cause abilities of permanents your opponents control to trigger" —
+ *   is `SuppressEntersTriggers(GameObjectFilter.Permanent, abilitiesOf = GameObjectFilter.Permanent.opponentControls())`.
  */
 @SerialName("SuppressEntersTriggers")
 @Serializable
 data class SuppressEntersTriggers(
-    val filter: GameObjectFilter = GameObjectFilter.Creature
+    val filter: GameObjectFilter = GameObjectFilter.Creature,
+    val abilitiesOf: GameObjectFilter? = null
 ) : StaticAbility {
     override val description: String =
-        "${filter.description} entering the battlefield don't cause abilities to trigger"
+        if (abilitiesOf == null) "${filter.description} entering the battlefield don't cause abilities to trigger"
+        else "${filter.description} entering the battlefield don't cause abilities of ${abilitiesOf.description} to trigger"
     override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
         val newFilter = filter.applyTextReplacement(replacer)
-        return if (newFilter !== filter) copy(filter = newFilter) else this
+        val newAbilitiesOf = abilitiesOf?.applyTextReplacement(replacer)
+        return if (newFilter !== filter || newAbilitiesOf !== abilitiesOf) {
+            copy(filter = newFilter, abilitiesOf = newAbilitiesOf)
+        } else this
     }
 }
 
@@ -913,23 +1063,27 @@ data object PreventManaPoolEmptying : StaticAbility {
 }
 
 /**
- * Converts the controller's would-be-lost unspent mana into red mana instead of emptying it.
- * Used for Ozai, the Phoenix King: "If you would lose unspent mana, that mana becomes red instead."
+ * Converts the controller's would-be-lost unspent mana into mana of [color] instead of emptying it:
+ * "If you would lose unspent mana, that mana becomes [color] instead." Ozai, the Phoenix King (red),
+ * Omnath, Locus of All (black).
  *
  * The colour cousin of [PreventManaPoolEmptying]: where Upwelling *keeps* the mana as-is, this
- * *replaces* the emptying event (CR 500.5 / 703.4q — any unspent mana left in a player's mana pool
- * empties as each step and phase ends) with an equal amount of red. Scoped to the controller of the
- * permanent bearing the ability, unlike Upwelling's all-players prevention.
+ * *replaces* the emptying event (CR 500.5 — unspent mana empties from each player's mana pool as
+ * each step and phase ends) with an equal amount of [color] mana. Scoped to the controller of
+ * the permanent bearing the ability, unlike Upwelling's all-players prevention.
  *
- * The engine checks for this static ability at every step/phase-end mana emptying (CR 500.5, in
- * `CleanupPhaseManager.emptyManaPools`, and again for firebending mana in `CombatManager.endCombat`);
- * for each controller of a permanent with this ability, the would-be-lost mana is replaced by that
- * many red mana rather than emptied.
+ * Only the colour changes. Per Omnath's ruling, mana carrying a spending restriction or a rider keeps
+ * it when it changes colour — a restricted unit stays restricted, just recoloured. Colorless mana
+ * becomes [color] too.
+ *
+ * The engine checks for this static ability at every step/phase-end mana emptying
+ * (`CleanupPhaseManager.emptyManaPools`, and again for firebending mana in `CombatManager.endCombat`).
  */
-@SerialName("ConvertEmptyingManaToRed")
+@SerialName("ConvertEmptyingMana")
 @Serializable
-data object ConvertEmptyingManaToRed : StaticAbility {
-    override val description: String = "If you would lose unspent mana, that mana becomes red instead"
+data class ConvertEmptyingMana(val color: Color) : StaticAbility {
+    override val description: String =
+        "If you would lose unspent mana, that mana becomes ${color.name.lowercase()} instead"
 }
 
 /**
@@ -939,7 +1093,7 @@ data object ConvertEmptyingManaToRed : StaticAbility {
  * A single-colour, controller-scoped, *permanent* mana-retention static — the durable static twin of
  * the turn-scoped one-shot [com.wingedsheep.engine.state.components.player.RetainUnspentManaComponent]
  * (The Last Agni Kai). Unlike [PreventManaPoolEmptying] (all colours, all players) and
- * [ConvertEmptyingManaToRed] (converts other colours to red), this simply keeps that one colour for
+ * [ConvertEmptyingMana] (converts other colours to one colour), this simply keeps that one colour for
  * the controller and lets every other colour empty normally. The engine merges the colour into the
  * `retain` set at every step/phase-end mana emptying (`CleanupPhaseManager.emptyManaPools`), which is
  * the single path for ordinary mana loss — the combat phase ends through it too, so end-of-combat
@@ -955,7 +1109,10 @@ data class RetainUnspentColoredMana(val color: Color) : StaticAbility {
  * The "legend rule" (CR 704.5j) doesn't apply to permanents matching [filter] that the controller
  * of this permanent controls (Spider-Verse: "The 'legend rule' doesn't apply to Spiders you
  * control"). Such permanents are excluded from the legend-rule duplicate grouping in
- * `LegendRuleCheck`, so the controller may keep multiple same-named copies.
+ * `LegendRuleCheck`, so the controller may keep multiple same-named copies. May be wrapped in a
+ * [ConditionalStaticAbility]; `LegendRuleCheck` then honours it only while the condition holds
+ * (Brothers Yamazaki: "If there are exactly two permanents named Brothers Yamazaki on the
+ * battlefield, …").
  */
 @SerialName("LegendRuleDoesNotApplyTo")
 @Serializable
@@ -963,6 +1120,26 @@ data class LegendRuleDoesNotApplyTo(
     val filter: GameObjectFilter
 ) : StaticAbility {
     override val description: String = "The \"legend rule\" doesn't apply to ${filter.description} you control"
+}
+
+/**
+ * The controller skips their draw step — "Skip your draw step." (Colfenor's Plans, Necropotence).
+ *
+ * Like [NoMaximumHandSize] this is a turn-based read rather than a continuous-projection effect:
+ * [com.wingedsheep.engine.core.DrawPhaseManager] scans the battlefield for it as the draw step
+ * begins and, when the drawing player controls a permanent that has it, takes no draw. It is the
+ * standing counterpart of
+ * [com.wingedsheep.sdk.scripting.effects.SkipStepOrPhaseThisTurnEffect] / the one-shot
+ * "skip your next draw step" marker, which are consumed by the step they skip.
+ *
+ * The draw-step read matches the ability by type and does **not** unwrap a
+ * [ConditionalStaticAbility], so an "as long as …" wording needs that unwrapping added to
+ * `DrawPhaseManager.skipsDrawStep` first — every printed use of this line so far is unconditional.
+ */
+@SerialName("SkipDrawStep")
+@Serializable
+data object SkipDrawStep : StaticAbility {
+    override val description: String = "Skip your draw step"
 }
 
 /**
@@ -1069,6 +1246,48 @@ data class WinCoinFlips(
         } else {
             "You win all coin flips"
         }
+}
+
+/**
+ * Each coin the controller would flip is replaced by [coinsPerFlip] coins, all but one of which the
+ * controller ignores — Krark's Thumb's "If you would flip a coin, instead flip two coins and ignore
+ * one" (CR 614.1a — an "instead" effect is a replacement effect; this one changes *how a flip's
+ * result is produced*, and the flip itself still
+ * happens, so a "whenever you flip a coin" ability sees exactly one flip per replaced coin).
+ *
+ * Queried by the coin-flip executors (`FlipCoinExecutor` / `FlipTwoCoinsExecutor` /
+ * `FlipCoinsExecutor` / `FlipCoinsUntilLossExecutor`) via `CoinFlipModifiers`, exactly like
+ * [WinCoinFlips]; it is not a Rule 613 continuous effect, so it maps to no layer (classified as
+ * no-op in `StaticAbilityHandler`).
+ *
+ * Three consequences of the Krark's Thumb rulings are load-bearing and are what make this a
+ * *per-coin* replacement rather than a per-flip-event one:
+ *
+ * - **It replaces each individual coin, not the instruction.** "If an effect tells you to flip two
+ *   coins, you don't flip four coins and ignore any two; you flip two coins, flip two coins, and
+ *   then ignore one flip from each pair." So a `FlipCoinsEffect(5)` under one Thumb flips ten coins
+ *   as five pairs and keeps one from each.
+ * - **All the coins are flipped before any is ignored** — "You will know the results of all
+ *   simultaneous flips before choosing which to ignore." The engine therefore flips the whole batch
+ *   up front and only then asks, so the flipper always chooses with complete information.
+ * - **Instances multiply.** A second Thumb replaces each of the first Thumb's coins in turn, so two
+ *   Thumbs flip four coins per original flip and ignore three. `CoinFlipModifiers` multiplies
+ *   [coinsPerFlip] across every source the flipper controls rather than summing them.
+ *
+ * A [WinCoinFlips] replacement that also applies makes every coin in the batch heads, which leaves
+ * the flipper nothing to choose — the engine skips the prompt whenever a batch is unanimous.
+ *
+ * @property coinsPerFlip How many coins are flipped in place of each single coin. Two is the printed
+ *   value (Krark's Thumb, and its silver-bordered twin Krark's Other Thumb); the parameter exists so
+ *   a future "flip three coins and ignore two" needs no new type. Values below two leave flips alone.
+ */
+@SerialName("FlipAdditionalCoins")
+@Serializable
+data class FlipAdditionalCoins(
+    val coinsPerFlip: Int = 2,
+) : StaticAbility {
+    override val description: String =
+        "If you would flip a coin, instead flip $coinsPerFlip coins and ignore all but one"
 }
 
 /**
@@ -1323,6 +1542,11 @@ data class AdditionalAttackTriggers(
  *
  * Multiple copies are additive: N doublers add N extra firings of each affected trigger (N+1 total).
  *
+ * Leaves-the-battlefield abilities look back in time (CR 603.10a): a scoped source that left the
+ * battlefield in the same event — including the dying creature itself — is judged by its last-known
+ * information, and a doubler that left in the same event still applies (Drivnod, Carnage Dominus
+ * rulings).
+ *
  * @property attachedCreature When true, the scope includes the creature this permanent is attached
  *   to ("this creature" on an Equipment/Aura). Resolved via the doubler source's attachment.
  * @property permanentsYouControl When non-null, the scope includes battlefield permanents the
@@ -1352,8 +1576,10 @@ data class AdditionalDeathTriggers(
 }
 
 /**
- * You may play additional lands on each of your turns.
- * Used for permanents like Hugs, Grisly Guardian and Oracle of Mul Daya.
+ * You may play additional lands on each of your turns (CR 305.2 — a continuous effect that
+ * increases the number of lands a player can play). Used for permanents like Hugs, Grisly Guardian
+ * and Oracle of Mul Daya; with [affected] = [Player.Each] it is the symmetric "each player may play
+ * an additional land on each of their turns" of Rites of Flourishing and Ghirapur Orrery.
  *
  * This is a continuous effect — the bonus applies as long as the permanent is on the
  * battlefield. If the permanent enters mid-turn, the extra land drop is immediately
@@ -1362,14 +1588,29 @@ data class AdditionalDeathTriggers(
  * Multiple copies are additive: two copies yield two additional land drops.
  *
  * @property count The number of additional land drops granted each turn (default 1)
+ * @property affected Who gets the extra drops, relative to the source's controller: [Player.You]
+ *   (default), [Player.Each], or [Player.EachOpponent].
  */
 @SerialName("GrantAdditionalLandDrop")
 @Serializable
 data class GrantAdditionalLandDrop(
-    val count: Int = 1
+    val count: Int = 1,
+    val affected: Player = Player.You
 ) : StaticAbility {
-    override val description: String =
-        "You may play ${if (count == 1) "an additional land" else "$count additional lands"} on each of your turns"
+    init {
+        require(affected == Player.You || affected == Player.Each || affected == Player.EachOpponent) {
+            "GrantAdditionalLandDrop.affected must be You, Each, or EachOpponent, was $affected"
+        }
+    }
+
+    override val description: String = run {
+        val lands = if (count == 1) "an additional land" else "$count additional lands"
+        when (affected) {
+            Player.Each -> "Each player may play $lands on each of their turns"
+            Player.EachOpponent -> "Each opponent may play $lands on each of their turns"
+            else -> "You may play $lands on each of your turns"
+        }
+    }
 }
 
 /**
@@ -1448,10 +1689,21 @@ data class ReduceEquipCost(
      * Warrior's token) — rather than every equip ability the controller activates (Éowyn). Scoped
      * at the reduction site by matching the grant's bearer against the equip ability's source.
      */
-    val onlyOwnEquip: Boolean = false
+    val onlyOwnEquip: Boolean = false,
+    /**
+     * When true, the reduction skips the equip abilities of the permanent bearing this static —
+     * "Equip abilities you activate of **other** Equipment cost {amount} less to activate"
+     * (Bladehold War-Whip). The mirror of [onlyOwnEquip], matched at the same reduction site.
+     */
+    val onlyOtherEquip: Boolean = false
 ) : StaticAbility {
+    init {
+        require(!(onlyOwnEquip && onlyOtherEquip)) { "onlyOwnEquip and onlyOtherEquip are mutually exclusive" }
+    }
+
     override val description: String = when {
         onlyOwnEquip -> "This permanent's equip abilities cost {$amount} less to activate"
+        onlyOtherEquip -> "Equip abilities you activate of other Equipment cost {$amount} less to activate"
         onlyIfTargetIsSource -> "Equip abilities you activate that target this permanent cost {$amount} less to activate"
         else -> "Equip abilities you activate cost {$amount} less to activate"
     }

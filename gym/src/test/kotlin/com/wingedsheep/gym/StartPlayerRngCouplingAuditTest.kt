@@ -4,7 +4,7 @@ import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.GameInitializer
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.TakeMulligan
-import com.wingedsheep.engine.core.TurnManager
+import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.handlers.MulliganHandler
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
@@ -22,6 +22,7 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import java.nio.file.Files
 import java.nio.file.Path
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Characterization-only audit for the relationship between the numeric engine seed and the
@@ -95,7 +96,7 @@ class StartPlayerRngCouplingAuditTest : FunSpec({
         AUDIT_SEEDS.forEach { seed ->
             val first = initialize(seed, startingPlayerIndex = 0)
             val second = initialize(seed, startingPlayerIndex = 1)
-            val turnManager = TurnManager(registry())
+            val turnManager = EngineServices(registry()).turnManager
 
             val firstDraw = turnManager.drawCards(
                 first.state,
@@ -246,7 +247,7 @@ private fun takeOneMulliganPerTurn(state: GameState): GameState {
     var current = state
     current.turnOrder.forEach { playerId ->
         val result = handler.handleTakeMulligan(current, TakeMulligan(playerId))
-        check(result.isSuccess) { "Mulligan failed for $playerId: ${result.error}" }
+        check(result.outcome is Outcome.Done) { "Mulligan failed for $playerId: ${result.error}" }
         current = result.newState
     }
     return current

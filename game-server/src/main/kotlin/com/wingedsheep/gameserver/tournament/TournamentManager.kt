@@ -74,7 +74,13 @@ data class TournamentMatch(
     var isDraw: Boolean = false,
     var isComplete: Boolean = false,
     var player1GameWins: Int = 0,
-    var player2GameWins: Int = 0
+    var player2GameWins: Int = 0,
+    /**
+     * True when this result came from [AiMatchSimulator] rather than a played game. Such a match never
+     * had a [gameSessionId], so it has no replay and never appeared as an active match to spectate;
+     * the flag is what lets the standings say so instead of passing it off as a played result.
+     */
+    var isSimulated: Boolean = false
 ) {
     val isBye: Boolean get() = player2Id == null
 
@@ -242,7 +248,30 @@ class TournamentManager(
             .find { m -> m.gameSessionId == gameSessionId }
             ?: return
 
-        if (match.isComplete) return
+        if (!applyResult(match, winnerId, winnerLifeRemaining)) return
+        logger.info("Match result reported for game $gameSessionId: winner=${winnerId?.value ?: "draw"}, life=$winnerLifeRemaining")
+    }
+
+    /**
+     * Record a match decided by [AiMatchSimulator] instead of played out — see
+     * [TournamentMatch.isSimulated]. Takes the match itself because a simulated match has no game
+     * session to look it up by, and reports no life total: no game was played, so there is none to
+     * report. The standings tiebreakers (match points, OMW%, GW%, OGW%) don't read life; only the
+     * displayed life differential does, and inventing a number for it would be inventing data.
+     */
+    fun reportSimulatedResult(match: TournamentMatch, winnerId: EntityId) {
+        if (!applyResult(match, winnerId, winnerLifeRemaining = 0)) return
+        match.isSimulated = true
+        logger.info("Simulated match result in lobby $lobbyId: winner=${winnerId.value}")
+    }
+
+    /**
+     * Apply a decided [match] to the standings. Shared by the played and the simulated path so both
+     * move wins/losses/draws, game wins and the life differential the same way. Returns false when the
+     * match was already decided, so neither caller announces a result it didn't record.
+     */
+    private fun applyResult(match: TournamentMatch, winnerId: EntityId?, winnerLifeRemaining: Int): Boolean {
+        if (match.isComplete) return false
 
         match.isComplete = true
 
@@ -275,8 +304,7 @@ class TournamentManager(
                 standings[p2]?.draws = (standings[p2]?.draws ?: 0) + 1
             }
         }
-
-        logger.info("Match result reported for game $gameSessionId: winner=${winnerId?.value ?: "draw"}, life=$winnerLifeRemaining")
+        return true
     }
 
     /**
@@ -532,7 +560,8 @@ class TournamentManager(
                 player2Id = match.player2Id?.value,
                 winnerId = match.winnerId?.value,
                 isDraw = match.isDraw,
-                isBye = match.isBye
+                isBye = match.isBye,
+                isSimulated = match.isSimulated
             )
         }
     }
@@ -618,6 +647,56 @@ class TournamentManager(
     }
 
     /**
+     * Every match that could be launched right now, given the set of players who are ready.
+     *
+     * A match qualifies when it has two seats (no BYE), hasn't been started or decided, both seats
+     * are ready, and neither seat still owes a game from an earlier round — see
+     * [hasIncompleteMatchBefore]. That last guard is why this query exists rather than a per-player
+     * lookup: a pair can become startable purely because somebody *else's* earlier-round match
+     * finished, with no change to the ready set, so the whole set has to be re-examined whenever a
+     * result lands.
+     *
+     * A player appears in at most one returned pair: their earliest unplayed match blocks every
+     * later one through the same guard, so the caller can start all of them in one sweep.
+     */
+    fun startableMatches(readyPlayerIds: Set<EntityId>): List<Pair<TournamentRound, TournamentMatch>> {
+        val startable = mutableListOf<Pair<TournamentRound, TournamentMatch>>()
+        for (round in rounds) {
+            for (match in round.matches) {
+                if (match.isBye || match.isComplete || match.gameSessionId != null) continue
+                val player2Id = match.player2Id ?: continue
+                if (match.player1Id !in readyPlayerIds || player2Id !in readyPlayerIds) continue
+                if (hasIncompleteMatchBefore(match.player1Id, round.roundNumber)) continue
+                if (hasIncompleteMatchBefore(player2Id, round.roundNumber)) continue
+                startable.add(round to match)
+            }
+        }
+        return startable
+    }
+
+    /**
+     * Bracket seats that the lobby no longer holds and that still owe at least one match.
+     *
+     * The bracket is built once, from the roster the lobby had at the time, and nothing rebuilds it
+     * when a seat leaves afterwards. A departed seat can never be put in a game — the match handler
+     * needs its lobby state for the deck, the identity and the socket — so its unplayed matches would
+     * stay incomplete forever, and [hasIncompleteMatchBefore] would then block every later match of
+     * every opponent it was scheduled against. One stranded pair idles the whole bracket, a player at
+     * a time, as each round reaches it.
+     *
+     * Naming them is a pure query, like [startableMatches], so the caller can forfeit them through the
+     * same [recordAbandon] a disconnect uses. [seatedPlayerIds] is the lobby's roster right now.
+     */
+    fun unseatedPlayersWithMatchesLeft(seatedPlayerIds: Set<EntityId>): List<EntityId> =
+        playerIds.filter { playerId ->
+            playerId !in seatedPlayerIds && rounds.any { round ->
+                round.matches.any {
+                    !it.isComplete && (it.player1Id == playerId || it.player2Id == playerId)
+                }
+            }
+        }
+
+    /**
      * Get the round containing a specific match (by gameSessionId).
      */
     fun getRoundForMatch(gameSessionId: String): TournamentRound? {
@@ -638,7 +717,8 @@ class TournamentManager(
                 player2Id = match.player2Id?.value,
                 winnerId = match.winnerId?.value,
                 isDraw = match.isDraw,
-                isBye = match.isBye
+                isBye = match.isBye,
+                isSimulated = match.isSimulated
             )
         }
     }

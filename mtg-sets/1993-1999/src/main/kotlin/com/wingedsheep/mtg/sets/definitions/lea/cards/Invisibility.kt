@@ -5,12 +5,13 @@
 package com.wingedsheep.mtg.sets.definitions.lea.cards
 
 import com.wingedsheep.sdk.core.Subtype
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.CantBeBlockedExceptBy
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 
 /**
@@ -25,10 +26,10 @@ val Invisibility = card("Invisibility") {
     colorIdentity = "U"
     typeLine = "Enchantment — Aura"
     oracleText = "Enchant creature\nEnchanted creature can't be blocked except by Walls."
-    auraTarget = Targets.Creature
+    auraTarget = TargetObject(filter = TargetFilter.Creature)
     staticAbility {
         ability = CantBeBlockedExceptBy(
-            blockerFilter = GameObjectFilter.Creature.withSubtype(Subtype.WALL),
+            blockerFilter = GameObjectFilter.Permanent.withSubtype(Subtype.WALL),
             filter = GroupFilter.attachedCreature()
         )
     }

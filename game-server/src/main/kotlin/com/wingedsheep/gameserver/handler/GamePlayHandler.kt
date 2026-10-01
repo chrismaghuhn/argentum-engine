@@ -2,6 +2,7 @@ package com.wingedsheep.gameserver.handler
 
 import com.wingedsheep.gameserver.ai.AiGameManager
 import com.wingedsheep.gameserver.ai.AiWebSocketSession
+import com.wingedsheep.gameserver.deck.SideboardSanitizer
 import com.wingedsheep.ai.engine.SealedDeckGenerator
 import com.wingedsheep.gameserver.protocol.ClientMessage
 import com.wingedsheep.gameserver.protocol.ErrorCode
@@ -57,6 +58,21 @@ class GamePlayHandler(
     private val deckProfiler: com.wingedsheep.gameserver.stats.DeckProfiler
 ) {
     private val logger = LoggerFactory.getLogger(GamePlayHandler::class.java)
+
+    /**
+     * Drop sideboard cards this engine hasn't implemented before they reach the engine, which
+     * would throw on the first one and fail the whole game start. See [SideboardSanitizer] for
+     * why unknown names are dropped rather than the submission rejected.
+     */
+    private fun sanitizeSideboard(sideboard: Map<String, Int>?, playerName: String): Map<String, Int> =
+        SideboardSanitizer.sanitize(sideboard.orEmpty(), cardRegistry).also { result ->
+            if (result.hasDrops) {
+                logger.info(
+                    "Dropped ${result.dropped.size} unknown sideboard card(s) from $playerName's " +
+                        "submission: ${result.dropped}",
+                )
+            }
+        }.kept
 
     @Volatile
     var waitingGameSession: GameSession? = null
@@ -144,7 +160,13 @@ class GamePlayHandler(
         )
         gameSession.quickGameSetCode = quickGameSetCode
         // A generated random/quick deck has no sideboard; only a real submitted deck carries one.
-        val sideboard = if (quickGameSetCode != null) emptyMap() else message.sideboard
+        // Sanitize whatever the client sent: an unimplemented name would throw out of
+        // GameInitializer and fail the game creation outright (see SideboardSanitizer).
+        val sideboard = if (quickGameSetCode != null) {
+            emptyMap()
+        } else {
+            sanitizeSideboard(message.sideboard, playerSession.playerName)
+        }
         gameSession.addPlayer(playerSession, deckList, sideboard = sideboard)
 
         // Store player info for persistence
@@ -169,8 +191,8 @@ class GamePlayHandler(
             aiGameManager.createAiOpponent(
                 gameSession = gameSession,
                 setCode = quickGameSetCode,
-                onActionReady = { aiPlayerId, action ->
-                    handleAiAction(gameSession, aiPlayerId, action)
+                onActionReady = { aiPlayerId, action, interactionEpoch ->
+                    handleAiAction(gameSession, aiPlayerId, action, interactionEpoch)
                 },
                 onMulliganKeep = { aiPlayerId ->
                     handleAiMulliganKeep(gameSession, aiPlayerId)
@@ -286,7 +308,11 @@ class GamePlayHandler(
         )
 
         // A generated random deck (empty submission) has no sideboard.
-        val sideboard = if (message.deckList.isEmpty()) emptyMap() else message.sideboard
+        val sideboard = if (message.deckList.isEmpty()) {
+            emptyMap()
+        } else {
+            sanitizeSideboard(message.sideboard, playerSession.playerName)
+        }
         gameSession.addPlayer(playerSession, deckList, sideboard = sideboard)
 
         // Store player info for persistence
@@ -385,7 +411,9 @@ class GamePlayHandler(
             gameSession = gameSession,
             aiPlayerId = aiPlayerId,
             deckList = deck,
-            onActionReady = { id, action -> handleAiAction(gameSession, id, action) },
+            onActionReady = { id, action, interactionEpoch ->
+                handleAiAction(gameSession, id, action, interactionEpoch)
+            },
             onMulliganKeep = { id -> handleAiMulliganKeep(gameSession, id) },
             onMulliganTake = { id -> handleAiMulliganTake(gameSession, id) },
             onBottomCards = { id, cardIds -> handleAiBottomCards(gameSession, id, cardIds) }
@@ -534,7 +562,9 @@ class GamePlayHandler(
             return
         }
 
-        val result = gameSession.executeAction(playerSession.playerId, message.action, message.messageId)
+        val result = gameSession.executeClientAction(
+            playerSession.playerId, message.action, message.messageId, message.interactionEpoch
+        )
         when (result) {
             is GameSession.ActionResult.Success -> {
                 logger.debug("Action executed successfully")
@@ -649,10 +679,14 @@ class GamePlayHandler(
 
     fun handleGameOver(gameSession: GameSession, reason: GameOverReason? = null, events: List<GameEvent> = emptyList()) {
         val winnerId = gameSession.getWinnerId()
+        val winnerIds = gameSession.getWinnerIds()
         val gameOverReason = reason ?: gameSession.getGameOverReason() ?: GameOverReason.LIFE_ZERO
-        // Extract custom message from PlayerLostEvent if present
-        val customMessage = events.filterIsInstance<PlayerLostEvent>().firstOrNull()?.message
-        val message = ServerMessage.GameOver(winnerId, gameOverReason, customMessage, gameSession.sessionId)
+        // Extract custom message from PlayerLostEvent if present. A game the server abandoned for
+        // lack of progress explains itself first — its stock reason is a bare "Draw", which reads
+        // like a rules outcome the players brought about rather than a loop nobody could break.
+        val customMessage = gameSession.stallMessage()
+            ?: events.filterIsInstance<PlayerLostEvent>().firstOrNull()?.message
+        val message = ServerMessage.GameOver(winnerId, gameOverReason, customMessage, gameSession.sessionId, winnerIds)
 
         gameSession.getPlayers().forEach { sender.send(it.webSocketSession, message) }
 
@@ -675,9 +709,10 @@ class GamePlayHandler(
             // TournamentManager, Free-for-All pods via FreeForAllHandler (which never creates
             // a TournamentManager). The callback routes by the lobby's game mode.
             // Capture winner's remaining life for tiebreaker calculations
+            // Through the resolver: a team's life is one shared total (CR 810.9a), and only the
+            // canonical member's raw component carries it.
             val winnerLifeRemaining = if (winnerId != null) {
-                gameSession.getStateForTesting()?.getEntity(winnerId)
-                    ?.get<LifeTotalComponent>()?.life ?: 0
+                gameSession.getStateForTesting()?.lifeTotal(winnerId) ?: 0
             } else {
                 0
             }
@@ -736,14 +771,18 @@ class GamePlayHandler(
                 engineVersion = engineVersion.value,
                 pinnedCards = gameSession.getPinnedCards(),
                 checkpoints = if (ReplayCheckpointPolicy.requiresTailCheckpoint(replaySnapshot.version)) {
+                    // The tail proves the position the recorded inputs reach, which is not the live
+                    // one when the recording was frozen by its size cap or the stall guard ended the
+                    // game out of band — see ReplayRecordingSnapshot.tailFingerprint.
                     ReplayCheckpointPolicy.withV3Tail(
                         checkpoints = replaySnapshot.checkpoints,
                         actionCount = replaySnapshot.actions.size,
-                        fingerprint = replaySnapshot.fingerprint,
+                        fingerprint = replaySnapshot.tailFingerprint,
                     )
                 } else {
                     replaySnapshot.checkpoints
                 },
+                truncated = replaySnapshot.truncated,
             )
             // AI-only games (e.g. the LLM tournament) are stored — that page links straight at their
             // replays — but skip the archived frame stream, which is orders of magnitude larger than
@@ -805,7 +844,7 @@ class GamePlayHandler(
                         com.wingedsheep.gameserver.stats.RecordedParticipant(
                             userId = identity?.userId,
                             playerName = player.playerName,
-                            won = winnerId != null && player.playerId == winnerId,
+                            won = player.playerId in winnerIds,
                             colors = profile?.colors,
                             setCodes = profile?.setCodes,
                             isAi = isAi,
@@ -853,8 +892,7 @@ class GamePlayHandler(
         // Fired before cleanup so it can launch the next bracket game off its own coroutine.
         llmTournamentGameOverCallback?.let { callback ->
             val winnerLife = if (winnerId != null) {
-                gameSession.getStateForTesting()?.getEntity(winnerId)
-                    ?.get<LifeTotalComponent>()?.life ?: 0
+                gameSession.getStateForTesting()?.lifeTotal(winnerId) ?: 0
             } else 0
             callback(gameSessionId, winnerId, winnerLife)
         }
@@ -896,7 +934,10 @@ class GamePlayHandler(
 
         try {
             sessionPlayers.forEach { session ->
-                val update = gameSession.createStateUpdate(session.playerId, allEvents)
+                val update = gameSession.createStateUpdate(
+                    session.playerId, allEvents,
+                    useEngineDecisionIds = usesEngineDecisionIds(session),
+                )
                 if (update != null) sender.send(session.webSocketSession, update)
                 else logger.warn("createStateUpdate returned null for player ${session.playerId.value}")
             }
@@ -1005,11 +1046,20 @@ class GamePlayHandler(
 
         val gameSession = getGameSession(session, playerSession) ?: return
 
-        // Forward the attacker targets to every opponent (2-player = the one opponent)
-        val serverMessage = ServerMessage.OpponentAttackerTargets(message.selectedAttackers, message.attackerTargets)
+        // Forward the attacker targets to every opponent (2-player = the one opponent), each in
+        // their own card names
+        val engineMessage = gameSession.fromSeat(
+            playerSession.playerId, message, ClientMessage.UpdateAttackerTargets.serializer()
+        ) ?: return
+        val serverMessage = ServerMessage.OpponentAttackerTargets(engineMessage.selectedAttackers, engineMessage.attackerTargets)
 
         gameSession.getOpponentIds(playerSession.playerId).forEach { opponentId ->
-            gameSession.getPlayerSession(opponentId)?.let { sender.send(it.webSocketSession, serverMessage) }
+            gameSession.getPlayerSession(opponentId)?.let {
+                sender.send(
+                    it.webSocketSession,
+                    gameSession.toSeat(opponentId, serverMessage, ServerMessage.OpponentAttackerTargets.serializer())
+                )
+            }
         }
 
         // Also forward to all spectators so they can see attacker arrows in real-time
@@ -1027,16 +1077,24 @@ class GamePlayHandler(
 
         val gameSession = getGameSession(session, playerSession) ?: return
 
-        // Forward the blocker assignments to every opponent (2-player = the one opponent)
+        // Forward the blocker assignments to every opponent (2-player = the one opponent), each in
+        // their own card names
+        val engineMessage = gameSession.fromSeat(
+            playerSession.playerId, message, ClientMessage.UpdateBlockerAssignments.serializer()
+        ) ?: return
+        val serverMessage = ServerMessage.OpponentBlockerAssignments(engineMessage.assignments)
         gameSession.getOpponentIds(playerSession.playerId).forEach { opponentId ->
             gameSession.getPlayerSession(opponentId)?.let {
-                sender.send(it.webSocketSession, ServerMessage.OpponentBlockerAssignments(message.assignments))
+                sender.send(
+                    it.webSocketSession,
+                    gameSession.toSeat(opponentId, serverMessage, ServerMessage.OpponentBlockerAssignments.serializer())
+                )
             }
         }
 
         // Also forward to all spectators so they can see blocker arrows in real-time
         for (spectator in gameSession.getSpectators()) {
-            sender.send(spectator.webSocketSession, ServerMessage.OpponentBlockerAssignments(message.assignments))
+            sender.send(spectator.webSocketSession, serverMessage)
         }
     }
 
@@ -1182,11 +1240,23 @@ class GamePlayHandler(
         logger.info("Player ${playerSession.playerName} requested state resync")
         // Clear cached state so the next update sends a full StateUpdate instead of a delta
         gameSession.clearLastSentState(playerSession.playerId)
-        val update = gameSession.createStateUpdate(playerSession.playerId, emptyList())
+        val update = gameSession.createStateUpdate(
+            playerSession.playerId, emptyList(),
+            useEngineDecisionIds = usesEngineDecisionIds(playerSession),
+        )
         if (update != null) {
             sender.send(session, update)
         }
     }
+
+    /**
+     * In-process AI simulates responses against the raw engine snapshot, so it gets engine decision
+     * IDs; a browser gets the epoch-prefixed token it must echo back. Every path that delivers a
+     * state update derives this from the recipient — encoding for the wrong transport hands the AI
+     * a token [GameSession.executeAiAction] then rejects, and the seat stops acting in silence.
+     */
+    private fun usesEngineDecisionIds(playerSession: PlayerSession): Boolean =
+        playerSession.webSocketSession is AiWebSocketSession
 
     // =========================================================================
     // AI recovery (rewire AI into GameSessions restored from Redis on startup)
@@ -1229,7 +1299,9 @@ class GamePlayHandler(
                 gameSession = gameSession,
                 aiPlayerId = aiPlayerId,
                 deckList = deckList,
-                onActionReady = { id, action -> handleAiAction(gameSession, id, action) },
+                onActionReady = { id, action, interactionEpoch ->
+                    handleAiAction(gameSession, id, action, interactionEpoch)
+                },
                 onMulliganKeep = { id -> handleAiMulliganKeep(gameSession, id) },
                 onMulliganTake = { id -> handleAiMulliganTake(gameSession, id) },
                 onBottomCards = { id, cardIds -> handleAiBottomCards(gameSession, id, cardIds) },
@@ -1367,9 +1439,16 @@ class GamePlayHandler(
         }
     }
 
-    fun handleAiAction(gameSession: GameSession, aiPlayerId: EntityId, action: com.wingedsheep.engine.core.GameAction) {
+    fun handleAiAction(
+        gameSession: GameSession,
+        aiPlayerId: EntityId,
+        action: com.wingedsheep.engine.core.GameAction,
+        interactionEpoch: String?
+    ) {
         try {
-            val result = gameSession.executeActionFromAiController(aiPlayerId, action)
+            // The AI ingress checks the action's originating timeline and that this seat is
+            // AI-controlled (never a human or ML-policy seat) before anything is applied.
+            val result = gameSession.executeAiAction(aiPlayerId, action, interactionEpoch) ?: return
             when (result) {
                 is GameSession.ActionResult.Success -> {
                     logger.debug("AI action executed successfully")
@@ -1381,6 +1460,17 @@ class GamePlayHandler(
                     broadcastStateUpdate(gameSession, result.events)
                 }
                 is GameSession.ActionResult.Failure -> {
+                    val aiSession = gameSession.getPlayerSession(aiPlayerId)?.webSocketSession as? AiWebSocketSession
+                    if (aiSession?.allowActionsOnlyFallback == false) {
+                        logger.error(
+                            "External AI action failed for seat {} in game {}: {} — refusing server-side strategic fallback",
+                            aiPlayerId.value,
+                            gameSession.sessionId,
+                            result.reason,
+                        )
+                        return
+                    }
+
                     // The chosen action was rejected (e.g. an illegal block the AI's combat model
                     // didn't foresee, like Ring-bearer "can't be blocked by greater power"). Try a
                     // sequence of step-appropriate, always-legal fallbacks so the game can't get
@@ -1391,7 +1481,9 @@ class GamePlayHandler(
                     logger.warn("AI action failed: {} — trying safe fallbacks", result.reason)
                     var recovered = false
                     for (fallback in safeFallbackActions(gameSession, aiPlayerId)) {
-                        when (val fb = gameSession.executeActionFromAiController(aiPlayerId, fallback)) {
+                        // Undo can occur after the original rejection or between fallback attempts.
+                        val fb = gameSession.executeAiAction(aiPlayerId, fallback, interactionEpoch) ?: return
+                        when (fb) {
                             is GameSession.ActionResult.Success -> {
                                 broadcastStateUpdate(gameSession, fb.events)
                                 if (gameSession.isGameOver()) handleGameOver(gameSession, events = fb.events)
@@ -1408,8 +1500,28 @@ class GamePlayHandler(
                         if (recovered) break
                     }
                     if (!recovered) {
-                        // Last resort: broadcast current state so the AI gets another chance.
-                        broadcastStateUpdate(gameSession, emptyList())
+                        // Last resort: broadcast current state so the AI gets another chance. That
+                        // is a loop with nothing bounding it — the AI is handed the same state, so
+                        // it re-chooses the same rejected action, and nothing was applied for the
+                        // stall guard to notice — so the seat gets a bounded number of chances and
+                        // is then conceded. See [GameStallGuard.onActionRejected].
+                        val conceded = gameSession.noteAiActionRejected(aiPlayerId, interactionEpoch) ?: return
+                        if (conceded) {
+                            logger.error(
+                                "AI seat {} has had {} actions in a row rejected with no legal " +
+                                    "fallback in game {} — conceding the seat rather than " +
+                                    "re-broadcasting forever",
+                                aiPlayerId.value,
+                                com.wingedsheep.gameserver.session.GameStallGuard.MAX_CONSECUTIVE_REJECTIONS,
+                                gameSession.sessionId,
+                            )
+                            broadcastStateUpdate(gameSession, emptyList())
+                            if (gameSession.isGameOver()) {
+                                handleGameOver(gameSession, GameOverReason.CONCESSION)
+                            }
+                        } else {
+                            broadcastStateUpdate(gameSession, emptyList())
+                        }
                     }
                 }
             }

@@ -13,6 +13,7 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Scenario coverage for Skyclave Apparition (ZNR #39).
@@ -51,7 +52,7 @@ class SkyclaveApparitionScenarioTest : FunSpec({
         val apparition = d.putCardInHand(me, "Skyclave Apparition")
         d.giveMana(me, Color.WHITE, 2)
         d.giveColorlessMana(me, 1)
-        d.castSpell(me, apparition).isSuccess shouldBe true
+        d.castSpell(me, apparition).outcome shouldBe Outcome.Done
         d.bothPass()
 
         val decision = d.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
@@ -61,7 +62,7 @@ class SkyclaveApparitionScenarioTest : FunSpec({
         legal shouldNotContain land
         legal shouldNotContain ownPermanent
 
-        d.submitTargetSelection(me, listOf(eligible)).isSuccess shouldBe true
+        d.submitTargetSelection(me, listOf(eligible)).outcome shouldBe Outcome.Done
         resolveStack(d)
         d.getExile(opp) shouldContain eligible
         d.getPermanents(opp) shouldNotContain eligible
@@ -76,10 +77,10 @@ class SkyclaveApparitionScenarioTest : FunSpec({
         val apparition = d.putCardInHand(me, "Skyclave Apparition")
         d.giveMana(me, Color.WHITE, 2)
         d.giveColorlessMana(me, 1)
-        d.castSpell(me, apparition).isSuccess shouldBe true
+        d.castSpell(me, apparition).outcome shouldBe Outcome.Done
         d.bothPass()
         d.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
-        d.submitTargetSelection(me, emptyList()).isSuccess shouldBe true
+        d.submitTargetSelection(me, emptyList()).outcome shouldBe Outcome.Done
         resolveStack(d)
 
         d.getPermanents(opp) shouldContain permanent
@@ -95,15 +96,15 @@ class SkyclaveApparitionScenarioTest : FunSpec({
         val apparitionCard = d.putCardInHand(me, "Skyclave Apparition")
         d.giveMana(me, Color.WHITE, 2)
         d.giveColorlessMana(me, 1)
-        d.castSpell(me, apparitionCard).isSuccess shouldBe true
+        d.castSpell(me, apparitionCard).outcome shouldBe Outcome.Done
         d.bothPass()
-        d.submitTargetSelection(me, listOf(exiled)).isSuccess shouldBe true
+        d.submitTargetSelection(me, listOf(exiled)).outcome shouldBe Outcome.Done
         resolveStack(d)
 
         val apparition = d.findPermanent(me, "Skyclave Apparition")!!
         val bolt = d.putCardInHand(me, "Lightning Bolt")
         d.giveMana(me, Color.RED, 1)
-        d.castSpell(me, bolt, listOf(apparition)).isSuccess shouldBe true
+        d.castSpell(me, bolt, listOf(apparition)).outcome shouldBe Outcome.Done
         resolveStack(d)
 
         d.findPermanent(me, "Skyclave Apparition") shouldBe null

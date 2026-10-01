@@ -27,12 +27,25 @@ import kotlinx.serialization.Serializable
  * [abilitySourceCardTypes] (plus [subtypes] of the source) carry the source's type
  * information for restrictions that check it.
  */
+@Serializable
 data class SpellPaymentContext(
     val isInstantOrSorcery: Boolean = false,
     val isKicked: Boolean = false,
     val isCreature: Boolean = false,
     val manaValue: Int = 0,
+    /**
+     * True when the cost being paid contains the {X} mana symbol: the spell's mana cost for a
+     * cast, the ability's mana cost for an activation (set by [buildAbilityPaymentContext]).
+     * Restrictions that are spell-only ([ManaRestriction.SpellsWithManaValueAtLeast]) also require
+     * `!isAbilityActivation`; [ManaRestriction.CostsContainingXOnly] reads it for both.
+     */
     val hasXInCost: Boolean = false,
+    /**
+     * True when the spell being cast is colorless (CR 105.2c). Defaults to false so a cast path
+     * that forgets to set it refuses [ManaRestriction.ColorlessSpellsOnly] mana rather than
+     * letting it pay for a colored spell.
+     */
+    val isColorless: Boolean = false,
     val subtypes: Set<String> = emptySet(),
     val isFromExile: Boolean = false,
     /** True when the spell being cast is legendary (has the Legendary supertype). */
@@ -103,6 +116,7 @@ data class SpellPaymentContext(
         fun faceDownCast(isFromHand: Boolean = true): SpellPaymentContext = SpellPaymentContext(
             isCreature = true,
             manaValue = 0,
+            isColorless = true,
             cardTypes = setOf(com.wingedsheep.sdk.core.CardType.CREATURE),
             isFromHand = isFromHand,
             isFaceDownCast = true,
@@ -132,6 +146,8 @@ fun ManaRestriction.isSatisfiedBy(context: SpellPaymentContext): Boolean = when 
             (context.manaValue >= minManaValue || (orXInCost && context.hasXInCost))
     is ManaRestriction.CreatureSpellsOnly -> !context.isAbilityActivation && context.isCreature
     is ManaRestriction.LegendarySpellsOnly -> !context.isAbilityActivation && context.isLegendary
+    is ManaRestriction.ColorlessSpellsOnly -> context.isSpellCast && context.isColorless
+    is ManaRestriction.CostsContainingXOnly -> (context.isSpellCast || context.isAbilityActivation) && context.hasXInCost
     is ManaRestriction.SubtypeSpellsOrAbilitiesOnly ->
         (!creatureOnly || (!context.isAbilityActivation && context.isCreature)) &&
             context.subtypes.any { it.equals(subtype, ignoreCase = true) }
@@ -143,6 +159,8 @@ fun ManaRestriction.isSatisfiedBy(context: SpellPaymentContext): Boolean = when 
     is ManaRestriction.AbilityActivationOnly -> context.isAbilityActivation
     is ManaRestriction.EquipAbilityActivationOnly -> context.isEquipAbilityActivation
     is ManaRestriction.AnyOf -> restrictions.any { it.isSatisfiedBy(context) }
+    is ManaRestriction.AllOf -> restrictions.all { it.isSatisfiedBy(context) }
+    is ManaRestriction.SpellsOnly -> context.isSpellCast
     is ManaRestriction.SubtypeSpellsOnly ->
         !context.isAbilityActivation &&
             subtypes.any { sub -> context.subtypes.any { it.equals(sub, ignoreCase = true) } }
@@ -153,6 +171,8 @@ fun ManaRestriction.isSatisfiedBy(context: SpellPaymentContext): Boolean = when 
     // payment passes untouched.
     is ManaRestriction.CannotCastSpellsOtherThan ->
         !context.isSpellCast || cardTypes.any { it in context.cardTypes }
+    // Negative restriction: only a spell cast from hand violates it.
+    is ManaRestriction.CannotCastSpellsFromHand -> !context.isSpellCast || !context.isFromHand
 }
 
 /**
@@ -175,9 +195,11 @@ fun ManaRestriction.isSatisfiedBy(context: SpellPaymentContext): Boolean = when 
 @Serializable
 data class SpentManaProvenance(
     val bySubtype: Map<com.wingedsheep.sdk.core.Subtype, Int> = emptyMap(),
-    val sourceIds: Set<com.wingedsheep.sdk.model.EntityId> = emptySet()
+    val sourceIds: Set<com.wingedsheep.sdk.model.EntityId> = emptySet(),
+    /** Producing-source card type → mana units carrying it (Inga and Esika's "mana from creatures"). */
+    val byCardType: Map<com.wingedsheep.sdk.core.CardType, Int> = emptyMap()
 ) {
-    val isEmpty: Boolean get() = bySubtype.isEmpty() && sourceIds.isEmpty()
+    val isEmpty: Boolean get() = bySubtype.isEmpty() && sourceIds.isEmpty() && byCardType.isEmpty()
 
     /**
      * The producing-source subtypes that had at least one mana unit spent. `bySubtype` only ever
@@ -185,6 +207,49 @@ data class SpentManaProvenance(
      * its key set — named here so the cast/resolve paths don't each re-filter for `> 0`.
      */
     val spentSubtypes: Set<com.wingedsheep.sdk.core.Subtype> get() = bySubtype.keys
+
+    /** Sum two snapshots (adding per-subtype and per-card-type counts, unioning source ids). */
+    operator fun plus(other: SpentManaProvenance): SpentManaProvenance = when {
+        isEmpty -> other
+        other.isEmpty -> this
+        else -> SpentManaProvenance(
+            bySubtype = sumCounts(bySubtype, other.bySubtype),
+            sourceIds = sourceIds + other.sourceIds,
+            byCardType = sumCounts(byCardType, other.byCardType)
+        )
+    }
+
+    companion object {
+        private fun <K> sumCounts(a: Map<K, Int>, b: Map<K, Int>): Map<K, Int> =
+            if (b.isEmpty()) a else a.toMutableMap().apply { b.forEach { (k, n) -> merge(k, n, Int::plus) } }
+
+        /** One unit's worth of provenance for each tag (a mana unit per tag). */
+        fun ofUnits(tags: List<com.wingedsheep.engine.state.components.player.ManaSourceTag>): SpentManaProvenance {
+            if (tags.isEmpty()) return SpentManaProvenance()
+            val bySubtype = mutableMapOf<com.wingedsheep.sdk.core.Subtype, Int>()
+            val byCardType = mutableMapOf<com.wingedsheep.sdk.core.CardType, Int>()
+            for (tag in tags) {
+                tag.subtypes.forEach { bySubtype.merge(it, 1, Int::plus) }
+                tag.cardTypes.forEach { byCardType.merge(it, 1, Int::plus) }
+            }
+            return SpentManaProvenance(bySubtype, tags.mapTo(mutableSetOf()) { it.sourceId }, byCardType)
+        }
+
+        /**
+         * Provenance of the restricted units a payment consumed: the multiset difference between
+         * the pool's restricted entries [before] and [after] the payment, read off each consumed
+         * entry's [RestrictedManaEntry.source].
+         */
+        fun ofConsumedRestricted(before: List<RestrictedManaEntry>, after: List<RestrictedManaEntry>): SpentManaProvenance {
+            if (before.none { it.source != null }) return SpentManaProvenance()
+            val remaining = after.toMutableList()
+            val consumed = before.filter { entry ->
+                val idx = remaining.indexOf(entry)
+                if (idx >= 0) { remaining.removeAt(idx); false } else true
+            }
+            return ofUnits(consumed.mapNotNull { it.source })
+        }
+    }
 }
 
 @Serializable
@@ -210,6 +275,9 @@ data class ManaPool(
     val manaProvenanceCompleteness: ManaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
     /** Players for whom every current joint subtype snapshot is authoritatively known. */
     val manaProvenanceKnownTo: Set<com.wingedsheep.sdk.model.EntityId> = emptySet(),
+    val manaByCardType: Map<com.wingedsheep.sdk.core.CardType, Int> = emptyMap(),
+    /** Ephemeral payment configuration, never stored in the player's mana component. */
+    val spendingColors: Map<Color, Set<Color>> = emptyMap()
 ) {
     /**
      * Get amount of mana for a specific color.
@@ -241,7 +309,7 @@ data class ManaPool(
      * Check if the pool is empty (including restricted mana).
      */
     fun isEmpty(): Boolean = total == 0 && restrictedMana.isEmpty() &&
-        manaBySubtype.isEmpty() && manaBySource.isEmpty() &&
+        manaBySubtype.isEmpty() && manaBySource.isEmpty() && manaByCardType.isEmpty() &&
         manaBySourceAndColor.isEmpty() && manaByFloatingBucket.isEmpty()
 
     /**
@@ -257,13 +325,18 @@ data class ManaPool(
      */
     fun addColorless(amount: Int = 1): ManaPool = addUntracked(PaymentManaColor.COLORLESS, amount)
 
-    /** Add ordinary mana with explicit Rules-owned source/color provenance. */
+    /**
+     * Add ordinary mana with explicit Rules-owned source/color provenance. [cardTypes] is the
+     * producing source's card-type snapshot ("mana from a creature"); it only feeds the aggregate
+     * [manaByCardType] counter, never the exact source/color buckets.
+     */
     fun addTracked(
         color: PaymentManaColor,
         sourceId: com.wingedsheep.sdk.model.EntityId,
         subtypes: Set<com.wingedsheep.sdk.core.Subtype>,
         amount: Int = 1,
         knownToPlayers: Set<com.wingedsheep.sdk.model.EntityId>? = null,
+        cardTypes: Set<com.wingedsheep.sdk.core.CardType> = emptySet(),
     ): ManaPool {
         if (amount <= 0) return this
         val beforeUnrestricted = unrestrictedTotal
@@ -271,6 +344,7 @@ data class ManaPool(
             copy(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
+                manaByCardType = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
                 manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
@@ -288,6 +362,14 @@ data class ManaPool(
             buildMap {
                 putAll(withColor.manaBySubtype)
                 subtypes.forEach { put(it, (get(it) ?: 0) + amount) }
+            }
+        }
+        val newByCardType = if (cardTypes.isEmpty()) {
+            withColor.manaByCardType
+        } else {
+            buildMap {
+                putAll(withColor.manaByCardType)
+                cardTypes.forEach { put(it, (get(it) ?: 0) + amount) }
             }
         }
         val canExtendComplete = beforeUnrestricted == 0 ||
@@ -310,6 +392,7 @@ data class ManaPool(
             return withColor.copy(
                 manaBySubtype = newBySubtype,
                 manaBySource = newBySource,
+                manaByCardType = newByCardType,
                 manaBySourceAndColor = emptyMap(),
                 manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
@@ -324,6 +407,7 @@ data class ManaPool(
         return withColor.copy(
             manaBySubtype = newBySubtype,
             manaBySource = newBySource,
+            manaByCardType = newByCardType,
             manaBySourceAndColor = withColor.manaBySourceAndColor + (sourceId to sourceBuckets.toMap()),
             manaByFloatingBucket = floatingBuckets.toMap(),
             manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
@@ -343,6 +427,7 @@ data class ManaPool(
             copy(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
+                manaByCardType = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
                 manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
@@ -440,6 +525,7 @@ data class ManaPool(
             return copy(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
+                manaByCardType = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
                 manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
@@ -474,7 +560,7 @@ data class ManaPool(
      * Restricted/rider mana is not considered.
      *
      * Shared by `CastPaymentProcessor.autoPay` (spends each unit and tallies per-color X spend)
-     * and `ActivateAbilityHandler.autoTapForManaCost` (uses only the count, to reduce how much X
+     * and `ActivationAutoTapper.autoTapForManaCost` (uses only the count, to reduce how much X
      * it must tap sources for) so both apply the exact same coverage rule.
      */
     fun xCoveragePlan(xAmount: Int, xManaRestriction: Set<Color>): List<Color?> {
@@ -522,6 +608,9 @@ data class ManaPool(
      * When [spellContext] is provided, eligible restricted mana is considered (spent first).
      */
     fun canPay(cost: ManaCost, spellContext: SpellPaymentContext? = null): Boolean {
+        if (spendingColors.isNotEmpty()) {
+            return payPartialWithSpending(cost, spellContext, allowMonoHybridGeneric = true).remainingCost.symbols.all { it is ManaSymbol.X }
+        }
         var remaining = this
 
         // First, pay colored costs — try restricted mana first, then unrestricted
@@ -539,7 +628,7 @@ data class ManaPool(
                 is ManaSymbol.X -> {
                     // X is 0 unless specified otherwise
                 }
-                is ManaSymbol.Hybrid -> {
+                is ManaSymbol.Hybrid, is ManaSymbol.HybridPhyrexian -> {
                     val spent = remaining.trySpendColored(symbol.color1, spellContext)
                         ?: remaining.trySpendColored(symbol.color2, spellContext)
                         ?: return false
@@ -603,6 +692,10 @@ data class ManaPool(
      * When [spellContext] is provided, eligible restricted mana is spent first.
      */
     fun pay(cost: ManaCost, spellContext: SpellPaymentContext? = null): ManaPool? {
+        if (spendingColors.isNotEmpty()) {
+            val partial = payPartialWithSpending(cost, spellContext, allowMonoHybridGeneric = true)
+            return partial.newPool.takeIf { partial.remainingCost.symbols.all { it is ManaSymbol.X } }
+        }
         if (!canPay(cost, spellContext)) return null
 
         var remaining = this
@@ -622,7 +715,7 @@ data class ManaPool(
                 is ManaSymbol.X -> {
                     // Handled by caller
                 }
-                is ManaSymbol.Hybrid -> {
+                is ManaSymbol.Hybrid, is ManaSymbol.HybridPhyrexian -> {
                     remaining = remaining.trySpendColored(symbol.color1, spellContext)
                         ?: remaining.trySpendColored(symbol.color2, spellContext)!!
                 }
@@ -688,6 +781,13 @@ data class ManaPool(
      * When [spellContext] is provided, eligible restricted mana is spent first.
      */
     fun payPartial(cost: ManaCost, spellContext: SpellPaymentContext? = null): PartialPaymentResult {
+        if (spendingColors.isNotEmpty()) {
+            if (cost.symbols.any { it is ManaSymbol.MonocolorHybrid }) {
+                val full = payPartialWithSpending(cost, spellContext, allowMonoHybridGeneric = true)
+                if (full.remainingCost.symbols.all { it is ManaSymbol.X }) return full
+            }
+            return payPartialWithSpending(cost, spellContext)
+        }
         var remaining = this
         val unpaidSymbols = mutableListOf<ManaSymbol>()
 
@@ -730,7 +830,7 @@ data class ManaPool(
                         unpaidSymbols.add(symbol)
                     }
                 }
-                is ManaSymbol.Hybrid -> {
+                is ManaSymbol.Hybrid, is ManaSymbol.HybridPhyrexian -> {
                     val beforeRemaining = remaining
                     val spent = remaining.trySpendColored(symbol.color1, spellContext)
                         ?: remaining.trySpendColored(symbol.color2, spellContext)
@@ -834,12 +934,100 @@ data class ManaPool(
         )
     }
 
+    /** Maximum matching of colored pips to actual mana colors; no subset enumeration.
+     * Augmenting paths reserve inflexible pips even when flexible ones appear first in the cost.
+     * Unpaid pips keep their ORIGINAL symbols, so a later land/payment pass retains every option.
+     */
+    private fun payPartialWithSpending(
+        cost: ManaCost,
+        context: SpellPaymentContext?,
+        allowMonoHybridGeneric: Boolean = false
+    ): PartialPaymentResult {
+        val symbols = cost.symbols.filter { it !is ManaSymbol.Generic && it !is ManaSymbol.X }
+        fun options(symbol: ManaSymbol): List<Color?> {
+            fun colors(color: Color): List<Color> = listOf(color) + spendingColors[color].orEmpty().filter { it != color }
+            return when (symbol) {
+                is ManaSymbol.Colored -> colors(symbol.color)
+                is ManaSymbol.Phyrexian -> colors(symbol.color)
+                is ManaSymbol.Hybrid, is ManaSymbol.HybridPhyrexian -> (colors(symbol.color1) + colors(symbol.color2)).distinct()
+                is ManaSymbol.MonocolorHybrid -> colors(symbol.color)
+                is ManaSymbol.Colorless -> listOf(null)
+                else -> emptyList()
+            }
+        }
+        val choices = symbols.map(::options)
+        val assigned = arrayOfNulls<Color>(symbols.size)
+        val matched = BooleanArray(symbols.size)
+        val capacities = (Color.entries.map { it as Color? } + null).associateWith { color ->
+            val plain = if (color == null) colorless else get(color)
+            plain + if (context == null) 0 else getEligibleRestrictedCount(color, context)
+        }
+        val occupants = capacities.keys.associateWith { mutableListOf<Int>() }
+        fun augment(pip: Int, visited: MutableSet<Color?>): Boolean {
+            for (color in choices[pip]) {
+                if (!visited.add(color)) continue
+                val used = occupants.getValue(color)
+                if (used.size < capacities.getValue(color)) {
+                    used.add(pip); assigned[pip] = color; matched[pip] = true
+                    return true
+                }
+                for (other in used.toList()) {
+                    if (augment(other, visited)) {
+                        used.remove(other); used.add(pip); assigned[pip] = color; matched[pip] = true
+                        return true
+                    }
+                }
+            }
+            return false
+        }
+        // A mono-hybrid can use generic instead; give strict pips first claim to colored mana.
+        val strictPips = symbols.indices.filter { symbols[it] !is ManaSymbol.MonocolorHybrid }
+            .sortedBy { choices[it].size }
+        for (i in strictPips + symbols.indices.filter { symbols[it] is ManaSymbol.MonocolorHybrid }) augment(i, mutableSetOf())
+        var pool = copy(spendingColors = emptyMap())
+        var spent = EMPTY
+        val unpaid = mutableListOf<ManaSymbol>()
+        val generic = cost.genericAmount
+        for (i in symbols.indices) {
+            if (matched[i]) {
+                val color = assigned[i]
+                pool = if (color == null) pool.trySpendColorless(context)!! else pool.trySpendColored(color, context)!!
+                spent = if (color == null) spent.addColorless() else spent.add(color)
+            }
+        }
+        val genericPartial = pool.payPartial(ManaCost(listOf(ManaSymbol.Generic(generic))), context)
+        pool = genericPartial.newPool
+        val genericSpent = genericPartial.manaSpent
+        spent = Color.entries.fold(spent) { acc, color -> acc.add(color, genericSpent.get(color)) }
+            .addColorless(genericSpent.colorless)
+        unpaid.addAll(genericPartial.remainingCost.symbols)
+        for (i in symbols.indices.filter { !matched[it] }) {
+            val symbol = symbols[i]
+            // Partial payment must preserve the colored alternative for the later source pass.
+            // Full-pool payment can select generic once that entire alternative is available.
+            if (allowMonoHybridGeneric && symbol is ManaSymbol.MonocolorHybrid) {
+                val fallback = ManaCost(listOf(ManaSymbol.Generic(symbol.generic)))
+                val paid = pool.payPartial(fallback, context)
+                if (paid.remainingCost.isEmpty()) {
+                    pool = paid.newPool
+                    spent = Color.entries.fold(spent) { acc, color -> acc.add(color, paid.manaSpent.get(color)) }
+                        .addColorless(paid.manaSpent.colorless)
+                    continue
+                }
+            }
+            unpaid.add(symbol)
+        }
+        unpaid.addAll(cost.symbols.filterIsInstance<ManaSymbol.X>())
+        return PartialPaymentResult(pool.copy(spendingColors = spendingColors), ManaCost(unpaid), spent)
+    }
+
     /**
      * Consume mana provenance tags proportional to [unrestrictedSpent] — the count of unrestricted
-     * floating mana pulled from the pool by a payment. Each subtype / source counter is reduced by
+     * floating mana pulled from the pool by a payment. Each subtype / source / card-type counter is reduced by
      * `min(count, unrestrictedSpent)` (the same greedy, proportional rule the legacy Treasure
      * counter used), and the consumed amounts are returned as a [SpentManaProvenance] so the caller
-     * can stamp the spell/event. Restricted mana never carries provenance, so it never contributes.
+     * can stamp the spell/event. Restricted units carry their own tag on each entry instead — see
+     * [SpentManaProvenance.ofConsumedRestricted].
      */
     fun consumeProvenance(unrestrictedSpent: Int): Pair<ManaPool, SpentManaProvenance> {
         if (unrestrictedSpent <= 0) {
@@ -847,6 +1035,7 @@ data class ManaPool(
         }
         val hasDetailedProvenance = manaBySubtype.isNotEmpty() ||
             manaBySource.isNotEmpty() ||
+            manaByCardType.isNotEmpty() ||
             manaBySourceAndColor.isNotEmpty() ||
             manaByFloatingBucket.isNotEmpty()
         val remainingUnrestricted = unrestrictedTotal - unrestrictedSpent
@@ -855,6 +1044,7 @@ data class ManaPool(
                 copy(
                     manaBySubtype = emptyMap(),
                     manaBySource = emptyMap(),
+                    manaByCardType = emptyMap(),
                     manaBySourceAndColor = emptyMap(),
                     manaByFloatingBucket = emptyMap(),
                     manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
@@ -868,24 +1058,14 @@ data class ManaPool(
             }
             return normalized to SpentManaProvenance()
         }
-        val consumedSubtypes = mutableMapOf<com.wingedsheep.sdk.core.Subtype, Int>()
-        val newSubtype = manaBySubtype.mapNotNull { (subtype, count) ->
-            val consumed = minOf(count, unrestrictedSpent)
-            if (consumed > 0) consumedSubtypes[subtype] = consumed
-            val remaining = count - consumed
-            if (remaining > 0) subtype to remaining else null
-        }.toMap()
-        val consumedSources = mutableSetOf<com.wingedsheep.sdk.model.EntityId>()
-        val newSource = manaBySource.mapNotNull { (sourceId, count) ->
-            val consumed = minOf(count, unrestrictedSpent)
-            if (consumed > 0) consumedSources.add(sourceId)
-            val remaining = count - consumed
-            if (remaining > 0) sourceId to remaining else null
-        }.toMap()
+        val (newSubtype, consumedSubtypes) = consumeCounts(manaBySubtype, unrestrictedSpent)
+        val (newSource, consumedSources) = consumeCounts(manaBySource, unrestrictedSpent)
+        val (newCardType, consumedCardTypes) = consumeCounts(manaByCardType, unrestrictedSpent)
         val updated = if (remainingUnrestricted <= 0) {
             copy(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
+                manaByCardType = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
                 manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
@@ -895,6 +1075,7 @@ data class ManaPool(
             copy(
                 manaBySubtype = newSubtype,
                 manaBySource = newSource,
+                manaByCardType = newCardType,
                 manaBySourceAndColor = emptyMap(),
                 manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
@@ -902,7 +1083,20 @@ data class ManaPool(
             )
         }
         return updated to
-            SpentManaProvenance(consumedSubtypes, consumedSources)
+            SpentManaProvenance(consumedSubtypes, consumedSources.keys, consumedCardTypes)
+    }
+
+    /** Reduce each counter by `min(count, spent)`; returns the remaining and the consumed counts. */
+    private fun <K> consumeCounts(counts: Map<K, Int>, spent: Int): Pair<Map<K, Int>, Map<K, Int>> {
+        if (counts.isEmpty()) return counts to emptyMap()
+        val consumed = mutableMapOf<K, Int>()
+        val remaining = mutableMapOf<K, Int>()
+        for ((key, count) in counts) {
+            val used = minOf(count, spent)
+            if (used > 0) consumed[key] = used
+            if (count - used > 0) remaining[key] = count - used
+        }
+        return remaining to consumed
     }
 
     /**
@@ -914,6 +1108,7 @@ data class ManaPool(
     internal fun withProvenanceFrom(provenancePool: ManaPool): ManaPool = copy(
         manaBySubtype = provenancePool.manaBySubtype,
         manaBySource = provenancePool.manaBySource,
+        manaByCardType = provenancePool.manaByCardType,
         manaBySourceAndColor = provenancePool.manaBySourceAndColor,
         manaByFloatingBucket = provenancePool.manaByFloatingBucket,
         manaProvenanceCompleteness = provenancePool.manaProvenanceCompleteness,
@@ -1030,6 +1225,11 @@ data class ManaPool(
             PaymentManaColor.COLORLESS to colorless - (spentByColor[PaymentManaColor.COLORLESS] ?: 0),
         )
         if (remainingColorCounts.values.any { it < 0 }) return null
+        // Card types are not part of the exact bucket key; they follow the aggregate greedy rule.
+        val (remainingCardTypes, spentCardTypes) = consumeCounts(
+            manaByCardType,
+            spentByBucket.values.sum(),
+        )
 
         val updated = copy(
             white = remainingColorCounts.getValue(PaymentManaColor.WHITE),
@@ -1040,6 +1240,7 @@ data class ManaPool(
             colorless = remainingColorCounts.getValue(PaymentManaColor.COLORLESS),
             manaBySubtype = remainingBySubtype.toMap(),
             manaBySource = remainingBySource.toMap(),
+            manaByCardType = if (remainingBuckets.isEmpty()) emptyMap() else remainingCardTypes,
             manaBySourceAndColor = remainingBySourceAndColor.mapValues { (_, colors) -> colors.toMap() },
             manaByFloatingBucket = remainingBuckets,
             manaProvenanceCompleteness = if (remainingBuckets.isEmpty()) {
@@ -1052,6 +1253,7 @@ data class ManaPool(
         return updated to SpentManaProvenance(
             bySubtype = spentBySubtype.toMap(),
             sourceIds = spentSourceIds,
+            byCardType = spentCardTypes,
         )
     }
 
@@ -1121,10 +1323,13 @@ data class ManaPool(
         } else {
             candidate.sourceSubtypes.associateWith { candidate.total - spent }
         }
+        // Card types are not part of the certified candidate; they follow the aggregate greedy rule.
+        val (remainingCardTypes, spentCardTypes) = consumeCounts(manaByCardType, spent)
 
         return afterSpend.copy(
             manaBySource = remainingSources,
             manaBySubtype = remainingSubtypes,
+            manaByCardType = if (remainingSources.isEmpty()) emptyMap() else remainingCardTypes,
             manaBySourceAndColor = remainingSources.mapValues { (_, amount) ->
                 mapOf(candidate.poolColor to amount)
             },
@@ -1143,6 +1348,7 @@ data class ManaPool(
                     .associateWith { spent }
             },
             sourceIds = spentBySource.keys,
+            byCardType = spentCardTypes,
         )
     }
 
@@ -1209,9 +1415,12 @@ data class ManaPool(
             candidate.sourceSubtypes.associateWith { remainingByKey.values.sum() }
         }
         val spent = spentBySourceAndColor.values.sum()
+        // Card types are not part of the certified candidate; they follow the aggregate greedy rule.
+        val (remainingCardTypes, spentCardTypes) = consumeCounts(manaByCardType, spent)
         return afterSpend.copy(
             manaBySource = remainingBySource,
             manaBySubtype = remainingSubtypes,
+            manaByCardType = if (remainingByKey.isEmpty()) emptyMap() else remainingCardTypes,
             manaBySourceAndColor = remainingDetail,
             manaProvenanceCompleteness = if (remainingByKey.isEmpty()) {
                 ManaProvenanceCompleteness.UNKNOWN
@@ -1224,6 +1433,7 @@ data class ManaPool(
                 .sortedBy { it.value }
                 .associateWith { spent },
             sourceIds = spentBySourceAndColor.keys.map { it.sourceId }.toSet(),
+            byCardType = spentCardTypes,
         )
     }
 

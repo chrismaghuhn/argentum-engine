@@ -3,6 +3,7 @@ package com.wingedsheep.engine.handlers
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.UnsupportedPathFailure
+import com.wingedsheep.engine.mechanics.targeting.HexproofFromRules
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
@@ -16,6 +17,7 @@ import com.wingedsheep.engine.mechanics.ControllerGrants
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.mechanics.targeting.ControllerHexproof
 import com.wingedsheep.engine.mechanics.targeting.ControllerShroud
+import com.wingedsheep.engine.mechanics.targeting.SourceKindProtection
 import com.wingedsheep.engine.mechanics.targeting.PlayerTargetRestriction
 import com.wingedsheep.engine.mechanics.targeting.StackObjectTargeting
 import com.wingedsheep.sdk.core.Keyword
@@ -29,7 +31,8 @@ import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
 import com.wingedsheep.sdk.scripting.predicates.StatePredicate
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.*
-import com.wingedsheep.sdk.scripting.values.EntityReference
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Identifies the type of source that is doing the targeting.
@@ -39,8 +42,10 @@ import com.wingedsheep.sdk.scripting.values.EntityReference
 enum class TargetingSourceType {
     /** The source is a spell (instant/sorcery/aura/etc.) */
     SPELL,
-    /** The source is an activated or triggered ability */
-    ABILITY,
+    /** The source is an activated ability (including loyalty and mana abilities that target) */
+    ACTIVATED_ABILITY,
+    /** The source is a triggered ability, reflexive ones included */
+    TRIGGERED_ABILITY,
     /** Unknown or default — no source-type-based restrictions apply */
     ANY
 }
@@ -52,9 +57,9 @@ enum class TargetingSourceType {
  * and returns a list of valid target EntityIds.
  */
 class TargetFinder(
+    /** The engine's evaluator — also what a collaborator built over this finder evaluates with. */
+    internal val predicateEvaluator: PredicateEvaluator
 ) {
-    private val predicateEvaluator = PredicateEvaluator()
-
     private data class RequiredPredicateContext(
         val controllerId: Boolean = false,
         val sourceId: Boolean = false,
@@ -81,6 +86,12 @@ class TargetFinder(
         val targetIndexes: Set<Int> = emptySet(),
         val controllerTargetIndexes: Set<Int> = emptySet(),
         val namedTargets: Set<String> = emptySet(),
+        /** Chosen targets (of any kind) an entity reference reads by position — `ContextTarget(i)`. */
+        val entityTargetIndexes: Set<Int> = emptySet(),
+        /** Chosen targets (of any kind) an entity reference reads by name — `BoundVariable(name)`. */
+        val entityNamedTargets: Set<String> = emptySet(),
+        /** The object an enclosing `ForEach` loop is visiting — `IterationEntity`. */
+        val iterationEntityId: Boolean = false,
         val unsupported: Boolean = false,
     ) {
         operator fun plus(other: RequiredPredicateContext): RequiredPredicateContext =
@@ -110,6 +121,9 @@ class TargetFinder(
                 targetIndexes = targetIndexes + other.targetIndexes,
                 controllerTargetIndexes = controllerTargetIndexes + other.controllerTargetIndexes,
                 namedTargets = namedTargets + other.namedTargets,
+                entityTargetIndexes = entityTargetIndexes + other.entityTargetIndexes,
+                entityNamedTargets = entityNamedTargets + other.entityNamedTargets,
+                iterationEntityId = iterationEntityId || other.iterationEntityId,
                 unsupported = unsupported || other.unsupported,
             )
 
@@ -139,11 +153,20 @@ class TargetFinder(
             if (this.controllerId && context.controllerId != controllerId) return false
             if (this.sourceId && (context.sourceId == null || state.getEntity(context.sourceId) == null)) return false
             if (this.triggeringEntityId && (context.triggeringEntityId == null || state.getEntity(context.triggeringEntityId) == null)) return false
-            if (triggeringPlayerId && context.triggeringPlayerId == null) return false
+            // Mirrors PredicateEvaluator's PlayerRef resolution: the trigger's player slot, else a
+            // triggering entity that is itself a player (a damaged player, Balefire Dragon).
+            if (triggeringPlayerId && context.triggeringPlayerId == null &&
+                context.triggeringEntityId?.takeIf { it in state.turnOrder } == null
+            ) return false
             if (triggeringPlayerOrEntityId &&
                 context.triggeringPlayerId == null && context.triggeringEntityId == null
             ) return false
-            if (defendingPlayerId && context.defendingPlayerId == null) return false
+            // The captured defender, else the one the source is attacking (or was, as it left
+            // combat) — the same two readings PredicateEvaluator resolves the reference through.
+            if (defendingPlayerId && context.defendingPlayerId == null &&
+                com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
+                    .defendingPlayerOfAttacker(state, context.sourceId) == null
+            ) return false
             if (targetPlayerId && context.targetPlayerId == null) return false
             if (targetOpponentId && context.targetOpponentId == null) return false
             if (granterId && context.granterId == null) return false
@@ -175,8 +198,11 @@ class TargetFinder(
                     ) == null
                 }) return false
             if (namedTargets.any { name ->
-                    (context.namedTargets[name] as? ChosenTarget.Player) == null
+                    (context.namedTargets.boundTarget(name) as? ChosenTarget.Player) == null
                 }) return false
+            if (entityTargetIndexes.any { index -> context.targets.getOrNull(index) == null }) return false
+            if (entityNamedTargets.any { name -> context.namedTargets.boundTarget(name) == null }) return false
+            if (iterationEntityId && context.iterationEntityId == null) return false
             if (storedCollections.any { (name, indices) ->
                     val collection = context.storedCollections[name] ?: return@any true
                     indices.any { index -> collection.getOrNull(index) == null }
@@ -234,7 +260,7 @@ class TargetFinder(
      * pipeline-derived fields (storedCollections, chosenValues, xValue, …) carried by
      * [pipelineContext]. Keeps the always-present `controllerId`/`sourceId`/`ownerId` from
      * the call site while letting resolution-time filters see the resolving effect's pipeline
-     * state — needed for "power <= the amassed Army's power" (EntityReference.AmassedArmy).
+     * state — needed for "power <= the amassed Army's power" (EffectTarget.AmassedArmy).
      */
     private fun targetingContext(
         controllerId: EntityId,
@@ -279,7 +305,7 @@ class TargetFinder(
          * Pipeline-derived predicate context (storedCollections, chosenValues, xValue, …) from the
          * resolving effect. Threaded so a target filter can compare candidates against a
          * resolution-time pipeline value — e.g. "power <= the amassed Army's power" reads
-         * [EntityReference.AmassedArmy] out of `pipelineContext.storedCollections`. Null for
+         * [EffectTarget.AmassedArmy] out of `pipelineContext.storedCollections`. Null for
          * cast-time targeting where no pipeline state exists yet.
          */
         pipelineContext: PredicateContext? = null,
@@ -309,7 +335,14 @@ class TargetFinder(
         return when (requirement) {
             is TargetPlayer -> findPlayerTargets(state, requirement, controllerId, sourceId, ignoreTargetingRestrictions)
             is TargetOpponent -> findOpponentTargets(state, requirement, controllerId, sourceId, ignoreTargetingRestrictions)
-            is AnyTarget -> findAnyTargets(state, controllerId, sourceId, ignoreTargetingRestrictions, targetingSourceType)
+            is AnyTarget -> {
+                val candidates = findAnyTargets(state, controllerId, sourceId, ignoreTargetingRestrictions, targetingSourceType)
+                if (requirement.filter == GameObjectFilter.Any) candidates else {
+                    val projected = state.projectedState
+                    val context = targetingContext(controllerId, sourceId, triggeringEntityId = triggeringEntityId, pipelineContext = pipelineContext)
+                    candidates.filter { predicateEvaluator.matches(state, projected, it, requirement.filter, context) }
+                }
+            }
             is TargetCreatureOrPlayer -> findCreatureOrPlayerTargets(
                 state,
                 controllerId,
@@ -375,7 +408,9 @@ class TargetFinder(
                     requireAuthoritativeContext,
                 )
                 val excludeId = requirement.excludeSourceId
-                    ?: if (requirement.excludeAttachedCreature) {
+                    ?: if (!requirement.excludeSource) {
+                        null
+                    } else if (requirement.excludeAttachedCreature) {
                         sourceId?.let { state.getEntity(it)?.get<AttachedToComponent>()?.targetId }
                     } else {
                         sourceId
@@ -392,8 +427,10 @@ class TargetFinder(
         is TargetPermanentOrPlayer -> permanentFilter.clauses().fold(RequiredPredicateContexts.noBranch()) { required, clause ->
             required.or(clause.baseFilter.requiredPredicateContexts())
         }
-        is TargetSpellOrPermanent -> permanentFilter?.requiredPredicateContexts()
-            ?: RequiredPredicateContexts.unconstrained()
+        is TargetSpellOrPermanent -> (permanentFilter?.requiredPredicateContexts()
+            ?: RequiredPredicateContexts.unconstrained())
+            .and(spellFilter?.requiredPredicateContexts() ?: RequiredPredicateContexts.unconstrained())
+        is AnyTarget -> filter.requiredPredicateContexts()
         is TargetOther -> baseRequirement.requiredPredicateContexts()
         else -> RequiredPredicateContexts.unconstrained()
     }
@@ -498,15 +535,15 @@ class TargetFinder(
                 targetPlayerId = true,
                 pipeline = true,
             )))
-            // The PlayerRef resolver reads triggeringPlayerId exactly; the entity fallback belongs
-            // only to the direct ControlledBy/OwnedByTriggeringPlayer predicates below.
+            // The PlayerRef resolver reads triggeringPlayerId, falling back only to a triggering
+            // entity that is a player; the looser player-or-entity fact belongs to the direct
+            // ControlledBy/OwnedByTriggeringPlayer predicates above.
             Player.TriggeringPlayer -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
                 triggeringPlayerId = true,
-                pipeline = true,
             )))
+            // The captured defender (from the pipeline) or the source's own attack.
             Player.DefendingPlayer -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
                 defendingPlayerId = true,
-                pipeline = true,
             )))
             else -> RequiredPredicateContexts(listOf(RequiredPredicateContext(unsupported = true, pipeline = true)))
         }
@@ -514,7 +551,13 @@ class TargetFinder(
     }
 
     private fun StatePredicate.requiredPredicateContexts(): RequiredPredicateContexts = when (this) {
-        StatePredicate.IsAttackingAnOpponent -> RequiredPredicateContexts(listOf(RequiredPredicateContext(controllerId = true)))
+        StatePredicate.IsAttackingAnOpponent,
+        StatePredicate.IsAttackingYouOrYourPlaneswalkers ->
+            RequiredPredicateContexts(listOf(RequiredPredicateContext(controllerId = true)))
+        StatePredicate.IsAttackingEnchantedPlayer,
+        StatePredicate.IsCombatPairedWithSource,
+        StatePredicate.DealtDamageToSourceControllerThisTurn,
+        StatePredicate.WasDealtDamageBySourceThisTurn,
         StatePredicate.InSameBandAsSource,
         StatePredicate.IsBlockingSource,
         StatePredicate.CreatedBySource,
@@ -528,6 +571,9 @@ class TargetFinder(
         StatePredicate.IsAttachedToSource,
         StatePredicate.ExiledWithSource -> RequiredPredicateContexts(listOf(RequiredPredicateContext(sourceId = true)))
         StatePredicate.IsGrantingPermanent -> RequiredPredicateContexts(listOf(RequiredPredicateContext(granterId = true)))
+        StatePredicate.IsBlockingIterationEntity ->
+            RequiredPredicateContexts(listOf(RequiredPredicateContext(pipeline = true, iterationEntityId = true)))
+        is StatePredicate.ControllerControls -> filter.requiredPredicateContexts()
         is StatePredicate.IsEnchantedByAura -> auraController.requiredPredicateContexts()
         is StatePredicate.AttachedTo -> filter.requiredPredicateContexts()
         is StatePredicate.Or -> predicates.fold(RequiredPredicateContexts.noBranch()) { required, predicate ->
@@ -606,6 +652,10 @@ class TargetFinder(
         )))
         is CardPredicate.SharesCreatureTypeWith -> entity.requiredPredicateContexts()
         is CardPredicate.SharesColorWith -> entity.requiredPredicateContexts()
+        is CardPredicate.SharesCardTypeWith -> entity.requiredPredicateContexts()
+        is CardPredicate.SharesManaValueWith -> entity.requiredPredicateContexts()
+        is CardPredicate.SharesNameWith -> entity.requiredPredicateContexts()
+        is CardPredicate.CouldEnchant -> reference.requiredPredicateContexts()
         is CardPredicate.SharesColorWithPermanentYouControl ->
             RequiredPredicateContexts(listOf(RequiredPredicateContext(controllerId = true)))
                 .and(filter.requiredPredicateContexts())
@@ -630,29 +680,57 @@ class TargetFinder(
         else -> RequiredPredicateContexts.unconstrained()
     }
 
-    private fun EntityReference.requiredPredicateContexts(): RequiredPredicateContexts = when (this) {
-        EntityReference.Source -> RequiredPredicateContexts(listOf(RequiredPredicateContext(sourceId = true)))
-        EntityReference.Triggering -> RequiredPredicateContexts(listOf(RequiredPredicateContext(triggeringEntityId = true)))
-        EntityReference.DamageSource -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
+    /**
+     * The context facts a value read of this reference needs inside a predicate — it resolves
+     * through `TargetResolutionUtils.resolveEntity` over [PredicateContext.toEffectContext], so a
+     * fact the predicate context can't supply leaves the reference unresolved and the predicate
+     * silently false. References only a resolution context carries (cost-paid permanents, the
+     * targeting stack object, …) are unsupported here: fail closed rather than guess.
+     */
+    private fun EffectTarget.SingleEntity.requiredPredicateContexts(): RequiredPredicateContexts = when (this) {
+        EffectTarget.Self -> RequiredPredicateContexts(listOf(RequiredPredicateContext(sourceId = true)))
+        EffectTarget.TriggeringEntity -> RequiredPredicateContexts(listOf(RequiredPredicateContext(triggeringEntityId = true)))
+        EffectTarget.DamageSource -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
             pipeline = true,
             damageSourceId = true,
         )))
-        EntityReference.DamageRecipient -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
+        EffectTarget.DamageRecipient -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
             pipeline = true,
             damageRecipientId = true,
         )))
-        EntityReference.AffectedEntity -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
+        EffectTarget.AffectedEntity -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
             pipeline = true,
             affectedEntityId = true,
         )))
-        is EntityReference.FromCostStorage -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
+        is EffectTarget.PipelineTarget -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
             pipeline = true,
             storedCollections = mapOf(collectionName to setOf(index)),
         )))
-        EntityReference.AmassedArmy -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
+        EffectTarget.AmassedArmy -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
             pipeline = true,
-            storedCollections = mapOf(EntityReference.AmassedArmy.STORAGE_KEY to setOf(0)),
+            storedCollections = mapOf(EffectTarget.AmassedArmy.STORAGE_KEY to setOf(0)),
         )))
+        EffectTarget.GrantingSource -> RequiredPredicateContexts(listOf(RequiredPredicateContext(granterId = true)))
+        // Anchored to the source permanent (its attachment, its chosen creature, its linked-exile
+        // pile): resolvable from the game state whenever the source is.
+        EffectTarget.EnchantedCreature,
+        EffectTarget.EquippedCreature,
+        EffectTarget.EnchantedPermanent,
+        EffectTarget.ChosenCreature,
+        is EffectTarget.LinkedExiledCard -> RequiredPredicateContexts(listOf(RequiredPredicateContext(sourceId = true)))
+        is EffectTarget.ContextTarget -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
+            pipeline = true,
+            entityTargetIndexes = setOf(index),
+        )))
+        is EffectTarget.BoundVariable -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
+            pipeline = true,
+            entityNamedTargets = setOf(name),
+        )))
+        EffectTarget.IterationEntity -> RequiredPredicateContexts(listOf(RequiredPredicateContext(
+            pipeline = true,
+            iterationEntityId = true,
+        )))
+        is EffectTarget.SpecificEntity -> RequiredPredicateContexts.unconstrained()
         else -> RequiredPredicateContexts(listOf(RequiredPredicateContext(unsupported = true, pipeline = true)))
     }
 
@@ -667,7 +745,7 @@ class TargetFinder(
             state.hasEntity(playerId) &&
                 (ignoreTargetingRestrictions || (!playerHasShroud(state, playerId) &&
                     !playerHasHexproofAgainst(state, playerId, controllerId))) &&
-                PlayerTargetRestriction.isSatisfied(state, requirement.restriction, playerId, controllerId, sourceId)
+                PlayerTargetRestriction.isSatisfied(state, requirement.restriction, playerId, controllerId, sourceId, predicateEvaluator = predicateEvaluator)
         }
     }
 
@@ -680,7 +758,7 @@ class TargetFinder(
     ): List<EntityId> {
         return state.turnOrder.filter { it != controllerId && state.hasEntity(it) &&
             (ignoreTargetingRestrictions || (!playerHasShroud(state, it) && !playerHasHexproof(state, it))) &&
-            PlayerTargetRestriction.isSatisfied(state, requirement.restriction, it, controllerId, sourceId) }
+            PlayerTargetRestriction.isSatisfied(state, requirement.restriction, it, controllerId, sourceId, predicateEvaluator = predicateEvaluator) }
     }
 
     /**
@@ -696,6 +774,13 @@ class TargetFinder(
         targetingSourceType: TargetingSourceType,
         sourceId: EntityId? = null
     ): Boolean {
+        // Protection / hexproof from a kind of source — spells, permanents cast this turn,
+        // activated or triggered abilities. Protection isn't controller-gated; the helper gates
+        // the hexproof half on the target's controller itself.
+        if (SourceKindProtection.targetingError(state, entityId, sourceId, controllerId, targetingSourceType, predicateEvaluator) != null) {
+            return true
+        }
+
         // Source-card-type restriction (Artifact Ward) is checked first because, unlike the
         // opponent-ability restriction, it is NOT controller-gated: a matching source can't target
         // the warded creature even if the same player controls both. It still only blocks abilities
@@ -710,7 +795,7 @@ class TargetFinder(
         // For ABILITY source type, always blocked. For ANY (unknown), conservatively block since
         // we don't know the source type. Read through ControllerGrants so a gated form of the
         // ability switches off with its condition instead of sticking on.
-        return ControllerGrants.isActiveOn<CantBeTargetedByOpponentAbilitiesComponent>(state, entityId)
+        return ControllerGrants.isActiveOn<CantBeTargetedByOpponentAbilitiesComponent>(state, entityId, predicateEvaluator = predicateEvaluator)
     }
 
     private fun findOpponentOrPlaneswalkerTargets(
@@ -926,7 +1011,7 @@ class TargetFinder(
         targets.addAll(
             findPermanentTargets(
                 state,
-                TargetCreature(),
+                TargetObject(filter = TargetFilter.Creature),
                 controllerId,
                 sourceId,
                 ignoreTargetingRestrictions = ignoreTargetingRestrictions,
@@ -958,7 +1043,8 @@ class TargetFinder(
         // Add all players (excluding those with shroud or hexproof from opponents)
         targets.addAll(state.turnOrder.filter { state.hasEntity(it) &&
             (ignoreTargetingRestrictions || (!playerHasShroud(state, it) &&
-                !playerHasHexproofAgainst(state, it, controllerId))) })
+                !playerHasHexproofAgainst(state, it, controllerId))) &&
+            (!requirement.opponentsOnly || state.isOpponentOf(it, controllerId)) })
 
         // Add all permanents matching the filter
         targets.addAll(
@@ -1138,6 +1224,12 @@ class TargetFinder(
     ): List<EntityId> {
         val projected = state.projectedState
         val targets = mutableListOf<EntityId>()
+        val predicateContext = targetingContext(
+            controllerId = controllerId,
+            sourceId = sourceId,
+            triggeringEntityId = triggeringEntityId,
+            pipelineContext = pipelineContext,
+        )
         val permanentFilter = requirement.permanentFilter
 
         // Add all permanents on the battlefield matching the optional filter
@@ -1155,18 +1247,7 @@ class TargetFinder(
             }
 
             if (permanentFilter != null &&
-                !predicateEvaluator.matches(
-                    state,
-                    projected,
-                    entityId,
-                    permanentFilter,
-                    targetingContext(
-                        controllerId = controllerId,
-                        sourceId = sourceId,
-                        triggeringEntityId = triggeringEntityId,
-                        pipelineContext = pipelineContext,
-                    ),
-                )
+                !predicateEvaluator.matches(state, projected, entityId, permanentFilter, predicateContext)
             ) continue
 
             targets.add(entityId)
@@ -1174,7 +1255,16 @@ class TargetFinder(
 
         // Add all spells on the stack — only actual spells (CR 112.1), never abilities
         // on the stack (CR 113.3b/c, 113.7a), consistent with findSpellTargets above.
-        targets.addAll(state.stack.filter { spellId -> state.isSpellOnStack(spellId) })
+        // The stack half carries its own filter (Divide by Zero: "with mana value 1 or
+        // greater"), independent of the battlefield half's.
+        val spellFilter = requirement.spellFilter
+        targets.addAll(
+            state.stack.filter { spellId ->
+                state.isSpellOnStack(spellId) &&
+                    (spellFilter == null ||
+                        predicateEvaluator.matches(state, projected, spellId, spellFilter, predicateContext))
+            }
+        )
 
         return targets
     }
@@ -1184,7 +1274,7 @@ class TargetFinder(
      * or Gilded Light's "You gain shroud until end of turn").
      */
     private fun playerHasShroud(state: GameState, playerId: EntityId): Boolean =
-        ControllerShroud.appliesTo(state, playerId)
+        ControllerShroud.appliesTo(state, playerId, predicateEvaluator = predicateEvaluator)
 
     /**
      * Check if a player has hexproof (from a permanent like Shalai, Voice of Plenty).
@@ -1192,7 +1282,7 @@ class TargetFinder(
      * target themselves.
      */
     private fun playerHasHexproof(state: GameState, playerId: EntityId): Boolean =
-        ControllerHexproof.appliesTo(state, playerId)
+        ControllerHexproof.appliesTo(state, playerId, predicateEvaluator = predicateEvaluator)
 
     /**
      * Check if a player has hexproof against a specific controller.
@@ -1223,21 +1313,16 @@ class TargetFinder(
         if (entityController == controllerId || sourceId == null) return false
         // Try projected colors first (for permanents on the battlefield),
         // then fall back to base CardComponent colors (for spells in hand/on stack)
-        var sourceColors = projected.getColors(sourceId)
-        if (sourceColors.isEmpty()) {
-            sourceColors = state.getEntity(sourceId)?.get<CardComponent>()
-                ?.colors?.map { it.name }?.toSet() ?: emptySet()
+        val sourceColors = projected.getColors(sourceId).ifEmpty {
+            state.getEntity(sourceId)?.get<CardComponent>()?.colors?.map { it.name }?.toSet().orEmpty()
         }
-        if (sourceColors.any { colorName -> projected.hasKeyword(entityId, "HEXPROOF_FROM_$colorName") }) {
-            return true
-        }
-        // Hexproof from monocolored: a source with exactly one color can't target (CR 105.2).
-        if (sourceColors.size == 1 && projected.hasKeyword(entityId, "HEXPROOF_FROM_MONOCOLORED")) {
-            return true
-        }
-        return SourceTypeTargeting.sourceCardTypes(state, sourceId).any { cardType ->
-            projected.hasKeyword(entityId, "HEXPROOF_FROM_CARDTYPE_${cardType.uppercase()}")
-        }
+        return HexproofFromRules.blockingQuality(
+            projected,
+            entityId,
+            sourceColors = sourceColors,
+            sourceCardTypes = SourceTypeTargeting.sourceCardTypes(state, sourceId),
+            sourceKnown = state.getEntity(sourceId) != null
+        ) != null
     }
 
     /**

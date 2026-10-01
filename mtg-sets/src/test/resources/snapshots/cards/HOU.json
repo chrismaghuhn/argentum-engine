@@ -17,7 +17,7 @@
                         },
                         "target": {
                             "type": "BoundVariable",
-                            "name": "target"
+                            "name": "t0"
                         }
                     },
                     "targetRequirements": [
@@ -26,7 +26,7 @@
                             "filter": {
                                 "baseFilter": "creature"
                             },
-                            "id": "target"
+                            "id": "t0"
                         }
                     ],
                     "description": "Abrade deals 3 damage to target creature"
@@ -36,7 +36,7 @@
                         "type": "MoveToZone",
                         "target": {
                             "type": "BoundVariable",
-                            "name": "target"
+                            "name": "t1"
                         },
                         "destination": "Graveyard",
                         "byDestruction": true
@@ -47,7 +47,7 @@
                             "filter": {
                                 "baseFilter": "artifact"
                             },
-                            "id": "target"
+                            "id": "t1"
                         }
                     ],
                     "description": "Destroy target artifact"
@@ -88,7 +88,7 @@
                     "body": {
                         "type": "GrantKeyword",
                         "keyword": "TRAMPLE",
-                        "target": "Self"
+                        "target": "IterationEntity"
                     }
                 },
                 {
@@ -147,7 +147,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Desert of the Mindful:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -197,6 +197,47 @@
     ]
 }
 
+// Feral Prowler
+{
+    "name": "Feral Prowler",
+    "manaCost": "{1}{G}",
+    "typeLine": "Creature — Cat",
+    "oracleText": "When this creature dies, draw a card.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 3
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Feral Prowler:1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "from": "Battlefield",
+                    "to": "Graveyard"
+                },
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                "descriptionOverride": "When this creature dies, draw a card."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "115",
+        "artist": "Ben Wootten",
+        "flavorText": "Once favored companions, many cats were left to fend for themselves.",
+        "imageUri": "https://cards.scryfall.io/normal/front/b/a/ba0431ad-185a-4917-b994-e58dd9850f5e.jpg?1783936020"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
 // Firebrand Archer
 {
     "name": "Firebrand Archer",
@@ -210,7 +251,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Firebrand Archer:1",
                 "trigger": {
                     "type": "SpellCastEvent",
                     "spellFilter": {
@@ -242,6 +283,62 @@
     },
     "colorIdentityOverride": [
         "RED"
+    ]
+}
+
+// Gift of Strength
+{
+    "name": "Gift of Strength",
+    "manaCost": "{1}{G}",
+    "typeLine": "Instant",
+    "oracleText": "Target creature gets +3/+3 and gains reach until end of turn.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "ModifyStats",
+                    "powerModifier": {
+                        "type": "Fixed",
+                        "amount": 3
+                    },
+                    "toughnessModifier": {
+                        "type": "Fixed",
+                        "amount": 3
+                    },
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    }
+                },
+                {
+                    "type": "GrantKeyword",
+                    "keyword": "REACH",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    }
+                }
+            ]
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "creature"
+                },
+                "id": "t0"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "117",
+        "artist": "Kieran Yanner",
+        "flavorText": "\"What greater testament can there be to Rhonas's lessons?\"",
+        "imageUri": "https://cards.scryfall.io/normal/front/3/b/3b779620-6bac-445e-a6fe-6d770c0a9c70.jpg"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
     ]
 }
 
@@ -293,12 +390,12 @@
                             "type": "Fixed",
                             "amount": 2
                         },
-                        "target": "Self"
+                        "target": "IterationEntity"
                     },
                     {
                         "type": "GrantKeyword",
                         "keyword": "TRAMPLE",
-                        "target": "Self"
+                        "target": "IterationEntity"
                     }
                 ]
             }
@@ -335,7 +432,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Quarry Beetle:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -347,11 +444,12 @@
                         "type": "MoveToZone",
                         "target": {
                             "type": "BoundVariable",
-                            "name": "target"
+                            "name": "t0"
                         },
                         "destination": "Battlefield",
                         "fromZone": "Graveyard"
-                    }
+                    },
+                    "descriptionOverride": "When this creature enters, you may return target land card from your graveyard to the battlefield."
                 },
                 "targetRequirement": {
                     "type": "TargetObject",
@@ -359,7 +457,7 @@
                         "baseFilter": "land own:you",
                         "zone": "Graveyard"
                     },
-                    "id": "target"
+                    "id": "t0"
                 },
                 "descriptionOverride": "When this creature enters, you may return target land card from your graveyard to the battlefield."
             }

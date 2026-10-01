@@ -25,7 +25,8 @@ import java.security.MessageDigest
  * carrying [com.wingedsheep.engine.core.PaymentStrategy.ExplicitV2] cannot be mislabeled as v3.
  * Version 5 changes the persisted action carrier to ExplicitV3, and version 6 adds the pending
  * PaymentPlanV3 decision-response carrier. Both retain the v4 state-digest semantics; their new
- * payment programs are already represented by the replayed input stream.
+ * payment programs are already represented by the replayed input stream. Version 7 (upstream sync 05)
+ * shuffles deck entity ids and team seats at game setup; it keeps the v4 digest.
  */
 object ReplayFingerprint {
 
@@ -36,7 +37,7 @@ object ReplayFingerprint {
     fun of(state: GameState, replayVersion: Int): String = when (replayVersion) {
         1, 2 -> legacy(state)
         3 -> v3(state)
-        4, 5, 6 -> v4(state)
+        4, 5, 6, 7 -> v4(state)
         else -> throw UnsupportedReplayVersionException(replayVersion, CompactReplay.CURRENT_VERSION)
     }
 
@@ -64,7 +65,8 @@ object ReplayFingerprint {
 
         // Life totals in turn order — the single most player-visible number a divergence moves.
         for (playerId in state.turnOrder) {
-            val life = state.getEntity(playerId)?.get<LifeTotalComponent>()?.life ?: 0
+            // The resolver, not the raw component: a 2HG team's life lives on one member (CR 810.9a).
+            val life = if (state.getEntity(playerId)?.get<LifeTotalComponent>() != null) state.lifeTotal(playerId) else 0
             sb.append(playerId.value).append('=').append(life).append(',')
         }
 

@@ -3,9 +3,8 @@ package com.wingedsheep.engine.scenarios
 import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.PaymentStrategy
-import com.wingedsheep.engine.handlers.ConditionEvaluator
+import com.wingedsheep.engine.event.TriggerContext
 import com.wingedsheep.engine.handlers.EffectContext
-import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.LastKnownPermanentComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -26,6 +25,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /** Focused behavioral evidence for Guardian Project's Oracle clauses. */
 class GuardianProjectScenarioTest : FunSpec({
@@ -45,7 +45,7 @@ class GuardianProjectScenarioTest : FunSpec({
     ) {
         val creature = driver.putCardInHand(player, name)
         driver.giveMana(player, Color.GREEN, amount = 2)
-        driver.castSpell(player, creature).isSuccess shouldBe true
+        driver.castSpell(player, creature).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -62,7 +62,7 @@ class GuardianProjectScenarioTest : FunSpec({
                 castFaceDown = true,
                 paymentStrategy = PaymentStrategy.FromPool,
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.bothPass()
     }
@@ -208,7 +208,7 @@ class GuardianProjectScenarioTest : FunSpec({
         val existing = driver.putCreatureOnBattlefield(player, "Grizzly Bears")
         val aura = driver.putCardInHand(player, "Witness Protection")
         driver.giveMana(player, Color.BLUE)
-        driver.castSpell(player, aura, targets = listOf(existing)).isSuccess shouldBe true
+        driver.castSpell(player, aura, targets = listOf(existing)).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.state.projectedState.getName(existing) shouldBe "Legitimate Businessperson"
@@ -226,7 +226,7 @@ class GuardianProjectScenarioTest : FunSpec({
         val existing = driver.putCreatureOnBattlefield(player, "Grizzly Bears")
         val existingAura = driver.putCardInHand(player, "Witness Protection")
         driver.giveMana(player, Color.BLUE)
-        driver.castSpell(player, existingAura, targets = listOf(existing)).isSuccess shouldBe true
+        driver.castSpell(player, existingAura, targets = listOf(existing)).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val handBeforeTrigger = driver.getHandSize(player)
@@ -236,16 +236,16 @@ class GuardianProjectScenarioTest : FunSpec({
                 driver.state.getEntity(entityId)?.get<CardComponent>()?.name == "Grizzly Bears"
         }
 
-        val exiled = ZoneTransitionService.moveToZone(driver.state, triggeringCreature, Zone.EXILE).state
-        val returned = ZoneTransitionService.moveToZone(exiled, triggeringCreature, Zone.BATTLEFIELD).state
+        val exiled = driver.zones.moveToZone(driver.state, triggeringCreature, Zone.EXILE).state
+        val returned = driver.zones.moveToZone(exiled, triggeringCreature, Zone.BATTLEFIELD).state
         val returnedFaceDown = returned.updateEntity(triggeringCreature) { it.with(FaceDownComponent) }
         returnedFaceDown.projectedState.isFaceDown(triggeringCreature) shouldBe true
-        val secondLeave = ZoneTransitionService.moveToZone(
+        val secondLeave = driver.zones.moveToZone(
             returnedFaceDown,
             triggeringCreature,
             Zone.EXILE,
         ).state
-        val existingAuraRemoved = ZoneTransitionService.moveToZone(
+        val existingAuraRemoved = driver.zones.moveToZone(
             secondLeave,
             existingAura,
             Zone.GRAVEYARD,
@@ -264,7 +264,7 @@ class GuardianProjectScenarioTest : FunSpec({
         val player = driver.player1
         val triggeringCreature = driver.putCreatureOnBattlefield(player, "Grizzly Bears")
 
-        ConditionEvaluator().evaluate(
+        driver.services.conditionEvaluator.evaluate(
             driver.state,
             TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard,
             EffectContext(
@@ -274,16 +274,19 @@ class GuardianProjectScenarioTest : FunSpec({
             )
         ) shouldBe false
 
-        ConditionEvaluator().evaluate(
+        driver.services.conditionEvaluator.evaluate(
             driver.state,
             TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard,
             EffectContext(
                 sourceId = null,
                 controllerId = player,
                 triggeringEntityId = triggeringCreature,
-                triggeringEntityEntryTimestamp = 42L,
-                triggeringEntityName = "Different Name",
-                triggeringEntityNameKnown = true,
+                triggerContext = TriggerContext(
+                    triggeringEntityId = triggeringCreature,
+                    triggeringEntityEntryTimestamp = 42L,
+                    triggeringEntityName = "Different Name",
+                    triggeringEntityNameKnown = true,
+                ),
             )
         ) shouldBe false
     }
@@ -315,14 +318,14 @@ class GuardianProjectScenarioTest : FunSpec({
                 castFaceDown = true,
                 paymentStrategy = PaymentStrategy.FromPool,
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         val faceDownCreature = driver.getPermanents(player).single { entityId ->
             driver.state.getEntity(entityId)?.has<FaceDownComponent>() == true
         }
         EntitySnapshot.fromProjection(faceDownCreature, driver.state).name shouldBe null
         captureEntitySnapshots(listOf(faceDownCreature), driver.state).single().name shouldBe null
-        val transition = ZoneTransitionService.moveToZone(driver.state, faceDownCreature, Zone.GRAVEYARD)
+        val transition = driver.zones.moveToZone(driver.state, faceDownCreature, Zone.GRAVEYARD)
         driver.replaceState(transition.state)
 
         driver.state.getEntity(faceDownCreature)
@@ -343,9 +346,9 @@ class GuardianProjectScenarioTest : FunSpec({
         val trigger = driver.state.stack.mapNotNull { stackEntityId ->
             driver.state.getEntity(stackEntityId)?.get<TriggeredAbilityOnStackComponent>()
         }.single()
-        val originalEntryTimestamp = trigger.triggeringEntityEntryTimestamp.shouldNotBeNull()
-        val exiled = ZoneTransitionService.moveToZone(driver.state, creature, Zone.EXILE).state
-        val returned = ZoneTransitionService.moveToZone(exiled, creature, Zone.BATTLEFIELD).state
+        val originalEntryTimestamp = trigger.triggerContext?.triggeringEntityEntryTimestamp.shouldNotBeNull()
+        val exiled = driver.zones.moveToZone(driver.state, creature, Zone.EXILE).state
+        val returned = driver.zones.moveToZone(exiled, creature, Zone.BATTLEFIELD).state
         returned.getEntity(creature)
             ?.get<com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent>()
             ?.timestamp shouldNotBe originalEntryTimestamp
@@ -366,7 +369,7 @@ class GuardianProjectScenarioTest : FunSpec({
         val handBeforeCast = driver.getHandSize(player)
         driver.giveMana(player, Color.RED)
 
-        driver.castSpell(player, bolt, targets = listOf(dissenter)).isSuccess shouldBe true
+        driver.castSpell(player, bolt, targets = listOf(dissenter)).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.bothPass()
 
@@ -387,7 +390,7 @@ class GuardianProjectScenarioTest : FunSpec({
         val handBeforeCast = driver.getHandSize(player)
         driver.giveMana(player, Color.GREEN, amount = 2)
 
-        driver.castSpell(player, creature).isSuccess shouldBe true
+        driver.castSpell(player, creature).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.moveToGraveyard(driver.findPermanent(player, "Grizzly Bears")!!)
         driver.bothPass()

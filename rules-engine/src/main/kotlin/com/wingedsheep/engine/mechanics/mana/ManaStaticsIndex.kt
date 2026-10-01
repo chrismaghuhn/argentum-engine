@@ -12,6 +12,7 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalManaOnSourceTap
 import com.wingedsheep.sdk.scripting.AdditionalManaOnTap
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
+import com.wingedsheep.sdk.scripting.HasAllActivatedAbilitiesOfCards
 import com.wingedsheep.sdk.scripting.MultiplyManaOnSourceTap
 import com.wingedsheep.sdk.scripting.OverrideEnchantedLandManaColor
 import com.wingedsheep.sdk.scripting.ReplaceLandManaColor
@@ -47,13 +48,19 @@ class ManaStaticsIndex private constructor(
      */
     val manaAbilityGrantors: List<ManaAbilityGrantor>,
     /**
+     * [HasAllActivatedAbilitiesOfCards] statics (Mirran Safehouse, Territory Forge, Agatha's Soul
+     * Cauldron): a donor card's mana abilities are mana abilities of the receiving permanent, so the
+     * solver must see them too. Same face-down / Room rules as [manaAbilityGrantors].
+     */
+    val donorGrantors: List<DonorGrantor>,
+    /**
      * Colors forced onto an enchanted land by an attached [OverrideEnchantedLandManaColor]
      * (Shimmerwilds Growth), keyed by the enchanted land. Later attachments in battlefield order
      * overwrite earlier ones, matching the original loop's last-write-wins.
      *
      * This is now the single source for both the solver and the mana-ability *labeller*
      * (`ManaAbilityEnumerator`), which each carried their own copy of the scan. It must stay in
-     * sync with `ActivateAbilityHandler.findEnchantedLandManaColorOverride`, which resolves the
+     * sync with `ActivatedManaAbilityResolver.findEnchantedLandManaColorOverride`, which resolves the
      * same override once per activation — if they disagree, the label, the affordability check and
      * the mana actually produced drift apart.
      */
@@ -72,6 +79,12 @@ class ManaStaticsIndex private constructor(
         val granterId: EntityId,
         val grant: GrantActivatedAbility,
         val granterControllerId: EntityId,
+    )
+
+    /** A [HasAllActivatedAbilitiesOfCards] static and the permanent carrying it. */
+    data class DonorGrantor(
+        val granterId: EntityId,
+        val grant: HasAllActivatedAbilitiesOfCards,
     )
 
     /** A [ReplaceLandManaColor] static, with the projected controller its filter reads as "you". */
@@ -108,6 +121,7 @@ class ManaStaticsIndex private constructor(
     /** True when no bucket holds anything — the overwhelmingly common case. */
     val isEmpty: Boolean =
         manaAbilityGrantors.isEmpty() &&
+            donorGrantors.isEmpty() &&
             landColorOverrideByTarget.isEmpty() &&
             landColorReplacements.isEmpty() &&
             auraBonusManaByTarget.isEmpty() &&
@@ -116,7 +130,7 @@ class ManaStaticsIndex private constructor(
 
     companion object {
         val EMPTY =
-            ManaStaticsIndex(emptyList(), emptyMap(), emptyList(), emptyMap(), emptyList(), emptyList())
+            ManaStaticsIndex(emptyList(), emptyList(), emptyMap(), emptyList(), emptyMap(), emptyList(), emptyList())
 
         /**
          * Walk the battlefield once and bucket every mana-relevant static on it.
@@ -126,6 +140,7 @@ class ManaStaticsIndex private constructor(
          */
         fun build(state: GameState, cardRegistry: CardRegistry): ManaStaticsIndex {
             var grantors: MutableList<ManaAbilityGrantor>? = null
+            var donorGrantors: MutableList<DonorGrantor>? = null
             var overrides: MutableMap<EntityId, Color>? = null
             var replacements: MutableList<LandColorReplacement>? = null
             var auraBonuses: MutableMap<EntityId, MutableList<AuraBonusMana>>? = null
@@ -145,6 +160,11 @@ class ManaStaticsIndex private constructor(
                 // abilities (CR 708.2); an unlocked Room face's statics do count (CR 709.5).
                 if (!faceDown) {
                     for (ability in RoomFaceStatics.activeStaticAbilities(container, cardDef)) {
+                        if (ability is HasAllActivatedAbilitiesOfCards) {
+                            (donorGrantors ?: mutableListOf<DonorGrantor>().also { donorGrantors = it })
+                                .add(DonorGrantor(permanentId, ability))
+                            continue
+                        }
                         if (ability !is GrantActivatedAbility) continue
                         if (ability.filter.scope !is Scope.Battlefield) continue
                         if (!ability.ability.isManaAbility) continue
@@ -155,8 +175,18 @@ class ManaStaticsIndex private constructor(
                 }
 
                 // Buckets 2–5 — read the printed static list, face-down permanents included, as the
-                // helpers being replaced did.
-                for (static in cardDef.script.staticAbilities) {
+                // helpers being replaced did, plus any statics *granted* to this permanent at
+                // runtime and recorded in `GameState.grantedStaticAbilities`. That is the same
+                // point-of-use read the combat checks do, and it is what lets a durational grant
+                // reach the mana path at all: the layer projector does not carry granted statics,
+                // so a `{U}: … until end of turn` mana rule (Deep Water) has nowhere else to live.
+                val grantedHere = state.grantedStaticAbilities
+                    .filter { it.entityId == permanentId }
+                    .map { it.ability }
+                val staticsHere =
+                    if (grantedHere.isEmpty()) cardDef.script.staticAbilities
+                    else cardDef.script.staticAbilities + grantedHere
+                for (static in staticsHere) {
                     when (static) {
                         is OverrideEnchantedLandManaColor -> {
                             if (attachedTo == null) continue
@@ -197,7 +227,32 @@ class ManaStaticsIndex private constructor(
                 }
             }
 
-            if (grantors == null && overrides == null && replacements == null &&
+            // Granted statics, not just printed ones. A *spell* can create a mana bonus that no
+            // permanent carries — High Tide's "until end of turn, whenever a player taps an Island
+            // for mana, that player adds an additional {U}" — by granting the static to its own
+            // controller for the turn. Only the battlefield-wide bonus shapes are read here; the
+            // attachment-scoped ones (AdditionalManaOnTap) need a host to be attached to.
+            for (granted in state.grantedStaticAbilities) {
+                when (val static = granted.ability) {
+                    is AdditionalManaOnSourceTap -> {
+                        // The filter's "you" is the grant holder — a player entity for a
+                        // spell-created grant, a permanent's controller otherwise.
+                        val controller = projected.getController(granted.entityId) ?: granted.entityId
+                        (sourceTapBonuses ?: mutableListOf<SourceTapBonus>().also { sourceTapBonuses = it })
+                            .add(SourceTapBonus(granted.entityId, static, controller))
+                    }
+                    is MultiplyManaOnSourceTap -> {
+                        val controller = projected.getController(granted.entityId) ?: granted.entityId
+                        (
+                            sourceTapMultipliers
+                                ?: mutableListOf<SourceTapMultiplier>().also { sourceTapMultipliers = it }
+                            ).add(SourceTapMultiplier(granted.entityId, static, controller))
+                    }
+                    else -> {}
+                }
+            }
+
+            if (grantors == null && donorGrantors == null && overrides == null && replacements == null &&
                 auraBonuses == null && sourceTapBonuses == null && sourceTapMultipliers == null
             ) {
                 return EMPTY
@@ -205,6 +260,7 @@ class ManaStaticsIndex private constructor(
 
             return ManaStaticsIndex(
                 manaAbilityGrantors = grantors ?: emptyList(),
+                donorGrantors = donorGrantors ?: emptyList(),
                 landColorOverrideByTarget = overrides ?: emptyMap(),
                 landColorReplacements = replacements ?: emptyList(),
                 auraBonusManaByTarget = auraBonuses ?: emptyMap(),

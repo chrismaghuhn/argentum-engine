@@ -7,7 +7,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Commander's Sphere:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddManaOfChoice",
@@ -17,7 +17,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Commander's Sphere:2",
                 "cost": "CostSacrificeSelf",
                 "effect": {
                     "type": "DrawCards",
@@ -68,7 +68,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Jazal Goldmane:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -96,7 +96,7 @@
                             "player": "Each",
                             "filter": "creature attacking"
                         },
-                        "target": "Self"
+                        "target": "IterationEntity"
                     }
                 }
             }
@@ -123,7 +123,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Myriad Landscape:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -136,7 +136,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Myriad Landscape:2",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -161,7 +161,8 @@
                                 "zone": "Library",
                                 "filter": "basicland"
                             },
-                            "storeAs": "searchable"
+                            "storeAs": "searchable",
+                            "search": true
                         },
                         {
                             "type": "SelectFromCollection",
@@ -199,6 +200,75 @@
         "rarity": "UNCOMMON",
         "artist": "Richard Wright",
         "imageUri": "https://cards.scryfall.io/normal/front/8/a/8aef73ec-5c98-4ac5-82a7-8e838cd36562.jpg"
+    },
+    "colorIdentityOverride": []
+}
+
+// Unstable Obelisk
+{
+    "name": "Unstable Obelisk",
+    "manaCost": "{3}",
+    "typeLine": "Artifact",
+    "oracleText": "{T}: Add {C}.\n{7}, {T}, Sacrifice this artifact: Destroy target permanent.",
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Unstable Obelisk:1",
+                "cost": "CostTap",
+                "effect": {
+                    "type": "AddColorlessMana",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                "timing": "ManaAbility",
+                "isManaAbility": true
+            },
+            {
+                "id": "Unstable Obelisk:2",
+                "cost": {
+                    "type": "CostComposite",
+                    "costs": [
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomMana",
+                                "cost": "{7}"
+                            }
+                        },
+                        "CostTap",
+                        "CostSacrificeSelf"
+                    ]
+                },
+                "effect": {
+                    "type": "MoveToZone",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    },
+                    "destination": "Graveyard",
+                    "byDestruction": true
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": "permanent"
+                        },
+                        "id": "t0"
+                    }
+                ],
+                "descriptionOverride": "{7}, {T}, Sacrifice this artifact: Destroy target permanent."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "58",
+        "rarity": "UNCOMMON",
+        "artist": "William Wu",
+        "flavorText": "Its collapse is like the lashing out of a long-dead civilization that resents being forgotten.",
+        "imageUri": "https://cards.scryfall.io/normal/front/b/3/b331b231-f31f-479f-80a9-f32c64d35096.jpg?1783938864"
     },
     "colorIdentityOverride": []
 }

@@ -31,6 +31,14 @@ export function hasPendingInputSelection(state: GameStore): boolean {
 }
 
 /**
+ * Follow-the-action as the camera actually behaves right now: the persisted setting, minus a
+ * manual pin holding the view still. This is what the rail's Follow button shows.
+ */
+export function isFollowingAction(state: Pick<GameStore, 'followAction' | 'viewPinned'>): boolean {
+  return state.followAction && !state.viewPinned
+}
+
+/**
  * True when the local player's own seat is out of a multiplayer game the others are still
  * playing (CR 800.4a). That's the spectator layout: a survivor takes over the bottom half of
  * the table and all action UI hides.
@@ -69,7 +77,9 @@ export interface BoardViewSliceState {
   viewedOpponentId: EntityId | null
   /**
    * True when the player manually selected a board — suspends follow-the-action
-   * until unpinned (re-click the viewed chip / Esc).
+   * until unpinned (re-click the viewed chip / Esc / the Follow button). A pin never
+   * touches [followAction]: it is a *suspension* of the setting, not a change to it, so
+   * unpinning brings the camera straight back.
    */
   viewPinned: boolean
   /** Follow-the-action camera setting (persisted). Default on. */
@@ -87,6 +97,14 @@ export interface BoardViewSliceState {
    * collapsed across overview toggles until reset (new game / leave).
    */
   collapsedSeats: readonly EntityId[]
+  /**
+   * Battlefield stacks the player ungrouped with the ⤢ toggle, as a set of member card ids (a
+   * stack is expanded when any member is in it). Kept here rather than in the stack's local
+   * state because an ungrouped stack is N full cards wide, not one card plus peeks — the
+   * battlefield sizing solver has to know, or the row wraps onto a line it never budgeted and
+   * spills over its neighbour row.
+   */
+  expandedStackCardIds: ReadonlySet<EntityId>
   /**
    * The local player dismissed the defeat overlay with "Keep watching" and stayed at the
    * table. Only records that choice — the spectator *layout* is derived from the roster by
@@ -121,6 +139,13 @@ export interface BoardViewSliceState {
    * the rail shows a single shared-life team header or per-player life.
    */
   teamSharedLife: boolean
+  /**
+   * True when the format gives each team one shared turn and one shared priority (Two-Headed
+   * Giant — CR 805 / 810.2). False for Team vs. Team (CR 808.4), whose teammates take individual
+   * turns. Drives whether the client offers actions while a *teammate* holds the priority baton
+   * (CR 805.5a) — see `hasPriority` in types/gameState.
+   */
+  teamSharedTurns: boolean
 }
 
 export interface BoardViewSliceActions {
@@ -134,6 +159,8 @@ export interface BoardViewSliceActions {
   toggleOverviewMode: () => void
   /** Fold/unfold one opponent's overview cell (MTGO-style per-board collapse). */
   toggleSeatCollapsed: (playerId: EntityId) => void
+  /** Ungroup (⤢) or regroup (⤡) one battlefield stack, given all of its member ids. */
+  setStackExpanded: (cardIds: readonly EntityId[], expanded: boolean) => void
   /**
    * "Keep watching" after being eliminated from a multiplayer game: dismisses the defeat
    * overlay and enters the spectator layout (overview on, dead bottom half collapsed).
@@ -155,9 +182,17 @@ export interface BoardViewSliceActions {
   /**
    * Stamp the seat → team map from the game-start roster (2HG / Team vs. Team). Pass an empty map
    * for a non-team game (the default). [sharedLife] is true only when the team shares one life total
-   * (2HG); Team vs. Team passes false. Persists until the next reset.
+   * (2HG); Team vs. Team passes false. [sharedTurns] likewise for the shared turn + shared priority
+   * (CR 805). Persists until the next reset.
+   *
+   * The spectator and replay rosters don't carry [sharedTurns] and leave it false; neither surface
+   * can act, and `syncSeatTeams` corrects it from the first state update regardless.
    */
-  setSeatTeams: (teamByPlayerId: Record<EntityId, number>, sharedLife?: boolean) => void
+  setSeatTeams: (
+    teamByPlayerId: Record<EntityId, number>,
+    sharedLife?: boolean,
+    sharedTurns?: boolean,
+  ) => void
   /** Reset on game start / leave. */
   resetBoardView: () => void
 }
@@ -170,11 +205,13 @@ export const createBoardViewSlice: SliceCreator<BoardViewSlice> = (set, get) => 
   followAction: loadFollowAction(),
   overviewMode: false,
   collapsedSeats: [],
+  expandedStackCardIds: new Set<EntityId>(),
   eliminatedSpectating: false,
   eliminatedBottomSeatId: null,
   spectatorBottomSeatId: null,
   teamByPlayerId: {},
   teamSharedLife: false,
+  teamSharedTurns: false,
 
   viewOpponent: (playerId, opts) => {
     const { gameState, playerId: ownId } = get()
@@ -185,21 +222,22 @@ export const createBoardViewSlice: SliceCreator<BoardViewSlice> = (set, get) => 
     // bottom — it never also occupies the viewed strip slot.
     if (isViewerEliminated(get()) && playerId === get().eliminatedBottomSeatId) return
     const pin = opts?.pin ?? true
-    // Pinning a board and follow-the-action are mutually exclusive: pinning turns follow off
-    // (the camera is locked), so the Follow toggle reflects that rather than lying "on".
+    // A pin suspends follow-the-action (the camera is locked) without flipping the persisted
+    // setting — so Esc / re-clicking the chip hands the camera back to the follow rules, as the
+    // help text promises. The Follow button shows the *effective* state (`isFollowingAction`)
+    // rather than lying "on" while a pin holds the camera still.
     // Picking a single board also exits the table overview — it *is* the focus gesture.
-    set({
-      viewedOpponentId: playerId,
-      viewPinned: pin,
-      overviewMode: false,
-      ...(pin ? { followAction: false } : {}),
-    })
+    set({ viewedOpponentId: playerId, viewPinned: pin, overviewMode: false })
   },
 
   unpinView: () => set({ viewPinned: false }),
 
   toggleFollowAction: () => {
-    const next = !get().followAction
+    const { followAction, viewPinned } = get()
+    // With follow on but suspended by a pin, the button reads "Off" — clicking it means "follow
+    // again", i.e. release the pin, not "turn the setting off" (which would be a second click
+    // that looks like a no-op).
+    const next = viewPinned && followAction ? true : !followAction
     try {
       localStorage.setItem(FOLLOW_ACTION_KEY, String(next))
     } catch {
@@ -222,6 +260,15 @@ export const createBoardViewSlice: SliceCreator<BoardViewSlice> = (set, get) => 
         ? prev.filter((id) => id !== playerId)
         : [...prev, playerId],
     })
+  },
+
+  setStackExpanded: (cardIds, expanded) => {
+    const next = new Set(get().expandedStackCardIds)
+    for (const id of cardIds) {
+      if (expanded) next.add(id)
+      else next.delete(id)
+    }
+    set({ expandedStackCardIds: next })
   },
 
   enterEliminatedSpectate: () =>
@@ -247,8 +294,8 @@ export const createBoardViewSlice: SliceCreator<BoardViewSlice> = (set, get) => 
   setSpectatorBottomSeat: (playerId) =>
     set({ spectatorBottomSeatId: playerId, viewedOpponentId: null, viewPinned: false }),
 
-  setSeatTeams: (teamByPlayerId, sharedLife = false) =>
-    set({ teamByPlayerId, teamSharedLife: sharedLife }),
+  setSeatTeams: (teamByPlayerId, sharedLife = false, sharedTurns = false) =>
+    set({ teamByPlayerId, teamSharedLife: sharedLife, teamSharedTurns: sharedTurns }),
 
   resetBoardView: () =>
     set({
@@ -256,10 +303,12 @@ export const createBoardViewSlice: SliceCreator<BoardViewSlice> = (set, get) => 
       viewPinned: false,
       overviewMode: false,
       collapsedSeats: [],
+      expandedStackCardIds: new Set<EntityId>(),
       eliminatedSpectating: false,
       eliminatedBottomSeatId: null,
       spectatorBottomSeatId: null,
       teamByPlayerId: {},
       teamSharedLife: false,
+      teamSharedTurns: false,
     }),
 })

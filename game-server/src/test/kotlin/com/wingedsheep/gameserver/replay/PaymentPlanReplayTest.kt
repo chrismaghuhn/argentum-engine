@@ -29,10 +29,10 @@ import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
-import com.wingedsheep.sdk.scripting.targets.TargetPlayerOrPlaneswalker
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.mockk.every
@@ -134,7 +134,7 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
         spell {
             modal(chooseCount = 1) {
                 mode("Target player gains 1 life") {
-                    target("target player", TargetPlayerOrPlaneswalker())
+                    target(Targets.PlayerOrPlaneswalker)
                     effect = Effects.GainLife(1)
                 }
                 mode("Gain 1 life") {

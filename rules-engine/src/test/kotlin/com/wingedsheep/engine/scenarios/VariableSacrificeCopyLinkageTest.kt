@@ -47,10 +47,8 @@ class VariableSacrificeCopyLinkageTest : FunSpec({
         manaCost = ManaCost.parse("{1}{B}"),
         oracleText = "As an additional cost to cast this spell, you may sacrifice one or more creatures. You draw a card and lose 1 life.",
         script = CardScript(
-            spellEffect = Effects.Composite(
-                Effects.DrawCards(1, EffectTarget.Controller),
+            spellEffect = Effects.DrawCards(1, EffectTarget.Controller) then
                 Effects.LoseLife(1, EffectTarget.Controller),
-            ),
             additionalCosts = listOf(
                 Costs.additional.SacrificePermanents(
                     filter = GameObjectFilter.Creature,

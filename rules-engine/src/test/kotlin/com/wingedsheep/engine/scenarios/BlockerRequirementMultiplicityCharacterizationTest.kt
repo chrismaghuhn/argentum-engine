@@ -12,6 +12,8 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.Duration
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Regression coverage for the CR 509.1c requirement-instance semantics in the blocker validator.
@@ -43,7 +45,7 @@ class BlockerRequirementMultiplicityCharacterizationTest : FunSpec({
         attackers.forEach(driver::removeSummoningSickness)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(attackerPlayer, attackers, defendingPlayer).isSuccess shouldBe true
+        driver.declareAttackers(attackerPlayer, attackers, defendingPlayer).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
 
         return Triple(driver, attackers, blockers)
@@ -86,7 +88,7 @@ class BlockerRequirementMultiplicityCharacterizationTest : FunSpec({
         driver.declareBlockers(
             defendingPlayer,
             mapOf(blockers[0] to listOf(second), blockers[1] to listOf(third)),
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
     }
 
     test("a specific Provoke requirement competes with another requirement instead of hard-pinning") {
@@ -114,7 +116,7 @@ class BlockerRequirementMultiplicityCharacterizationTest : FunSpec({
         driver.declareBlockers(
             defendingPlayer,
             mapOf(blocker to listOf(otherRequiredAttacker)),
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
     }
 
     test("Lure-style requirements remain blocker-scoped and preserve duplicate instances") {
@@ -145,13 +147,13 @@ class BlockerRequirementMultiplicityCharacterizationTest : FunSpec({
         driver.declareBlockers(
             defendingPlayer,
             mapOf(blockers[0] to listOf(attackers[0]), blockers[1] to listOf(attackers[1])),
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
 
         // Both normal blockers can satisfy all four duplicate instances for the first attacker;
         // the declaration reaches the exact Rules-owned maximum without a hard pin.
         driver.declareBlockers(
             defendingPlayer,
             mapOf(blockers[0] to listOf(attackers[0]), blockers[1] to listOf(attackers[0])),
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
     }
 })

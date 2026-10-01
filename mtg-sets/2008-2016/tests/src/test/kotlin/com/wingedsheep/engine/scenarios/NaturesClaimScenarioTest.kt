@@ -7,6 +7,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /** Nature's Claim (WWK #108): destroy an artifact or enchantment; its controller gains 4 life. */
 class NaturesClaimScenarioTest : io.kotest.core.spec.style.FunSpec({
@@ -28,7 +29,7 @@ class NaturesClaimScenarioTest : io.kotest.core.spec.style.FunSpec({
         driver.giveMana(caster, Color.GREEN, 1)
 
         val result = driver.castSpell(caster, spell, listOf(target))
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.findPermanent(opponent, "Test Enchantment") shouldBe null
@@ -43,7 +44,7 @@ class NaturesClaimScenarioTest : io.kotest.core.spec.style.FunSpec({
         val spell = driver.putCardInHand(caster, "Nature's Claim")
         driver.giveMana(caster, Color.GREEN, 1)
 
-        driver.castSpell(caster, spell, listOf(creature)).isSuccess shouldBe false
+        driver.castSpell(caster, spell, listOf(creature)).outcome shouldNotBe Outcome.Done
         driver.findPermanent(opponent, "Grizzly Bears") shouldNotBe null
     }
 })

@@ -50,21 +50,7 @@ class AttachCollectionToTargetExecutor(
         }
 
         if (hostChanging.size >= 2) {
-            val decisionResult = decisionHandler.createOrderDecision(
-                state = state,
-                playerId = context.controllerId,
-                sourceId = context.sourceId,
-                sourceName = context.sourceId?.let { state.getEntity(it)?.let { entity ->
-                    entity.get<com.wingedsheep.engine.state.components.identity.CardComponent>()?.name
-                } },
-                prompt = "Choose the relative timestamp order of the attachments",
-                objects = hostChanging,
-                phase = DecisionPhase.RESOLUTION,
-            )
-            val pendingDecision = decisionResult.pendingDecision
-                ?: return EffectResult.error(state, "Ordering decision was not created")
             val continuation = AttachCollectionOrderContinuation(
-                decisionId = pendingDecision.id,
                 effect = effect,
                 effectContext = context,
                 selectedAttachments = selected,
@@ -78,10 +64,19 @@ class AttachCollectionToTargetExecutor(
                     stamp?.let { attachmentId to it }
                 }.toMap(),
             )
-            return EffectResult.paused(
-                decisionResult.state.pushContinuation(continuation),
-                pendingDecision,
-                decisionResult.events,
+            return EffectResult.from(
+                decisionHandler.createOrderDecision(
+                    state = state,
+                    playerId = context.controllerId,
+                    sourceId = context.sourceId,
+                    sourceName = context.sourceId?.let { state.getEntity(it)?.let { entity ->
+                        entity.get<com.wingedsheep.engine.state.components.identity.CardComponent>()?.name
+                    } },
+                    prompt = "Choose the relative timestamp order of the attachments",
+                    objects = hostChanging,
+                    phase = DecisionPhase.RESOLUTION,
+                    answer = continuation,
+                )
             )
         }
 

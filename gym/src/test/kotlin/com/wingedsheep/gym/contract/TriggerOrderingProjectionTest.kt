@@ -45,11 +45,16 @@ class TriggerOrderingProjectionTest : FunSpec({
             objects = listOf(first, second),
             objectLabels = mapOf(first to "first trigger", second to "second trigger")
         )
-        val paused = environment.state.withPendingDecision(pending)
+        // The engine holds a question only inside a Suspension (question + answer continuation);
+        // this projection test presents the trigger-order question through the builder's
+        // pendingDecisionOverride seam, which keeps the question exactly as written here.
+        val state = environment.state
         val builder = ObservationBuilder(cardRegistry = registry)
 
-        val ownerView = builder.build(paused, owner, emptyList()).observation as TrainingObservation
-        val opponentView = builder.build(paused, opponent, emptyList()).observation as TrainingObservation
+        val ownerView = builder.build(state, owner, emptyList(), pendingDecisionOverride = pending)
+            .observation as TrainingObservation
+        val opponentView = builder.build(state, opponent, emptyList(), pendingDecisionOverride = pending)
+            .observation as TrainingObservation
 
         ownerView.pendingDecision?.kind shouldBe PendingDecisionKind.ORDER_OBJECTS
         ownerView.pendingDecision?.requiresStructuredResponse shouldBe true

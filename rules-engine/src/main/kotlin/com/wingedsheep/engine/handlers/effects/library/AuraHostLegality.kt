@@ -148,6 +148,7 @@ class AuraHostLegality(
                     playerId = hostId,
                     sourceId = auraId,
                     casterId = auraControllerId,
+                    predicateEvaluator = targetFinder.predicateEvaluator,
                 )
             } else {
                 !PlayerProtectionRules.isProtectedFromSourceCharacteristics(
@@ -155,6 +156,7 @@ class AuraHostLegality(
                     playerId = hostId,
                     source = source,
                     casterId = auraControllerId,
+                    predicateEvaluator = targetFinder.predicateEvaluator,
                 )
             }
         }

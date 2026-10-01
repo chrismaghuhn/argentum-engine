@@ -4,18 +4,32 @@ import com.wingedsheep.assay.syntax.Phrase
 import com.wingedsheep.assay.syntax.bind
 import com.wingedsheep.assay.syntax.oneOf
 import com.wingedsheep.assay.syntax.phrase
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.scripting.ActivationRestriction
 import com.wingedsheep.sdk.scripting.TimingRule
+import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.effects.AddColorlessManaEffect
 import com.wingedsheep.sdk.scripting.effects.AddDynamicManaEffect
 import com.wingedsheep.sdk.scripting.effects.AddManaOfChoiceEffect
 import com.wingedsheep.sdk.scripting.effects.AddManaEffect
+import com.wingedsheep.sdk.scripting.effects.CardDestination
+import com.wingedsheep.sdk.scripting.effects.CardSource
+import com.wingedsheep.sdk.scripting.effects.CascadeEffect
+import com.wingedsheep.sdk.scripting.effects.CastFromCollectionWithoutPayingCostEffect
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
+import com.wingedsheep.sdk.scripting.effects.DiscoverEffect
+import com.wingedsheep.sdk.scripting.effects.DrawCardsEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.sdk.scripting.effects.ExileFromTopRepeatingEffect
+import com.wingedsheep.sdk.scripting.effects.ExileLibraryUntilManaValueEffect
+import com.wingedsheep.sdk.scripting.effects.GatherCardsEffect
+import com.wingedsheep.sdk.scripting.effects.MoveCollectionEffect
+import com.wingedsheep.sdk.scripting.effects.PutOnLibraryPositionOfChoiceEffect
+import com.wingedsheep.sdk.scripting.effects.SurveilEffect
 
 /**
  * "{T}: Add {G}." — the cost-colon-effect sentence, and the third `CardScript` slot the grammar
@@ -69,10 +83,16 @@ object Activated {
      * something an activated ability has nowhere to put.
      *
      * Shared by both directions so `match` can reconstruct and compare the whole value: an ability
-     * carrying a restriction, an activation zone, a `descriptionOverride`, convoke, exhaust or any
-     * of the two dozen other fields on `ActivatedAbility` fails the equality and refuses to print,
-     * rather than printing a sentence that quietly drops it. Only the id is exempt, because the id
-     * is not in the text.
+     * carrying a restriction, a `descriptionOverride`, convoke, exhaust or any of the two dozen other
+     * fields on `ActivatedAbility` fails the equality and refuses to print, rather than printing a
+     * sentence that quietly drops it. Only the id is exempt, because the id is not in the text.
+     *
+     * **The activation zone used to be on that list and is now derived.** Nothing in a printed line
+     * says "this ability works from the graveyard" in words of its own — the effect clause says
+     * "return this card **from your graveyard** to your hand" and CR 113.6m does the rest. So
+     * [Recursion.functionsIn] reads it off the cost and the effect for the same reason
+     * [producesMana] reads mana-ability-ness off them, and 74 cards stopped refusing to print over a
+     * field their own sentence already determined.
      */
     private fun abilityFor(
         cost: AbilityCost,
@@ -83,7 +103,8 @@ object Activated {
         val effect = script.spellEffect ?: return null
         val targets = script.targetRequirements
         if (script != CardScript(spellEffect = effect, targetRequirements = targets)) return null
-        val manaAbility = targets.isEmpty() && producesMana(effect)
+        if (removesTheSource(cost) && Slots.readsPropertyOf(script, entity = "Source", property = "CounterCount")) return null
+        val manaAbility = targets.isEmpty() && producesMana(effect) && !movesLibraryCard(cost, effect)
         return ActivatedAbility(
             id = ID,
             cost = cost,
@@ -96,7 +117,35 @@ object Activated {
             },
             isManaAbility = manaAbility,
             restrictions = restrictions,
+            activateFromZone = Recursion.functionsIn(effect, cost) ?: Zone.BATTLEFIELD,
         )
+    }
+
+    /**
+     * A cost that puts the source somewhere else before the ability resolves — CR 113.7a's
+     * last-known-information case, as an activation cost.
+     *
+     * "{4}, {T}, Sacrifice ~: Each opponent loses life equal to the number of soul counters on ~."
+     * (Ravenous Amulet) is the shape. [Amounts]' `counterCount` reads the source's **live** tally,
+     * and by resolution the source is in the graveyard, so that reading evaluates to zero: the
+     * sentence round-trips byte-perfectly and means a different card. The SDK has the right value
+     * for this position, `DynamicAmount.LastKnownSourceCounters`, and the card corpus writes it.
+     *
+     * Which of the two a clause means is decided by the *ability around it* and a step cannot see
+     * that — the same finding [Amounts]' `namesX` records for the trigger position, refused there
+     * for the same reason. So this refuses too, rather than emitting the model that evaluates to
+     * zero. Deriving the translation instead is the better answer and it is a piece of work of its
+     * own: it has to run in both directions, because a golden carrying the last-known value must
+     * come back as the live one before [Steps.step] can print it.
+     *
+     * P/T needs no such rule and that asymmetry is the engine's, not an oversight: the SDK applies
+     * the last-known snapshot to `EntityProperty(Self, Power|Toughness)` automatically, so
+     * "{T}, Sacrifice ~: You gain life equal to its power." is already correct as written.
+     */
+    private fun removesTheSource(cost: AbilityCost): Boolean = when (cost) {
+        AbilityCost.SacrificeSelf, AbilityCost.ExileSelf -> true
+        is AbilityCost.Composite -> cost.costs.any(::removesTheSource)
+        else -> false
     }
 
     /**
@@ -108,20 +157,115 @@ object Activated {
      * Channeler come out as instant-speed abilities that go on the stack. The differential found all
      * three the first time the grammar could read them.
      *
-     * **A rider does not stop it being one.** The rule says "could add mana … when it resolves", not
-     * "does nothing else", so "{1}, {T}, Sacrifice this artifact: Add one mana of any color. Draw a
-     * card." is a mana ability with a draw attached — Chromatic Sphere, whose own printed ruling
-     * spells that out ("This is a mana ability, which means it can be activated as part of the
-     * process of casting a spell … but you don't get to look at the drawn card until you have
-     * finished"). Reading only the outermost effect made the whole clause an instant-speed ability
-     * that goes on the stack, which is a different card. The walk therefore descends through the one
-     * shape a multi-clause line builds — a `CompositeEffect` — and no further: a mana effect buried
-     * under a gate or a `ForEach` is one that *might not* happen, and CR 605.1a's "could" is about
-     * the ability, not about a branch the grammar has not proved reachable.
+     * **Most riders do not stop it being one.** The rule says "could add mana … when it resolves",
+     * not "does nothing else", so a mana line with something attached is still a mana line and the
+     * walk has to see past the outermost effect. Reading only that made Cryptex's unlock counter and
+     * Path of Ancestry's scry come out as instant-speed abilities that go on the stack, which are
+     * different cards. The walk therefore descends through the one shape a multi-clause line builds
+     * — a `CompositeEffect` — and no further: a mana effect buried under a gate or a `ForEach` is one
+     * that *might not* happen, and CR 605.1a's "could" is about the ability, not about a branch the
+     * grammar has not proved reachable.
+     *
+     * The exception is a rider that touches a library, which [movesLibraryCard] handles separately —
+     * see there for why "{1}, {T}, Sacrifice this artifact: Add one mana of any color. Draw a card."
+     * is no longer a mana ability.
      */
     private fun producesMana(effect: Effect): Boolean = when (effect) {
         is AddManaEffect, is AddColorlessManaEffect, is AddManaOfChoiceEffect, is AddDynamicManaEffect -> true
         is CompositeEffect -> effect.effects.any(::producesMana)
+        else -> false
+    }
+
+    /**
+     * CR 605.1a's "and its cost and effect don't move any card to or from a library".
+     *
+     * The August 7, 2026 rules update added this clause, and it reclassified seven cards the
+     * grammar already read: Chromatic Sphere and the five Odyssey Eggs ("Add {W}{U}. Draw a card.")
+     * lose it on the effect, Deranged Assistant ("{T}, Mill a card: Add {C}.") on the cost. Before
+     * that update all seven were mana abilities — Chromatic Sphere's own printed ruling still says
+     * so — which is exactly why the derivation has to carry the clause rather than the card text:
+     * nothing in any of those seven printed lines changed on that date.
+     *
+     * Cost and effect are read with the same walk, and it descends only through the shapes a printed
+     * line builds — `CompositeEffect` and `AbilityCost.Composite` — for [producesMana]'s reason.
+     *
+     * This has to agree with `CardLinter`'s `MisflaggedManaAbility` rule card-for-card, because the
+     * differential gate compares what the grammar derives against what the hand-written cards
+     * declare: a disagreement here is reported as a card defect rather than as the rule drift it
+     * would actually be. The two therefore split the vocabulary the same way — the nodes that always
+     * move a library card, and the pipeline shapes where only [crossesLibraryBoundary] can tell.
+     *
+     * Scry is not a disqualifier: it reorders cards *within* a library and moves none to or from it,
+     * so Path of Ancestry keeps its classification.
+     */
+    private fun movesLibraryCard(cost: AbilityCost, effect: Effect): Boolean =
+        movesLibraryCard(cost) || movesLibraryCard(effect) || crossesLibraryBoundary(effect)
+
+    /**
+     * Nodes that move a library card whatever their arguments. `Surveil` puts cards from a library
+     * into a graveyard; cascade, discover and the exile-from-the-top family all take cards off a
+     * library; `PutOnLibraryPositionOfChoice` puts one back onto it.
+     */
+    private fun movesLibraryCard(effect: Effect): Boolean = when (effect) {
+        is DrawCardsEffect,
+        is SurveilEffect,
+        is CascadeEffect,
+        is DiscoverEffect,
+        is ExileFromTopRepeatingEffect,
+        is ExileLibraryUntilManaValueEffect,
+        is PutOnLibraryPositionOfChoiceEffect -> true
+        is CompositeEffect -> effect.effects.any(::movesLibraryCard)
+        else -> false
+    }
+
+    /**
+     * True if a card *crosses* the library boundary somewhere in [effect] — the pipeline half, and
+     * the reason a `TopOfLibrary` gather is not on its own a disqualifier.
+     *
+     * `CardSource.TopOfLibrary` is the shared gather for mill, exile-the-top, surveil, scry **and
+     * look-at-top**, and `CardDestination.ToZone(Zone.LIBRARY)` is the shared put-back for
+     * shuffle-in, put-on-top *and* the same reorders. Either alone says only that a library was
+     * touched; 605.1a asks whether a card ended up on the other side of it. So the default is that
+     * touching a library counts, and exactly one shape is carved out: a **reorder**, where cards come
+     * off a library and every one of them goes straight back into it —
+     * `LibraryPatterns.lookAtTopAndReorder` and the pipeline `Scry` expands to, which must classify
+     * the same way the compact `Scry` node does.
+     */
+    private fun crossesLibraryBoundary(effect: Effect): Boolean {
+        val fromLibrary = anyEffect(effect) {
+            it is GatherCardsEffect && it.source.let { source ->
+                source is CardSource.TopOfLibrary ||
+                    (source is CardSource.FromZone && source.zone == Zone.LIBRARY) ||
+                    (source is CardSource.FromMultipleZones && Zone.LIBRARY in source.zones)
+            }
+        }
+        val toLibrary = anyEffect(effect) { it.movesTo(Zone.LIBRARY) == true }
+        if (!fromLibrary && !toLibrary) return false
+
+        val toElsewhere = anyEffect(effect) { it.movesTo(Zone.LIBRARY) == false }
+        // A cast takes the card to the stack, so a gather it consumes has left the library even
+        // though no destination says so.
+        val castsFromCollection = anyEffect(effect) { it is CastFromCollectionWithoutPayingCostEffect }
+        val reorder = fromLibrary && toLibrary && !toElsewhere && !castsFromCollection
+        return !reorder
+    }
+
+    /** Null unless this is a `MoveCollection` to a fixed zone; else whether that zone is [zone]. */
+    private fun Effect.movesTo(zone: Zone): Boolean? =
+        (this as? MoveCollectionEffect)?.destination
+            ?.let { it as? CardDestination.ToZone }
+            ?.let { it.zone == zone }
+
+    /** True if [effect] or any effect inside its `CompositeEffect` chain satisfies [predicate]. */
+    private fun anyEffect(effect: Effect, predicate: (Effect) -> Boolean): Boolean =
+        predicate(effect) ||
+            (effect is CompositeEffect && effect.effects.any { anyEffect(it, predicate) })
+
+    private fun movesLibraryCard(cost: AbilityCost): Boolean = when (cost) {
+        is AbilityCost.Atom -> cost.atom.let { atom ->
+            atom is CostAtom.Mill || (atom is CostAtom.ExileFrom && atom.zone == Zone.LIBRARY)
+        }
+        is AbilityCost.Composite -> cost.costs.any(::movesLibraryCard)
         else -> false
     }
 
@@ -155,7 +299,10 @@ object Activated {
     private val choice: Phrase<List<ActivatedAbility>> =
         phrase("{cost}: {alternatives}", name = "an activated mana ability with a choice") {
             slot("cost", Costs.cost)
-            slot("alternatives", Mana.addedAlternatives)
+            slot(
+                "alternatives",
+                oneOf("several kinds of mana", Mana.addedAlternatives, Mana.addedAlternativesRestricted),
+            )
             build { bindings ->
                 val cost = bindings.value<AbilityCost>("cost")
                 val built = bindings.value<List<Effect>>("alternatives")
@@ -255,11 +402,22 @@ object Activated {
      * needs — "{T}: Add {B} or {G}." as two abilities sharing a cost — has nowhere to go in a grant,
      * so it declines here rather than being silently truncated to its first member.
      *
-     * Note what the quoted text does **not** mean: `~` inside a granted ability is the creature that
-     * gained it, not the card whose line this is. Normalization abstracts both to the same token and
-     * records that as a known limitation; nothing here reads `~` as the source, and the effect
-     * vocabulary spells it [com.wingedsheep.sdk.scripting.targets.EffectTarget.Self] either way,
-     * which is the reading that stays true in both positions.
+     * ### `~` inside the quotes is not the card whose line this is
+     *
+     * A self-reference has two printed shapes and CR 201.4 keeps them apart: "this creature" is the
+     * object that *has* the ability — the creature the Equipment or Aura handed it to,
+     * [com.wingedsheep.sdk.scripting.targets.EffectTarget.Self] — while the card's own **name**
+     * still means the card that printed it, `EffectTarget.GrantingSource`. Outside a quote the two
+     * denote one object and `Normalizer` abstracts both to `~`; inside one they come apart, so
+     * normalization keeps the name as its own token there and nothing under these quotes can read
+     * it. The effect vocabulary spells `~` as `Self`, which is the reading that is true for the
+     * noun form and the only form that reaches here.
+     *
+     * Trusty Boomerang is what made that necessary: "Equipped creature has "{1}, {T}: Tap target
+     * creature. Return Trusty Boomerang to its owner's hand."" bounces the Equipment, and reading it
+     * as the equipped creature round-trips byte-perfectly while meaning the wrong permanent. It
+     * declines instead, and is counted; the twenty-one Slivers and Auras that spell the *noun* are
+     * unaffected, because the distinction is now in the text the grammar sees.
      */
     val quoted: Phrase<ActivatedAbility> = phrase("\"{ability}\"", name = "a quoted activated ability") {
         slot("ability", abilities)

@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.StormCopyTargetContinuation
+import com.wingedsheep.engine.core.Suspension
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.state.GameState
@@ -26,8 +27,6 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.KeywordAbility
-import com.wingedsheep.sdk.scripting.effects.ConditionalEffect
-import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetObject
@@ -57,7 +56,6 @@ class ResolvingSpellCopyPayloadTest : FunSpec({
 
         spell {
             val permanentCard = target(
-                "target permanent card with mana value 3 or less from your graveyard",
                 TargetObject(
                     filter = TargetFilter(
                         GameObjectFilter.Permanent.manaValueAtMost(3).ownedByYou(),
@@ -67,9 +65,9 @@ class ResolvingSpellCopyPayloadTest : FunSpec({
             )
             effect = Effects.Move(permanentCard, Zone.BATTLEFIELD, fromZone = Zone.GRAVEYARD)
                 .then(
-                    ConditionalEffect(
+                    Effects.If(
                         condition = Conditions.WasCastFromZone(Zone.GRAVEYARD),
-                        effect = MayEffect(
+                        then = Effects.May(
                             Effects.CopyTargetSpell(target = EffectTarget.Self),
                             descriptionOverride = "You may copy this resolving spell and choose a new target",
                         ),
@@ -124,13 +122,19 @@ class ResolvingSpellCopyPayloadTest : FunSpec({
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
         driver.submitYesNo(you, true).error shouldBe null
         val retargetDecision = driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
-        retargetDecision.id.startsWith("copy-spell-target-") shouldBe true
+        // Decision ids are opaque routing ids allocated from GameState.nextRoutingId (the fork's
+        // "copy-spell-target-<uuid>" name is gone): the prompt is identified as the copy-spell
+        // retarget prompt by the answer it is paired with in the top Suspension.
+        val retargetSuspension = driver.state.continuationStack.last().shouldBeInstanceOf<Suspension>()
+        retargetSuspension.question.id shouldBe retargetDecision.id
+        retargetSuspension.answer.shouldBeInstanceOf<StormCopyTargetContinuation>().sourceId shouldBe spell
         retargetDecision.legalTargets.values.flatten() shouldContain retargetCandidate
 
         val pausedState = driver.state
         pausedState.getEntity(spell)?.get<SpellOnStackComponent>().shouldNotBeNull()
         pausedState.getEntity(spell)?.get<TargetsComponent>().shouldNotBeNull()
         val copyContinuation = pausedState.continuationStack.last()
+            .shouldBeInstanceOf<Suspension>().answer
             .shouldBeInstanceOf<StormCopyTargetContinuation>()
         val payload = copyContinuation.resolvingSpellCopyPayload.shouldNotBeNull()
         payload.sourceSpellId shouldBe spell
@@ -196,8 +200,8 @@ class ResolvingSpellCopyPayloadTest : FunSpec({
         copyTargets.targetRequirements shouldBe pausedState.continuationStack
             .last()
             .let { continuation ->
-                continuation as com.wingedsheep.engine.core.StormCopyTargetContinuation
-                continuation.spellTargetRequirements
+                ((continuation as Suspension).answer as com.wingedsheep.engine.core.StormCopyTargetContinuation)
+                    .spellTargetRequirements
             }
 
         driver.replaceState(originalFork.state)

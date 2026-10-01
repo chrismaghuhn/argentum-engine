@@ -14,6 +14,7 @@ import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
 import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Forge Anew — ETB reanimates a target Equipment from your graveyard, then grants instant-speed
@@ -65,7 +66,7 @@ class ForgeAnewScenarioTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(a)),
                 alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe a
 
@@ -153,7 +154,7 @@ class ForgeAnewScenarioTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(courser)),
                 alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.NORMAL),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe courser
     }

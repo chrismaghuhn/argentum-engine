@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.effects.zones
 
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
@@ -26,7 +27,6 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.effects.PutOntoBattlefieldAttachedToChosenEffect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.TargetObject
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -55,12 +55,13 @@ import kotlin.reflect.KClass
  * Auras and Equipment.
  */
 class PutOntoBattlefieldAttachedToChosenExecutor(
+    private val zones: ZoneTransitionService,
     private val cardRegistry: CardRegistry,
     private val targetFinder: TargetFinder
 ) : EffectExecutor<PutOntoBattlefieldAttachedToChosenEffect> {
 
     private val auraHostLegality = AuraHostLegality(cardRegistry, targetFinder)
-    private val targetValidator = TargetValidator()
+    private val targetValidator = TargetValidator(zones.predicateEvaluator)
 
     override val effectType: KClass<PutOntoBattlefieldAttachedToChosenEffect> =
         PutOntoBattlefieldAttachedToChosenEffect::class
@@ -123,7 +124,7 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
             return if (isEquipment) {
                 val fromZone = findCurrentZone(state, cardId)
                     ?: return EffectResult.success(state)
-                val transition = ZoneTransitionService.moveToZone(
+                val transition = zones.moveToZone(
                     state, cardId, Zone.BATTLEFIELD,
                     ZoneEntryOptions(controllerId = controllerId),
                     fromZone
@@ -135,9 +136,8 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
         }
 
         // Pause for the controller to choose a host.
-        val decisionId = UUID.randomUUID().toString()
         val cardName = cardComponent.name
-        val decision = ChooseTargetsDecision(
+        val decision = { decisionId: String -> ChooseTargetsDecision(
             id = decisionId,
             playerId = controllerId,
             prompt = "Choose what $cardName attaches to",
@@ -148,23 +148,15 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
             ),
             targetRequirements = listOf(requirementInfo),
             legalTargets = mapOf(0 to legalHosts)
-        )
+        ) }
 
         val continuation = PutOntoBattlefieldAttachedToChosenContinuation(
-            decisionId = decisionId,
             cardId = cardId,
             controllerId = controllerId,
             hostFilter = effect.hostFilter,
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult(
-            state = stateWithContinuation,
-            events = emptyList(),
-            pendingDecision = decision
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation, emptyList()))
     }
 
     private fun findCurrentZone(state: GameState, entityId: com.wingedsheep.sdk.model.EntityId): ZoneKey? {

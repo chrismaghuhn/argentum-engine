@@ -7,13 +7,14 @@
  * current subscriptions.
  */
 import type { SliceCreator, ActionPipelineState, PhaseResult } from '../types'
-import type { ActivateAbilityAction, CastSpellAction, EntityId, LegalActionInfo } from '@/types'
+import type { ActivateAbilityAction, CastSpellAction, EntityId, GameAction, LegalActionInfo } from '@/types'
 import { computePhases, mergeResult, enterPhase } from './pipelinePhases'
 import type { PipelineStoreMethods } from './pipelinePhases'
 import {
   parseManaCost as parseManaCostUtil,
   getRemainingCostSymbols,
   getRemainingCostAfterConvoke,
+  materializeX,
   trimAutoTapPreview,
 } from '@/utils/manaCost'
 
@@ -32,6 +33,49 @@ export interface PipelineSliceActions {
 
 export type PipelineSlice = PipelineSliceState & PipelineSliceActions
 
+/** Every piece of UI state a pipeline phase can own, emptied together when the pipeline ends. */
+export const CLEARED_PIPELINE_SELECTIONS = {
+  pipelineState: null,
+  targetingState: null,
+  xSelectionState: null,
+  modalModeSelectionState: null,
+  blightVariableSelectionState: null,
+  payXLifeSelectionState: null,
+  convokeSelectionState: null,
+  tapForGenericSelectionState: null,
+  harmonizeSelectionState: null,
+  delveSelectionState: null,
+  manaSelectionState: null,
+  manaColorSelectionState: null,
+  counterDistributionState: null,
+  damageDistributionState: null,
+} as const
+
+/**
+ * Whether the object an in-progress action is being built for is still offered by the server.
+ * Compared by source identity (the card, permanent, or ability), not by the whole action: the
+ * pipeline has been folding the player's choices into its copy, and the server re-derives costs
+ * and targets on submit anyway.
+ */
+export function isActionStillOffered(
+  action: GameAction,
+  legalActions: readonly LegalActionInfo[],
+): boolean {
+  const key = actionSourceKey(action)
+  return legalActions.some((info) => actionSourceKey(info.action) === key)
+}
+
+function actionSourceKey(action: GameAction): string {
+  const source =
+    'cardId' in action ? action.cardId
+      : 'sourceId' in action ? action.sourceId
+        : 'vehicleId' in action ? action.vehicleId
+          : 'mountId' in action ? action.mountId
+            : ''
+  const abilityId = 'abilityId' in action ? action.abilityId : ''
+  return `${action.type}|${source}|${abilityId}`
+}
+
 export const createPipelineSlice: SliceCreator<PipelineSlice> = (set, get) => ({
   pipelineState: null,
 
@@ -40,12 +84,14 @@ export const createPipelineSlice: SliceCreator<PipelineSlice> = (set, get) => ({
     // cancel the current pipeline (e.g. the improvise/waterbend tap step) first. Guards against casting a
     // second spell from hand mid-cast even if some interaction path slips past the UI gating.
     if (get().pipelineState != null) return
+    const interactionEpoch = actionInfo.interactionEpoch
+    if (!interactionEpoch || interactionEpoch !== get().interactionEpoch) return
     const autoTapEnabled = options?.forceManualTap ? false : get().autoTapEnabled
     const phases = computePhases(actionInfo, { autoTapEnabled })
 
     if (phases.length === 0) {
       // No interaction needed — submit directly
-      get().submitAction(actionInfo.action)
+      get().submitAction(actionInfo.action, interactionEpoch)
       get().selectCard(null)
       return
     }
@@ -74,6 +120,7 @@ export const createPipelineSlice: SliceCreator<PipelineSlice> = (set, get) => ({
 
     set({
       pipelineState: {
+        interactionEpoch,
         actionInfo,
         accumulatedAction,
         remainingPhases: phases,
@@ -97,7 +144,8 @@ export const createPipelineSlice: SliceCreator<PipelineSlice> = (set, get) => ({
     if (!pipelineState || !gameState) return
 
     let { actionInfo } = pipelineState
-    const { accumulatedAction, remainingPhases } = pipelineState
+    const { accumulatedAction, remainingPhases, interactionEpoch } = pipelineState
+    if (interactionEpoch !== get().interactionEpoch) return
 
     // Merge result into accumulated action
     const mergedAction = mergeResult(accumulatedAction, actionInfo, result, gameState)
@@ -107,15 +155,12 @@ export const createPipelineSlice: SliceCreator<PipelineSlice> = (set, get) => ({
     // the reduced cost — the engine will re-solve on submit, but this keeps the UI
     // pre-selection honest about what will actually tap.
     if (result.type === 'delve') {
-      const originalSymbols = parseManaCostUtil(actionInfo.manaCostString ?? '')
-      // If X was resolved earlier, expand each {X} symbol to its numeric value so
-      // getRemainingCostSymbols can reduce that generic via delve.
-      const xValue =
-        mergedAction.type === 'CastSpell' ? mergedAction.xValue ?? 0 : 0
-      const resolvedSymbols =
-        xValue > 0
-          ? originalSymbols.map((s) => (s === 'X' ? String(xValue) : s))
-          : originalSymbols
+      // Delve pays generic mana of the total cost, X included (CR 601.2f / 702.66a), so fold the
+      // chosen X in first — same handoff as convoke below.
+      const resolvedSymbols = materializeX(
+        parseManaCostUtil(actionInfo.manaCostString ?? ''),
+        mergedAction.type === 'CastSpell' ? mergedAction.xValue : undefined,
+      )
       const remainingSymbols = getRemainingCostSymbols(resolvedSymbols, result.delvedCards.length)
       const modifiedManaCost = remainingSymbols.map((s) => `{${s}}`).join('')
       const trimmedPreview: readonly EntityId[] | undefined =
@@ -141,7 +186,12 @@ export const createPipelineSlice: SliceCreator<PipelineSlice> = (set, get) => ({
     // Trim the preview similarly so the manaSource phase pre-selection reflects the
     // reduced cost rather than over-selecting based on the original full cost.
     if (result.type === 'convoke') {
-      const originalSymbols = parseManaCostUtil(actionInfo.manaCostString ?? '')
+      // Convoke pays generic mana of the total cost, which includes the announced X (CR 601.2f /
+      // 702.51a), so fold X in first — the server credits the leftover taps against the X mana.
+      const originalSymbols = materializeX(
+        parseManaCostUtil(actionInfo.manaCostString ?? ''),
+        mergedAction.type === 'CastSpell' ? mergedAction.xValue : undefined,
+      )
       const remainingSymbols = getRemainingCostAfterConvoke(originalSymbols, result.convokedCreatures)
       const modifiedManaCost = remainingSymbols.map((s) => `{${s}}`).join('')
       const trimmedPreview: readonly EntityId[] | undefined =
@@ -166,14 +216,7 @@ export const createPipelineSlice: SliceCreator<PipelineSlice> = (set, get) => ({
     // cost shown to subsequent phases (each tapped permanent pays {1} generic). Mirrors convoke.
     if (result.type === 'tapForGeneric') {
       const originalSymbols = parseManaCostUtil(actionInfo.manaCostString ?? '')
-      const remainingSymbols = [...originalSymbols]
-      for (let i = 0; i < result.tapForGenericPermanents.length; i++) {
-        const gIdx = remainingSymbols.findIndex((s) => /^\d+$/.test(s))
-        if (gIdx < 0) break
-        const val = parseInt(remainingSymbols[gIdx]!, 10)
-        if (val > 1) remainingSymbols[gIdx] = String(val - 1)
-        else remainingSymbols.splice(gIdx, 1)
-      }
+      const remainingSymbols = getRemainingCostSymbols(originalSymbols, result.tapForGenericPermanents.length)
       const modifiedManaCost = remainingSymbols.map((s) => `{${s}}`).join('')
       const trimmedPreview: readonly EntityId[] | undefined =
         actionInfo.autoTapPreview && actionInfo.availableManaSources
@@ -250,6 +293,7 @@ export const createPipelineSlice: SliceCreator<PipelineSlice> = (set, get) => ({
 
       set({
         pipelineState: {
+          interactionEpoch,
           actionInfo,
           accumulatedAction: mergedAction,
           remainingPhases: [{ type: 'damageDistribution' }, ...nextPhases],
@@ -271,13 +315,14 @@ export const createPipelineSlice: SliceCreator<PipelineSlice> = (set, get) => ({
     if (nextPhases.length === 0) {
       // All phases complete — submit
       set({ pipelineState: null })
-      submitAction(mergedAction)
+      submitAction(mergedAction, interactionEpoch)
       return
     }
 
     // Update pipeline state and enter next phase
     set({
       pipelineState: {
+        interactionEpoch,
         actionInfo,
         accumulatedAction: mergedAction,
         remainingPhases: nextPhases,
@@ -289,22 +334,7 @@ export const createPipelineSlice: SliceCreator<PipelineSlice> = (set, get) => ({
   },
 
   cancelPipeline: () => {
-    set({
-      pipelineState: null,
-      targetingState: null,
-      xSelectionState: null,
-      modalModeSelectionState: null,
-      blightVariableSelectionState: null,
-      payXLifeSelectionState: null,
-      convokeSelectionState: null,
-      tapForGenericSelectionState: null,
-      harmonizeSelectionState: null,
-      delveSelectionState: null,
-      manaSelectionState: null,
-      manaColorSelectionState: null,
-      counterDistributionState: null,
-      damageDistributionState: null,
-    })
+    set(CLEARED_PIPELINE_SELECTIONS)
   },
 })
 

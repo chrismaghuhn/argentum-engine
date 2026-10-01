@@ -12,10 +12,12 @@ import com.wingedsheep.engine.core.ChooseReplacementDecision
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ConditionalSelectionMinimum
 import com.wingedsheep.engine.core.LegendRuleContinuation
+import com.wingedsheep.engine.core.LeylineDecisionContinuation
 import com.wingedsheep.engine.core.ManaSourceOption
 import com.wingedsheep.engine.core.ModeOption
 import com.wingedsheep.engine.core.OptionMetadata
 import com.wingedsheep.engine.core.OrderObjectsDecision
+import com.wingedsheep.engine.core.PendingDecision
 import com.wingedsheep.engine.core.ReorderLibraryDecision
 import com.wingedsheep.engine.core.SearchCardInfo
 import com.wingedsheep.engine.core.SearchLibraryDecision
@@ -25,6 +27,7 @@ import com.wingedsheep.engine.core.SplitPilesDecision
 import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.WaterbendPermanentChoice
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.PlayerYields
@@ -75,6 +78,26 @@ class ReplayFingerprintV3Test : FunSpec({
         prompt = prompt,
         context = DecisionContext(sourceId = sourceId, effectHint = effectHint),
     )
+
+    // A question is no longer a GameState field: the engine installs it as one Suspension
+    // (question + the answer continuation that consumes it) on top of the continuation stack, with
+    // its id allocated from GameState.nextRoutingId. Every compared pair below shares this neutral
+    // answer, so only the question differs.
+    val neutralAnswer = LeylineDecisionContinuation(EntityId("p1"), EntityId("leyline"), "Test leyline")
+
+    // The routing allocator position is fingerprinted state of its own. Every fixture is parked at
+    // the same position after asking, so a pair differs only in what the test varies.
+    val parkedRoutingId = 100L
+
+    /**
+     * Ask [question] from routing allocator position [routingId] (the question's id becomes
+     * "r<routingId>"), then park the allocator at [parkedRoutingId].
+     */
+    fun pending(routingId: Long = 0L, question: (String) -> PendingDecision): GameState =
+        GameState(nextRoutingId = routingId)
+            .suspendForDecision(question = question, answer = neutralAnswer)
+            .state
+            .copy(nextRoutingId = parkedRoutingId)
 
     test("v3 fingerprint is a complete 64-hex SHA-256 value") {
         val fingerprint = ReplayFingerprint.of(GameState())
@@ -532,79 +555,86 @@ class ReplayFingerprintV3Test : FunSpec({
     }
 
     test("nonce changes are ignored but decision semantics remain fingerprinted") {
-        val withAbc = GameState(pendingDecision = decision("abc"))
-        val withXyz = GameState(pendingDecision = decision("xyz"))
-        val differentSemantics = GameState(
-            pendingDecision = decision("xyz", sourceId = EntityId("source"))
-        )
+        // Same question asked from two routing allocator positions: the routing ids differ
+        // ("r0" vs "r7"), the allocator is parked at the same position, the semantics match.
+        val withAbc = pending(routingId = 0L) { id -> decision(id) }
+        val withXyz = pending(routingId = 7L) { id -> decision(id) }
+        val differentSemantics = pending(routingId = 7L) { id ->
+            decision(id, sourceId = EntityId("source"))
+        }
+        withAbc.pendingDecision!!.id shouldNotBe withXyz.pendingDecision!!.id
+        withAbc.nextRoutingId shouldBe withXyz.nextRoutingId
 
         ReplayFingerprint.of(withAbc) shouldBe ReplayFingerprint.of(withXyz)
-        ReplayFingerprint.of(withAbc) shouldNotBe ReplayFingerprint.of(differentSemantics)
+        // Same routing id as withXyz, so only the decision semantics differ.
+        ReplayFingerprint.of(withXyz) shouldNotBe ReplayFingerprint.of(differentSemantics)
 
         ReplayFingerprint.of(
-            GameState(pendingDecision = decision("abc", prompt = "Prompt A", effectHint = "Hint A"))
+            pending(routingId = 0L) { id -> decision(id, prompt = "Prompt A", effectHint = "Hint A") }
         ) shouldBe ReplayFingerprint.of(
-            GameState(pendingDecision = decision("xyz", prompt = "Prompt B", effectHint = "Hint B"))
+            pending(routingId = 7L) { id -> decision(id, prompt = "Prompt B", effectHint = "Hint B") }
         )
     }
 
     test("v3 excludes audited presentation-only decision labels") {
-        val yesNoA = GameState(
-            pendingDecision = YesNoDecision(
-                id = "yes-a",
+        // Each A/B pair is asked from the same routing allocator position, so only the labels differ;
+        // routing-id (nonce) invariance is asserted by "nonce changes are ignored ..." above.
+        val yesNoA = pending { id ->
+            YesNoDecision(
+                id = id,
                 playerId = EntityId("p1"),
                 prompt = "same semantic question",
                 context = DecisionContext(),
                 yesText = "Accept the offer",
                 noText = "Decline the offer",
                 hint = "A very specific UI hint",
-            ),
-        )
-        val yesNoB = yesNoA.copy(
-            pendingDecision = (yesNoA.pendingDecision as YesNoDecision).copy(
-                id = "yes-b",
+            )
+        }
+        val yesNoB = pending { id ->
+            (yesNoA.pendingDecision as YesNoDecision).copy(
+                id = id,
                 yesText = "Do it",
                 noText = "Do not do it",
                 hint = "A different UI hint",
-            ),
-        )
+            )
+        }
         ReplayFingerprint.of(yesNoA, 3) shouldBe ReplayFingerprint.of(yesNoB, 3)
 
-        val batchA = GameState(
-            pendingDecision = BatchYesNoDecision(
-                id = "batch-a",
+        val batchA = pending { id ->
+            BatchYesNoDecision(
+                id = id,
                 playerId = EntityId("p1"),
                 prompt = "same batch question",
                 context = DecisionContext(),
                 count = 2,
                 yesText = "Accept all",
                 noText = "Decline all",
-            ),
-        )
-        val batchB = batchA.copy(
-            pendingDecision = (batchA.pendingDecision as BatchYesNoDecision).copy(
-                id = "batch-b",
+            )
+        }
+        val batchB = pending { id ->
+            (batchA.pendingDecision as BatchYesNoDecision).copy(
+                id = id,
                 yesText = "All yes",
                 noText = "All no",
-            ),
-        )
+            )
+        }
         ReplayFingerprint.of(batchA, 3) shouldBe ReplayFingerprint.of(batchB, 3)
 
-        val modesA = GameState(
-            pendingDecision = ChooseModeDecision(
-                id = "modes-a",
+        val modesA = pending { id ->
+            ChooseModeDecision(
+                id = id,
                 playerId = EntityId("p1"),
                 prompt = "same mode question",
                 context = DecisionContext(),
                 modes = listOf(ModeOption(index = 0, text = "Draw two cards", available = true)),
-            ),
-        )
-        val modesB = modesA.copy(
-            pendingDecision = (modesA.pendingDecision as ChooseModeDecision).copy(
-                id = "modes-b",
+            )
+        }
+        val modesB = pending { id ->
+            (modesA.pendingDecision as ChooseModeDecision).copy(
+                id = id,
                 modes = listOf(ModeOption(index = 0, text = "A completely different label", available = true)),
-            ),
-        )
+            )
+        }
         ReplayFingerprint.of(modesA, 3) shouldBe ReplayFingerprint.of(modesB, 3)
     }
 
@@ -642,9 +672,9 @@ class ReplayFingerprintV3Test : FunSpec({
         )
 
         val states = listOf(
-            GameState(
-                pendingDecision = ChooseTargetsDecision(
-                    id = "targets",
+            pending { id ->
+                ChooseTargetsDecision(
+                    id = id,
                     playerId = player,
                     prompt = "same prompt",
                     context = contextA,
@@ -670,10 +700,10 @@ class ReplayFingerprintV3Test : FunSpec({
                     ),
                     legalTargets = mapOf(0 to listOf(first)),
                     canCancel = true,
-                ),
-            ) to GameState(
-                pendingDecision = ChooseTargetsDecision(
-                    id = "targets",
+                )
+            } to pending { id ->
+                ChooseTargetsDecision(
+                    id = id,
                     playerId = player,
                     prompt = "different prompt",
                     context = contextB,
@@ -699,11 +729,11 @@ class ReplayFingerprintV3Test : FunSpec({
                     ),
                     legalTargets = mapOf(0 to listOf(first)),
                     canCancel = true,
-                ),
-            ),
-            GameState(
-                pendingDecision = SelectCardsDecision(
-                    id = "cards",
+                )
+            },
+            pending { id ->
+                SelectCardsDecision(
+                    id = id,
                     playerId = player,
                     prompt = "same prompt",
                     context = contextA,
@@ -734,10 +764,10 @@ class ReplayFingerprintV3Test : FunSpec({
                             description = "Condition A",
                         ),
                     ),
-                ),
-            ) to GameState(
-                pendingDecision = SelectCardsDecision(
-                    id = "cards",
+                )
+            } to pending { id ->
+                SelectCardsDecision(
+                    id = id,
                     playerId = player,
                     prompt = "different prompt",
                     context = contextB,
@@ -768,11 +798,11 @@ class ReplayFingerprintV3Test : FunSpec({
                             description = "Condition B",
                         ),
                     ),
-                ),
-            ),
-            GameState(
-                pendingDecision = SearchLibraryDecision(
-                    id = "search",
+                )
+            },
+            pending { id ->
+                SearchLibraryDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Search A",
                     context = contextA,
@@ -781,10 +811,10 @@ class ReplayFingerprintV3Test : FunSpec({
                     maxSelections = 1,
                     cards = mapOf(first to cardInfoA),
                     filterDescription = "A filter",
-                ),
-            ) to GameState(
-                pendingDecision = SearchLibraryDecision(
-                    id = "search",
+                )
+            } to pending { id ->
+                SearchLibraryDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Search B",
                     context = contextB,
@@ -793,30 +823,30 @@ class ReplayFingerprintV3Test : FunSpec({
                     maxSelections = 1,
                     cards = mapOf(first to cardInfoB),
                     filterDescription = "A different filter",
-                ),
-            ),
-            GameState(
-                pendingDecision = ReorderLibraryDecision(
-                    id = "reorder",
+                )
+            },
+            pending { id ->
+                ReorderLibraryDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Reorder A",
                     context = contextA,
                     cards = listOf(first, second),
                     cardInfo = mapOf(first to cardInfoA),
-                ),
-            ) to GameState(
-                pendingDecision = ReorderLibraryDecision(
-                    id = "reorder",
+                )
+            } to pending { id ->
+                ReorderLibraryDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Reorder B",
                     context = contextB,
                     cards = listOf(first, second),
                     cardInfo = mapOf(first to cardInfoB),
-                ),
-            ),
-            GameState(
-                pendingDecision = ChooseOptionDecision(
-                    id = "option",
+                )
+            },
+            pending { id ->
+                ChooseOptionDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Option A",
                     context = contextA,
@@ -825,10 +855,10 @@ class ReplayFingerprintV3Test : FunSpec({
                     optionCardIds = mapOf(0 to listOf(first)),
                     optionMetadata = listOf(OptionMetadata(id = "one", description = "A", iconKey = "a")),
                     canCancel = true,
-                ),
-            ) to GameState(
-                pendingDecision = ChooseOptionDecision(
-                    id = "option",
+                )
+            } to pending { id ->
+                ChooseOptionDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Option B",
                     context = contextB,
@@ -837,11 +867,11 @@ class ReplayFingerprintV3Test : FunSpec({
                     optionCardIds = mapOf(0 to listOf(second)),
                     optionMetadata = listOf(OptionMetadata(id = "one", description = "B", iconKey = "b")),
                     canCancel = true,
-                ),
-            ),
-            GameState(
-                pendingDecision = ChooseReplacementDecision(
-                    id = "replacement",
+                )
+            },
+            pending { id ->
+                ChooseReplacementDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Replacement A",
                     context = contextA,
@@ -851,10 +881,10 @@ class ReplayFingerprintV3Test : FunSpec({
                     toMetadata = listOf(OptionMetadata(id = "island", description = "A", iconKey = "a")),
                     allowedToByFrom = listOf(listOf(0)),
                     defaultFromIndex = 0,
-                ),
-            ) to GameState(
-                pendingDecision = ChooseReplacementDecision(
-                    id = "replacement",
+                )
+            } to pending { id ->
+                ChooseReplacementDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Replacement B",
                     context = contextB,
@@ -864,32 +894,32 @@ class ReplayFingerprintV3Test : FunSpec({
                     toMetadata = listOf(OptionMetadata(id = "island", description = "B", iconKey = "b")),
                     allowedToByFrom = listOf(listOf(0)),
                     defaultFromIndex = 0,
-                ),
-            ),
-            GameState(
-                pendingDecision = OrderObjectsDecision(
-                    id = "order",
+                )
+            },
+            pending { id ->
+                OrderObjectsDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Order A",
                     context = contextA,
                     objects = listOf(first, second),
                     cardInfo = mapOf(first to cardInfoA),
                     objectLabels = mapOf(first to "Display label A"),
-                ),
-            ) to GameState(
-                pendingDecision = OrderObjectsDecision(
-                    id = "order",
+                )
+            } to pending { id ->
+                OrderObjectsDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Order B",
                     context = contextB,
                     objects = listOf(first, second),
                     cardInfo = mapOf(first to cardInfoB),
                     objectLabels = mapOf(first to "Display label B"),
-                ),
-            ),
-            GameState(
-                pendingDecision = SplitPilesDecision(
-                    id = "split",
+                )
+            },
+            pending { id ->
+                SplitPilesDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Split A",
                     context = contextA,
@@ -897,10 +927,10 @@ class ReplayFingerprintV3Test : FunSpec({
                     numberOfPiles = 2,
                     pileLabels = listOf("Keep A", "Discard A"),
                     cardInfo = mapOf(first to cardInfoA),
-                ),
-            ) to GameState(
-                pendingDecision = SplitPilesDecision(
-                    id = "split",
+                )
+            } to pending { id ->
+                SplitPilesDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Split B",
                     context = contextB,
@@ -908,11 +938,11 @@ class ReplayFingerprintV3Test : FunSpec({
                     numberOfPiles = 2,
                     pileLabels = listOf("Keep B", "Discard B"),
                     cardInfo = mapOf(first to cardInfoB),
-                ),
-            ),
-            GameState(
-                pendingDecision = SelectManaSourcesDecision(
-                    id = "mana",
+                )
+            },
+            pending { id ->
+                SelectManaSourcesDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Mana A",
                     context = contextA,
@@ -927,10 +957,10 @@ class ReplayFingerprintV3Test : FunSpec({
                     requiredCost = "{1}",
                     autoPaySuggestion = listOf(first),
                     waterbendPermanents = listOf(WaterbendPermanentChoice(first, "Permanent A", false)),
-                ),
-            ) to GameState(
-                pendingDecision = SelectManaSourcesDecision(
-                    id = "mana",
+                )
+            } to pending { id ->
+                SelectManaSourcesDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Mana B",
                     context = contextB,
@@ -945,73 +975,80 @@ class ReplayFingerprintV3Test : FunSpec({
                     requiredCost = "{1}",
                     autoPaySuggestion = listOf(first),
                     waterbendPermanents = listOf(WaterbendPermanentChoice(first, "Permanent B", true)),
-                ),
-            ),
-            GameState(
-                pendingDecision = BudgetModalDecision(
-                    id = "budget",
+                )
+            },
+            pending { id ->
+                BudgetModalDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Budget A",
                     context = contextA,
                     budget = 2,
                     modes = listOf(BudgetModeOption(cost = 1, description = "Mode A")),
-                ),
-            ) to GameState(
-                pendingDecision = BudgetModalDecision(
-                    id = "budget",
+                )
+            } to pending { id ->
+                BudgetModalDecision(
+                    id = id,
                     playerId = player,
                     prompt = "Budget B",
                     context = contextB,
                     budget = 2,
                     modes = listOf(BudgetModeOption(cost = 1, description = "Mode B")),
-                ),
-            ),
+                )
+            },
         )
 
         states.forEach { (a, b) ->
             ReplayFingerprint.of(a, 3) shouldBe ReplayFingerprint.of(b, 3)
         }
 
-        val semanticChange = (states[1].first.pendingDecision as SelectCardsDecision)
-            .copy(minSelections = 2)
-        ReplayFingerprint.of(states[1].first.copy(pendingDecision = semanticChange), 3) shouldNotBe
+        // Re-asked from the same routing allocator position as states[n].first, so the changed
+        // field is the only difference.
+        val semanticChange = pending { id ->
+            (states[1].first.pendingDecision as SelectCardsDecision).copy(id = id, minSelections = 2)
+        }
+        ReplayFingerprint.of(semanticChange, 3) shouldNotBe
             ReplayFingerprint.of(states[1].first, 3)
 
-        val semanticColorChange = (states[1].first.pendingDecision as SelectCardsDecision)
-            .copy(availableColors = listOf("R"))
-        ReplayFingerprint.of(states[1].first.copy(pendingDecision = semanticColorChange), 3) shouldNotBe
+        val semanticColorChange = pending { id ->
+            (states[1].first.pendingDecision as SelectCardsDecision).copy(id = id, availableColors = listOf("R"))
+        }
+        ReplayFingerprint.of(semanticColorChange, 3) shouldNotBe
             ReplayFingerprint.of(states[1].first, 3)
 
         val targetZoneChange = (states[0].first.pendingDecision as ChooseTargetsDecision)
             .targetRequirements.single()
             .copy(targetZone = "Battlefield")
-        val changedTargetDomain = states[0].first.copy(
-            pendingDecision = (states[0].first.pendingDecision as ChooseTargetsDecision).copy(
+        val changedTargetDomain = pending { id ->
+            (states[0].first.pendingDecision as ChooseTargetsDecision).copy(
+                id = id,
                 targetRequirements = listOf(targetZoneChange),
-            ),
-        )
+            )
+        }
         ReplayFingerprint.of(changedTargetDomain, 3) shouldBe ReplayFingerprint.of(states[0].first, 3)
     }
 
     test("decision routing fields remain present through shared canonical aliases") {
-        val state = GameState(
-            pendingDecision = decision("abc"),
-            continuationStack = listOf(
-                LegendRuleContinuation(
-                    decisionId = "abc",
-                    playerId = EntityId("p1"),
-                    allDuplicates = listOf(EntityId("e1")),
-                )
+        // The question and the answer continuation that consumes it are one Suspension frame on
+        // the continuation stack; the answer no longer carries a decisionId of its own, the frame
+        // itself is the routing relationship.
+        val state = GameState().suspendForDecision(
+            question = { id -> decision(id) },
+            answer = LegendRuleContinuation(
+                playerId = EntityId("p1"),
+                allDuplicates = listOf(EntityId("e1")),
             ),
-        )
+        ).state
+        val routingId = state.pendingDecision!!.id
 
         val canonical = TransitionSemanticGameStateCanonicalizer.canonicalJson(state)
 
-        canonical shouldContain "\"pendingDecision\""
         canonical shouldContain "\"continuationStack\""
+        canonical shouldContain "\"question\""
+        canonical shouldContain "\"answer\""
+        canonical shouldContain "\"allDuplicates\""
         canonical shouldContain "\"id\":\"D0\""
-        canonical shouldContain "\"decisionId\":\"D0\""
-        canonical.contains("abc").shouldBeFalse()
+        canonical.contains("\"$routingId\"").shouldBeFalse()
     }
 
     test("canonical inventory covers every serialized GameState constructor field") {

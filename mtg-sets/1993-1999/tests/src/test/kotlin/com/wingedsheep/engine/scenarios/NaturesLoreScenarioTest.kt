@@ -14,6 +14,7 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Nature's Lore (ICE #255)
@@ -48,7 +49,7 @@ class NaturesLoreScenarioTest : FunSpec({
             it is LibraryShuffledEvent && it.playerId == player
         }
 
-        driver.castSpell(player, spell).isSuccess shouldBe true
+        driver.castSpell(player, spell).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val decision = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
@@ -68,7 +69,7 @@ class NaturesLoreScenarioTest : FunSpec({
             it is LibraryShuffledEvent && it.playerId == player
         } shouldBe shufflesBefore
 
-        driver.submitCardSelection(player, listOf(matching)).isSuccess shouldBe true
+        driver.submitCardSelection(player, listOf(matching)).outcome shouldBe Outcome.Done
 
         val forest = driver.findPermanent(player, "Forest")
         forest shouldNotBe null
@@ -87,7 +88,7 @@ class NaturesLoreScenarioTest : FunSpec({
         driver.giveMana(player, Color.GREEN, 1)
         driver.giveColorlessMana(player, 1)
 
-        driver.castSpell(player, spell).isSuccess shouldBe true
+        driver.castSpell(player, spell).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.pendingDecision shouldBe null

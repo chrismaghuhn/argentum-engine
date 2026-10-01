@@ -11,10 +11,10 @@ import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContain
@@ -42,7 +42,7 @@ class CommanderZoneChoiceDuringSpellResolutionTest : FunSpec({
         typeLine = "Instant"
         oracleText = "The owner of target creature shuffles it into their library. Draw a card."
         spell {
-            val creature = target("target creature", Targets.Creature)
+            val creature = target(TargetFilter.Creature)
             effect = Effects.Composite(
                 listOf(
                     Effects.ShuffleIntoLibrary(creature),

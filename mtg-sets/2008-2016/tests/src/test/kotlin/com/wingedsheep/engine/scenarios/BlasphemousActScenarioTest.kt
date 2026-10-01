@@ -7,6 +7,7 @@ import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Blasphemous Act (ISD #130).
@@ -41,7 +42,7 @@ class BlasphemousActScenarioTest : io.kotest.core.spec.style.FunSpec({
         // Seven creatures reduce {8}{R} to {1}{R}; the pool contains exactly that cost.
         driver.giveMana(you, Color.RED, 1)
         driver.giveColorlessMana(you, 1)
-        driver.castSpell(you, act).isSuccess shouldBe true
+        driver.castSpell(you, act).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.getCreatures(you).size shouldBe 0

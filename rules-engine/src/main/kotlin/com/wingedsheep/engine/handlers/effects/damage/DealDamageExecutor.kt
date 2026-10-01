@@ -1,11 +1,13 @@
 package com.wingedsheep.engine.handlers.effects.damage
 
+import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.DamageUtils.dealDamageToTarget
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.scripting.effects.DealDamageEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
@@ -17,7 +19,8 @@ import kotlin.reflect.KClass
  * multi-player targets (e.g., PlayerRef(Player.Each), PlayerRef(Player.EachOpponent)).
  */
 class DealDamageExecutor(
-    private val amountEvaluator: DynamicAmountEvaluator = DynamicAmountEvaluator()
+    private val zones: ZoneTransitionService,
+    private val amountEvaluator: DynamicAmountEvaluator
 ) : EffectExecutor<DealDamageEffect> {
 
     override val effectType: KClass<DealDamageEffect> = DealDamageEffect::class
@@ -47,6 +50,28 @@ class DealDamageExecutor(
             context.sourceId
         }
 
+        // "Each opponent and planeswalker it has dealt damage to this game" (The Fallen): a set
+        // that mixes players and permanents, read off the damage source's accumulated memory.
+        // Empty is a legal no-op, not an error — a Fallen that has damaged nobody yet does nothing.
+        if (effect.target is EffectTarget.EachDamagedBySourceThisGame) {
+            val recipients = resolveDamagedThisGame(state, sourceId, context)
+            val (readyState, pause) = OptionalDamageRedirect.beforeDealing(
+                state,
+                recipients.map { OptionalDamageRedirect.Instance(sourceId, it, amount) },
+                effect,
+                context
+            )
+            if (pause != null) return pause
+            var newState = readyState
+            val events = mutableListOf<EngineGameEvent>()
+            for (recipientId in recipients) {
+                val result = dealDamageToTarget(zones, newState, recipientId, amount, sourceId, effect.cantBePrevented)
+                newState = result.newState
+                events.addAll(result.events)
+            }
+            return EffectResult.success(newState, events)
+        }
+
         // For PlayerRef targets, resolve to potentially multiple players
         if (effect.target is EffectTarget.PlayerRef) {
             val playerIds = context.resolvePlayerTargets(effect.target, state)
@@ -54,10 +79,17 @@ class DealDamageExecutor(
                 return EffectResult.error(state, "No valid target for damage")
             }
 
-            var newState = state
+            val (readyState, pause) = OptionalDamageRedirect.beforeDealing(
+                state,
+                playerIds.map { OptionalDamageRedirect.Instance(sourceId, it, amount) },
+                effect,
+                context
+            )
+            if (pause != null) return pause
+            var newState = readyState
             val events = mutableListOf<EngineGameEvent>()
             for (playerId in playerIds) {
-                val result = dealDamageToTarget(newState, playerId, amount, sourceId, effect.cantBePrevented)
+                val result = dealDamageToTarget(zones, newState, playerId, amount, sourceId, effect.cantBePrevented)
                 newState = result.newState
                 events.addAll(result.events)
             }
@@ -68,9 +100,49 @@ class DealDamageExecutor(
         val targetId = context.resolveTarget(effect.target, state)
             ?: return EffectResult.error(state, "No valid target for damage")
 
-        return dealDamageToTarget(
-            state, targetId, amount, sourceId, effect.cantBePrevented,
+        // "You may have that damage dealt to you instead" (Blood of the Martyr) — ask before dealing.
+        val (readyState, pause) = OptionalDamageRedirect.beforeDealing(
+            state,
+            listOf(OptionalDamageRedirect.Instance(sourceId, targetId, amount)),
+            effect,
+            context
+        )
+        if (pause != null) return pause
+
+        val result = dealDamageToTarget(
+            zones,
+            readyState, targetId, amount, sourceId, effect.cantBePrevented,
             excessToController = effect.excessToController
         )
+        val excessVariable = effect.excessDamageVariable ?: return result
+        // Excess damage (CR 120.4a) dealt to this target by this instruction, read off the actual
+        // DamageDealtEvent so prevention, deathtouch, marked damage and loyalty are all accounted.
+        val excess = result.events
+            .filterIsInstance<DamageDealtEvent>()
+            .filter { it.targetId == targetId }
+            .sumOf { it.excessAmount }
+        return result.copy(updatedStoredNumbers = result.updatedStoredNumbers + (excessVariable to excess))
+    }
+
+    /**
+     * The recipients still eligible to be hit again: opponents of the source's controller, plus
+     * planeswalkers still on the battlefield. A recorded player who has since left the game, and a
+     * planeswalker that has since died, are dropped — the memory identifies them, it doesn't
+     * resurrect them. Ordered deterministically by the recorded set's iteration order.
+     */
+    private fun resolveDamagedThisGame(
+        state: GameState,
+        sourceId: com.wingedsheep.sdk.model.EntityId?,
+        context: EffectContext
+    ): List<com.wingedsheep.sdk.model.EntityId> {
+        val sourceEntity = sourceId?.let(state::getEntity) ?: return emptyList()
+        val recorded = sourceEntity
+            .get<com.wingedsheep.engine.state.components.battlefield.DealtDamageToThisGameComponent>()
+            ?.recipientIds
+            ?: return emptyList()
+        val opponents = state.getOpponents(context.controllerId).toSet()
+        val battlefield = state.getBattlefield().toSet()
+        val projected = state.projectedState
+        return recorded.filter { it in opponents || (it in battlefield && projected.isPlaneswalker(it)) }
     }
 }

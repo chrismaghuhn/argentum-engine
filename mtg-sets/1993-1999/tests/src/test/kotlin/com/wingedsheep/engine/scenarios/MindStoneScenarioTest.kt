@@ -10,6 +10,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Mind Stone (WTH #153) — "{T}: Add {C}. {1}, {T}, Sacrifice this artifact: Draw a card."
@@ -36,7 +37,7 @@ class MindStoneScenarioTest : FunSpec({
             ActivateAbility(player, stone, manaAbilityId)
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.isTapped(stone) shouldBe true
         driver.state.getEntity(player)?.get<ManaPoolComponent>()?.colorless shouldBe 1
     }
@@ -57,7 +58,7 @@ class MindStoneScenarioTest : FunSpec({
                 paymentStrategy = PaymentStrategy.FromPool
             )
         )
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.findPermanent(player, "Mind Stone") shouldBe null

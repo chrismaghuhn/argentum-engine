@@ -1,6 +1,5 @@
 package com.wingedsheep.engine.mechanics
 
-import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
@@ -47,8 +46,10 @@ internal data class EffectiveCrewAbility(
  */
 internal object EffectiveKeywordAbilityResolver {
 
-    private val predicateEvaluator = PredicateEvaluator()
-    private val conditionEvaluator = ConditionEvaluator()
+    // Grant filters and grant conditions read only components and projected state, never a card's
+    // script, so this resolver keeps one registry-less evaluator graph rather than one per call.
+    private val predicateEvaluator = PredicateEvaluator(cardRegistry = null)
+    private val conditionEvaluator = predicateEvaluator.conditions
 
     fun effectiveCrewAbilities(
         state: GameState,

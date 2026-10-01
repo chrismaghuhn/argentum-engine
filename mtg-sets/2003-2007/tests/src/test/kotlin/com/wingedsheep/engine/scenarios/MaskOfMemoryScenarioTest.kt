@@ -2,6 +2,7 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.SelectCardsDecision
+import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.ScenarioTestBase
@@ -14,6 +15,8 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Mask of Memory (MRD) — "Whenever equipped creature deals combat damage to a player, you may draw
@@ -44,7 +47,7 @@ class MaskOfMemoryScenarioTest : ScenarioTestBase() {
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -147,7 +150,7 @@ class MaskOfMemoryScenarioTest : ScenarioTestBase() {
                     abilityId = equipAbilityId,
                     targets = listOf(ChosenTarget.Permanent(opponentCreature)),
                 )
-            ).isSuccess shouldBe false
+            ).outcome shouldNotBe Outcome.Done
             driver.state.getEntity(mask)?.get<AttachedToComponent>() shouldBe null
 
             equip(driver, player, mask, ownCreature)
@@ -162,8 +165,56 @@ class MaskOfMemoryScenarioTest : ScenarioTestBase() {
                     abilityId = equipAbilityId,
                     targets = listOf(ChosenTarget.Permanent(secondCreature)),
                 )
-            ).isSuccess shouldBe false
+            ).outcome shouldNotBe Outcome.Done
             driver.state.getEntity(mask)?.get<AttachedToComponent>()?.targetId shouldBe ownCreature
+        }
+
+        test("an equipped creature that dies to the same combat damage still triggers the Mask") {
+            // Trample Beast (5/5 trample) is blocked by a 1/1 deathtouch Rat: it assigns lethal 1 to
+            // the Rat and tramples 4 over, while the Rat's deathtouch damage kills it in the same
+            // step. The Mask's ability triggered when that damage was dealt (CR 603.2), while the
+            // Beast was still equipped; the state-based actions that destroy the Beast and unattach
+            // the Mask (CR 704.5n) only happen afterwards.
+            val driver = createDriver()
+            val player = driver.activePlayer!!
+            val opponent = driver.getOpponent(player)
+            val beast = driver.putCreatureOnBattlefield(player, "Trample Beast")
+            driver.removeSummoningSickness(beast)
+            val rat = driver.putCreatureOnBattlefield(opponent, "Deathtouch Rat")
+            val mask = driver.putPermanentOnBattlefield(player, "Mask of Memory")
+            equip(driver, player, mask, beast)
+            val libraryBefore = driver.state.getLibrary(player).size
+
+            driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+            driver.declareAttackers(player, listOf(beast), opponent)
+            driver.bothPass()
+            driver.declareBlockers(opponent, mapOf(rat to listOf(beast)))
+            var maskOffered = false
+            var guard = 0
+            while (driver.state.step != Step.END_COMBAT && guard++ < 50) {
+                val decision = driver.state.pendingDecision
+                when {
+                    decision is YesNoDecision -> {
+                        maskOffered = true
+                        driver.submitYesNo(decision.playerId, true)
+                    }
+                    decision != null -> driver.autoResolveDecision()
+                    else -> driver.passPriority(driver.state.priorityPlayerId ?: break)
+                }
+            }
+
+            withClue("the Beast died to the Rat's deathtouch damage in the same step") {
+                driver.state.getGraveyard(player).contains(beast) shouldBe true
+            }
+            withClue("4 damage trampled over to the defending player") {
+                driver.getLifeTotal(opponent) shouldBe 16
+            }
+            withClue("the Mask still triggered and offered the draw") {
+                maskOffered shouldBe true
+            }
+            withClue("accepting drew two cards") {
+                driver.state.getLibrary(player).size shouldBe libraryBefore - 2
+            }
         }
 
         test("combat damage from a non-equipped creature does not trigger the Mask") {

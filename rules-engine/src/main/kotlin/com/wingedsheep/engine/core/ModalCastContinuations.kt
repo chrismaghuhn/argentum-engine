@@ -34,7 +34,6 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class CastModalModeSelectionContinuation(
-    override val decisionId: String,
     val cardId: EntityId,
     val casterId: EntityId,
     val baseCastAction: CastSpell,
@@ -46,7 +45,7 @@ data class CastModalModeSelectionContinuation(
     val availableIndices: List<Int>? = null,
     val selectedModeIndices: List<Int> = emptyList(),
     val doneOptionOffered: Boolean = false
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Cast-time per-mode target selection for a choose-N modal spell (rule 601.2c).
@@ -66,7 +65,6 @@ data class CastModalModeSelectionContinuation(
  */
 @Serializable
 data class CastModalTargetSelectionContinuation(
-    override val decisionId: String,
     val cardId: EntityId,
     val casterId: EntityId,
     val baseCastAction: CastSpell,
@@ -76,4 +74,4 @@ data class CastModalTargetSelectionContinuation(
     val currentOrdinal: Int,
     /** Exact per-requirement counts returned by each target decision, by mode ordinal. */
     val resolvedModeTargetRequirements: List<List<TargetRequirement>> = emptyList()
-) : ContinuationFrame
+) : AnswerContinuation

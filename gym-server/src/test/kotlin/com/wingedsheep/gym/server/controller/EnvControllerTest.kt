@@ -26,6 +26,7 @@ import com.wingedsheep.gym.server.dto.CreateEnvResponse
 import com.wingedsheep.gym.server.dto.DisposeBody
 import com.wingedsheep.gym.server.dto.RestoreBody
 import com.wingedsheep.gym.server.dto.SchemaHashResponse
+import com.wingedsheep.gym.server.dto.ServiceStatusResponse
 import com.wingedsheep.gym.server.dto.StepBody
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.extensions.spring.SpringExtension
@@ -66,7 +67,10 @@ import java.net.http.HttpResponse
  * rejection. Sealed-deck flows and structured decisions belong in
  * dedicated tests alongside the controllers.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    properties = ["argentum.build-revision=test-build-revision"]
+)
 class EnvControllerTest : FunSpec() {
 
     @LocalServerPort
@@ -161,7 +165,7 @@ class EnvControllerTest : FunSpec() {
             val response = get("/schema-hash")
             response.statusCode() shouldBe 200
             val parsed = json.decodeFromString<SchemaHashResponse>(response.body())
-            parsed.schemaHash shouldBe "argentum-gym-contract@v1.26-repeat-count-domain"
+            parsed.schemaHash shouldBe "argentum-gym-contract@v1.27-upstream-sync-05"
             parsed.schemaHash shouldBe SchemaHash.CURRENT
         }
 
@@ -170,6 +174,30 @@ class EnvControllerTest : FunSpec() {
             response.statusCode() shouldBe 200
             response.body() shouldContain "\"status\""
             response.body() shouldContain "\"ok\""
+        }
+
+        test("GET /status returns service, schema, and configured build identity") {
+            val response = get("/status")
+            response.statusCode() shouldBe 200
+            val parsed = json.decodeFromString<ServiceStatusResponse>(response.body())
+            parsed.status shouldBe "ok"
+            parsed.service shouldBe "argentum-gym-server"
+            parsed.schemaHash shouldBe SchemaHash.CURRENT
+            parsed.buildRevision shouldBe "test-build-revision"
+        }
+
+        // Lives here rather than in its own @SpringBootTest so it shares this class's application
+        // context — a second one would register the whole card catalogue again.
+        test("GET /actuator/metrics/http.server.requests records completed requests with standard tags") {
+            get("/health").statusCode() shouldBe 200
+
+            val metrics = get("/actuator/metrics/http.server.requests")
+            metrics.statusCode() shouldBe 200
+            metrics.body() shouldContain "\"name\":\"http.server.requests\""
+            metrics.body() shouldContain "\"tag\":\"method\""
+            metrics.body() shouldContain "\"tag\":\"status\""
+            metrics.body() shouldContain "\"tag\":\"uri\""
+            metrics.body() shouldContain "/health"
         }
 
         test("GET /v3/api-docs serves the OpenAPI spec") {
@@ -610,6 +638,33 @@ class EnvControllerTest : FunSpec() {
 
             deleteJson("/envs", json.encodeToString(DisposeBody(listOf(created.envId))))
                 .statusCode() shouldBe 204
+        }
+
+        test("explicit seat observation masks actions and rejects unknown players over HTTP") {
+            val created = json.decodeFromString<CreateEnvResponse>(
+                postJson("/envs", json.encodeToString(twoPlayerConfig())).body()
+            )
+            try {
+                val opening = created.observation as TrainingObservation
+                val other = opening.players.first { it.id != opening.agentToAct }.id
+                val path = "/envs/${created.envId.value}"
+                val response = get("$path?perspectivePlayerId=${other.value}")
+                response.statusCode() shouldBe 200
+                val masked = json.decodeFromString<TrainingObservation>(response.body())
+                masked.perspectivePlayerId shouldBe other
+                masked.legalActions shouldBe emptyList()
+                postJson("$path/step", json.encodeToString(StepBody(0))).statusCode() shouldBe 400
+                get("$path?perspectivePlayerId=not-seated").statusCode() shouldBe 400
+
+                val actor = get("$path?perspectivePlayerId=${opening.agentToAct!!.value}")
+                actor.statusCode() shouldBe 200
+                val acting = json.decodeFromString<TrainingObservation>(actor.body())
+                acting.legalActions.shouldNotBeEmpty()
+                postJson("$path/step", json.encodeToString(StepBody(acting.legalActions.first().actionId)))
+                    .statusCode() shouldBe 200
+            } finally {
+                deleteJson("/envs", json.encodeToString(DisposeBody(listOf(created.envId))))
+            }
         }
 
         test("POST /envs with an unknown set code surfaces 400") {

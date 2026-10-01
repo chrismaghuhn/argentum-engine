@@ -1,8 +1,11 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.stack.StormCopyEffectExecutor
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -26,6 +29,7 @@ import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Phase 5 of `backlog/storm-implementation-correctness.md`: per rule 707.10c a
@@ -34,6 +38,7 @@ import io.kotest.matchers.shouldBe
  * short-circuited and silently skipped the copy when no legal targets existed.
  */
 class StormIllegalTargetFizzleTest : FunSpec({
+    val zones = ZoneTransitionService(CardRegistry(), predicateEvaluator = PredicateEvaluator(cardRegistry = null))
 
     fun buildState(
         p1: EntityId,
@@ -71,6 +76,14 @@ class StormIllegalTargetFizzleTest : FunSpec({
             .copy(stack = listOf(spellEntity))
     }
 
+    fun stormCopyExecutor(): StormCopyEffectExecutor {
+        val predicateEvaluator = PredicateEvaluator(cardRegistry = null)
+        return StormCopyEffectExecutor(
+            targetFinder = TargetFinder(predicateEvaluator),
+            targetValidator = TargetValidator(predicateEvaluator)
+        )
+    }
+
     test("copy is still put on the stack when no legal target replacement exists") {
         val p1 = EntityId.generate()
         val p2 = EntityId.generate()
@@ -86,10 +99,7 @@ class StormIllegalTargetFizzleTest : FunSpec({
             targetRequirements = listOf(requirement)
         )
 
-        val executor = StormCopyEffectExecutor(
-            cardRegistry = CardRegistry(),
-            targetFinder = TargetFinder()
-        )
+        val executor = stormCopyExecutor()
         val result = executor.execute(
             buildState(p1, p2, spellEntity, source, sourceTargets),
             StormCopyEffect(
@@ -101,7 +111,7 @@ class StormIllegalTargetFizzleTest : FunSpec({
             EffectContext(sourceId = spellEntity, controllerId = p1)
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
 
         // Copy is on the stack with CopyOfComponent
         val copyId = result.state.stack.single { id ->
@@ -127,10 +137,7 @@ class StormIllegalTargetFizzleTest : FunSpec({
             targetRequirements = listOf(requirement)
         )
 
-        val executor = StormCopyEffectExecutor(
-            cardRegistry = CardRegistry(),
-            targetFinder = TargetFinder()
-        )
+        val executor = stormCopyExecutor()
         val result = executor.execute(
             buildState(p1, p2, spellEntity, source, sourceTargets),
             StormCopyEffect(
@@ -142,7 +149,7 @@ class StormIllegalTargetFizzleTest : FunSpec({
             EffectContext(sourceId = spellEntity, controllerId = p1)
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
 
         // Three copies on the stack alongside the source.
         val copyIds = result.state.stack.filter { id ->

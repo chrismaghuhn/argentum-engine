@@ -14,6 +14,7 @@ import com.wingedsheep.gym.server.dto.RestoreBody
 import com.wingedsheep.gym.server.dto.StepBatchItem
 import com.wingedsheep.gym.server.dto.StepBatchResult
 import com.wingedsheep.gym.server.dto.StepBody
+import com.wingedsheep.sdk.model.EntityId
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.media.Content
 import io.swagger.v3.oas.annotations.media.ExampleObject
@@ -202,11 +203,24 @@ class EnvController(
 
     @Operation(
         summary = "Observe an env without advancing",
-        description = "Returns the perspective-safe observation without advancing the environment."
+        description = """
+            Returns the perspective-safe observation without advancing the environment.
+            Pass `perspectivePlayerId` to obtain one seated player's normal information set.
+            When another seat must act, a masked observation exposes neither that seat's pending
+            decision nor its legal-action surface. Multi-seat callers should read `agentToAct`,
+            then observe that player before choosing. There is no HTTP reveal-all view: an
+            obsolete `revealAll` query parameter is ignored and never unmasks hidden information.
+        """
     )
     @GetMapping("/{id}")
-    fun observe(@PathVariable id: String): Observation =
-        multiEnvService.observe(EnvId(id)).observation
+    fun observe(
+        @PathVariable id: String,
+        @RequestParam(required = false) perspectivePlayerId: String?
+    ): Observation =
+        multiEnvService.observe(
+            EnvId(id),
+            perspectivePlayerId = perspectivePlayerId?.let(::EntityId)
+        ).observation
 
     // =========================================================================
     // Stepping
@@ -222,6 +236,12 @@ class EnvController(
             The server binds that payload to the selected current candidate and the rules engine
             validates the completed action; it never chooses missing fields on the controller's
             behalf.
+            Optional `params` complete an action the ID alone can't describe — `attackers`
+            (attacker id → defender id), `blockers` (blocker id → attackers blocked), `targets`,
+            `xValue`. The candidates come from the same legal action's `attackDeclarationDomain` /
+            `blockerDeclarationDomain` / `targetDomain`. `action` and `params` are alternatives:
+            send at most one of them. Params the action can't use, and an action the engine then
+            rejects, both return 400 rather than a silent no-op.
         """
     )
     @PostMapping("/{id}/step")
@@ -229,7 +249,14 @@ class EnvController(
         @PathVariable id: String,
         @RequestBody body: StepBody
     ): Observation =
-        multiEnvService.step(StepRequest(EnvId(id), body.actionId, body.action)).observation
+        multiEnvService.step(
+            StepRequest(
+                envId = EnvId(id),
+                actionId = body.actionId,
+                action = body.action,
+                params = body.params
+            )
+        ).observation
 
     @Operation(
         summary = "Advance many envs in parallel",
@@ -237,7 +264,9 @@ class EnvController(
     )
     @PostMapping("/step-batch")
     fun stepBatch(@RequestBody items: List<StepBatchItem>): List<StepBatchResult> {
-        val requests = items.map { StepRequest(it.envId, it.actionId, it.action) }
+        val requests = items.map {
+            StepRequest(envId = it.envId, actionId = it.actionId, action = it.action, params = it.params)
+        }
         return multiEnvService.stepBatch(requests).map { (envId, obs) ->
             StepBatchResult(envId, obs.observation)
         }
@@ -263,7 +292,7 @@ class EnvController(
         multiEnvService.submitDecision(
             EnvId(id),
             response,
-            actorId?.let { com.wingedsheep.sdk.model.EntityId.of(it) }
+            actorId?.let { EntityId.of(it) }
         ).observation
 
     // =========================================================================

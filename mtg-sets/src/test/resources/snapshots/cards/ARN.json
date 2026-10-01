@@ -11,7 +11,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Abu Ja'far:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "from": "Battlefield",
@@ -40,6 +40,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "1",
         "rarity": "UNCOMMON",
@@ -64,7 +65,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Aladdin:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -82,7 +83,7 @@
                     "type": "GainControl",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target artifact"
+                        "name": "t0"
                     },
                     "duration": {
                         "type": "WhileYouControlSource",
@@ -95,12 +96,13 @@
                         "filter": {
                             "baseFilter": "artifact"
                         },
-                        "id": "target artifact"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "34",
         "rarity": "RARE",
@@ -121,7 +123,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Aladdin's Lamp:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -141,51 +143,46 @@
                         "type": "Composite",
                         "effects": [
                             {
-                                "type": "Composite",
-                                "effects": [
-                                    {
-                                        "type": "GatherCards",
-                                        "source": {
-                                            "type": "TopOfLibrary",
-                                            "count": "XValue"
-                                        },
-                                        "storeAs": "looked"
-                                    },
-                                    {
-                                        "type": "SelectFromCollection",
-                                        "from": "looked",
-                                        "selection": {
-                                            "type": "ChooseExactly",
-                                            "count": {
-                                                "type": "Fixed",
-                                                "amount": 1
-                                            }
-                                        },
-                                        "storeSelected": "kept",
-                                        "storeRemainder": "rest",
-                                        "selectedLabel": "Keep on top",
-                                        "remainderLabel": "Put on bottom at random"
-                                    },
-                                    {
-                                        "type": "MoveCollection",
-                                        "from": "kept",
-                                        "destination": {
-                                            "type": "ToZone",
-                                            "zone": "Library",
-                                            "placement": "Top"
-                                        }
-                                    },
-                                    {
-                                        "type": "MoveCollection",
-                                        "from": "rest",
-                                        "destination": {
-                                            "type": "ToZone",
-                                            "zone": "Library",
-                                            "placement": "Bottom"
-                                        },
-                                        "order": "Random"
+                                "type": "GatherCards",
+                                "source": {
+                                    "type": "TopOfLibrary",
+                                    "count": "XValue"
+                                },
+                                "storeAs": "looked"
+                            },
+                            {
+                                "type": "SelectFromCollection",
+                                "from": "looked",
+                                "selection": {
+                                    "type": "ChooseExactly",
+                                    "count": {
+                                        "type": "Fixed",
+                                        "amount": 1
                                     }
-                                ]
+                                },
+                                "storeSelected": "kept",
+                                "storeRemainder": "rest",
+                                "selectedLabel": "Keep on top",
+                                "remainderLabel": "Put on bottom at random"
+                            },
+                            {
+                                "type": "MoveCollection",
+                                "from": "kept",
+                                "destination": {
+                                    "type": "ToZone",
+                                    "zone": "Library",
+                                    "placement": "Top"
+                                }
+                            },
+                            {
+                                "type": "MoveCollection",
+                                "from": "rest",
+                                "destination": {
+                                    "type": "ToZone",
+                                    "zone": "Library",
+                                    "placement": "Bottom"
+                                },
+                                "order": "Random"
                             },
                             {
                                 "type": "DrawCards",
@@ -201,6 +198,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "56",
         "rarity": "RARE",
@@ -218,7 +216,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Aladdin's Ring:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -240,18 +238,19 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "any target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
                     {
                         "type": "AnyTarget",
-                        "id": "any target"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "57",
         "rarity": "RARE",
@@ -274,7 +273,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ali Baba:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -286,7 +285,7 @@
                     "type": "TapUntap",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target Wall"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -295,12 +294,13 @@
                         "filter": {
                             "baseFilter": "permanent Wall"
                         },
-                        "id": "target Wall"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "35",
         "rarity": "UNCOMMON",
@@ -328,6 +328,7 @@
             "LifeLossFloor"
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "36",
         "rarity": "RARE",
@@ -378,10 +379,11 @@
                     "type": "Fixed",
                     "amount": 0
                 },
-                "target": "Self"
+                "target": "IterationEntity"
             }
         }
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "2",
         "artist": "Brian Snõddy",
@@ -402,7 +404,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Bazaar of Baghdad:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "Composite",
@@ -454,6 +456,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "70",
         "rarity": "UNCOMMON",
@@ -476,6 +479,7 @@
     "keywords": [
         "FLYING"
     ],
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "37",
         "artist": "Kaja Foglio",
@@ -496,7 +500,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Bottle of Suleiman:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -537,6 +541,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "58",
         "rarity": "RARE",
@@ -561,7 +566,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Brass Man:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -585,6 +590,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "59",
         "rarity": "UNCOMMON",
@@ -613,7 +619,7 @@
                 "appliesTo": {
                     "type": "DamageEvent",
                     "recipient": {
-                        "type": "RecipientMatching",
+                        "type": "RecipientObject",
                         "filter": {
                             "statePredicates": [
                                 "InSameBandAsSource"
@@ -621,13 +627,19 @@
                         }
                     },
                     "source": {
-                        "type": "SourceMatching",
-                        "filter": "land Desert"
+                        "cardPredicates": [
+                            "IsLand",
+                            {
+                                "type": "HasSubtype",
+                                "subtype": "Desert"
+                            }
+                        ]
                     }
                 }
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "3",
         "artist": "Sandra Everingham",
@@ -639,6 +651,114 @@
     ]
 }
 
+// City in a Bottle
+{
+    "name": "City in a Bottle",
+    "manaCost": "{2}",
+    "typeLine": "Artifact",
+    "oracleText": "Whenever one or more other nontoken permanents with a name originally printed in the Arabian Nights expansion are on the battlefield, their controllers sacrifice them.\nPlayers can't cast spells or play lands with a name originally printed in the Arabian Nights expansion.",
+    "script": {
+        "stateTriggeredAbilities": [
+            {
+                "id": "City in a Bottle:1",
+                "condition": {
+                    "type": "Exists",
+                    "player": "Each",
+                    "zone": "Battlefield",
+                    "filter": {
+                        "cardPredicates": [
+                            "IsPermanent",
+                            "IsNontoken",
+                            {
+                                "type": "OriginallyPrintedInSet",
+                                "setCode": "ARN"
+                            }
+                        ]
+                    },
+                    "excludeSelf": true
+                },
+                "effect": {
+                    "type": "Composite",
+                    "effects": [
+                        {
+                            "type": "GatherCards",
+                            "source": {
+                                "type": "BattlefieldMatching",
+                                "filter": {
+                                    "cardPredicates": [
+                                        "IsPermanent",
+                                        "IsNontoken",
+                                        {
+                                            "type": "OriginallyPrintedInSet",
+                                            "setCode": "ARN"
+                                        }
+                                    ]
+                                },
+                                "excludeSelf": true,
+                                "excludeTriggering": true
+                            },
+                            "storeAs": "sacrificeAll_gathered"
+                        },
+                        {
+                            "type": "MoveCollection",
+                            "from": "sacrificeAll_gathered",
+                            "destination": {
+                                "type": "ToZone",
+                                "zone": "Graveyard"
+                            },
+                            "moveType": "Sacrifice"
+                        }
+                    ]
+                },
+                "descriptionOverride": "Whenever one or more other nontoken permanents with a name originally printed in the Arabian Nights expansion are on the battlefield, their controllers sacrifice them"
+            }
+        ],
+        "staticAbilities": [
+            {
+                "type": "PlayersCantCastSpells",
+                "affected": "Each",
+                "spellFilter": {
+                    "cardPredicates": [
+                        {
+                            "type": "OriginallyPrintedInSet",
+                            "setCode": "ARN"
+                        }
+                    ]
+                }
+            },
+            {
+                "type": "PlayersCantPlayLands",
+                "landFilter": {
+                    "cardPredicates": [
+                        {
+                            "type": "OriginallyPrintedInSet",
+                            "setCode": "ARN"
+                        }
+                    ]
+                }
+            }
+        ]
+    },
+    "setCode": "ARN",
+    "metadata": {
+        "collectorNumber": "60",
+        "rarity": "RARE",
+        "artist": "Drew Tucker",
+        "imageUri": "https://cards.scryfall.io/normal/front/9/5/9598b346-a47d-4c4c-9571-156824e86b9c.jpg?1783948377",
+        "rulings": [
+            {
+                "date": "2014-02-01",
+                "text": "Any time a player receives priority to cast spells or activate abilities, check to see whether any permanents on the battlefield were originally printed in the Arabian Nights expansion (even if the physical card representing that permanent is a reprint with a different expansion symbol). If there are any such permanents, the ability will trigger and those permanents will be sacrificed."
+            },
+            {
+                "date": "2004-10-04",
+                "text": "Token creatures and counters created by Arabian Nights cards are not removed."
+            }
+        ]
+    },
+    "colorIdentityOverride": []
+}
+
 // City of Brass
 {
     "name": "City of Brass",
@@ -648,7 +768,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "City of Brass:1",
                 "trigger": "TapEvent",
                 "effect": {
                     "type": "DealDamage",
@@ -662,7 +782,7 @@
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "City of Brass:2",
                 "cost": "CostTap",
                 "effect": "AddManaOfChoice",
                 "timing": "ManaAbility",
@@ -670,6 +790,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "71",
         "rarity": "UNCOMMON",
@@ -692,7 +813,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Cuombajj Witches:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "Composite",
@@ -705,7 +826,7 @@
                             },
                             "target": {
                                 "type": "BoundVariable",
-                                "name": "controller target"
+                                "name": "t0"
                             }
                         },
                         {
@@ -716,7 +837,7 @@
                             },
                             "target": {
                                 "type": "BoundVariable",
-                                "name": "opponent target"
+                                "name": "t1"
                             }
                         }
                     ]
@@ -724,17 +845,18 @@
                 "targetRequirements": [
                     {
                         "type": "AnyTarget",
-                        "id": "controller target"
+                        "id": "t0"
                     },
                     {
                         "type": "AnyTarget",
-                        "id": "opponent target",
+                        "id": "t1",
                         "chooser": "Opponent"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "23",
         "artist": "Kaja Foglio",
@@ -764,7 +886,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Cyclone:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -775,7 +897,7 @@
                     "effects": [
                         {
                             "type": "AddCounters",
-                            "counterType": "wind",
+                            "counterType": "WIND",
                             "count": 1,
                             "target": "Self"
                         },
@@ -787,13 +909,10 @@
                                     "type": "PayDynamicManaCost",
                                     "amount": {
                                         "type": "EntityProperty",
-                                        "entity": "Source",
+                                        "entity": "Self",
                                         "numericProperty": {
                                             "type": "CounterCount",
-                                            "counterType": {
-                                                "type": "Named",
-                                                "name": "wind"
-                                            }
+                                            "counterType": "WIND"
                                         }
                                     },
                                     "color": "GREEN"
@@ -814,16 +933,13 @@
                                             "type": "DealDamage",
                                             "amount": {
                                                 "type": "EntityProperty",
-                                                "entity": "Source",
+                                                "entity": "Self",
                                                 "numericProperty": {
                                                     "type": "CounterCount",
-                                                    "counterType": {
-                                                        "type": "Named",
-                                                        "name": "wind"
-                                                    }
+                                                    "counterType": "WIND"
                                                 }
                                             },
-                                            "target": "Self"
+                                            "target": "IterationEntity"
                                         }
                                     },
                                     {
@@ -836,13 +952,10 @@
                                             "type": "DealDamage",
                                             "amount": {
                                                 "type": "EntityProperty",
-                                                "entity": "Source",
+                                                "entity": "Self",
                                                 "numericProperty": {
                                                     "type": "CounterCount",
-                                                    "counterType": {
-                                                        "type": "Named",
-                                                        "name": "wind"
-                                                    }
+                                                    "counterType": "WIND"
                                                 }
                                             },
                                             "target": "Controller"
@@ -861,6 +974,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "45",
         "rarity": "UNCOMMON",
@@ -885,6 +999,7 @@
     "keywords": [
         "FLYING"
     ],
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "61",
         "rarity": "RARE",
@@ -907,7 +1022,7 @@
     "script": {
         "stateTriggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Dandân:1",
                 "condition": {
                     "type": "Exists",
                     "player": "You",
@@ -934,6 +1049,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "12",
         "artist": "Drew Tucker",
@@ -953,7 +1069,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Desert:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -966,7 +1082,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Desert:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "DealDamage",
@@ -976,7 +1092,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target attacking creature"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -985,7 +1101,7 @@
                         "filter": {
                             "baseFilter": "creature attacking"
                         },
-                        "id": "target attacking creature"
+                        "id": "t0"
                     }
                 ],
                 "restrictions": [
@@ -997,6 +1113,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "72",
         "artist": "Jesper Myrfors",
@@ -1024,15 +1141,28 @@
                 "type": "PreventDamage",
                 "appliesTo": {
                     "type": "DamageEvent",
-                    "recipient": "RecipientSelf",
+                    "recipient": {
+                        "type": "RecipientObject",
+                        "filter": {
+                            "statePredicates": [
+                                "IsSource"
+                            ]
+                        }
+                    },
                     "source": {
-                        "type": "SourceMatching",
-                        "filter": "land Desert"
+                        "cardPredicates": [
+                            "IsLand",
+                            {
+                                "type": "HasSubtype",
+                                "subtype": "Desert"
+                            }
+                        ]
                     }
                 }
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "38",
         "artist": "Christopher Rush",
@@ -1054,7 +1184,7 @@
             "type": "MoveToZone",
             "target": {
                 "type": "BoundVariable",
-                "name": "target permanent"
+                "name": "t0"
             },
             "destination": "Graveyard",
             "byDestruction": true
@@ -1065,10 +1195,11 @@
                 "filter": {
                     "baseFilter": "permanent"
                 },
-                "id": "target permanent"
+                "id": "t0"
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "46",
         "rarity": "UNCOMMON",
@@ -1089,7 +1220,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Diamond Valley:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -1107,13 +1238,14 @@
                     "type": "GainLife",
                     "amount": {
                         "type": "EntityProperty",
-                        "entity": "Sacrificed",
+                        "entity": "SacrificedAsCost",
                         "numericProperty": "Toughness"
                     }
                 }
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "73",
         "rarity": "RARE",
@@ -1132,7 +1264,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Drop of Honey:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -1187,7 +1319,7 @@
         ],
         "stateTriggeredAbilities": [
             {
-                "id": "ability_2",
+                "id": "Drop of Honey:2",
                 "condition": {
                     "type": "Exists",
                     "player": "Each",
@@ -1203,6 +1335,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "47",
         "rarity": "RARE",
@@ -1223,7 +1356,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ebony Horse:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -1244,7 +1377,7 @@
                             "type": "TapUntap",
                             "target": {
                                 "type": "BoundVariable",
-                                "name": "target attacking creature you control"
+                                "name": "t0"
                             },
                             "tap": false
                         },
@@ -1252,7 +1385,7 @@
                             "type": "PreventDamageShield",
                             "target": {
                                 "type": "BoundVariable",
-                                "name": "target attacking creature you control"
+                                "name": "t0"
                             },
                             "scope": "CombatOnly",
                             "direction": "Both"
@@ -1265,12 +1398,13 @@
                         "filter": {
                             "baseFilter": "creature attacking ctrl:you"
                         },
-                        "id": "target attacking creature you control"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "62",
         "rarity": "RARE",
@@ -1292,7 +1426,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "El-Hajjâj:1",
                 "trigger": "DealsDamageEvent",
                 "effect": {
                     "type": "GainLife",
@@ -1304,6 +1438,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "24",
         "rarity": "RARE",
@@ -1324,7 +1459,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Elephant Graveyard:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -1337,13 +1472,13 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Elephant Graveyard:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "Regenerate",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target Elephant"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -1352,12 +1487,13 @@
                         "filter": {
                             "baseFilter": "permanent Elephant"
                         },
-                        "id": "target Elephant"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "74",
         "rarity": "RARE",
@@ -1380,7 +1516,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Erg Raiders:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "END"
@@ -1427,6 +1563,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "25",
         "artist": "Dameon Willich",
@@ -1450,7 +1587,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Erhnam Djinn:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -1461,7 +1598,7 @@
                     "keyword": "FORESTWALK",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "non-Wall creature an opponent controls"
+                        "name": "t0"
                     },
                     "duration": "UntilYourNextUpkeep"
                 },
@@ -1479,11 +1616,12 @@
                             "controllerPredicate": "ControlledByOpponent"
                         }
                     },
-                    "id": "non-Wall creature an opponent controls"
+                    "id": "t0"
                 }
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "48",
         "rarity": "RARE",
@@ -1504,7 +1642,7 @@
     "script": {
         "spellEffect": {
             "type": "PreventDamageShield",
-            "sourceFilter": "ChosenSource",
+            "sourceFilter": "PreventFromChosen",
             "onPrevented": {
                 "type": "DealDamage",
                 "amount": {
@@ -1516,6 +1654,7 @@
             "preventDamage": false
         }
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "4",
         "rarity": "UNCOMMON",
@@ -1547,6 +1686,7 @@
             }
         }
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "13",
         "artist": "Anson Maddocks",
@@ -1567,7 +1707,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Flying Carpet:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -1586,7 +1726,7 @@
                     "keyword": "FLYING",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -1595,12 +1735,13 @@
                         "filter": {
                             "baseFilter": "creature"
                         },
-                        "id": "target creature"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "63",
         "rarity": "UNCOMMON",
@@ -1622,6 +1763,7 @@
     "keywords": [
         "FLYING"
     ],
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "14",
         "artist": "Christopher Rush",
@@ -1646,19 +1788,20 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ghazbán Ogre:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
                 },
                 "binding": "ANY",
                 "effect": {
-                    "type": "GainControlByMost",
+                    "type": "GainControlByRank",
                     "metric": "LifeTotal"
                 }
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "49",
         "artist": "Jesper Myrfors",
@@ -1700,6 +1843,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "15",
         "artist": "Kaja Foglio",
@@ -1796,6 +1940,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "26",
         "rarity": "RARE",
@@ -1820,7 +1965,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Hasran Ogress:1",
                 "trigger": "AttackEvent",
                 "effect": {
                     "type": "PayOrSuffer",
@@ -1843,6 +1988,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "27",
         "artist": "Dan Frazier",
@@ -1866,13 +2012,13 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Hurr Jackal:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "CantBeRegenerated",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -1881,12 +2027,13 @@
                         "filter": {
                             "baseFilter": "creature"
                         },
-                        "id": "target creature"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "39",
         "artist": "Drew Tucker",
@@ -1913,7 +2060,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ifh-Bíff Efreet:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -1938,7 +2085,7 @@
                                     "type": "Fixed",
                                     "amount": 1
                                 },
-                                "target": "Self"
+                                "target": "IterationEntity"
                             }
                         },
                         {
@@ -1964,6 +2111,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "50",
         "rarity": "RARE",
@@ -1991,7 +2139,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Island Fish Jasconius:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -2016,7 +2164,7 @@
         ],
         "stateTriggeredAbilities": [
             {
-                "id": "ability_2",
+                "id": "Island Fish Jasconius:2",
                 "condition": {
                     "type": "Exists",
                     "player": "You",
@@ -2043,6 +2191,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "16",
         "rarity": "RARE",
@@ -2063,13 +2212,13 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Island of Wak-Wak:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "SetBaseStats",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature with flying"
+                        "name": "t0"
                     },
                     "power": {
                         "type": "Fixed",
@@ -2083,12 +2232,13 @@
                         "filter": {
                             "baseFilter": "creature kw:flying"
                         },
-                        "id": "target creature with flying"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "75",
         "rarity": "RARE",
@@ -2108,7 +2258,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Jandor's Ring:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -2133,6 +2283,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "64",
         "rarity": "RARE",
@@ -2160,7 +2311,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Jandor's Saddlebags:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -2178,7 +2329,7 @@
                     "type": "TapUntap",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature"
+                        "name": "t0"
                     },
                     "tap": false
                 },
@@ -2188,12 +2339,13 @@
                         "filter": {
                             "baseFilter": "creature"
                         },
-                        "id": "target creature"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "65",
         "rarity": "RARE",
@@ -2212,7 +2364,7 @@
     "script": {
         "stateTriggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Jihad:1",
                 "condition": {
                     "type": "Exists",
                     "player": "ChosenOpponent",
@@ -2269,6 +2421,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "5",
         "rarity": "RARE",
@@ -2296,7 +2449,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Junún Efreet:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -2316,6 +2469,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "28",
         "rarity": "RARE",
@@ -2340,7 +2494,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Juzám Djinn:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -2357,6 +2511,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "29",
         "rarity": "RARE",
@@ -2382,7 +2537,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Khabál Ghoul:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "END",
@@ -2391,7 +2546,7 @@
                 "binding": "ANY",
                 "effect": {
                     "type": "AddDynamicCounters",
-                    "counterType": "+1/+1",
+                    "counterType": "PLUS_ONE_PLUS_ONE",
                     "amount": {
                         "type": "Add",
                         "left": {
@@ -2410,6 +2565,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "30",
         "rarity": "UNCOMMON",
@@ -2434,13 +2590,13 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "King Suleiman:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target Djinn or Efreet"
+                        "name": "t0"
                     },
                     "destination": "Graveyard",
                     "byDestruction": true
@@ -2479,12 +2635,13 @@
                                 ]
                             }
                         },
-                        "id": "target Djinn or Efreet"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "6",
         "rarity": "RARE",
@@ -2529,6 +2686,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "40",
         "artist": "Ken Meyer, Jr.",
@@ -2548,7 +2706,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Library of Alexandria:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -2561,7 +2719,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Library of Alexandria:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "DrawCards",
@@ -2612,6 +2770,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "76",
         "rarity": "UNCOMMON",
@@ -2630,7 +2789,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Magnetic Mountain:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP",
@@ -2647,14 +2806,14 @@
                                 "player": "TriggeringPlayer",
                                 "filter": "creature blue tapped"
                             },
-                            "storeAs": "eligible"
+                            "storeAs": "gathered0"
                         },
                         {
                             "type": "SelectFromCollection",
-                            "from": "eligible",
+                            "from": "gathered0",
                             "selection": "ChooseAnyNumber",
                             "chooser": "TriggeringPlayer",
-                            "storeSelected": "chosen",
+                            "storeSelected": "selected1",
                             "prompt": "Choose any number of tapped blue creatures to untap (pay {4} for each)",
                             "useTargetingUI": true,
                             "restrictions": [
@@ -2667,7 +2826,7 @@
                         },
                         {
                             "type": "ConditionalOnCollection",
-                            "collection": "chosen",
+                            "collection": "selected1",
                             "ifNotEmpty": {
                                 "type": "Gated",
                                 "gate": {
@@ -2678,7 +2837,7 @@
                                             "type": "Multiply",
                                             "amount": {
                                                 "type": "VariableReference",
-                                                "variableName": "chosen_count"
+                                                "variableName": "selected1_count"
                                             },
                                             "multiplier": 4
                                         },
@@ -2689,11 +2848,11 @@
                                     "type": "ForEach",
                                     "space": {
                                         "type": "IterationSpace.Collection",
-                                        "collection": "chosen"
+                                        "collection": "selected1"
                                     },
                                     "body": {
                                         "type": "TapUntap",
-                                        "target": "Self",
+                                        "target": "IterationEntity",
                                         "tap": false
                                     }
                                 },
@@ -2718,6 +2877,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "41",
         "rarity": "UNCOMMON",
@@ -2742,7 +2902,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Merchant Ship:1",
                 "trigger": "BecomesUnblockedEvent",
                 "effect": {
                     "type": "GainLife",
@@ -2755,7 +2915,7 @@
         ],
         "stateTriggeredAbilities": [
             {
-                "id": "ability_2",
+                "id": "Merchant Ship:2",
                 "condition": {
                     "type": "Exists",
                     "player": "You",
@@ -2782,6 +2942,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "17",
         "rarity": "UNCOMMON",
@@ -2810,7 +2971,7 @@
                 },
                 "right": {
                     "type": "EntityProperty",
-                    "entity": "Sacrificed",
+                    "entity": "SacrificedAsCost",
                     "numericProperty": "ManaValue"
                 }
             },
@@ -2826,6 +2987,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "51",
         "artist": "Christopher Rush",
@@ -2859,7 +3021,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Mijae Djinn:1",
                 "trigger": "AttackEvent",
                 "effect": {
                     "type": "FlipCoin",
@@ -2880,6 +3042,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "42",
         "rarity": "RARE",
@@ -2904,6 +3067,7 @@
     "keywords": [
         "TRAMPLE"
     ],
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "7",
         "artist": "Dameon Willich",
@@ -2928,10 +3092,13 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Nafs Asp:1",
                 "trigger": {
                     "type": "DealsDamageEvent",
-                    "recipient": "AnyPlayer"
+                    "recipient": {
+                        "type": "RecipientPlayer",
+                        "player": "Any"
+                    }
                 },
                 "effect": {
                     "type": "CreateDelayedTrigger",
@@ -2969,6 +3136,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "52",
         "artist": "Christopher Rush",
@@ -3002,13 +3170,13 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Oasis:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "PreventDamageShield",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature"
+                        "name": "t0"
                     },
                     "amount": {
                         "type": "Fixed",
@@ -3021,12 +3189,13 @@
                         "filter": {
                             "baseFilter": "creature"
                         },
-                        "id": "target creature"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "78",
         "rarity": "UNCOMMON",
@@ -3052,13 +3221,13 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Old Man of the Sea:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "GainControl",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "duration": {
                         "type": "WhileSourceTappedAndAffectedPowerAtMostSource",
@@ -3074,17 +3243,18 @@
                                     "IsCreature",
                                     {
                                         "type": "PowerAtMostEntity",
-                                        "reference": "Source"
+                                        "reference": "Self"
                                     }
                                 ]
                             }
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "18",
         "rarity": "RARE",
@@ -3105,7 +3275,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Oubliette:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -3114,7 +3284,7 @@
                     "type": "PhaseOutUntilLeaves",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "creature"
+                        "name": "t0"
                     },
                     "tapOnPhaseIn": true
                 },
@@ -3123,11 +3293,11 @@
                     "filter": {
                         "baseFilter": "creature"
                     },
-                    "id": "creature"
+                    "id": "t0"
                 }
             },
             {
-                "id": "ability_2",
+                "id": "Oubliette:2",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "from": "Battlefield"
@@ -3136,6 +3306,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "31",
         "artist": "Douglas Shuler",
@@ -3171,10 +3342,11 @@
                     "type": "Fixed",
                     "amount": 3
                 },
-                "target": "Self"
+                "target": "IterationEntity"
             }
         }
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "8",
         "artist": "Mark Poole",
@@ -3195,7 +3367,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Pyramids:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -3210,8 +3382,8 @@
                             "effect": {
                                 "type": "MoveToZone",
                                 "target": {
-                                    "type": "ContextTarget",
-                                    "index": 0
+                                    "type": "BoundVariable",
+                                    "name": "t0"
                                 },
                                 "destination": "Graveyard",
                                 "byDestruction": true
@@ -3235,7 +3407,8 @@
                                                 }
                                             ]
                                         }
-                                    }
+                                    },
+                                    "id": "t0"
                                 }
                             ],
                             "description": "Destroy target Aura attached to a land"
@@ -3244,8 +3417,8 @@
                             "effect": {
                                 "type": "RemoveDamageShield",
                                 "target": {
-                                    "type": "ContextTarget",
-                                    "index": 0
+                                    "type": "BoundVariable",
+                                    "name": "t1"
                                 }
                             },
                             "targetRequirements": [
@@ -3253,7 +3426,8 @@
                                     "type": "TargetObject",
                                     "filter": {
                                         "baseFilter": "land"
-                                    }
+                                    },
+                                    "id": "t1"
                                 }
                             ],
                             "description": "The next time target land would be destroyed this turn, remove all damage marked on it instead"
@@ -3264,6 +3438,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "67",
         "rarity": "RARE",
@@ -3291,6 +3466,7 @@
             }
         }
     ],
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "9",
         "rarity": "RARE",
@@ -3301,6 +3477,86 @@
     "colorIdentityOverride": [
         "WHITE"
     ]
+}
+
+// Ring of Ma'rûf
+{
+    "name": "Ring of Ma'rûf",
+    "manaCost": "{5}",
+    "typeLine": "Artifact",
+    "oracleText": "{5}, {T}, Exile this artifact: The next time you would draw a card this turn, instead put a card you own from outside the game into your hand.",
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Ring of Ma'rûf:1",
+                "cost": {
+                    "type": "CostComposite",
+                    "costs": [
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomMana",
+                                "cost": "{5}"
+                            }
+                        },
+                        "CostTap",
+                        "CostExileSelf"
+                    ]
+                },
+                "effect": {
+                    "type": "ReplaceNextDrawWith",
+                    "replacementEffect": {
+                        "type": "Composite",
+                        "effects": [
+                            {
+                                "type": "GatherCards",
+                                "source": {
+                                    "type": "FromZone",
+                                    "zone": "Sideboard"
+                                },
+                                "storeAs": "wishable"
+                            },
+                            {
+                                "type": "SelectFromCollection",
+                                "from": "wishable",
+                                "selection": {
+                                    "type": "ChooseExactly",
+                                    "count": {
+                                        "type": "Fixed",
+                                        "amount": 1
+                                    }
+                                },
+                                "storeSelected": "wishableFound"
+                            },
+                            {
+                                "type": "MoveCollection",
+                                "from": "wishableFound",
+                                "destination": {
+                                    "type": "ToZone",
+                                    "zone": "Hand"
+                                }
+                            }
+                        ]
+                    }
+                },
+                "descriptionOverride": "{5}, {T}, Exile this artifact: The next time you would draw a card this turn, instead put a card you own from outside the game into your hand."
+            }
+        ]
+    },
+    "setCode": "ARN",
+    "metadata": {
+        "collectorNumber": "68",
+        "rarity": "RARE",
+        "artist": "Dan Frazier",
+        "imageUri": "https://cards.scryfall.io/normal/front/f/c/fcc1004f-7cee-420a-9f0e-2986ed3ab852.jpg?1783948377",
+        "rulings": [
+            {
+                "date": "2007-09-16",
+                "text": "Ring of Ma'rûf works a little differently than the Wishes from others sets. Rather than letting you simply put a card into your hand from outside the game, this ability replaces your next draw. If you wouldn't draw a card during the rest of the turn, the ability won't have any effect."
+            }
+        ]
+    },
+    "colorIdentityOverride": []
 }
 
 // Rukh Egg
@@ -3316,7 +3572,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Rukh Egg:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "from": "Battlefield",
@@ -3343,6 +3599,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "43",
         "artist": "Christopher Rush",
@@ -3362,7 +3619,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Sandals of Abdallah:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -3384,7 +3641,7 @@
                             "keyword": "ISLANDWALK",
                             "target": {
                                 "type": "BoundVariable",
-                                "name": "target creature"
+                                "name": "t0"
                             }
                         },
                         {
@@ -3404,7 +3661,7 @@
                             },
                             "watchedTarget": {
                                 "type": "BoundVariable",
-                                "name": "target creature"
+                                "name": "t0"
                             }
                         }
                     ]
@@ -3415,12 +3672,13 @@
                         "filter": {
                             "baseFilter": "creature"
                         },
-                        "id": "target creature"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "69",
         "rarity": "UNCOMMON",
@@ -3450,10 +3708,11 @@
                     "type": "Fixed",
                     "amount": 1
                 },
-                "target": "Self"
+                "target": "IterationEntity"
             }
         }
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "53",
         "artist": "Brian Snõddy",
@@ -3481,7 +3740,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Serendib Djinn:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -3521,7 +3780,7 @@
         ],
         "stateTriggeredAbilities": [
             {
-                "id": "ability_2",
+                "id": "Serendib Djinn:2",
                 "condition": {
                     "type": "Exists",
                     "player": "You",
@@ -3537,6 +3796,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "19",
         "rarity": "RARE",
@@ -3564,7 +3824,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Serendib Efreet:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -3581,6 +3841,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "20",
         "rarity": "RARE",
@@ -3605,7 +3866,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Sindbad:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "Composite",
@@ -3619,7 +3880,7 @@
                                     "amount": 1
                                 }
                             },
-                            "storeAs": "toDraw"
+                            "storeAs": "gathered0"
                         },
                         {
                             "type": "DrawCards",
@@ -3630,31 +3891,32 @@
                         },
                         {
                             "type": "FilterCollection",
-                            "from": "toDraw",
+                            "from": "gathered0",
                             "filter": {
-                                "type": "InZone",
-                                "zone": "Hand"
+                                "statePredicates": [
+                                    {
+                                        "type": "InZone",
+                                        "zone": "Hand"
+                                    }
+                                ]
                             },
-                            "storeMatching": "drawn"
+                            "storeMatching": "matching2"
                         },
                         {
                             "type": "RevealCollection",
-                            "from": "drawn",
+                            "from": "matching2",
                             "revealToSelf": false
                         },
                         {
                             "type": "FilterCollection",
-                            "from": "drawn",
-                            "filter": {
-                                "type": "MatchesFilter",
-                                "filter": "land"
-                            },
-                            "storeMatching": "keptLand",
-                            "storeNonMatching": "notLand"
+                            "from": "matching2",
+                            "filter": "land",
+                            "storeMatching": "matching4",
+                            "storeNonMatching": "rest4"
                         },
                         {
                             "type": "MoveCollection",
-                            "from": "notLand",
+                            "from": "rest4",
                             "destination": {
                                 "type": "ToZone",
                                 "zone": "Graveyard"
@@ -3666,6 +3928,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "21",
         "rarity": "UNCOMMON",
@@ -3690,13 +3953,13 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Singing Tree:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "SetBaseStats",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target attacking creature"
+                        "name": "t0"
                     },
                     "power": {
                         "type": "Fixed",
@@ -3710,12 +3973,13 @@
                         "filter": {
                             "baseFilter": "creature attacking"
                         },
-                        "id": "target attacking creature"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "54",
         "rarity": "RARE",
@@ -3740,13 +4004,13 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Sorceress Queen:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "SetBaseStats",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature other than this creature"
+                        "name": "t0"
                     },
                     "power": {
                         "type": "Fixed",
@@ -3765,12 +4029,13 @@
                             "baseFilter": "creature",
                             "excludeSelf": true
                         },
-                        "id": "target creature other than this creature"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "32",
         "rarity": "UNCOMMON",
@@ -3795,6 +4060,7 @@
     "keywords": [
         "FIRST_STRIKE"
     ],
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "33",
         "artist": "Ken Meyer, Jr.",
@@ -3815,7 +4081,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Unstable Mutation:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -3823,7 +4089,7 @@
                 "binding": "ATTACHED",
                 "effect": {
                     "type": "AddCounters",
-                    "counterType": "-1/-1",
+                    "counterType": "MINUS_ONE_MINUS_ONE",
                     "count": 1,
                     "target": "EnchantedCreature"
                 }
@@ -3843,6 +4109,7 @@
             }
         }
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "22",
         "artist": "Douglas Shuler",
@@ -3867,6 +4134,7 @@
         "TRAMPLE",
         "BANDING"
     ],
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "11",
         "artist": "Kristen Bishop",
@@ -3891,7 +4159,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Wyluli Wolf:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "ModifyStats",
@@ -3905,7 +4173,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -3914,12 +4182,13 @@
                         "filter": {
                             "baseFilter": "creature"
                         },
-                        "id": "target creature"
+                        "id": "t0"
                     }
                 ]
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "55",
         "artist": "Susan Van Camp",
@@ -3944,7 +4213,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ydwen Efreet:1",
                 "trigger": "BlockEvent",
                 "effect": {
                     "type": "FlipCoin",
@@ -3966,6 +4235,7 @@
             }
         ]
     },
+    "setCode": "ARN",
     "metadata": {
         "collectorNumber": "44",
         "rarity": "RARE",

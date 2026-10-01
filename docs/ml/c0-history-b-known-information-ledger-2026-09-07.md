@@ -201,6 +201,13 @@ reacquire positions that remain authoritative. It does not infer a new order fro
 This covers both library entry and library exit, including the case where a newly placed top card
 would otherwise leave an older top fact at position zero.
 
+Since upstream-sync-05 a card put elsewhere in its own library (scry to the bottom) never leaves the
+zone and emits `LibraryReorderedEvent(sameZonePlacement = true)` instead of a `LIBRARY -> LIBRARY`
+`ZoneChangeEvent`. The ledger treats that placement exactly like the zone change it replaces: it
+invalidates the owner's library positions and ends draw-continuity position authority for that
+library. The moved card's own non-positional facts are rebased onto its new incarnation stamp, the
+same way a shuffled library card's are.
+
 ### 5.4 Zone changes and face-down objects
 
 Every zone entry advances `GameState.objectIdentityStamps`, including library entry. `ZoneTransitionService`

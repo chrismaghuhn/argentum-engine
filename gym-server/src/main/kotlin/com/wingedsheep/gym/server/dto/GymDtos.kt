@@ -1,5 +1,6 @@
 package com.wingedsheep.gym.server.dto
 
+import com.wingedsheep.engine.core.ActionParams
 import com.wingedsheep.gym.contract.Observation
 import com.wingedsheep.gym.service.EnvId
 import com.wingedsheep.gym.service.SnapshotHandle
@@ -18,12 +19,22 @@ data class CreateEnvResponse(
     val observation: Observation
 )
 
-/** Body for `POST /envs/{id}/step`. */
+/**
+ * Body for `POST /envs/{id}/step`.
+ *
+ * [action] is the structured-action overlay for a candidate with `requiresStructuredAction=true`:
+ * the presentation-free `actionSemantics` object with the controller's explicit choices filled in.
+ *
+ * [params] completes an action whose enumerated form is a template — which creatures attack and
+ * whom, which blocks are made, a spell's targets, X. Omit it for actions that need no choice beyond
+ * their ID; see [ActionParams] for what is (and isn't) expressible here.
+ */
 @Serializable
 data class StepBody(
     val actionId: Int,
     /** Optional overlay copied from the selected LegalActionView.actionSemantics. */
-    val action: JsonObject? = null
+    val action: JsonObject? = null,
+    val params: ActionParams = ActionParams.EMPTY
 )
 
 /** Single entry for `POST /envs/step-batch`. */
@@ -31,7 +42,8 @@ data class StepBody(
 data class StepBatchItem(
     val envId: EnvId,
     val actionId: Int,
-    val action: JsonObject? = null
+    val action: JsonObject? = null,
+    val params: ActionParams = ActionParams.EMPTY
 )
 
 /** Result entry for `POST /envs/step-batch`. */
@@ -55,6 +67,14 @@ data class SchemaHashResponse(val schemaHash: String)
 
 @Serializable
 data class HealthResponse(val status: String = "ok")
+
+@Serializable
+data class ServiceStatusResponse(
+    val status: String = "ok",
+    val service: String,
+    val schemaHash: String,
+    val buildRevision: String
+)
 
 /** Shared error envelope for `@ExceptionHandler` responses. */
 @Serializable

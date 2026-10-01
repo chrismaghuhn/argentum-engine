@@ -63,6 +63,75 @@
     ]
 }
 
+// Coercion
+{
+    "name": "Coercion",
+    "manaCost": "{2}{B}",
+    "typeLine": "Sorcery",
+    "oracleText": "Target opponent reveals their hand. You choose a card from it. That player discards that card.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "GatherCards",
+                    "source": {
+                        "type": "FromZone",
+                        "zone": "Hand",
+                        "player": {
+                            "type": "BoundVariable",
+                            "name": "t0"
+                        }
+                    },
+                    "storeAs": "gathered0",
+                    "revealed": true
+                },
+                {
+                    "type": "SelectFromCollection",
+                    "from": "gathered0",
+                    "selection": {
+                        "type": "ChooseExactly",
+                        "count": {
+                            "type": "Fixed",
+                            "amount": 1
+                        }
+                    },
+                    "storeSelected": "selected1",
+                    "prompt": "Choose a card for that player to discard"
+                },
+                {
+                    "type": "MoveCollection",
+                    "from": "selected1",
+                    "destination": {
+                        "type": "ToZone",
+                        "zone": "Graveyard",
+                        "player": {
+                            "type": "BoundVariable",
+                            "name": "t0"
+                        }
+                    },
+                    "moveType": "Discard"
+                }
+            ]
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetOpponent",
+                "id": "t0"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "54",
+        "artist": "DiTerlizzi",
+        "flavorText": "A rhino's bargain\n—Femeref expression meaning \"a situation with no choices\"",
+        "imageUri": "https://cards.scryfall.io/normal/front/f/3/f3b07d33-f5f5-45cc-b2ac-360eaf2d4146.jpg?1783946995"
+    },
+    "colorIdentityOverride": [
+        "BLACK"
+    ]
+}
+
 // Creeping Mold
 {
     "name": "Creeping Mold",
@@ -74,7 +143,7 @@
             "type": "MoveToZone",
             "target": {
                 "type": "BoundVariable",
-                "name": "target"
+                "name": "t0"
             },
             "destination": "Graveyard",
             "byDestruction": true
@@ -85,7 +154,7 @@
                 "filter": {
                     "baseFilter": "artifact|enchantment|land"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -111,7 +180,7 @@
             "type": "MoveToZone",
             "target": {
                 "type": "BoundVariable",
-                "name": "target"
+                "name": "t0"
             },
             "destination": "Hand"
         },
@@ -122,7 +191,7 @@
                     "baseFilter": "own:you",
                     "zone": "Graveyard"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -134,6 +203,55 @@
     },
     "colorIdentityOverride": [
         "GREEN"
+    ]
+}
+
+// Fireblast
+{
+    "name": "Fireblast",
+    "manaCost": "{4}{R}{R}",
+    "typeLine": "Instant",
+    "oracleText": "You may sacrifice two Mountains rather than pay this spell's mana cost.\nFireblast deals 4 damage to any target.",
+    "script": {
+        "spellEffect": {
+            "type": "DealDamage",
+            "amount": {
+                "type": "Fixed",
+                "amount": 4
+            },
+            "target": {
+                "type": "BoundVariable",
+                "name": "t0"
+            }
+        },
+        "targetRequirements": [
+            {
+                "type": "AnyTarget",
+                "id": "t0"
+            }
+        ],
+        "selfAlternativeCost": {
+            "manaCost": "{0}",
+            "additionalCosts": [
+                {
+                    "type": "AdditionalAtom",
+                    "atom": {
+                        "type": "AtomSacrifice",
+                        "filter": "land Mountain",
+                        "count": 2
+                    }
+                }
+            ]
+        }
+    },
+    "metadata": {
+        "collectorNumber": "79",
+        "artist": "Michael Danza",
+        "flavorText": "\"Embermages aren't well known for their diplomatic skills.\"",
+        "imageUri": "https://cards.scryfall.io/normal/front/b/1/b1eb5b2c-1f02-48a6-a287-88eb189d6780.jpg?1783946989"
+    },
+    "colorIdentityOverride": [
+        "RED"
     ]
 }
 
@@ -176,7 +294,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Infantry Veteran:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "ModifyStats",
@@ -190,7 +308,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target attacking creature"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -199,7 +317,7 @@
                         "filter": {
                             "baseFilter": "creature attacking"
                         },
-                        "id": "target attacking creature"
+                        "id": "t0"
                     }
                 ]
             }
@@ -237,13 +355,13 @@
             },
             "target": {
                 "type": "BoundVariable",
-                "name": "target"
+                "name": "t0"
             }
         },
         "targetRequirements": [
             {
                 "type": "TargetPlayer",
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -270,7 +388,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Man-o'-War:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -279,7 +397,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "destination": "Hand"
                 },
@@ -288,7 +406,7 @@
                     "filter": {
                         "baseFilter": "creature"
                     },
-                    "id": "target"
+                    "id": "t0"
                 }
             }
         ]
@@ -318,18 +436,18 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature card from your graveyard"
+                        "name": "t0"
                     },
                     "destination": "Battlefield",
                     "fromZone": "Graveyard"
                 },
                 {
                     "type": "AddCounters",
-                    "counterType": "+1/+1",
+                    "counterType": "PLUS_ONE_PLUS_ONE",
                     "count": 1,
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature card from your graveyard"
+                        "name": "t0"
                     }
                 }
             ]
@@ -341,7 +459,7 @@
                     "baseFilter": "creature own:you",
                     "zone": "Graveyard"
                 },
-                "id": "target creature card from your graveyard"
+                "id": "t0"
             }
         ]
     },
@@ -383,7 +501,8 @@
                         "zone": "Library",
                         "filter": "creature green"
                     },
-                    "storeAs": "searchable"
+                    "storeAs": "searchable",
+                    "search": true
                 },
                 {
                     "type": "SelectFromCollection",
@@ -447,7 +566,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Nekrataal:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -459,14 +578,14 @@
                             "type": "CantBeRegenerated",
                             "target": {
                                 "type": "BoundVariable",
-                                "name": "target"
+                                "name": "t0"
                             }
                         },
                         {
                             "type": "MoveToZone",
                             "target": {
                                 "type": "BoundVariable",
-                                "name": "target"
+                                "name": "t0"
                             },
                             "destination": "Graveyard",
                             "byDestruction": true
@@ -487,7 +606,7 @@
                             ]
                         }
                     },
-                    "id": "target"
+                    "id": "t0"
                 }
             }
         ]
@@ -601,7 +720,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Quicksand:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -614,7 +733,7 @@
                 "isManaAbility": true
             },
             {
-                "id": "ability_2",
+                "id": "Quicksand:2",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -634,7 +753,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -654,7 +773,7 @@
                                 ]
                             }
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
@@ -667,6 +786,151 @@
         "imageUri": "https://cards.scryfall.io/normal/front/1/1/11370658-8d80-4d2f-afa5-ec6df6dee369.jpg"
     },
     "colorIdentityOverride": []
+}
+
+// Quirion Ranger
+{
+    "name": "Quirion Ranger",
+    "manaCost": "{G}",
+    "typeLine": "Creature — Elf Ranger",
+    "oracleText": "Return a Forest you control to its owner's hand: Untap target creature. Activate only once each turn.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 1
+    },
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Quirion Ranger:1",
+                "cost": {
+                    "type": "CostAtomWrapper",
+                    "atom": {
+                        "type": "AtomReturnToHand",
+                        "filter": "land Forest"
+                    }
+                },
+                "effect": {
+                    "type": "TapUntap",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    },
+                    "tap": false
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": "creature"
+                        },
+                        "id": "t0"
+                    }
+                ],
+                "restrictions": [
+                    "OncePerTurn"
+                ]
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "117",
+        "artist": "Tom Kyffin",
+        "flavorText": "\"Respect the earth, for it will one day be your shield and another day your blanket.\"\n—Liefellen, Quirion exarch",
+        "imageUri": "https://cards.scryfall.io/normal/front/5/6/56efe72c-6d7f-44f6-ac74-01af9305c4b6.jpg?1783946981"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
+// Relentless Assault
+{
+    "name": "Relentless Assault",
+    "manaCost": "{2}{R}{R}",
+    "typeLine": "Sorcery",
+    "oracleText": "Untap all creatures that attacked this turn. After this main phase, there is an additional combat phase followed by an additional main phase.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "ForEach",
+                    "space": {
+                        "type": "IterationSpace.Group",
+                        "filter": {
+                            "baseFilter": {
+                                "cardPredicates": [
+                                    "IsCreature"
+                                ],
+                                "statePredicates": [
+                                    "AttackedThisTurn"
+                                ]
+                            }
+                        }
+                    },
+                    "body": {
+                        "type": "TapUntap",
+                        "target": "IterationEntity",
+                        "tap": false
+                    }
+                },
+                "AddCombatPhase",
+                "AddMainPhase"
+            ]
+        }
+    },
+    "metadata": {
+        "collectorNumber": "91",
+        "rarity": "RARE",
+        "artist": "Geofrey Darrow & I. Rabarot",
+        "flavorText": "Flog and Squee / Up the tree / See the army / Flee, flee, flee.\n—Goblin nursery rhyme/war cry",
+        "imageUri": "https://cards.scryfall.io/normal/front/7/4/747161ea-cb65-4960-84dd-a05bfe5f3ba0.jpg?1783946986"
+    },
+    "colorIdentityOverride": [
+        "RED"
+    ]
+}
+
+// River Boa
+{
+    "name": "River Boa",
+    "manaCost": "{1}{G}",
+    "typeLine": "Creature — Snake",
+    "oracleText": "Islandwalk (This creature can't be blocked as long as defending player controls an Island.)\n{G}: Regenerate this creature.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 1
+    },
+    "keywords": [
+        "ISLANDWALK"
+    ],
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "River Boa:1",
+                "cost": {
+                    "type": "CostAtomWrapper",
+                    "atom": {
+                        "type": "AtomMana",
+                        "cost": "{G}"
+                    }
+                },
+                "effect": {
+                    "type": "Regenerate",
+                    "target": "Self"
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "118",
+        "artist": "Steve White",
+        "flavorText": "\"But no one heard the snake's gentle hiss for peace over the elephant's trumpeting of war.\"\n—Afari, *Tales*",
+        "imageUri": "https://cards.scryfall.io/normal/front/2/e/2e9d5aaf-b7e8-4676-aec8-7d29a0169a2c.jpg"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
 }
 
 // Simoon
@@ -690,11 +954,14 @@
                     "type": "Fixed",
                     "amount": 1
                 },
-                "target": "Self"
+                "target": "IterationEntity"
             }
         },
         "targetRequirements": [
-            "TargetOpponent"
+            {
+                "type": "TargetOpponent",
+                "id": "t0"
+            }
         ]
     },
     "metadata": {
@@ -718,7 +985,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Sisay's Ring:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddColorlessMana",
@@ -793,7 +1060,7 @@
                     "type": "Fixed",
                     "amount": 1
                 },
-                "target": "Self"
+                "target": "IterationEntity"
             }
         }
     },
@@ -821,7 +1088,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Uktabi Orangutan:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -830,7 +1097,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target artifact"
+                        "name": "t0"
                     },
                     "destination": "Graveyard",
                     "byDestruction": true
@@ -840,7 +1107,7 @@
                     "filter": {
                         "baseFilter": "artifact"
                     },
-                    "id": "target artifact"
+                    "id": "t0"
                 }
             }
         ]
@@ -857,6 +1124,47 @@
     ]
 }
 
+// Undo
+{
+    "name": "Undo",
+    "manaCost": "{1}{U}{U}",
+    "typeLine": "Sorcery",
+    "oracleText": "Return two target creatures to their owners' hands.",
+    "script": {
+        "spellEffect": {
+            "type": "ForEach",
+            "space": "IterationSpace.Targets",
+            "body": {
+                "type": "MoveToZone",
+                "target": {
+                    "type": "ContextTarget",
+                    "index": 0
+                },
+                "destination": "Hand"
+            }
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "count": 2,
+                "filter": {
+                    "baseFilter": "creature"
+                },
+                "id": "t0"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "47",
+        "artist": "Terese Nielsen",
+        "flavorText": "\"Oft have I wished to undo past deeds, but never did I imagine they would be undone for me.\"\n—Naimah, Femeref philosopher",
+        "imageUri": "https://cards.scryfall.io/normal/front/2/b/2bef942e-9d17-4d40-a4c9-8be715e73a08.jpg"
+    },
+    "colorIdentityOverride": [
+        "BLUE"
+    ]
+}
+
 // Vampiric Tutor
 {
     "name": "Vampiric Tutor",
@@ -868,41 +1176,37 @@
             "type": "Composite",
             "effects": [
                 {
-                    "type": "Composite",
-                    "effects": [
-                        {
-                            "type": "GatherCards",
-                            "source": {
-                                "type": "FromZone",
-                                "zone": "Library"
-                            },
-                            "storeAs": "searchable"
-                        },
-                        {
-                            "type": "SelectFromCollection",
-                            "from": "searchable",
-                            "selection": {
-                                "type": "ChooseUpTo",
-                                "count": {
-                                    "type": "Fixed",
-                                    "amount": 1
-                                }
-                            },
-                            "storeSelected": "found"
-                        },
-                        "ShuffleLibrary",
-                        {
-                            "type": "MoveCollection",
-                            "from": "found",
-                            "destination": {
-                                "type": "ToZone",
-                                "zone": "Library",
-                                "placement": "Top"
-                            }
-                        },
-                        "EmitLibrarySearchedEvent"
-                    ]
+                    "type": "GatherCards",
+                    "source": {
+                        "type": "FromZone",
+                        "zone": "Library"
+                    },
+                    "storeAs": "searchable",
+                    "search": true
                 },
+                {
+                    "type": "SelectFromCollection",
+                    "from": "searchable",
+                    "selection": {
+                        "type": "ChooseUpTo",
+                        "count": {
+                            "type": "Fixed",
+                            "amount": 1
+                        }
+                    },
+                    "storeSelected": "found"
+                },
+                "ShuffleLibrary",
+                {
+                    "type": "MoveCollection",
+                    "from": "found",
+                    "destination": {
+                        "type": "ToZone",
+                        "zone": "Library",
+                        "placement": "Top"
+                    }
+                },
+                "EmitLibrarySearchedEvent",
                 {
                     "type": "LoseLife",
                     "amount": {
@@ -951,7 +1255,7 @@
                     "type": "Fixed",
                     "amount": 1
                 },
-                "target": "Self"
+                "target": "IterationEntity"
             }
         }
     },

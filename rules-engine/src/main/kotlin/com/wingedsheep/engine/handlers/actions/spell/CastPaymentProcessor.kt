@@ -1,11 +1,15 @@
 package com.wingedsheep.engine.handlers.actions.spell
 
+import com.wingedsheep.engine.mechanics.mana.withSpendingColors
+import com.wingedsheep.engine.handlers.effects.mana.ManaProvenanceTracker
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PaymentPlanV2
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.handlers.CostHandler
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ExplicitPaymentPlanExecutor
@@ -60,7 +64,13 @@ data class PaymentResult(
      * stack object so it can be read at resolution via `DynamicAmount.ManaSpentOnX`
      * (e.g. Soul Burn's "gain life equal to the {B} spent on X"). Empty when X is unrestricted.
      */
-    val xManaSpentByColor: Map<Color, Int> = emptyMap()
+    val xManaSpentByColor: Map<Color, Int> = emptyMap(),
+    /**
+     * How many Phyrexian mana symbols the caster chose to pay with 2 life instead of mana
+     * (CR 107.4f). Carried onto the spell so compleated (CR 702.150a) can reduce the resolving
+     * planeswalker's starting loyalty.
+     */
+    val phyrexianLifePips: Int = 0
 )
 
 /**
@@ -68,6 +78,7 @@ data class PaymentResult(
  * AutoPay (solver taps lands), FromPool (use floating mana), or Explicit (specific sources).
  */
 class CastPaymentProcessor(
+    private val zones: ZoneTransitionService,
     private val manaSolver: ManaSolver,
     private val costHandler: CostHandler,
     private val manaAbilitySideEffectExecutor: ManaAbilitySideEffectExecutor
@@ -84,30 +95,28 @@ class CastPaymentProcessor(
 
     /**
      * Provenance of mana freshly tapped by the solver during a payment (AutoPay / Explicit). The
-     * snapshot is carried from the actual production transition through [ManaProduction]; this
-     * method never rereads a source's current card state after a tap or sacrifice.
+     * subtype snapshot is carried from the actual production transition through [ManaProduction];
+     * this method never rereads a source's current subtypes after a tap or sacrifice. The
+     * producing card types (Inga and Esika's "mana from creatures") have no production-time
+     * snapshot, so they are read off the pre-payment [state], where every tapped source still
+     * exists — the same tag [ManaProvenanceTracker] stamps at production.
      */
     private fun tappedSourceProvenance(state: GameState, manaProduced: Map<EntityId, com.wingedsheep.engine.mechanics.mana.ManaProduction>): SpentManaProvenance {
         if (manaProduced.isEmpty()) return SpentManaProvenance()
         val bySubtype = mutableMapOf<com.wingedsheep.sdk.core.Subtype, Int>()
+        val byCardType = mutableMapOf<com.wingedsheep.sdk.core.CardType, Int>()
         val sourceIds = mutableSetOf<EntityId>()
         for ((sourceId, production) in manaProduced) {
             val amount = production.amount + production.colorless
             if (amount <= 0) continue
             sourceIds.add(sourceId)
             val subtypes = production.sourceSubtypes.orEmpty()
-            for (subtype in subtypes) bySubtype[subtype] = (bySubtype[subtype] ?: 0) + amount
+            for (subtype in subtypes) bySubtype.merge(subtype, amount, Int::plus)
+            for (cardType in ManaProvenanceTracker.sourceTag(state, sourceId).cardTypes) {
+                byCardType.merge(cardType, amount, Int::plus)
+            }
         }
-        return SpentManaProvenance(bySubtype, sourceIds)
-    }
-
-    /** Merge two provenance snapshots (summing subtype counts, unioning source ids). */
-    private fun mergeProvenance(a: SpentManaProvenance, b: SpentManaProvenance): SpentManaProvenance {
-        if (a.isEmpty) return b
-        if (b.isEmpty) return a
-        val bySubtype = a.bySubtype.toMutableMap()
-        for ((subtype, count) in b.bySubtype) bySubtype[subtype] = (bySubtype[subtype] ?: 0) + count
-        return SpentManaProvenance(bySubtype, a.sourceIds + b.sourceIds)
+        return SpentManaProvenance(bySubtype, sourceIds, byCardType)
     }
 
     fun processPayment(
@@ -119,15 +128,35 @@ class CastPaymentProcessor(
         spellContext: SpellPaymentContext? = null,
         xManaRestriction: Set<Color> = emptySet()
     ): PaymentResult {
-        return when (action.paymentStrategy) {
-            is PaymentStrategy.FromPool -> payFromPool(state, action.playerId, effectiveCost, cardName, xValue, spellContext, xManaRestriction)
-            is PaymentStrategy.AutoPay -> autoPay(state, action.playerId, effectiveCost, cardName, xValue, spellContext, xManaRestriction = xManaRestriction)
+        // Phyrexian pips paid with 2 life (CR 107.4f): the caster's explicit choice, or on auto-pay
+        // the fewest pips mana can't cover — the same split `ManaSolver.canPay` deemed affordable.
+        // The exact payment plans (V1 on Explicit, V2, V3) carry no Phyrexian choice: validation
+        // rejects any cost with a Phyrexian symbol before a plan can reach payment.
+        val lifePayments = when (val strategy = action.paymentStrategy) {
+            is PaymentStrategy.Explicit -> strategy.phyrexianLifePayments
+            is PaymentStrategy.AutoPay -> manaSolver.choosePhyrexianLifePayments(
+                state, action.playerId, effectiveCost, xValue, spellContext = spellContext, xManaRestriction = xManaRestriction
+            ).orEmpty()
+            is PaymentStrategy.FromPool,
+            is PaymentStrategy.ExplicitV2,
+            is PaymentStrategy.ExplicitV3 -> emptyList()
+        }
+        val lifeToPay = lifePayments.size * 2
+        val currentLife = state.lifeTotal(action.playerId)
+        if (lifeToPay > currentLife) {
+            return PaymentResult(state, emptyList(), "Insufficient life for Phyrexian mana payment")
+        }
+        val manaCost = effectiveCost.withPhyrexianPaidByLife(lifePayments)
+            ?: return PaymentResult(state, emptyList(), "Invalid Phyrexian mana payment")
+        val manaResult = when (action.paymentStrategy) {
+            is PaymentStrategy.FromPool -> payFromPool(state, action.playerId, manaCost, cardName, xValue, spellContext, xManaRestriction)
+            is PaymentStrategy.AutoPay -> autoPay(state, action.playerId, manaCost, cardName, xValue, spellContext, xManaRestriction = xManaRestriction)
             is PaymentStrategy.Explicit -> action.paymentStrategy.paymentPlan?.let { plan ->
                 explicitPlanPay(
                     state = state,
                     playerId = action.playerId,
                     plan = plan,
-                    cost = effectiveCost,
+                    cost = manaCost,
                     cardName = cardName,
                     spellContext = spellContext,
                 )
@@ -135,7 +164,7 @@ class CastPaymentProcessor(
                 state,
                 action.playerId,
                 action.paymentStrategy,
-                effectiveCost,
+                manaCost,
                 cardName,
                 xValue,
                 spellContext,
@@ -182,6 +211,14 @@ class CastPaymentProcessor(
                 error = "PaymentStrategy.ExplicitV3 requires PaymentPlanV3",
             )
         }
+        if (manaResult.error != null || lifePayments.isEmpty()) return manaResult
+        val lifePayment = LifePaymentService.pay(zones, manaResult.state, action.playerId, lifeToPay)
+            ?: return PaymentResult(state, emptyList(), "Unable to pay life for Phyrexian mana")
+        return manaResult.copy(
+            state = lifePayment.first,
+            events = manaResult.events + lifePayment.second,
+            phyrexianLifePips = lifePayments.size
+        )
     }
 
     /**
@@ -342,7 +379,7 @@ class CastPaymentProcessor(
     ): PaymentResult {
         val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>()
             ?: ManaPoolComponent()
-        val pool = poolComponent.toManaPool()
+        val pool = poolComponent.toManaPool().withSpendingColors(state, playerId)
 
         // Pay base cost first
         var poolAfterPayment = costHandler.payManaCost(pool, cost, spellContext)
@@ -430,12 +467,14 @@ class CastPaymentProcessor(
             return PaymentResult(state, emptyList(), "Insufficient mana in pool for X cost")
         }
 
-        // Consume provenance tags proportional to unrestricted mana pulled from the pool.
-        // Restricted mana doesn't participate (tagged mana is always unrestricted). Everything is
-        // paid from the pool here, so there is no freshly-tapped-source provenance to add.
+        // Consume provenance tags proportional to unrestricted mana pulled from the pool, plus the
+        // tags on each restricted unit spent. Everything is paid from the pool here, so there is
+        // no freshly-tapped-source provenance to add.
         val unrestrictedSpent = (whiteSpent + blueSpent + blackSpent + redSpent + greenSpent + colorlessSpent) - restrictedSpent
-        val (provenancePool, spentProvenance) = pool.consumeProvenance(maxOf(0, unrestrictedSpent))
+        val (provenancePool, unrestrictedProvenance) = pool.consumeProvenance(maxOf(0, unrestrictedSpent))
         val poolWithProvenanceUpdated = poolAfterPayment.withProvenanceFrom(provenancePool)
+        val spentProvenance = unrestrictedProvenance +
+            SpentManaProvenance.ofConsumedRestricted(poolComponent.restrictedMana, poolAfterPayment.restrictedMana)
 
         val newState = state.updateEntity(playerId) { container ->
             container.with(fromManaPool(poolWithProvenanceUpdated))
@@ -475,7 +514,7 @@ class CastPaymentProcessor(
     ): PaymentResult {
         val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>()
             ?: ManaPoolComponent()
-        val pool = poolComponent.toManaPool()
+        val pool = poolComponent.toManaPool().withSpendingColors(state, playerId)
         val xSymbolCount = cost.xCount.coerceAtLeast(1)
         val solution = manaSolver.solve(
             state = state,
@@ -561,10 +600,15 @@ class CastPaymentProcessor(
             }
         }
 
-        val spentProvenance = mergeProvenance(
-            poolProvenance,
-            tappedSourceProvenance(state, solution.manaProduced),
-        )
+        // Restricted units spent on the outer cost carry their own source tags; units an inner
+        // activation cost consumed were not spent on this spell (mirrors the rider accounting).
+        val poolBeforeOuterPayment = solution.poolAfterActivation ?: pool
+        val spentProvenance = poolProvenance +
+            tappedSourceProvenance(state, solution.manaProduced) +
+            SpentManaProvenance.ofConsumedRestricted(
+                poolBeforeOuterPayment.restrictedMana,
+                solution.poolAfterPayment.restrictedMana,
+            )
         val xSpentByColor = solution.xRestrictedManaSpent
 
         events.add(
@@ -580,7 +624,6 @@ class CastPaymentProcessor(
             )
         )
 
-        val poolBeforeOuterPayment = solution.poolAfterActivation ?: pool
         val consumedRiders = ridersConsumedDuringPayment(
             poolBeforeOuterPayment.restrictedMana,
             solution.poolAfterPayment.restrictedMana,
@@ -605,7 +648,7 @@ class CastPaymentProcessor(
      * solver with the non-chosen sources excluded, so only the minimum subset
      * actually needed to cover the (already cost-reduced) payment gets tapped.
      *
-     * Validation (`CastSpellHandler.validatePayment`) already uses the same solver
+     * Validation (`CastCostPayer.validateManaPayment`) already uses the same solver
      * call with the same exclusion — execution matching validation ensures we never
      * tap lands that weren't required.
      */

@@ -1,7 +1,7 @@
 package com.wingedsheep.engine.handlers.effects.stack
 
+import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.core.EffectResult
-import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
@@ -12,7 +12,6 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
-import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.effects.MoveToZoneEffect
 import com.wingedsheep.sdk.scripting.effects.ReturnSpellOrPermanentToOwnersHandEffect
@@ -33,13 +32,26 @@ import kotlin.reflect.KClass
  * If the target is no longer in a valid zone at resolution, the effect does nothing.
  */
 class ReturnSpellOrPermanentToOwnersHandExecutor(
-    private val cardRegistry: CardRegistry
+    private val zones: ZoneTransitionService,
+    private val cardRegistry: CardRegistry,
+    private val targetFinder: TargetFinder
 ) : EffectExecutor<ReturnSpellOrPermanentToOwnersHandEffect> {
 
     override val effectType: KClass<ReturnSpellOrPermanentToOwnersHandEffect> =
         ReturnSpellOrPermanentToOwnersHandEffect::class
 
-    private val permanentBounce = MoveToZoneEffectExecutor(cardRegistry)
+    // Bounce is always to hand, so the entering-permanent recursion can never fire. A throwing
+    // stub rather than a real executor keeps that assumption honest: if this delegation ever
+    // grows a battlefield destination, it fails here instead of silently skipping the entering
+    // permanent's OnEnterRun replacement.
+    private val permanentBounce = MoveToZoneEffectExecutor(
+        zones,
+        cardRegistry,
+        effectExecutor = { _, _, _ ->
+            error("ReturnSpellOrPermanentToOwnersHandExecutor bounces to hand; nothing enters the battlefield")
+        },
+        targetFinder = targetFinder
+    )
 
     override fun execute(
         state: GameState,
@@ -59,7 +71,10 @@ class ReturnSpellOrPermanentToOwnersHandExecutor(
                 ?: spellComponent?.casterId
                 ?: return EffectResult.error(state, "Cannot determine spell owner")
 
-            return ZoneTransitionService.moveToZoneWithReplacements(
+            // A spell on the stack is still a commander candidate (CR 903.9b): route the
+            // stack-to-hand move through the zone-change replacement pipeline, which also strips
+            // the stack-only components and text changes and reports the old/new object identities.
+            return zones.moveToZoneWithReplacements(
                 state = state,
                 entityId = targetId,
                 destinationZone = Zone.HAND,

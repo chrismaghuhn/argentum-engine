@@ -13,7 +13,7 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.CopyExceptions
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.core.Step
 
 /**
  * Absorbing Man — Marvel Super Heroes #199 (rare)
@@ -43,8 +43,11 @@ import com.wingedsheep.sdk.scripting.targets.TargetObject
  * untap step of his controller's next turn, which is before the first main phase, so the trigger
  * is back in time to fire and pick a new object every turn.
  *
- * The target is optional ("up to one"), and a target that has become illegal simply leaves the copy
- * effect a no-op — Absorbing Man stays himself for the turn.
+ * The target is optional ("up to one"), so the trigger can go on the stack with no target at all and
+ * resolves harmlessly. If a target *was* chosen and is illegal on resolution, it is the only
+ * instance of "target" the ability has, so per CR 608.2b the whole ability is countered — removed
+ * from the stack without resolving. Either way the observable result is the same: Absorbing Man
+ * stays himself for the turn.
  */
 val AbsorbingMan = card("Absorbing Man") {
     manaCost = "{1}{G}{U}"
@@ -60,18 +63,14 @@ val AbsorbingMan = card("Absorbing Man") {
     keywords(Keyword.VIGILANCE)
 
     triggeredAbility {
-        trigger = Triggers.FirstMainPhase
+        trigger = Triggers.you.beginningOf(Step.PRECOMBAT_MAIN)
         val copySource = target(
-            "up to one target artifact, non-Aura enchantment, or land",
-            TargetObject(
-                count = 1,
-                optional = true,
-                filter = TargetFilter(
-                    GameObjectFilter.Artifact or
-                        GameObjectFilter.Enchantment.notSubtype(Subtype.AURA) or
-                        GameObjectFilter.Land
-                ),
+            TargetFilter(
+                GameObjectFilter.Artifact or
+                    GameObjectFilter.Enchantment.notSubtype(Subtype.AURA) or
+                    GameObjectFilter.Land
             ),
+            optional = true,
         )
         effect = Effects.EachPermanentBecomesCopyOfTarget(
             target = copySource,

@@ -416,6 +416,12 @@ The current event reports that a reorder occurred but does not provide a histori
 or safe persistent card references. A future B/C composition must decide what each perspective knew
 before and after the reorder.
 
+Upstream-sync-05 addendum: the Rules engine no longer reports a card put elsewhere in its own library
+(scry to the bottom, "the rest on the bottom") as a `LIBRARY -> LIBRARY` `ZoneChangeEvent`. It emits
+`LibraryReorderedEvent(sameZonePlacement = true)` instead. A keeps such a placement in the
+hidden-to-hidden classification the zone change had (`INTENTIONALLY_HIDDEN`); only a chosen order
+(`sameZonePlacement = false`) is deferred to B.
+
 ## 6. Pre-state, post-state, and event-time boundary
 
 The source captures both committed pre- and post-states internally. A does not reconstruct a hidden

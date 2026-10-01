@@ -2,14 +2,17 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.AssignDamageDecision
+import com.wingedsheep.engine.core.DamageAssignmentContinuation
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DiagnosticKind
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.UnsupportedPathFailure
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.registry.CardDefinitionMissingException
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.contract.ObservationBuilder
@@ -68,11 +71,23 @@ class A9DiagnosticsTest : FunSpec({
         hasDeathtouch = false
     )
 
+    // Pending decisions are installed as a Suspension (question + answer continuation) whose id
+    // comes from the state's routing-id counter; the answer is the decision's natural resumer and
+    // is never consumed here.
+    fun GameState.withUnsupportedDecision(playerId: EntityId): GameState =
+        suspendForDecision(
+            question = { id -> unsupportedDecision(playerId).copy(id = id) },
+            answer = DamageAssignmentContinuation(
+                attackerId = EntityId("attacker"),
+                defendingPlayerId = turnOrder.first { it != playerId },
+            ),
+        ).state
+
     test("ObservationBuilder emits a typed non-wire diagnostic for a missing structured domain") {
         val environment = GameEnvironment.create(registry())
         environment.reset(config())
         val result = ObservationBuilder(cardRegistry = registry()).build(
-            environment.state.copy(pendingDecision = unsupportedDecision(environment.playerIds.first())),
+            environment.state.withUnsupportedDecision(environment.playerIds.first()),
             environment.playerIds.first(),
             emptyList()
         )
@@ -140,7 +155,7 @@ class A9DiagnosticsTest : FunSpec({
         val environment = GameEnvironment.create(registry())
         environment.reset(config())
         environment.restore(
-            environment.state.copy(pendingDecision = unsupportedDecision(environment.playerIds.first())),
+            environment.state.withUnsupportedDecision(environment.playerIds.first()),
             environment.playerIds,
             environment.stepCount,
             environment.maxSteps

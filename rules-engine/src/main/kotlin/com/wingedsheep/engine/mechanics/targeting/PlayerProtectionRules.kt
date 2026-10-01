@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.mechanics.targeting
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.mechanics.ControllerGrants
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.GrantsControllerProtectionComponent
@@ -15,10 +16,8 @@ import kotlinx.serialization.Serializable
  * for a player carrying a [PlayerProtectionComponent] (The One Ring's "protection from
  * everything until your next turn").
  *
- * For a player, only the **D**amage and **T**argeting parts of DEBT apply: a protected
- * player can't be the target of, nor be dealt damage by, a source matching one of the
- * player's protection [ProtectionScope]s. This is the single source of truth so the
- * targeting validator, target enumerator, and damage executor stay consistent.
+ * A protected player cannot be enchanted, targeted, or dealt damage by a matching source.
+ * Attachment choice, state-based checks, targeting, and damage share this reading.
  */
 object PlayerProtectionRules {
 
@@ -41,7 +40,8 @@ object PlayerProtectionRules {
         state: GameState,
         playerId: EntityId,
         sourceId: EntityId?,
-        casterId: EntityId?
+        casterId: EntityId?,
+        predicateEvaluator: PredicateEvaluator
     ): Boolean {
         // Player-level protection comes from two sources, unioned:
         //  1. A one-shot [PlayerProtectionComponent] on the player (e.g. The One Ring).
@@ -59,33 +59,40 @@ object PlayerProtectionRules {
                 // Each scope carries its own "as long as …" gate, re-evaluated here on every read
                 // because the marker was stamped once, on entry — see [ControllerGrantMarker].
                 ?.any {
-                    ControllerGrants.isActive(state, entityId, it.condition) &&
+                    ControllerGrants.isActive(state, entityId, it.condition, predicateEvaluator = predicateEvaluator) &&
                         scopeMatchesSource(state, playerId, it.scope, sourceId, casterId)
                 } == true
         }
     }
 
     /**
-     * The same protection check for a source represented only by its characteristics. A
+     * The same protection check for a source represented by its characteristics. A
      * definition-only Aura token has no source entity or stable identity yet, but its printed
-     * colors and types still matter when the non-targeting attachment host is chosen.
+     * colors and types still matter when the non-targeting attachment host is chosen; a spell
+     * being cast is judged by the face actually cast rather than its entity's printed front.
+     *
+     * [sourceId] is the source object when there is one: the scopes that name a *kind* of source
+     * rather than a characteristic (spells, permanents cast this turn) are read off it, and match
+     * nothing without it.
      */
     fun isProtectedFromSourceCharacteristics(
         state: GameState,
         playerId: EntityId,
         source: SourceCharacteristics,
-        casterId: EntityId?
+        casterId: EntityId?,
+        predicateEvaluator: PredicateEvaluator,
+        sourceId: EntityId? = null
     ): Boolean {
         val ownScopes = state.getEntity(playerId)?.get<PlayerProtectionComponent>()?.scopes.orEmpty()
-        if (ownScopes.any { scopeMatchesCharacteristics(it, source, playerId, casterId) }) return true
+        if (ownScopes.any { scopeMatchesCharacteristics(state, it, source, playerId, casterId, sourceId) }) return true
 
         return state.getBattlefield().any { entityId ->
             val container = state.getEntity(entityId) ?: return@any false
             if (ControllerGrants.granterController(state, entityId) != playerId) return@any false
             container.get<GrantsControllerProtectionComponent>()?.grants
                 ?.any {
-                    ControllerGrants.isActive(state, entityId, it.condition) &&
-                        scopeMatchesCharacteristics(it.scope, source, playerId, casterId)
+                    ControllerGrants.isActive(state, entityId, it.condition, predicateEvaluator = predicateEvaluator) &&
+                        scopeMatchesCharacteristics(state, it.scope, source, playerId, casterId, sourceId)
                 } == true
         }
     }
@@ -101,9 +108,14 @@ object PlayerProtectionRules {
         if (sourceId == null) return false
 
         val projected = state.projectedState
+        // Attachment choices inspect an Aura before entry; spells likewise need their current
+        // off-battlefield characteristics rather than an absent battlefield projection — see
+        // [sourceColors] and its siblings.
         return when (scope) {
             is ProtectionScope.Color -> scope.color.name in sourceColors(state, projected, sourceId)
             is ProtectionScope.Colors -> scope.colors.any { it.name in sourceColors(state, projected, sourceId) }
+            is ProtectionScope.NonColor -> scope.color.name !in sourceColors(state, projected, sourceId)
+            ProtectionScope.Multicolored -> sourceColors(state, projected, sourceId).size >= 2
             is ProtectionScope.Subtype ->
                 sourceSubtypes(state, projected, sourceId).any { it.equals(scope.subtype, ignoreCase = true) }
             is ProtectionScope.Supertype ->
@@ -116,22 +128,39 @@ object PlayerProtectionRules {
                 sourceController != null && sourceController != protectedPlayerId
             }
             ProtectionScope.Everything -> true
+            ProtectionScope.Spells -> SourceKindProtection.isSpell(state, sourceId)
+            ProtectionScope.PermanentsCastThisTurn -> SourceKindProtection.isPermanentCastThisTurn(state, sourceId)
+            // An ability kind is a property of the targeting spell-or-ability, not of the source
+            // object this reading is given; no player-protection grant names one.
+            ProtectionScope.ActivatedAbilities, ProtectionScope.TriggeredAbilities -> false
         }
     }
 
     private fun scopeMatchesCharacteristics(
+        state: GameState,
         scope: ProtectionScope,
         source: SourceCharacteristics,
         protectedPlayerId: EntityId,
-        casterId: EntityId?
+        casterId: EntityId?,
+        sourceId: EntityId?
     ): Boolean = when (scope) {
         is ProtectionScope.Color -> scope.color.name in source.colors
         is ProtectionScope.Colors -> scope.colors.any { it.name in source.colors }
+        is ProtectionScope.NonColor -> scope.color.name !in source.colors
+        ProtectionScope.Multicolored -> source.colors.size >= 2
         is ProtectionScope.Subtype -> source.subtypes.any { it.equals(scope.subtype, ignoreCase = true) }
         is ProtectionScope.Supertype -> source.supertypes.any { it.equals(scope.supertype, ignoreCase = true) }
         is ProtectionScope.CardType -> source.cardTypes.any { it.equals(scope.cardType, ignoreCase = true) }
         ProtectionScope.Everything -> true
         ProtectionScope.EachOpponent -> casterId != null && casterId != protectedPlayerId
+        // A kind of source is a fact about the source object, not its characteristics: read it
+        // off [sourceId] when there is one (a definition-only Aura token has none and was never
+        // cast). An ability kind belongs to the targeting spell-or-ability, not to the source
+        // object; no player-protection grant names one.
+        ProtectionScope.Spells -> sourceId != null && SourceKindProtection.isSpell(state, sourceId)
+        ProtectionScope.PermanentsCastThisTurn ->
+            sourceId != null && SourceKindProtection.isPermanentCastThisTurn(state, sourceId)
+        ProtectionScope.ActivatedAbilities, ProtectionScope.TriggeredAbilities -> false
     }
 
     /**

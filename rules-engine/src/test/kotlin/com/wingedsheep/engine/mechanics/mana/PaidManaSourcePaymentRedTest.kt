@@ -23,6 +23,9 @@ import com.wingedsheep.sdk.scripting.AbilityCost
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import com.wingedsheep.engine.core.LeylineDecisionContinuation
+import com.wingedsheep.engine.core.suspendForDecision
 
 /**
  * Characterizations for #106. This file targets the rules seams and keeps the two CR timing
@@ -67,7 +70,7 @@ class PaidManaSourcePaymentRedTest : FunSpec({
         val signetId = driver.putPermanentOnBattlefield(player, GolgariSignet.name)
         val printedCost = GolgariSignet.activatedAbilities.single().cost
         val reversedCost = (printedCost as AbilityCost.Composite).let { AbilityCost.Composite(it.costs.reversed()) }
-        val handler = CostHandler(driver.cardRegistry)
+        val handler = CostHandler(driver.zones)
 
         val forward = handler.payAbilityCost(
             state = driver.state,
@@ -130,10 +133,18 @@ class PaidManaSourcePaymentRedTest : FunSpec({
                 phase = DecisionPhase.CASTING,
             ),
             canDecline = false,
-            cardRegistry = nested.cardRegistry,
+            manaSolver = nested.services.manaSolver,
         )
         window.availableSources.any { it.entityId == nestedForest } shouldBe true
-        nested.replaceState(nested.state.withPendingDecision(window))
+        // A pending decision is a suspension now: the window is installed under an allocated routing
+        // id, paired with a neutral answer. The answer is never resumed here: activating the Signet
+        // sets the suspension aside (ManaPaymentWindow.suspend) and re-raises it afterwards.
+        nested.replaceState(
+            nested.state.suspendForDecision(
+                question = { id -> window.copy(id = id) },
+                answer = LeylineDecisionContinuation(nestedPlayer, nestedSignet, "PAY106 outer payment"),
+            ).state
+        )
 
         val nestedResult = nested.submit(
             ActivateAbility(
@@ -144,7 +155,7 @@ class PaidManaSourcePaymentRedTest : FunSpec({
         )
 
         nestedResult.error shouldBe null
-        nestedResult.isPaused shouldBe true
+        nestedResult.outcome.shouldBeInstanceOf<Outcome.Paused>()
         nestedResult.pendingDecision.shouldBeInstanceOf<SelectManaSourcesDecision>()
         snapshot(nested, nestedPlayer, nestedForest, nestedSignet) shouldBe preSnapshot
     }
@@ -170,7 +181,7 @@ class PaidManaSourcePaymentRedTest : FunSpec({
         driver.passPriorityUntil(com.wingedsheep.sdk.core.Step.PRECOMBAT_MAIN)
         val player = driver.activePlayer!!
         val sourceId = driver.putPermanentOnBattlefield(player, collidingManaArtifact.name)
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
 

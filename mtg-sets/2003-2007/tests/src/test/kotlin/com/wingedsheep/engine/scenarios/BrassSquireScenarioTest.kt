@@ -15,6 +15,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Brass Squire (MBS #101).
@@ -108,7 +109,7 @@ class BrassSquireScenarioTest : FunSpec({
                     ChosenTarget.Permanent(ownCreature),
                 ),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(opponentEquipment)?.get<AttachedToComponent>() shouldBe null
 
         driver.submit(
@@ -121,7 +122,7 @@ class BrassSquireScenarioTest : FunSpec({
                     ChosenTarget.Permanent(opponentCreature),
                 ),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(ownEquipment)?.get<AttachedToComponent>() shouldBe null
         driver.state.getEntity(ownCreature)?.get<AttachmentsComponent>()?.attachedIds
             .orEmpty() shouldNotContain ownEquipment

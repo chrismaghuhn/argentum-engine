@@ -8,9 +8,7 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.GrantKeyword
-import com.wingedsheep.sdk.scripting.TriggerBinding
-import com.wingedsheep.sdk.scripting.events.DamageType
-import com.wingedsheep.sdk.scripting.events.RecipientFilter
+import com.wingedsheep.sdk.scripting.events.Recipient
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 
 /**
@@ -37,12 +35,7 @@ val OhranFrostfang = card("Ohran Frostfang") {
     }
 
     triggeredAbility {
-        trigger = Triggers.dealsDamage(
-            damageType = DamageType.Combat,
-            recipient = RecipientFilter.AnyPlayer,
-            sourceFilter = GameObjectFilter.Creature.youControl(),
-            binding = TriggerBinding.ANY,
-        )
+        trigger = Triggers.a(GameObjectFilter.Creature.youControl()).dealsCombatDamage(to = Recipient.AnyPlayer)
         effect = Effects.DrawCards(1)
         description = "Whenever a creature you control deals combat damage to a player, draw a card."
     }

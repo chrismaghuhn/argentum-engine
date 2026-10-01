@@ -1,10 +1,13 @@
 package com.wingedsheep.engine.legalactions.enumerators
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.legalactions.ActionEnumerator
 import com.wingedsheep.engine.legalactions.AdditionalCostData
 import com.wingedsheep.engine.legalactions.EnumerationContext
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.utils.AbilityCostReduction
+import com.wingedsheep.engine.legalactions.utils.TargetEnumerationUtils
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.core.Zone
@@ -33,7 +36,7 @@ import com.wingedsheep.sdk.scripting.TimingRule
  * non-battlefield `activateFromZone` generically (owner + zone-membership check), so no handler
  * change is needed.
  */
-class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator {
+class ZoneActivatedAbilityEnumerator(private val zone: Zone, private val predicateEvaluator: PredicateEvaluator) : ActionEnumerator {
 
     override fun enumerate(context: EnumerationContext): List<LegalAction> {
         val result = mutableListOf<LegalAction>()
@@ -66,26 +69,42 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                 // it anyway).
                 if (ability.timing == TimingRule.SorcerySpeed && !context.canPlaySorcerySpeed) continue
 
-                // Check activation restrictions
-                var restrictionsMet = true
-                for (restriction in ability.restrictions) {
-                    if (!context.castPermissionUtils.checkActivationRestriction(
-                            state, playerId, restriction, entityId, ability.id, ability.isExhaust
-                        )
-                    ) {
-                        restrictionsMet = false
-                        break
-                    }
-                }
-                if (!restrictionsMet) continue
+                // Kang the Conqueror's turn-scoped power-up lockout is zone-independent, and so is
+                // the matching check in `ActivateAbilityHandler.validate`. Every printed power-up
+                // ability activates from the battlefield, so this only guards future cards.
+                if (context.castPermissionUtils.isPowerUpActivationRestricted(state, ability)) continue
 
-                // Check cost requirements and build cost info
-                val effectiveCost = ability.cost
+                // An any-zone "players can't activate abilities" (Yuriko, Blade of the Mighty) —
+                // the same check `ActivateAbilityHandler.validate` makes off the battlefield.
+                if (context.castPermissionUtils.isActivationPreventedForPlayer(
+                        state, entityId, playerId, abilityIsManaAbility = ability.isManaAbility
+                    )
+                ) continue
+
+                // Check activation restrictions
+                if (!context.legality.activationRestrictionsMet(state, playerId, entityId, ability)) continue
+
+                // Check cost requirements and build cost info. A *defined* {X} (CR 107.3c) and
+                // the ability's generic cost reduction are both resolved here for the same reason
+                // the battlefield enumerator resolves them: the affordability check below and the
+                // cost shown in the menu have to be the number the handler will charge, not an
+                // unresolved `{X}` or an unreduced cost. Without the reduction, a channel land
+                // ("costs {1} less to activate for each legendary creature you control", activated
+                // by discarding it from hand) is hidden from the menu whenever the player can
+                // afford only the reduced price.
+                val effectiveCost = AbilityCostReduction.apply(
+                    context.castPermissionUtils
+                        .applyDefinedXValue(ability.cost, ability, state, entityId, playerId),
+                    ability, state, entityId, playerId, context.targetUtils,
+                    predicateEvaluator = predicateEvaluator
+                )
+                val displayDescription = AbilityCostReduction.describe(ability, effectiveCost)
+
                 var costCanBePaid = true
                 val resolvedPayLifeTotal = context.costUtils.resolvePayLifeCostTotal(
                     state, playerId, entityId, effectiveCost
                 ) ?: continue
-                if (state.lifeTotal(playerId) < resolvedPayLifeTotal) continue
+                if (!state.canPayLife(playerId, resolvedPayLifeTotal)) continue
                 val handCards = state.getZone(playerId, Zone.HAND)
                 var hasDiscardCost = false
                 var blightCost: AbilityCost.Blight? = null
@@ -94,6 +113,8 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                 val abilityContext = com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext(
                     cardComponent, context.projected, entityId, ability
                 )
+
+                if (!com.wingedsheep.engine.mechanics.cost.PlayerCounterPayment.canAffordAbility(state, playerId, effectiveCost)) continue
 
                 when (effectiveCost) {
                     is AbilityCost.Atom -> when (val atom = effectiveCost.atom) {
@@ -114,6 +135,7 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                         }
                         // PayLife was resolved as the complete cost total above.
                         is CostAtom.PayLife -> {}
+                        is CostAtom.ExileFrom -> if (!canExile(context, playerId, entityId, atom)) costCanBePaid = false
                         // Other atoms — engine validates at payment.
                         else -> {}
                     }
@@ -151,10 +173,13 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                                     // PayLife was resolved as the complete cost total above.
                                     is CostAtom.PayLife -> {}
                                     is CostAtom.ReturnToHand -> {
-                                        val targets = context.costUtils.findAbilityBounceTargets(state, playerId, atom.filter)
+                                        val targets = context.costUtils.findAbilityBounceTargets(state, playerId, atom.filter, atom.youControl)
                                         if (targets.size < atom.count) {
                                             costCanBePaid = false; break
                                         }
+                                    }
+                                    is CostAtom.ExileFrom -> if (!canExile(context, playerId, entityId, atom)) {
+                                        costCanBePaid = false; break
                                     }
                                     // Other atoms — engine validates at payment.
                                     else -> {}
@@ -211,17 +236,16 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                 } else null
 
                 // Calculate X cost info
-                val abilityManaCost = when (val c = ability.cost) {
+                val abilityManaCost = when (val c = effectiveCost) {
                     is AbilityCost.Atom -> c.manaCostOrNull
                     is AbilityCost.Composite -> c.costs.firstNotNullOfOrNull { it.manaCostOrNull }
                     else -> null
                 }
                 val zoneManaCostString = abilityManaCost?.toString()
-                val abilityHasXCost = abilityManaCost?.hasX == true
+                val abilityHasXCost = abilityManaCost?.hasX == true || context.costUtils.hasPlayerChosenNonManaX(effectiveCost)
                 val abilityMaxAffordableX: Int? = if (abilityHasXCost) {
-                    val availableSources = context.manaSolver.getAvailableManaCount(state, playerId, precomputedSources = context.availableManaSources)
-                    val fixedCost = abilityManaCost.cmc
-                    (availableSources - fixedCost).coerceAtLeast(0)
+                    context.costUtils.calculateMaxAffordableX(state, playerId, effectiveCost, abilityManaCost,
+                        precomputedSources = context.availableManaSources, sourceId = entityId)
                 } else null
 
                 // Compute auto-tap preview for UI highlighting (skipped in ACTIONS_ONLY mode)
@@ -245,13 +269,13 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                     val firstInfo = targetInfos.first()
 
                     if (targetReqs.size == 1 &&
-                        context.targetUtils.shouldAutoSelectPlayerTarget(firstReq, firstInfo.validTargets)
+                        TargetEnumerationUtils.shouldAutoSelectPlayerTarget(firstReq, firstInfo.validTargets)
                     ) {
                         val autoSelectedTarget = ChosenTarget.Player(firstInfo.validTargets.first())
                         result.add(
                             LegalAction(
                                 actionType = "ActivateAbility",
-                                description = ability.description,
+                                description = displayDescription,
                                 action = ActivateAbility(
                                     playerId, entityId, ability.id,
                                     targets = listOf(autoSelectedTarget)
@@ -269,7 +293,7 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                         result.add(
                             LegalAction(
                                 actionType = "ActivateAbility",
-                                description = ability.description,
+                                description = displayDescription,
                                 action = ActivateAbility(playerId, entityId, ability.id),
                                 validTargets = firstInfo.validTargets,
                                 requiresTargets = true,
@@ -277,7 +301,7 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
                                 targetRequirements = targetInfos.infos,
-                                     targetDomainSupport = targetInfos.support,
+                                targetDomainSupport = targetInfos.support,
                                 additionalCostInfo = costInfo,
                                 hasXCost = abilityHasXCost,
                                 maxAffordableX = abilityMaxAffordableX,
@@ -290,7 +314,7 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                     result.add(
                         LegalAction(
                             actionType = "ActivateAbility",
-                            description = ability.description,
+                            description = displayDescription,
                             action = ActivateAbility(playerId, entityId, ability.id),
                             additionalCostInfo = costInfo,
                             hasXCost = abilityHasXCost,
@@ -305,4 +329,22 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
 
         return result
     }
+
+    /**
+     * Whether [playerId] has enough cards to pay an exile-from-zone cost of the ability on
+     * [sourceId]. The card activating from its own graveyard is left out for an "exile **another**
+     * …" cost (Gallia, Tragic Host) — otherwise a graveyard holding only the source would offer an
+     * ability that payment then rejects. The *which cards* choice is made at activation
+     * (`ActivateAbilityHandler` pauses when there are more candidates than the count).
+     */
+    private fun canExile(
+        context: EnumerationContext,
+        playerId: EntityId,
+        sourceId: EntityId,
+        atom: CostAtom.ExileFrom,
+    ): Boolean = context.costUtils.findExileTargets(
+        context.state, playerId, atom.filter, atom.zone,
+        atom.anyPlayersZone, atom.singleZone, atom.count,
+        excludeSelfId = if (atom.excludeSelf) sourceId else null,
+    ).size >= atom.count
 }

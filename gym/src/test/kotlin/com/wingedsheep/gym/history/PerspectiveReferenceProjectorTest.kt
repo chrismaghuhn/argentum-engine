@@ -48,6 +48,7 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import com.wingedsheep.engine.core.Outcome
 
 class PerspectiveReferenceProjectorTest : FunSpec({
 
@@ -419,7 +420,7 @@ class PerspectiveReferenceProjectorTest : FunSpec({
 
         val thief = driver.putCardInHand(viewer, "Ingenious Thief")
         driver.giveMana(viewer, Color.BLUE, 2)
-        driver.castSpell(viewer, thief).isSuccess shouldBe true
+        driver.castSpell(viewer, thief).outcome shouldBe Outcome.Done
 
         var lookTransition: CommittedRulesTransition? = null
         repeat(40) {
@@ -535,7 +536,7 @@ class PerspectiveReferenceProjectorTest : FunSpec({
 
         val thief = driver.putCardInHand(viewer, "Ingenious Thief")
         driver.giveMana(viewer, Color.BLUE, 2)
-        driver.castSpell(viewer, thief).isSuccess shouldBe true
+        driver.castSpell(viewer, thief).outcome shouldBe Outcome.Done
 
         var lookTransition: CommittedRulesTransition? = null
         repeat(40) {

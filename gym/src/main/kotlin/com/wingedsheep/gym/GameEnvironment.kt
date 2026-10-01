@@ -1,8 +1,10 @@
 package com.wingedsheep.gym
 
+import com.wingedsheep.ai.engine.AutomaticResolutionLimitException
 import com.wingedsheep.ai.engine.DecisionResponder
 import com.wingedsheep.ai.engine.GameSimulator
 import com.wingedsheep.ai.engine.SimulationResult
+import com.wingedsheep.ai.engine.requireNoAutomaticResolutionStop
 import com.wingedsheep.ai.engine.evaluation.BoardEvaluator
 import com.wingedsheep.ai.engine.evaluation.CompositeBoardEvaluator
 import com.wingedsheep.ai.engine.evaluation.BoardPresence
@@ -87,7 +89,14 @@ enum class GameEnvironmentMode {
 }
 
 class GameEnvironment private constructor(
-    private val cardRegistry: CardRegistry,
+    /**
+     * The card-definition authority used by this environment and every [fork].
+     *
+     * External search and observation adapters often need card definitions alongside the
+     * environment's state. They should derive that dependency here instead of accepting a second
+     * registry that might disagree with the one used by action processing and legal enumeration.
+     */
+    val cardRegistry: CardRegistry,
     private val processor: ActionProcessor,
     private val enumerator: LegalActionEnumerator,
     private val evaluator: BoardEvaluator,
@@ -111,7 +120,7 @@ class GameEnvironment private constructor(
     var events: List<GameEvent> = emptyList()
         private set
 
-    /** Events from the most recent [step] call. */
+    /** Events from the most recent [step] or [stepExactlyOne] call. */
     var lastStepEvents: List<GameEvent> = emptyList()
         private set
 
@@ -181,6 +190,21 @@ class GameEnvironment private constructor(
 
     /** Monotonic state generation used to deduplicate observation diagnostics. */
     internal var projectionGeneration: Long = 0L
+
+    /**
+     * Why the engine rejected the most recent submission, or `null` when it was accepted.
+     *
+     * An illegal action leaves the state untouched, which on its own is indistinguishable from an
+     * action that legitimately changed nothing (declaring no attackers, passing priority). Callers
+     * that must not swallow a rejection read this: the HTTP transport turns it into a 400, and MCTS
+     * asserts on it, since a rejected decision edge would otherwise become a child node identical to
+     * its parent and be searched as if it were progress.
+     *
+     * [step] is the only way to learn of its own rejection. [stepExactlyOne] also writes this field,
+     * but its typed [ExactlyOneSubmissionResult.Rejected] is the better read: it carries the
+     * offending action alongside the reason, and it cannot be forgotten the way a field can.
+     */
+    var lastRejection: String? = null
         private set
 
     // =========================================================================
@@ -226,6 +250,7 @@ class GameEnvironment private constructor(
         playerIds = initResult.playerIds
         events = initResult.events
         lastStepEvents = initResult.events
+        lastRejection = null
         stepCount = 0
         this.maxSteps = maxSteps
         diagnostics = EpisodeDiagnostics.EMPTY
@@ -248,6 +273,8 @@ class GameEnvironment private constructor(
      *               or a [SubmitDecision] when responding to a [pendingDecision].
      * @return [StepResult] with the new state, events, rewards, and termination flag.
      * @throws IllegalStateException if the game hasn't been started via [reset].
+     * @throws AutomaticResolutionLimitException if automatic resolution exhausts its progress
+     * guard; the environment is left at the pre-step state.
      */
     fun step(action: GameAction): StepResult {
         check(playerIds.isNotEmpty()) { "Call reset() before step()" }
@@ -417,12 +444,18 @@ class GameEnvironment private constructor(
         // Do not install an illegal simulation result as if it were a successful step.  Besides
         // hiding the error, doing that would incorrectly consume one unit of the Gym horizon.
         if (simResult is SimulationResult.Illegal) {
+            lastRejection = simResult.reason
             throw IllegalArgumentException(simResult.reason)
         }
+        // An automatic resolution that ran out of transitions left an unfinished state; a step
+        // must never install it as if the game had settled. The environment stays at the
+        // pre-step state.
+        simResult.requireNoAutomaticResolutionStop("Gym step")
 
         state = simResult.state
         events = events + simResult.events
         lastStepEvents = simResult.events
+        lastRejection = null
         stepCount++
         projectionGeneration++
         if (listener != null) transitions?.forEach { (processed, after) -> listener(processed, after) }
@@ -439,12 +472,14 @@ class GameEnvironment private constructor(
             throw UnsupportedPathFailure(result.diagnostics)
         }
         if (result.error != null) {
+            lastRejection = result.error
             throw IllegalArgumentException(result.error)
         }
 
         state = result.state
         events = events + result.events
         lastStepEvents = result.events
+        lastRejection = null
         stepCount++
         projectionGeneration++
         pendingCommittedTransition = CommittedRulesTransition(
@@ -456,6 +491,40 @@ class GameEnvironment private constructor(
         committedTransitionListener?.invoke(action, result.state)
 
         return buildStepResult(result.events)
+    }
+
+    /**
+     * Submit exactly one [action] through [ActionProcessor] and install its direct result.
+     *
+     * Unlike [step], this does not run simulator-driven automatic resolution: it never
+     * synthesizes an additional [GameAction], decision response, or priority pass. The submitted
+     * action may itself legitimately resolve the stack or advance the game (for example,
+     * [PassPriority]). [ActionProcessor] remains the authoritative action boundary: it performs
+     * the submitted action atomically and any resulting [PendingDecision] remains for the caller.
+     * A rejected action is returned as [ExactlyOneSubmissionResult.Rejected], rather than being
+     * represented as a game reward or outcome.
+     */
+    fun stepExactlyOne(action: GameAction): ExactlyOneSubmissionResult {
+        check(playerIds.isNotEmpty()) { "Call reset() before stepExactlyOne()" }
+        // Not a strict Gym commit: it is never an eligible perspective-history source.
+        pendingCommittedTransition = null
+
+        val result = processor.process(state, action).result
+        stepCount++
+        projectionGeneration++
+        val rejection = result.error
+        if (rejection != null) {
+            lastStepEvents = result.events
+            lastRejection = rejection
+            return ExactlyOneSubmissionResult.Rejected(action, rejection)
+        }
+
+        state = result.state
+        events = events + result.events
+        lastStepEvents = result.events
+        lastRejection = null
+        committedTransitionListener?.invoke(action, result.state)
+        return ExactlyOneSubmissionResult.Applied(buildStepResult(result.events))
     }
 
     /**
@@ -563,6 +632,7 @@ class GameEnvironment private constructor(
         this.playerIds = playerIds
         this.events = emptyList()
         this.lastStepEvents = emptyList()
+        this.lastRejection = null
         this.stepCount = stepCount
         this.maxSteps = maxSteps
         this.diagnostics = diagnostics
@@ -665,6 +735,8 @@ class GameEnvironment private constructor(
             recordFailure(EpisodeFailureReason.UNSUPPORTED_DIAGNOSTIC)
             throw failure
         } catch (failure: IllegalArgumentException) {
+            // Upstream callers read the reason off [lastRejection]; the fork's boundary also throws.
+            lastRejection = failure.message ?: failure.toString()
             recordFailure(EpisodeFailureReason.PUBLIC_CHOICE_REJECTED)
             throw failure
         } catch (failure: RuntimeException) {
@@ -747,7 +819,7 @@ class GameEnvironment private constructor(
         ): GameEnvironment {
             val services = EngineServices(cardRegistry, printingRegistry, tokenArtRegistry)
             val processor = ActionProcessor(services, computeUndo = false)
-            val enumerator = LegalActionEnumerator.create(cardRegistry)
+            val enumerator = services.legalActionEnumerator
             val simulator = GameSimulator(cardRegistry, processor, enumerator)
             return GameEnvironment(
                 cardRegistry, processor, enumerator, evaluator, simulator, executionMode, printingRegistry,

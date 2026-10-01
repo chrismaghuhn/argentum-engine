@@ -26,6 +26,7 @@ import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.config.GameProperties
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gameserver.deck.DeckValidator
+import com.wingedsheep.gameserver.deck.SideboardSanitizer
 import com.wingedsheep.gameserver.deck.EasterEggDeckInjector
 import com.wingedsheep.gameserver.cube.CubeCardEntry
 import com.wingedsheep.gameserver.cube.CubeList
@@ -234,9 +235,6 @@ class LobbyHandler(
 
     fun startTournament(lobby: TournamentLobby) =
         tournamentMatchHandler.startTournament(lobby)
-
-    fun startNextTournamentRound(lobbyId: String) =
-        tournamentMatchHandler.startNextTournamentRound(lobbyId)
 
     fun handleRoundComplete(lobbyId: String) =
         tournamentMatchHandler.handleRoundComplete(lobbyId)
@@ -825,7 +823,7 @@ class LobbyHandler(
             boosterCount = boosterCount,
             boosterDistribution = TournamentLobby.calculateDefaultDistribution(codes, boosterCount),
             maxPlayers = maxPlayers,
-            pickTimeSeconds = message.pickTimeSeconds.coerceIn(15, 120),
+            pickTimeSeconds = TournamentLobby.clampPickTimeSeconds(message.pickTimeSeconds, 120),
             picksPerRound = initialPicksPerRound,
             isPublic = message.isPublic,
             // Commander formats enable Chaos boosters by default — 20-card commander packs
@@ -1159,7 +1157,10 @@ class LobbyHandler(
                         standings = tournament.getStandingsInfo(connectedIds),
                         nextOpponentName = nextOpponentName,
                         nextRoundHasBye = nm.isBye,
-                        isTournamentComplete = false
+                        isTournamentComplete = false,
+                        // Describes `round` above — the round this player's next match sits in, which
+                        // by definition still has that match to play.
+                        roundComplete = false
                     ))
                 }
                 // Send active matches so player can watch live games while waiting
@@ -1167,10 +1168,9 @@ class LobbyHandler(
                 // Send ready status
                 val readyPlayerIds = lobby.getReadyPlayerIds()
                 if (readyPlayerIds.isNotEmpty()) {
+                    // A snapshot for the reconnecting player, not news about them — hence no playerId.
                     sender.send(session, ServerMessage.PlayerReadyForRound(
                         lobbyId = lobby.lobbyId,
-                        playerId = identity.playerId.value,
-                        playerName = identity.playerName,
                         readyPlayerIds = readyPlayerIds.map { it.value },
                         totalConnectedPlayers = connectedIds.size
                     ))
@@ -1194,7 +1194,10 @@ class LobbyHandler(
                         standings = tournament.getStandingsInfo(connectedIds),
                         nextOpponentName = nextOpponentName,
                         nextRoundHasBye = nm.isBye,
-                        isTournamentComplete = false
+                        isTournamentComplete = false,
+                        // Without this the reconnecting player is told their finished round is still
+                        // running, and the overlay names the round they already played.
+                        roundComplete = currentRound.isComplete
                     ))
                     // Send active matches so player can watch live games while waiting
                     val spectatingGameId = identity.currentSpectatingGameId
@@ -1225,10 +1228,9 @@ class LobbyHandler(
                 // Send ready status
                 val readyPlayerIds = lobby.getReadyPlayerIds()
                 if (readyPlayerIds.isNotEmpty()) {
+                    // A snapshot for the reconnecting player, not news about them — hence no playerId.
                     sender.send(session, ServerMessage.PlayerReadyForRound(
                         lobbyId = lobby.lobbyId,
-                        playerId = identity.playerId.value,
-                        playerName = identity.playerName,
                         readyPlayerIds = readyPlayerIds.map { it.value },
                         totalConnectedPlayers = connectedIds.size
                     ))
@@ -1620,6 +1622,7 @@ class LobbyHandler(
         }
 
         lobby.forceRemovePlayer(aiPlayerId)
+        forfeitBracketMatchesIfSeatGone(lobby, aiPlayerId)
         sessionRegistry.removeIdentity(aiPlayerState.identity.token)
         lobbyRepository.saveLobby(lobby)
 
@@ -1969,7 +1972,7 @@ class LobbyHandler(
         logger.info("AI building sealed deck from pool of {} cards (heuristic={})", pool.size, heuristic)
 
         val aiProperties = gameProperties.ai
-        val forceHeuristic = heuristic || aiProperties.heuristicDeckbuilding
+        val forceHeuristic = heuristic || aiProperties.heuristicDeckbuilding || aiProperties.mode.trim().equals("jev", ignoreCase = true)
         if (!forceHeuristic && aiProperties.enabled && aiProperties.effectiveApiKey.isNotBlank()) {
             val llmDeck = tryLlmSealedDeck(pool, aiProperties)
             if (llmDeck != null) return llmDeck
@@ -2206,6 +2209,7 @@ class LobbyHandler(
 
         // Use forceRemovePlayer for explicit leave - player cannot rejoin
         lobby.forceRemovePlayer(identity.playerId)
+        forfeitBracketMatchesIfSeatGone(lobby, identity.playerId)
         identity.currentLobbyId = null
 
         logger.info("Player ${identity.playerName} left lobby $lobbyId (cannot rejoin)")
@@ -2224,6 +2228,27 @@ class LobbyHandler(
     }
 
     /**
+     * Forfeit a departed seat's remaining bracket matches, if the seat really is gone.
+     *
+     * The `TournamentManager` is built once, from the roster the lobby had then, and nothing rebuilds
+     * it afterwards — so every path that drops a player from `lobby.players` has to settle what the
+     * bracket still has them scheduled for. Only the disconnect-timeout path did (via
+     * [TournamentMatchHandler.handleAbandon]); an explicit Leave and a removed AI seat did not, and
+     * left a seat in the bracket that can never be put in a game. Its matches then sit unplayed
+     * forever, and `hasIncompleteMatchBefore` blocks every later match of whoever it was paired
+     * against, idling the tournament a player at a time.
+     *
+     * Guarded on the seat actually being gone, because [TournamentLobby.removePlayer] deliberately
+     * *keeps* the state during a tournament so the player can rejoin — forfeiting one of those would
+     * decide matches they are still entitled to play. [TournamentMatchHandler.handleAbandon] is a
+     * no-op when the lobby has no bracket yet, which covers everything before the tournament starts.
+     */
+    private fun forfeitBracketMatchesIfSeatGone(lobby: TournamentLobby, playerId: EntityId) {
+        if (lobby.players.containsKey(playerId)) return
+        tournamentMatchHandler.handleAbandon(lobby.lobbyId, playerId)
+    }
+
+    /**
      * Helper to leave current lobby if the player is in one.
      * Used when creating/joining a new lobby to auto-leave the old one.
      */
@@ -2236,6 +2261,7 @@ class LobbyHandler(
         }
 
         lobby.removePlayer(identity.playerId)
+        forfeitBracketMatchesIfSeatGone(lobby, identity.playerId)
         identity.currentLobbyId = null
 
         logger.info("Player ${identity.playerName} auto-left lobby $lobbyId")
@@ -2689,7 +2715,7 @@ class LobbyHandler(
             }
         }
         message.gamesPerMatch?.let { lobby.gamesPerMatch = it.coerceIn(1, 5) }
-        message.pickTimeSeconds?.let { lobby.pickTimeSeconds = it.coerceIn(15, 180) }
+        message.pickTimeSeconds?.let { lobby.pickTimeSeconds = TournamentLobby.clampPickTimeSeconds(it, 180) }
         message.picksPerRound?.let { lobby.picksPerRound = it.coerceIn(1, 2) }
         message.isPublic?.let { lobby.isPublic = it }
 
@@ -2856,9 +2882,21 @@ class LobbyHandler(
             }
         }
 
+        // Unknown card names are dropped before the sideboard is stored: it reaches the engine
+        // unvalidated (unlike the deck, which is rejected above), and GameInitializer throws on the
+        // first name the registry can't resolve — failing a game start whose decks were all legal.
+        val sanitizedSideboard = SideboardSanitizer.sanitize(sideboard, cardRegistry).also { result ->
+            if (result.hasDrops) {
+                logger.info(
+                    "Lobby $lobbyId: dropped ${result.dropped.size} unknown sideboard card(s) from " +
+                        "${identity.playerName}'s submission: ${result.dropped}",
+                )
+            }
+        }.kept
+
         // For a PREMADE_DECKS (constructed) lobby this explicit sideboard is honored; for Limited
         // lobbies TournamentLobby.submitDeck ignores it and derives pool − maindeck (CR 100.4b).
-        val result = lobby.submitDeck(identity.playerId, deckList, effectiveCommander, sideboard)
+        val result = lobby.submitDeck(identity.playerId, deckList, effectiveCommander, sanitizedSideboard)
         when (result) {
             is TournamentLobby.DeckSubmissionResult.Success -> {
                 val deckSize = deckList.values.sum()

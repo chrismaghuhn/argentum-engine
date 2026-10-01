@@ -15,6 +15,8 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.nulls.shouldBeNull
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Loxodon Warhammer (MRD #201) — "Equipped creature gets +3/+0 and has trample and lifelink.
@@ -45,7 +47,7 @@ class LoxodonWarhammerScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature))
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -72,9 +74,9 @@ class LoxodonWarhammerScenarioTest : FunSpec({
         equip(driver, player, hammer, creature)
         driver.removeSummoningSickness(creature)
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(player, listOf(creature), opponent).isSuccess shouldBe true
+        driver.declareAttackers(player, listOf(creature), opponent).outcome shouldBe Outcome.Done
         driver.bothPass()
-        driver.declareNoBlockers(opponent).isSuccess shouldBe true
+        driver.declareNoBlockers(opponent).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.getLifeTotal(opponent) shouldBe 14
@@ -116,7 +118,7 @@ class LoxodonWarhammerScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(opponentCreature))
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.attachedTo(hammer) shouldBe null
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
@@ -128,7 +130,7 @@ class LoxodonWarhammerScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(ownCreature))
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.attachedTo(hammer) shouldBe null
     }
 
@@ -143,7 +145,7 @@ class LoxodonWarhammerScenarioTest : FunSpec({
         driver.giveMana(player, com.wingedsheep.sdk.core.Color.WHITE, 1)
         driver.giveColorlessMana(player, 1)
         driver.castSpellWithTargets(player, disenchant, listOf(ChosenTarget.Permanent(hammer)))
-            .isSuccess shouldBe true
+            .outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.getPermanents(player) shouldNotContain hammer

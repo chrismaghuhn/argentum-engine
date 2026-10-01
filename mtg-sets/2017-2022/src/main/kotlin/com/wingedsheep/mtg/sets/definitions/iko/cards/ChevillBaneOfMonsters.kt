@@ -1,17 +1,15 @@
 package com.wingedsheep.mtg.sets.definitions.iko.cards
 
-import com.wingedsheep.sdk.core.Counters
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Keyword
-import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Conditions
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Chevill, Bane of Monsters
@@ -40,32 +38,23 @@ val ChevillBaneOfMonsters = card("Chevill, Bane of Monsters") {
     keywords(Keyword.DEATHTOUCH)
 
     triggeredAbility {
-        trigger = Triggers.YourUpkeep
+        trigger = Triggers.you.beginningOf(Step.UPKEEP)
         interveningIf = Conditions.OpponentControls(
-            GameObjectFilter.Permanent.withCounter(Counters.BOUNTY),
+            GameObjectFilter.Permanent.withCounter(CounterType.BOUNTY),
             negate = true,
         )
-        val target = target(
-            "target creature or planeswalker an opponent controls",
-            TargetObject(
-                filter = TargetFilter(GameObjectFilter.CreatureOrPlaneswalker.opponentControls()),
-            ),
-        )
-        effect = Effects.AddCounters(Counters.BOUNTY, 1, target)
+        val target = target(TargetFilter(GameObjectFilter.CreatureOrPlaneswalker.opponentControls()))
+        effect = Effects.AddCounters(CounterType.BOUNTY, 1, target)
     }
 
     triggeredAbility {
-        trigger = Triggers.leavesBattlefield(
-            filter = GameObjectFilter.Permanent
+        trigger = Triggers.a(
+            GameObjectFilter.Permanent
                 .opponentControls()
-                .withCounter(Counters.BOUNTY),
-            to = Zone.GRAVEYARD,
-            binding = TriggerBinding.ANY,
-        )
-        effect = Effects.Composite(
-            Effects.GainLife(3),
-            Effects.DrawCards(1),
-        )
+                .withCounter(CounterType.BOUNTY)
+        ).dies()
+        effect = Effects.GainLife(3) then
+            Effects.DrawCards(1)
     }
 
     metadata {

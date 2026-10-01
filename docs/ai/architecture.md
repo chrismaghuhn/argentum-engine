@@ -165,16 +165,41 @@ every candidate. Sampling before the one-ply simulation matters because pending 
 by that simulation can inspect hidden zones too. Sharing the world is essential: independently
 sampling candidates would make hidden-information variance look like move quality.
 
-`Visibility` in `rules-engine/view` is the common oracle for both client masking and AI
-determinization. The determinizer rewrites identities, never entities: entity IDs, zone membership,
-pending decisions, targets and continuations remain intact. Individually revealed cards and cards
-carrying runtime state are pinned. With a known decklist it samples from `decklist − seen`;
-otherwise it permutes the existing hidden multiset. That fallback removes exact hand and
-library-order knowledge, but remains “cheating-lite” because it knows which cards exist unseen.
+`Visibility` in `rules-engine/view` is the common identity oracle for client masking, Gym
+observations, and AI determinization. The determinizer rewrites identities, never entities: entity
+IDs, zone membership, pending decisions, targets and continuations remain intact. Individually
+revealed cards and cards carrying runtime state are pinned. With a known decklist it samples from
+`decklist − seen`; otherwise it permutes the existing hidden multiset. That fallback removes exact
+hand and library-order knowledge, but remains “cheating-lite” because it knows which cards exist
+unseen.
 
 Phase 8 starts with one shared determinization per search. More worlds compete directly with rollout
 count, so raising K requires an arena result showing it buys more strength at the same wall-clock
 budget.
+
+The mechanics of a swap — which slots are safe, which are pinned by the conservative typed-`EntityId`
+projection of every live stack object, pending decision, and continuation frame, how the rebuild is
+applied — live in `HiddenSlotRewrite` in `rules-engine`, not here. Its in-flight pin projection
+fails closed: an incomplete in-flight graph pins every candidate hidden slot. `Determinizer` keeps
+the policy: it decides *which* slots are hidden from the viewer and *what* to put in them.
+
+Pinning buys coherence at the cost of information separation, and it is worth being explicit about
+which way that trades. A slot pinned because in-flight execution references it keeps its **real**
+identity in the sampled world even when the viewer is not allowed to know it — the alternative is a
+world whose paused decision points at a card that was never there. That stays sound because the
+Strategist determinizes at roots where the AI holds priority, so a paused root is one the AI itself
+must answer and the referenced slots are its own. It is still strictly less leaky than pinning every
+candidate whenever a continuation frame exists, which is what the projection replaced. A future
+caller that determinizes at *another* seat's pause would be handing its search the truth, and needs
+a policy of its own rather than this default.
+
+The other
+caller of that primitive is `HiddenWorldMaterializer`, for callers that already own an assignment:
+it takes an explicit `EntityId → CardDefinition` map plus a caller-selected RNG for future simulated
+events, and refuses the whole request rather than pinning what it cannot install. Neither accepts a
+`ClientGameState` or a Gym observation — those are lossy views, while both operate on a trusted
+complete engine state. Callers needing hypothetical randomness independent of an authoritative game
+must supply an independently derived RNG; reusing the source stream stays an explicit choice.
 
 ---
 

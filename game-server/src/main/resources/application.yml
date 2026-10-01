@@ -108,12 +108,21 @@ game:
     # production stays clean — the deploy passes no GAME_EASTER_EGGS_ENABLED, so a redeploy can't
     # switch them back on. Local dev opts in via .env.
     enabled: ${GAME_EASTER_EGGS_ENABLED:false}
+  tournament:
+    # Decide AI-vs-AI bracket matches by simulation instead of playing them out. A round-robin with
+    # one human and N AI seats spends most of its CPU on games nobody is in; simulating them keeps the
+    # standings moving for a fraction of the cost. Set to false to play every match (e.g. on a box
+    # where the AI games are being spectated). An all-AI bracket (the AI Sandbox) is never simulated
+    # whatever this says — it exists to be watched.
+    simulate-ai-matches: ${GAME_TOURNAMENT_SIMULATE_AI_MATCHES:true}
   admin:
     # Password for admin replay feature. Feature is disabled if not set.
     password: ${GAME_ADMIN_PASSWORD:}
   ai:
     enabled: ${GAME_AI_ENABLED:true}
-    # AI mode: "engine" (built-in, no API key needed) or "llm" (requires API key)
+    # AI mode: "engine" (built-in, no API key needed), "llm" (requires API key), or the mode
+    # of a registered AiControllerProvider. Anything else fails startup rather than silently
+    # disabling the AI.
     mode: ${GAME_AI_MODE:engine}
     base-url: ${GAME_AI_BASE_URL:https://openrouter.ai/api/v1}
     api-key: ${GAME_AI_API_KEY:${OPENROUTER_API_KEY:}}

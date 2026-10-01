@@ -23,13 +23,12 @@ import kotlinx.serialization.Serializable
 @Serializable
 @SerialName("ChooseGuessKindContinuation")
 data class ChooseGuessKindContinuation(
-    override val decisionId: String,
     val controllerLibraryOwnerId: EntityId,
     val guesserId: EntityId,
     val onGuessedRight: Effect,
     val onGuessedWrong: Effect,
     val effectContext: EffectContext,
-) : ContinuationFrame
+) : AnswerContinuation
 
 /**
  * Resume after the guesser guessed the top card's [CardKind]. Reveals the top card of the
@@ -39,10 +38,31 @@ data class ChooseGuessKindContinuation(
 @Serializable
 @SerialName("GuessTopCardKindContinuation")
 data class GuessTopCardKindContinuation(
-    override val decisionId: String,
     val controllerLibraryOwnerId: EntityId,
     val guesserId: EntityId,
     val onGuessedRight: Effect,
     val onGuessedWrong: Effect,
     val effectContext: EffectContext,
-) : ContinuationFrame
+) : AnswerContinuation
+
+/**
+ * Resume after the guesser answered a
+ * [com.wingedsheep.sdk.scripting.effects.PlayerGuessesConditionEffect] (Liar's Pendulum). On resume
+ * the condition is evaluated for the first time and the answer scored, publishing 1 or 0 under
+ * [storeGuessedRightAs].
+ *
+ * The whole [effectContext] is carried rather than rebuilt, because the condition is usually written
+ * against something an earlier step chose — Liar's Pendulum's guess is about a card *name* held in
+ * `chosenValues`, and a fresh context would lose it and silently score every guess as wrong.
+ *
+ * @property condition The proposition, still unevaluated at the moment this frame is pushed.
+ * @property storeGuessedRightAs Pipeline number written as 1 (guessed right) or 0 (guessed wrong).
+ */
+@Serializable
+@SerialName("GuessConditionContinuation")
+data class GuessConditionContinuation(
+    val guesserId: EntityId,
+    val condition: com.wingedsheep.sdk.scripting.conditions.Condition,
+    val storeGuessedRightAs: String,
+    val effectContext: EffectContext,
+) : AnswerContinuation

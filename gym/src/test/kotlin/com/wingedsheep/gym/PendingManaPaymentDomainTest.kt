@@ -18,12 +18,12 @@ import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.player.PayOrSufferExecutor
 import com.wingedsheep.engine.mechanics.cost.CostPaymentContext
 import com.wingedsheep.engine.mechanics.cost.CostPaymentService
 import com.wingedsheep.engine.mechanics.cost.PaymentResult
-import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
@@ -78,7 +78,7 @@ class PendingManaPaymentDomainTest : ScenarioTestBase() {
         typeLine = "Creature — Human"
         power = 1
         toughness = 1
-        keywordAbility(KeywordAbility.wardComposite(WardCost.Mana("{2}"), WardCost.Life(2)))
+        keywordAbility(KeywordAbility.Ward(WardCost.Composite(listOf(WardCost.Mana("{2}"), WardCost.Life(2)))))
     }
 
     init {
@@ -336,22 +336,26 @@ class PendingManaPaymentDomainTest : ScenarioTestBase() {
                 .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
                 .withRngSeed(11L)
                 .build()
-            val prompt = YesNoDecision(
-                id = "counter-unless-yes",
-                playerId = game.player1Id,
-                prompt = "Pay {1}?",
-                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
-            )
-            val state = game.state.copy(pendingDecision = prompt).pushContinuation(
-                CounterUnlessPaysContinuation(
-                    decisionId = prompt.id,
+            // The question and its answer continuation are installed together as one Suspension;
+            // the decision id is the state's next routing id, so the prompt is read back from it.
+            val state = game.state.suspendForDecision(
+                question = { id ->
+                    YesNoDecision(
+                        id = id,
+                        playerId = game.player1Id,
+                        prompt = "Pay {1}?",
+                        context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                    )
+                },
+                answer = CounterUnlessPaysContinuation(
                     payingPlayerId = game.player1Id,
                     spellEntityId = com.wingedsheep.sdk.model.EntityId("counter-unless-spell"),
                     manaCost = com.wingedsheep.sdk.core.ManaCost.parse("{1}"),
                     sourceId = null,
                     sourceName = "Counter unless pays",
                 ),
-            )
+            ).state
+            val prompt = state.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
             val environment = GameEnvironment.create(
                 cardRegistry = cardRegistry,
                 executionMode = GameEnvironmentMode.TRUSTED,
@@ -423,7 +427,11 @@ class PendingManaPaymentDomainTest : ScenarioTestBase() {
                 .withRngSeed(16L)
                 .build()
             val sourceId = game.findPermanent("Goblin Guide") ?: error("Missing pay-or-suffer source")
-            val result = PayOrSufferExecutor(cardRegistry).execute(
+            val result = PayOrSufferExecutor(
+                zones = services.zones,
+                cardRegistry = cardRegistry,
+                costPaymentService = { services.costPaymentService },
+            ).execute(
                 state = game.state,
                 effect = PayOrSufferEffect(
                     cost = Costs.pay.Mana("{G}"),
@@ -548,7 +556,7 @@ class PendingManaPaymentDomainTest : ScenarioTestBase() {
             forgeIds.size shouldBe 2
             val plan = twoForgeRedPlan(forgeIds)
             val before = game.state
-            PaymentPlanValidator(ManaSolver(cardRegistry)).validateV3(
+            PaymentPlanValidator(services.manaSolver).validateV3(
                 state = before,
                 playerId = game.player1Id,
                 cost = com.wingedsheep.sdk.core.ManaCost.parse("{2}"),

@@ -14,6 +14,8 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Diabolic Intent (PLS #42) — sacrifice a creature, then search for any card and put it into hand.
@@ -47,13 +49,13 @@ class DiabolicIntentScenarioTest : FunSpec({
                 ),
             )
         )
-        (cast.isSuccess || cast.isPaused) shouldBe true
+        ((cast.outcome is Outcome.Done) || (cast.outcome is Outcome.Paused)) shouldBe true
         driver.bothPass()
 
         val search = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
         search.playerId shouldBe player
         search.options shouldContain noncreature
-        driver.submitCardSelection(player, listOf(noncreature)).isSuccess shouldBe true
+        driver.submitCardSelection(player, listOf(noncreature)).outcome shouldBe Outcome.Done
 
         driver.findCardInHand(player, "Lightning Bolt") shouldBe noncreature
         driver.getGraveyardCardNames(player) shouldContain "Grizzly Bears"
@@ -76,7 +78,7 @@ class DiabolicIntentScenarioTest : FunSpec({
             )
         )
 
-        cast.isSuccess shouldBe false
+        cast.outcome shouldNotBe Outcome.Done
         driver.findCardInHand(player, "Diabolic Intent") shouldBe intent
     }
 })

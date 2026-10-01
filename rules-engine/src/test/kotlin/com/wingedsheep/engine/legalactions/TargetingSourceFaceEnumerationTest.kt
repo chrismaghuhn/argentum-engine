@@ -7,7 +7,6 @@ import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.CardLayout
 import com.wingedsheep.sdk.model.Deck
@@ -20,6 +19,8 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
  * Alternative spell faces are the source of targeting characteristics while that face is cast.
@@ -36,7 +37,7 @@ class TargetingSourceFaceEnumerationTest : FunSpec({
             typeLine = "Instant"
             oracleText = "Target creature gets +1/+0 until end of turn."
             spell {
-                target = Targets.Creature
+                target = TargetObject(filter = TargetFilter.Creature)
                 effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
             }
         }
@@ -45,7 +46,7 @@ class TargetingSourceFaceEnumerationTest : FunSpec({
             typeLine = "Instant"
             oracleText = "Target creature gets +1/+0 until end of turn."
             spell {
-                target = Targets.Creature
+                target = TargetObject(filter = TargetFilter.Creature)
                 effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
             }
         }

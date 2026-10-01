@@ -12,6 +12,8 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Vulshok Morningstar (DST #157) — "Equipped creature gets +2/+2. Equip {2}."
@@ -38,7 +40,7 @@ class VulshokMorningstarScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature)),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -81,7 +83,7 @@ class VulshokMorningstarScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(opponentCreature)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(morningstar)?.get<AttachedToComponent>()?.targetId shouldBe second
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
@@ -93,7 +95,7 @@ class VulshokMorningstarScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(first)),
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.state.getEntity(morningstar)?.get<AttachedToComponent>()?.targetId shouldBe second
     }
 
@@ -111,7 +113,7 @@ class VulshokMorningstarScenarioTest : FunSpec({
             caster,
             swords,
             listOf(ChosenTarget.Permanent(creature)),
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.findPermanent(player, "Vulshok Morningstar") shouldBe morningstar

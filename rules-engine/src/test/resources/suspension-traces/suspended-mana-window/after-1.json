@@ -1,0 +1,192 @@
+{
+    "entities": {
+        "player-1": {
+            "com.wingedsheep.engine.state.components.identity.PlayerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.PlayerComponent",
+                "name": "Player1"
+            },
+            "com.wingedsheep.engine.state.components.identity.LifeTotalComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.LifeTotalComponent",
+                "life": 20
+            },
+            "com.wingedsheep.engine.state.components.player.ManaPoolComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.ManaPoolComponent",
+                "blue": 1,
+                "manaBySubtype": {
+                    "Bird": 1
+                },
+                "manaBySource": {
+                    "card-1001": 1
+                },
+                "manaByCardType": {
+                    "CREATURE": 1
+                }
+            },
+            "com.wingedsheep.engine.state.components.player.LandDropsComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.LandDropsComponent"
+            }
+        },
+        "player-2": {
+            "com.wingedsheep.engine.state.components.identity.PlayerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.PlayerComponent",
+                "name": "Player2"
+            },
+            "com.wingedsheep.engine.state.components.identity.LifeTotalComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.LifeTotalComponent",
+                "life": 20
+            },
+            "com.wingedsheep.engine.state.components.player.ManaPoolComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.ManaPoolComponent"
+            },
+            "com.wingedsheep.engine.state.components.player.LandDropsComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.LandDropsComponent"
+            }
+        },
+        "card-1001": {
+            "com.wingedsheep.engine.state.components.identity.CardComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.CardComponent",
+                "cardDefinitionId": "Birds of Paradise",
+                "name": "Birds of Paradise",
+                "manaCost": "{G}",
+                "typeLine": "Creature — Bird",
+                "oracleText": "Flying\n{T}: Add one mana of any color.",
+                "baseStats": {
+                    "power": 0,
+                    "toughness": 1
+                },
+                "baseKeywords": [
+                    "FLYING"
+                ],
+                "colors": [
+                    "GREEN"
+                ],
+                "ownerId": "player-1"
+            },
+            "com.wingedsheep.engine.state.components.identity.OwnerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.OwnerComponent",
+                "playerId": "player-1"
+            },
+            "com.wingedsheep.engine.state.components.identity.ControllerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.ControllerComponent",
+                "playerId": "player-1"
+            },
+            "com.wingedsheep.engine.state.components.battlefield.TappedComponent": {
+                "type": "com.wingedsheep.engine.state.components.battlefield.TappedComponent"
+            },
+            "com.wingedsheep.engine.state.components.battlefield.HasBecomeTappedComponent": {
+                "type": "com.wingedsheep.engine.state.components.battlefield.HasBecomeTappedComponent",
+                "lastBecameTappedTurn": 1,
+                "timesThisTurn": 1
+            }
+        }
+    },
+    "zones": [
+        {
+            "ownerId": "player-1",
+            "zoneType": "Hand"
+        },
+        [],
+        {
+            "ownerId": "player-1",
+            "zoneType": "Library"
+        },
+        [],
+        {
+            "ownerId": "player-1",
+            "zoneType": "Graveyard"
+        },
+        [],
+        {
+            "ownerId": "player-1",
+            "zoneType": "Battlefield"
+        },
+        [
+            "card-1001"
+        ],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Hand"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Library"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Graveyard"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Battlefield"
+        },
+        []
+    ],
+    "turnNumber": 1,
+    "activePlayerId": "player-1",
+    "phase": "PRECOMBAT_MAIN",
+    "step": "PRECOMBAT_MAIN",
+    "priorityPlayerId": "player-1",
+    "turnOrder": [
+        "player-1",
+        "player-2"
+    ],
+    "continuationStack": [
+        {
+            "type": "com.wingedsheep.engine.core.Suspension",
+            "question": {
+                "type": "SelectManaSourcesDecision",
+                "id": "r1",
+                "playerId": "player-1",
+                "prompt": "Pay {1}",
+                "context": {
+                    "sourceName": "You may pay"
+                },
+                "availableSources": [],
+                "requiredCost": "{1}",
+                "autoPaySuggestion": [],
+                "canDecline": true
+            },
+            "answer": {
+                "type": "com.wingedsheep.engine.core.MayPayManaSelectionContinuation",
+                "playerId": "player-1",
+                "sourceName": null,
+                "manaCost": "{1}",
+                "effect": {
+                    "type": "GainLife",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 2
+                    }
+                },
+                "effectContext": {
+                    "sourceId": null,
+                    "controllerId": "player-1"
+                },
+                "availableSources": [
+                    {
+                        "entityId": "card-1001",
+                        "name": "Birds of Paradise",
+                        "producesColors": [
+                            "WHITE",
+                            "BLUE",
+                            "BLACK",
+                            "RED",
+                            "GREEN"
+                        ],
+                        "producesColorless": false
+                    }
+                ],
+                "autoPaySuggestion": [
+                    "card-1001"
+                ]
+            }
+        }
+    ],
+    "rng": {
+        "state": 1703
+    },
+    "nextRoutingId": 3
+}

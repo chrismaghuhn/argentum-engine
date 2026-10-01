@@ -4,7 +4,6 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
 
 /**
  * Go for the Throat
@@ -19,7 +18,7 @@ val GoForTheThroat = card("Go for the Throat") {
     oracleText = "Destroy target nonartifact creature."
 
     spell {
-        val target = target("target", TargetCreature(filter = TargetFilter.Creature.nonartifact()))
+        val target = target(TargetFilter.Creature.nonartifact())
         effect = Effects.Destroy(target)
     }
 

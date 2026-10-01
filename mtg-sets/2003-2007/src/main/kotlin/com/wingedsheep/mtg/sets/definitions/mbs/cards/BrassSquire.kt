@@ -6,8 +6,6 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
-import com.wingedsheep.sdk.scripting.targets.TargetPermanent
 
 /**
  * Brass Squire — Mirrodin Besieged #101
@@ -25,16 +23,8 @@ val BrassSquire = card("Brass Squire") {
 
     activatedAbility {
         cost = com.wingedsheep.sdk.dsl.Costs.Tap
-        val equipment = target(
-            "target Equipment you control",
-            TargetPermanent(
-                filter = TargetFilter(GameObjectFilter.Artifact.withSubtype(Subtype.EQUIPMENT).youControl())
-            )
-        )
-        val creature = target(
-            "target creature you control",
-            TargetCreature(filter = TargetFilter.CreatureYouControl)
-        )
+        val equipment = target(TargetFilter(GameObjectFilter.Artifact.withSubtype(Subtype.EQUIPMENT).youControl()))
+        val creature = target(TargetFilter.CreatureYouControl)
         effect = Effects.AttachTargetEquipmentToCreature(equipment, creature)
     }
 

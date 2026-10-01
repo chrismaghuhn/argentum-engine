@@ -17,6 +17,7 @@ import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Rip, Spawn Hunter (DSK #228) — {2}{G}{W} 4/4 Legendary Creature — Human Survivor.
@@ -198,7 +199,7 @@ class RipSpawnHunterScenarioTest : ScenarioTestBase() {
                         optionFor(game, decision, "Spawn Three"),
                     )
                 )
-                invalid.isSuccess shouldBe false
+                invalid.outcome shouldNotBe Outcome.Done
                 invalid.error shouldNotBe null
                 game.getPendingDecision()?.id shouldBe decision.id
 
@@ -209,7 +210,7 @@ class RipSpawnHunterScenarioTest : ScenarioTestBase() {
                         optionFor(game, decision, "Spawn Two A"),
                         optionFor(game, decision, "Spawn Three"),
                     )
-                ).isSuccess shouldBe true
+                ).outcome shouldBe Outcome.Done
                 game.resolveStack()
 
                 withClue("only the first power-2 card and the power-3 card reached hand") {

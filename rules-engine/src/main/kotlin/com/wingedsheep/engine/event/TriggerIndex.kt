@@ -30,8 +30,6 @@ import com.wingedsheep.sdk.scripting.GrantTriggeredAbility
 import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 import com.wingedsheep.sdk.scripting.events.DamageType
-import com.wingedsheep.sdk.scripting.events.RecipientFilter
-import com.wingedsheep.sdk.scripting.events.SourceFilter
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
 
 /**
@@ -77,22 +75,32 @@ enum class TriggerCategory {
     CHOOSE_TARGETS,
     DISCARD,
     RING_TEMPTED,
+    CLASHED,
     SCRIED,
     SURVEILED,
+    PROLIFERATED,
     DISCOVERED,
     EVIDENCE_COLLECTED,
+    FORAGED,
+    CASE_SOLVED,
     EXPLORED,
+    CONNIVED,
     EXPLOITED,
     TRAINED,
+    CHAMPIONED,
     YOU_BEND,
     MANIFESTED_DREAD,
     SEARCH_LIBRARY,
+    SHUFFLE_LIBRARY,
     BECAME_SADDLED,
+    BECAME_RENOWNED,
     CREW_OR_SADDLE_CONTRIBUTION,
     BECOMES_ATTACHED,
     BECOMES_UNATTACHED,
     SAGA_CHAPTER_RESOLVED,
     PLAYER_LOST,
+    ROOM_FULLY_UNLOCKED,
+    LAND_TAPPED_FOR_MANA,
 }
 
 /**
@@ -209,12 +217,16 @@ class TriggerIndex(
          */
         fun triggerToCategories(trigger: SdkGameEvent, binding: TriggerBinding): List<TriggerCategory> {
             // ATTACHED triggers are generally handled by AttachmentTriggerDetector via the
-            // aurasByTarget index. Exception: BlocksOrBecomesBlockedByEvent needs the full
-            // BlockersDeclaredEvent block map to compute the equipped creature's combat partner,
-            // so it stays indexed under BLOCKERS_DECLARED and is handled in the main
-            // detectTriggersForEvent loop (which resolves ATTACHED → the equipped creature).
+            // aurasByTarget index. Two exceptions, both needing the full BlockersDeclaredEvent
+            // block map that the per-entity attachment path never sees, so both stay indexed under
+            // BLOCKERS_DECLARED and are handled in the main detectTriggersForEvent loop (which
+            // resolves ATTACHED → the equipped/enchanted creature):
+            //   - BlocksOrBecomesBlockedByEvent, to compute the combat partner (Barrow-Blade)
+            //   - BecomesUnblockedEvent, whose "isn't blocked" is a *negative* over the whole map
+            //     (Farrel's Mantle)
             if (binding == TriggerBinding.ATTACHED &&
-                trigger !is SdkGameEvent.BlocksOrBecomesBlockedByEvent
+                trigger !is SdkGameEvent.BlocksOrBecomesBlockedByEvent &&
+                trigger !is SdkGameEvent.BecomesUnblockedEvent
             ) return emptyList()
 
             return when (trigger) {
@@ -239,7 +251,7 @@ class TriggerIndex(
                 is SdkGameEvent.BecomesUnblockedEvent -> listOf(TriggerCategory.BLOCKERS_DECLARED)
                 is SdkGameEvent.BlocksOrBecomesBlockedByEvent -> listOf(TriggerCategory.BLOCKERS_DECLARED)
                 is SdkGameEvent.DamageReceivedEvent ->
-                    if (trigger.source == SourceFilter.Any) listOf(TriggerCategory.DAMAGE_RECEIVED) else emptyList()
+                    if (trigger.source == GameObjectFilter.Any) listOf(TriggerCategory.DAMAGE_RECEIVED) else emptyList()
                 is SdkGameEvent.SpellCastEvent -> listOf(TriggerCategory.SPELL_CAST)
                 is SdkGameEvent.NthSpellCastEvent -> listOf(TriggerCategory.SPELL_CAST)
                 is SdkGameEvent.LandPlayedEvent -> listOf(TriggerCategory.LAND_PLAYED)
@@ -257,7 +269,6 @@ class TriggerIndex(
                 is SdkGameEvent.PhasesInEvent -> listOf(TriggerCategory.PHASES_IN)
                 is SdkGameEvent.LifeGainEvent -> listOf(TriggerCategory.LIFE_GAIN)
                 is SdkGameEvent.LifeLossEvent -> listOf(TriggerCategory.LIFE_LOSS)
-                is SdkGameEvent.LifeGainOrLossEvent -> listOf(TriggerCategory.LIFE_GAIN, TriggerCategory.LIFE_LOSS)
                 is SdkGameEvent.BecomesTargetEvent -> listOf(TriggerCategory.BECOMES_TARGET)
                 is SdkGameEvent.TurnFaceUpEvent -> listOf(TriggerCategory.TURN_FACE_UP)
                 is SdkGameEvent.CreatureTurnedFaceUpEvent -> listOf(TriggerCategory.TURN_FACE_UP)
@@ -269,6 +280,7 @@ class TriggerIndex(
                 is SdkGameEvent.PermanentsSacrificedEvent -> listOf(TriggerCategory.SACRIFICE)
                 is SdkGameEvent.OneOrMoreDealCombatDamageToPlayerEvent -> listOf(TriggerCategory.COMBAT_DAMAGE_BATCH)
                 is SdkGameEvent.OneOrMoreDealCombatDamageToYouEvent -> listOf(TriggerCategory.COMBAT_DAMAGE_BATCH)
+                is SdkGameEvent.OpponentsDealtCombatDamageEvent -> listOf(TriggerCategory.COMBAT_DAMAGE_BATCH)
                 is SdkGameEvent.LeaveBattlefieldWithoutDyingEvent -> listOf(TriggerCategory.LEAVE_WITHOUT_DYING)
                 is SdkGameEvent.CreaturesYouControlDiedEvent -> listOf(TriggerCategory.CREATURES_DIED_BATCH)
                 is SdkGameEvent.PermanentsEnteredEvent -> listOf(TriggerCategory.PERMANENTS_ENTERED_BATCH)
@@ -280,28 +292,67 @@ class TriggerIndex(
                 is SdkGameEvent.TargetsChosenEvent -> listOf(TriggerCategory.CHOOSE_TARGETS)
                 is SdkGameEvent.DiscardEvent -> listOf(TriggerCategory.DISCARD)
                 is SdkGameEvent.RingTemptedEvent -> RING_TEMPTED_LIST
+                is SdkGameEvent.ClashedEvent -> CLASHED_LIST
                 is SdkGameEvent.ScriedEvent -> SCRIED_LIST
                 is SdkGameEvent.SurveiledEvent -> SURVEILED_LIST
+                is SdkGameEvent.ProliferatedEvent -> PROLIFERATED_LIST
                 // "Whenever you scry or surveil" indexes under both buckets so either engine event
                 // finds it; the matcher confirms the event is a scry or a surveil.
                 is SdkGameEvent.ScriedOrSurveiledEvent -> SCRIED_OR_SURVEILED_LIST
                 is SdkGameEvent.DiscoveredEvent -> DISCOVERED_LIST
                 is SdkGameEvent.EvidenceCollectedEvent -> EVIDENCE_COLLECTED_LIST
+                is SdkGameEvent.ForagedEvent -> FORAGED_LIST
+                is SdkGameEvent.CaseSolvedEvent -> CASE_SOLVED_LIST
                 is SdkGameEvent.ExploredEvent -> EXPLORED_LIST
+                is SdkGameEvent.ConnivedEvent -> CONNIVED_LIST
                 is SdkGameEvent.ExploitedEvent -> EXPLOITED_LIST
                 is SdkGameEvent.TrainedEvent -> TRAINED_LIST
+                is SdkGameEvent.ChampionedEvent -> CHAMPIONED_LIST
                 is SdkGameEvent.BendPerformedEvent -> BEND_LIST
                 is SdkGameEvent.ManifestedDreadEvent -> MANIFESTED_DREAD_LIST
                 is SdkGameEvent.SearchLibraryEvent -> SEARCH_LIBRARY_LIST
+                is SdkGameEvent.ShuffleLibraryEvent -> SHUFFLE_LIBRARY_LIST
                 is SdkGameEvent.BecameSaddledEvent -> BECAME_SADDLED_LIST
+                is SdkGameEvent.BecameRenownedEvent -> BECAME_RENOWNED_LIST
                 is SdkGameEvent.CrewsEvent,
                 is SdkGameEvent.SaddlesEvent -> CREW_OR_SADDLE_CONTRIBUTION_LIST
                 is SdkGameEvent.BecomesAttachedEvent -> BECOMES_ATTACHED_LIST
                 is SdkGameEvent.BecomesUnattachedEvent -> BECOMES_UNATTACHED_LIST
                 is SdkGameEvent.SagaChapterResolvedEvent -> SAGA_CHAPTER_RESOLVED_LIST
                 is SdkGameEvent.PlayerLostGameEvent -> PLAYER_LOST_LIST
-                // These are handled by specialized detect methods, not the main loop
-                else -> emptyList()
+                is SdkGameEvent.RoomFullyUnlockedEvent -> ROOM_FULLY_UNLOCKED_LIST
+
+                // Detected by a dedicated pass in TriggerDetector or the observer detectors, which
+                // need data the per-event loop doesn't carry (the source face of a door, the damage
+                // source, the dying creature's damage history). DamagePreventedEvent and
+                // CardPlayedFromPermissionEvent back linked delayed triggers only. Indexing any of
+                // these here would fire them a second time. DamageReceivedEvent with a non-Any
+                // source filter goes to the damage detector too (branch above).
+                is SdkGameEvent.BecomesPlottedEvent,
+                is SdkGameEvent.CardPlayedFromPermissionEvent,
+                is SdkGameEvent.ControlChangeEvent,
+                is SdkGameEvent.CreatureDealtDamageBySourceDiesEvent,
+                is SdkGameEvent.DamagePreventedEvent,
+                is SdkGameEvent.DealsDamageEvent,
+                is SdkGameEvent.DoorUnlockedEvent -> emptyList()
+
+                // Replacement-effect filters, never triggers: ReplacementEffectProcessor and the
+                // amount modifiers read them, and TriggerMatcher returns false for each.
+                is SdkGameEvent.CounterPlacementEvent,
+                is SdkGameEvent.DamageEvent,
+                is SdkGameEvent.DrawCardsEvent,
+                is SdkGameEvent.ExtraTurnEvent,
+                is SdkGameEvent.CounterSpellEvent,
+                is SdkGameEvent.LifePaymentEvent,
+                is SdkGameEvent.MillEvent -> emptyList()
+
+                // Synthetic: StateTriggerPoller produces these pending triggers directly.
+                is SdkGameEvent.StateConditionMetEvent -> emptyList()
+
+                // A *non-mana* "whenever you tap a land for mana" (Forbidden Orchard) — it uses the
+                // stack. A mana-adding one is a triggered mana ability (CR 605.1b), authored as
+                // AdditionalManaOnSourceTap so it resolves immediately instead.
+                is SdkGameEvent.LandTappedForMana -> LAND_TAPPED_FOR_MANA_LIST
             }
         }
 
@@ -337,23 +388,109 @@ class TriggerIndex(
             is com.wingedsheep.engine.core.TargetsChosenEvent -> CHOOSE_TARGETS_LIST
             is CardsDiscardedEvent -> DISCARD_LIST
             is com.wingedsheep.engine.core.RingTemptedEvent -> RING_TEMPTED_LIST
+            is com.wingedsheep.engine.core.ClashedEvent -> CLASHED_LIST
             is com.wingedsheep.engine.core.ScriedEvent -> SCRIED_LIST
             is com.wingedsheep.engine.core.SurveiledEvent -> SURVEILED_LIST
+            is com.wingedsheep.engine.core.ProliferatedEvent -> PROLIFERATED_LIST
             is com.wingedsheep.engine.core.DiscoveredEvent -> DISCOVERED_LIST
             is com.wingedsheep.engine.core.EvidenceCollectedEvent -> EVIDENCE_COLLECTED_LIST
+            is com.wingedsheep.engine.core.ForagedEvent -> FORAGED_LIST
+            is com.wingedsheep.engine.core.CaseSolvedEvent -> CASE_SOLVED_LIST
             is com.wingedsheep.engine.core.PermanentExploredEvent -> EXPLORED_LIST
+            is com.wingedsheep.engine.core.PermanentConnivedEvent -> CONNIVED_LIST
             is com.wingedsheep.engine.core.ExploitedEvent -> EXPLOITED_LIST
             is com.wingedsheep.engine.core.TrainedEvent -> TRAINED_LIST
+            is com.wingedsheep.engine.core.ChampionedEvent -> CHAMPIONED_LIST
             is com.wingedsheep.engine.core.BendPerformedEvent -> BEND_LIST
             is com.wingedsheep.engine.core.ManifestedDreadEvent -> MANIFESTED_DREAD_LIST
             is com.wingedsheep.engine.core.LibrarySearchedEvent -> SEARCH_LIBRARY_LIST
+            is com.wingedsheep.engine.core.LibraryShuffledEvent -> SHUFFLE_LIBRARY_LIST
             is com.wingedsheep.engine.core.BecameSaddledEvent -> BECAME_SADDLED_LIST
+            is com.wingedsheep.engine.core.BecameRenownedEvent -> BECAME_RENOWNED_LIST
             is CrewOrSaddleContributionEvent -> CREW_OR_SADDLE_CONTRIBUTION_LIST
             is com.wingedsheep.engine.core.PermanentAttachedEvent -> BECOMES_ATTACHED_LIST
             is com.wingedsheep.engine.core.PermanentUnattachedEvent -> BECOMES_UNATTACHED_LIST
             is com.wingedsheep.engine.core.SagaChapterResolvedEvent -> SAGA_CHAPTER_RESOLVED_LIST
             is com.wingedsheep.engine.core.PlayerLostEvent -> PLAYER_LOST_LIST
-            else -> emptyList()
+            is com.wingedsheep.engine.core.RoomFullyUnlockedEvent -> ROOM_FULLY_UNLOCKED_LIST
+
+            // Read by a dedicated pass in TriggerDetector rather than the per-event loop:
+            // sacrifice batches, control changes, plotting, door unlocks and step boundaries
+            // (StepEvent triggers). DamagePreventedEvent and CardPlayedFromPermissionEvent match
+            // only the delayed trigger whose link id they echo back.
+            is PermanentsSacrificedEvent,
+            is ControlChangedEvent,
+            is com.wingedsheep.engine.core.CardPlottedEvent,
+            is com.wingedsheep.engine.core.DoorUnlockedEvent,
+            is com.wingedsheep.engine.core.StepChangedEvent,
+            is com.wingedsheep.engine.core.DamagePreventedEvent,
+            is com.wingedsheep.engine.core.CardPlayedFromPermissionEvent -> emptyList()
+
+            // No trigger watches these today. A new "whenever …" pattern over one of them needs a
+            // TriggerCategory here and a branch in TriggerMatcher.
+            is com.wingedsheep.engine.core.PlayerActionPermissionsChangedEvent,
+            is com.wingedsheep.engine.core.PlayerActionTakenEvent,
+            is com.wingedsheep.engine.core.TurnEndedByEffectEvent,
+            is com.wingedsheep.engine.core.AbilityAutoAnsweredEvent,
+            is com.wingedsheep.engine.core.AbilityCounteredEvent,
+            is com.wingedsheep.engine.core.AbilityFizzledEvent,
+            is com.wingedsheep.engine.core.AbilityResolvedEvent,
+            is com.wingedsheep.engine.core.AttackerOrderDeclaredEvent,
+            is com.wingedsheep.engine.core.BlockerOrderDeclaredEvent,
+            is com.wingedsheep.engine.core.CardExiledWithMadnessEvent,
+            is com.wingedsheep.engine.core.CardsRevealedEvent,
+            is com.wingedsheep.engine.core.CitysBlessingGainedEvent,
+            is com.wingedsheep.engine.core.ClassLevelChangedEvent,
+            is com.wingedsheep.engine.core.CoinFlipEvent,
+            is com.wingedsheep.engine.core.CreatureDestroyedEvent,
+            is com.wingedsheep.engine.core.CreatureGoadedEvent,
+            is com.wingedsheep.engine.core.CreatureNoLongerGoadedEvent,
+            is com.wingedsheep.engine.core.CreatureTypeChangedEvent,
+            is com.wingedsheep.engine.core.CreatureTypeChosenEvent,
+            is com.wingedsheep.engine.core.CreatureTypeRevealedEvent,
+            is com.wingedsheep.engine.core.CreaturesPairedEvent,
+            is com.wingedsheep.engine.core.CreaturesUnpairedEvent,
+            is com.wingedsheep.engine.core.DamageAssignedEvent,
+            is com.wingedsheep.engine.core.DayNightChangedEvent,
+            is com.wingedsheep.engine.core.DecisionRequestedEvent,
+            is com.wingedsheep.engine.core.DecisionSubmittedEvent,
+            is com.wingedsheep.engine.core.DiscardRequiredEvent,
+            is com.wingedsheep.engine.core.DoorLockedEvent,
+            is com.wingedsheep.engine.core.DrawFailedEvent,
+            is com.wingedsheep.engine.core.EnduringStoryGainedEvent,
+            is com.wingedsheep.engine.core.ExertedEvent,
+            is com.wingedsheep.engine.core.GameEndedEvent,
+            is com.wingedsheep.engine.core.HandLookedAtEvent,
+            is com.wingedsheep.engine.core.HandRevealedEvent,
+            is com.wingedsheep.engine.core.KeywordGrantedEvent,
+            is com.wingedsheep.engine.core.LibraryReorderedEvent,
+            is com.wingedsheep.engine.core.LookedAtCardsEvent,
+            is com.wingedsheep.engine.core.LoyaltyChangedEvent,
+            is com.wingedsheep.engine.core.ManaAddedEvent,
+            is com.wingedsheep.engine.core.ManaSpentEvent,
+            is com.wingedsheep.engine.core.ManaPoolChangedEvent,
+            is com.wingedsheep.engine.core.TextChangedEvent,
+            is com.wingedsheep.engine.core.MaximumHandSizeReducedEvent,
+            is com.wingedsheep.engine.core.MaximumHandSizeRemovedEvent,
+            is com.wingedsheep.engine.core.PhaseChangedEvent,
+            is com.wingedsheep.engine.core.PhasedOutEvent,
+            is com.wingedsheep.engine.core.PlayerLeftGameEvent,
+            is com.wingedsheep.engine.core.PriorityChangedEvent,
+            is com.wingedsheep.engine.core.ReflexiveAbilityTriggeredEvent,
+            is com.wingedsheep.engine.core.ResolvedEvent,
+            is com.wingedsheep.engine.core.SpeedChangedEvent,
+            is com.wingedsheep.engine.core.SpellCopiedEvent,
+            is com.wingedsheep.engine.core.SpellCounteredEvent,
+            is com.wingedsheep.engine.core.SpellFizzledEvent,
+            is com.wingedsheep.engine.core.StatsModifiedEvent,
+            is com.wingedsheep.engine.core.TargetReselectedEvent,
+            is com.wingedsheep.engine.core.TurnChangedEvent,
+            is com.wingedsheep.engine.core.TurnHijackedEvent,
+            is com.wingedsheep.engine.core.TurnedFaceDownEvent -> emptyList()
+            // No card triggers on a permanent flipping (CR 710); the flip is its own action.
+            is com.wingedsheep.engine.core.FlippedEvent -> emptyList()
+
+            is com.wingedsheep.engine.core.LandTappedForManaEvent -> LAND_TAPPED_FOR_MANA_LIST
         }
 
         // Pre-allocated lists to avoid allocation on every event
@@ -382,23 +519,33 @@ class TriggerIndex(
         private val CHOOSE_TARGETS_LIST = listOf(TriggerCategory.CHOOSE_TARGETS)
         private val DISCARD_LIST = listOf(TriggerCategory.DISCARD)
         private val RING_TEMPTED_LIST = listOf(TriggerCategory.RING_TEMPTED)
+        private val CLASHED_LIST = listOf(TriggerCategory.CLASHED)
         private val SCRIED_LIST = listOf(TriggerCategory.SCRIED)
         private val SURVEILED_LIST = listOf(TriggerCategory.SURVEILED)
+        private val PROLIFERATED_LIST = listOf(TriggerCategory.PROLIFERATED)
         private val DISCOVERED_LIST = listOf(TriggerCategory.DISCOVERED)
         private val EVIDENCE_COLLECTED_LIST = listOf(TriggerCategory.EVIDENCE_COLLECTED)
+        private val FORAGED_LIST = listOf(TriggerCategory.FORAGED)
+        private val CASE_SOLVED_LIST = listOf(TriggerCategory.CASE_SOLVED)
         private val SCRIED_OR_SURVEILED_LIST = listOf(TriggerCategory.SCRIED, TriggerCategory.SURVEILED)
         private val EXPLORED_LIST = listOf(TriggerCategory.EXPLORED)
+        private val CONNIVED_LIST = listOf(TriggerCategory.CONNIVED)
         private val EXPLOITED_LIST = listOf(TriggerCategory.EXPLOITED)
         private val TRAINED_LIST = listOf(TriggerCategory.TRAINED)
+        private val CHAMPIONED_LIST = listOf(TriggerCategory.CHAMPIONED)
         private val BEND_LIST = listOf(TriggerCategory.YOU_BEND)
         private val MANIFESTED_DREAD_LIST = listOf(TriggerCategory.MANIFESTED_DREAD)
         private val SEARCH_LIBRARY_LIST = listOf(TriggerCategory.SEARCH_LIBRARY)
+        private val SHUFFLE_LIBRARY_LIST = listOf(TriggerCategory.SHUFFLE_LIBRARY)
         private val BECAME_SADDLED_LIST = listOf(TriggerCategory.BECAME_SADDLED)
+        private val BECAME_RENOWNED_LIST = listOf(TriggerCategory.BECAME_RENOWNED)
         private val CREW_OR_SADDLE_CONTRIBUTION_LIST =
             listOf(TriggerCategory.CREW_OR_SADDLE_CONTRIBUTION)
         private val BECOMES_ATTACHED_LIST = listOf(TriggerCategory.BECOMES_ATTACHED)
         private val BECOMES_UNATTACHED_LIST = listOf(TriggerCategory.BECOMES_UNATTACHED)
         private val SAGA_CHAPTER_RESOLVED_LIST = listOf(TriggerCategory.SAGA_CHAPTER_RESOLVED)
         private val PLAYER_LOST_LIST = listOf(TriggerCategory.PLAYER_LOST)
+        private val LAND_TAPPED_FOR_MANA_LIST = listOf(TriggerCategory.LAND_TAPPED_FOR_MANA)
+        private val ROOM_FULLY_UNLOCKED_LIST = listOf(TriggerCategory.ROOM_FULLY_UNLOCKED)
     }
 }

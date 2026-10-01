@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.continuations
 
+import com.wingedsheep.engine.mechanics.mana.withSpendingColors
 import com.wingedsheep.engine.core.AttackTaxManaSelectionContinuation
 import com.wingedsheep.engine.core.BlockTaxManaSelectionContinuation
 import com.wingedsheep.engine.core.DecisionResponse
@@ -8,10 +9,9 @@ import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSourceOption
 import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.core.PaymentManaColor
-import com.wingedsheep.engine.core.tap
+import com.wingedsheep.engine.core.tapForMana
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.PendingManaPaymentPlanExecutor
-import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.state.GameState
@@ -19,6 +19,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Resumes attack / block declarations that paused for the player to pick mana sources
@@ -49,7 +50,62 @@ class CombatTaxContinuationResumer(
         resumer(BlockTaxManaSelectionContinuation::class) { state, continuation, response, _ ->
             resumeBlockTaxSelection(state, continuation, response)
         },
+        resumer(com.wingedsheep.engine.core.AttackSacrificeSelectionContinuation::class) { state, continuation, response, _ ->
+            resumeAttackSacrificeSelection(state, continuation, response)
+        },
     )
+
+    /**
+     * Sacrifice the chosen permanents for one attacker's `CantAttackUnlessSacrifice` cost, then
+     * either ask for the next attacker's cost or commit the declaration.
+     *
+     * The sacrifice reuses `ForceSacrificeExecutor.sacrificePermanents`, so it emits
+     * `PermanentsSacrificedEvent`, snapshots the sacrificed permanents' characteristics, and lets
+     * dies/sacrifice triggers fire — a hand-rolled zone move here would silently skip all three.
+     */
+    private fun resumeAttackSacrificeSelection(
+        state: GameState,
+        continuation: com.wingedsheep.engine.core.AttackSacrificeSelectionContinuation,
+        response: DecisionResponse,
+    ): ExecutionResult {
+        if (response !is com.wingedsheep.engine.core.CardsSelectedResponse) {
+            return ExecutionResult.error(state, "Expected card selection response for attack sacrifice")
+        }
+        if (response.selectedCards.size != continuation.count) {
+            return ExecutionResult.error(
+                state,
+                "Must sacrifice exactly ${continuation.count} permanents to attack"
+            )
+        }
+
+        val sacrificeResult = com.wingedsheep.engine.handlers.effects.zones.ForceSacrificeExecutor(services.zones, dynamicAmountEvaluator = services.dynamicAmountEvaluator)
+            .sacrificePermanents(state, continuation.attackingPlayer, response.selectedCards)
+            .toExecutionResult()
+        if (sacrificeResult.outcome !is Outcome.Done) return sacrificeResult
+
+        val next = continuation.remaining.firstOrNull()
+        if (next != null) {
+            return services.combatManager.attackPhase.pauseForNextAttackSacrifice(
+                state = sacrificeResult.state,
+                attackingPlayer = continuation.attackingPlayer,
+                attackers = continuation.attackers,
+                payingAttacker = next.attackerId,
+                count = next.count,
+                remaining = continuation.remaining.drop(1),
+                bands = continuation.bands,
+                carryEvents = sacrificeResult.events.toList(),
+            )
+        }
+
+        return services.combatManager.attackPhase.commitAttackDeclaration(
+            state = sacrificeResult.state,
+            attackingPlayer = continuation.attackingPlayer,
+            attackers = continuation.attackers,
+            projected = sacrificeResult.state.projectedState,
+            taxEvents = sacrificeResult.events.toList(),
+            bands = continuation.bands,
+        )
+    }
 
     private fun resumeAttackTaxSelection(
         state: GameState,
@@ -150,7 +206,7 @@ class CombatTaxContinuationResumer(
     ): TaxPayment? {
         val playerEntity = state.getEntity(playerId) ?: return null
         val poolComponent = playerEntity.get<ManaPoolComponent>() ?: return null
-        var pool = poolComponent.toManaPool()
+        var pool = poolComponent.toManaPool().withSpendingColors(state, playerId)
 
         val partial = pool.payPartial(manaCost)
         var remainingCost = partial.remainingCost
@@ -159,7 +215,7 @@ class CombatTaxContinuationResumer(
 
         if (!remainingCost.isEmpty()) {
             if (response.autoPay) {
-                val solver = ManaSolver(services.cardRegistry)
+                val solver = services.manaSolver
                 val solution = solver.solve(currentState, playerId, remainingCost) ?: return null
                 val tapResult = services.manaAbilitySideEffectExecutor
                     .tapSourcesWithSideEffects(currentState, solution, playerId)
@@ -194,9 +250,9 @@ class CombatTaxContinuationResumer(
                         // to returning null so the caller errors with a clear message.
                         return null
                     }
-                    val (tappedState, tapEvent) = tap(currentState, sourceId)
+                    val (tappedState, tapEvents) = tapForMana(currentState, sourceId, playerId)
                     currentState = tappedState
-                    tapEvent?.let(events::add)
+                    events.addAll(tapEvents)
                     val subtypes = currentState.getEntity(sourceId)
                         ?.get<CardComponent>()?.typeLine?.subtypes.orEmpty()
                     pool = when {

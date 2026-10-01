@@ -68,7 +68,7 @@ class EnvironmentV1ExactPairChosenCostPaymentTest : FunSpec({
         }
     }
 
-    fun config(): EnvConfig {
+    fun config(seed: Long = 0L): EnvConfig {
         val decks = mapOf(
             "Akiri" to lockedDeck("akiri-v0.1.txt"),
             "Chevill" to lockedDeck("chevill-v0.1.txt"),
@@ -89,7 +89,7 @@ class EnvironmentV1ExactPairChosenCostPaymentTest : FunSpec({
             skipMulligans = true,
             useHandSmoother = false,
             startingPlayerIndex = 0,
-            seed = 0L,
+            seed = seed,
             maxSteps = EXACT_PAIR_PREFIX_MAX_STEPS,
             perspectivePlayerIndex = 0,
         )
@@ -180,7 +180,15 @@ class EnvironmentV1ExactPairChosenCostPaymentTest : FunSpec({
 
     test("real exact-pair additionalCostPayment action crosses chosen semantic validation") {
         val service = MultiEnvService(registry())
-        val created = service.create(config())
+        // Seed 0 reached Plumb the Forbidden at transition 531 on fork main. Upstream now mints each
+        // deck's entity ids in a seeded shuffled order (GameConfig.shuffledDeckIds), and this
+        // policy breaks ties by canonical action semantics, which embed those ids — so the same
+        // seed now takes a different line (first divergence: the turn-8 cleanup discard) and never
+        // offers an additional-cost cast within the prefix bound. With decklist-order ids the
+        // merged engine replays fork main's seed-0 line exactly, so only the id order moved. Seed
+        // 2 reaches "Cast Plumb the Forbidden" (sacrifice any number of creatures) at transition
+        // 1144 under shuffled ids.
+        val created = service.create(config(seed = 2L))
         try {
             var current = created.observation
             var observation = current.observation as TrainingObservation

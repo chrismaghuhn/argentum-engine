@@ -2,7 +2,6 @@ package com.wingedsheep.engine.event
 
 import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
-import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
@@ -18,7 +17,8 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 import com.wingedsheep.sdk.scripting.references.Player
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
@@ -41,9 +41,10 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
         val ability = TriggeredAbility.create(
             trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
             effect = Effects.GainLife(1),
-            targetRequirement = TargetCreature(),
+            targetRequirement = TargetObject(filter = TargetFilter.Creature),
             descriptionOverride = "Synthetic pre-stack fizzle",
-        ).copy(id = AbilityId("synthetic-pre-stack-fizzle"))
+            id = AbilityId("synthetic-pre-stack-fizzle"),
+        )
         val pending = PendingTrigger(
             ability = ability,
             sourceId = sourceId,
@@ -58,8 +59,8 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
             AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION
         pending.effectiveSourceObjectIncarnationStamp(driver.state) shouldBe sourceStamp
 
-        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
-            .processTargetedTrigger(driver.state, pending, TargetCreature())
+        val result = driver.services.triggerProcessor
+            .processTargetedTrigger(driver.state, pending, TargetObject(filter = TargetFilter.Creature))
         val event = result.events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
 
         result.error shouldBe null
@@ -103,12 +104,12 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
             sourceEndpointAuthority = AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION,
             sourceObjectIncarnationStamp = sourceStamp,
         )
-        val resolver = StackResolver(driver.cardRegistry)
+        val resolver = driver.services.stackResolver
         val placement = resolver.putTriggeredAbility(
             state = initialState,
             ability = ability,
             targets = listOf(ChosenTarget.Permanent(targetId)),
-            targetRequirements = listOf(TargetCreature()),
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
         )
         placement.error shouldBe null
         val stackId = placement.newState.stack.single()
@@ -173,12 +174,12 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
             controllerId = driver.player1,
             effect = Effects.GainLife(1),
         )
-        val resolver = StackResolver(driver.cardRegistry)
+        val resolver = driver.services.stackResolver
         val placement = resolver.putActivatedAbility(
             state = initialState,
             ability = ability,
             targets = listOf(ChosenTarget.Permanent(targetId)),
-            targetRequirements = listOf(TargetCreature()),
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
             targetLockState = initialState,
         )
         placement.error shouldBe null

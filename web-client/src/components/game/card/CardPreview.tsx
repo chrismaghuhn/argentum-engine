@@ -4,13 +4,16 @@ import { useGameStore } from '@/store/gameStore.ts'
 import { selectGameState, selectViewingPlayerId, useCardLegalActions } from '@/store/selectors.ts'
 import { AbilityFlagDisplayNames, ZoneType, zoneIdEquals } from '@/types'
 import { getCardImageUrl } from '@/utils/cardImages.ts'
-import { useResponsiveContext, handleImageError, getCounterStatModifier, hasStatCounters, getTokenFrameGradient, getTokenFrameTextColor, getPTColor } from '../board/shared'
+import { DfcFlipHint } from '@/components/ui/useDfcHoverFlip'
+import { useResponsiveContext, handleImageError, getCounterStatModifier, hasStatCounters, listCardCounters, getTokenFrameGradient, getTokenFrameTextColor, getPTColor } from '../board/shared'
 import { styles } from '../board/styles'
 import { counterManaClass } from '@/assets/icons/keywords'
 import { HoverCardPreview } from '../../ui/HoverCardPreview'
+import { useHasHover } from '@/hooks/useHasHover.ts'
 import { ManaCost, AbilityText } from '../../ui/ManaSymbols'
 import { buildActionOptions, playCostRange, playLadderOptions } from '@/utils/actionOptions.ts'
 import { parseManaCost, totalManaNeeded } from '@/utils/manaCost.ts'
+import { castOfferFace } from '@/utils/castFace.ts'
 
 /**
  * Game board card preview — wraps the shared HoverCardPreview with
@@ -22,10 +25,18 @@ export function CardPreview() {
   const gameState = useGameStore(selectGameState)
   const playerId = useGameStore(selectViewingPlayerId)
   const responsive = useResponsiveContext()
+  const hasHover = useHasHover()
 
   // All hooks must be called before any early return
   const cardActions = useCardLegalActions(hoveredCardId)
-  const card = hoveredCardId && gameState ? gameState.cards[hoveredCardId] ?? null : null
+  // Preview the face the card would be *cast* as, so a disturb card in the graveyard previews as
+  // the spirit it becomes (CR 712.8c) — matching the ghost card offered in hand. Press F still
+  // flips to the printed front, which `castOfferFace` leaves in the back-face slots.
+  const rawCard = hoveredCardId && gameState ? gameState.cards[hoveredCardId] ?? null : null
+  const card = useMemo(
+    () => (rawCard ? castOfferFace(rawCard, cardActions) : null),
+    [rawCard, cardActions]
+  )
 
   // Check if hovered card is in the player's hand
   const isInHand = useMemo(() => {
@@ -94,9 +105,15 @@ export function CardPreview() {
 
   if (!card) return null
 
-  // On mobile, show the fullscreen overlay (game-specific behaviour)
-  if (responsive.isMobile) {
-    return <MobileCardPreview card={card} />
+  // On mobile, show the fullscreen overlay (game-specific behaviour). Any device that can't hover
+  // gets it too, whatever its width: the cursor-following variant has nowhere to anchor without a
+  // cursor, and a landscape tablet would otherwise get a 280px card pinned to the top-left corner.
+  //
+  // `dismissible` is exactly "can't hover", not "is a phone": with a mouse the preview is dismissed
+  // by moving off the card, and a tap-catching backdrop over a hovered card would both swallow the
+  // board's clicks and prevent the mouseleave that clears it.
+  if (responsive.isMobile || !hasHover) {
+    return <MobileCardPreview card={card} dismissible={!hasHover} />
   }
 
   const isRevealedFaceDown = card.isFaceDown && !!card.revealedName
@@ -118,11 +135,16 @@ export function CardPreview() {
 
   const counterModifier = getCounterStatModifier(card)
   const hasCounters = hasStatCounters(card)
+  // Every counter type on the card, not just the ones that move P/T. The stats box below is gated
+  // on the card having power/toughness at all, so a land's counters (City of Shadows' storage)
+  // could never appear there — this panel is independent of it.
+  const allCounters = listCardCounters(card)
   const effectPowerMod = card.power !== null && card.basePower !== null
     ? (card.power - card.basePower) - counterModifier : 0
   const effectToughnessMod = card.toughness !== null && card.baseToughness !== null
     ? (card.toughness - card.baseToughness) - counterModifier : 0
   const hasEffects = effectPowerMod !== 0 || effectToughnessMod !== 0
+  const playerName = (id: string) => gameState?.players.find((p) => p.playerId === id)?.name ?? 'Unknown player'
 
   // Estimate extra height for positioning
   let extraHeight = 0
@@ -131,6 +153,7 @@ export function CardPreview() {
   // The cost ladder is a real panel though: header + padding, then a row (plus its optional hint line).
   if (showCostLadder) extraHeight += 40 + costRows.length * 26 + GAP
   if (hasStatModifications) extraHeight += 80 + GAP
+  if (card.protectorId) extraHeight += (card.controllerId !== card.protectorId ? 76 : 44) + GAP
   if (card.keywords.length > 0 || (card.abilityFlags && card.abilityFlags.length > 0)) extraHeight += 40 + GAP
 
   // Split-layout cards (CR 709) — Rooms and classic Invasion split spells like
@@ -196,38 +219,6 @@ export function CardPreview() {
           <ManaCost cost={manaCostInfo.cost} size={18} gap={2} />
         </div>
       )}
-      {isDfc && (
-        <div style={{
-          position: 'absolute',
-          bottom: 10,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          backgroundColor: 'rgba(0, 0, 0, 0.88)',
-          color: '#d0d4e0',
-          fontSize: 13,
-          fontWeight: 600,
-          padding: '5px 12px',
-          borderRadius: 6,
-          border: '1px solid rgba(180, 190, 220, 0.5)',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.5)',
-          whiteSpace: 'nowrap',
-          zIndex: 5,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-        }}>
-          <i className={`ms ms-dfc-${showingBackFace ? 'night' : 'day'}`} style={{ fontSize: 14 }} />
-          <span style={{
-            backgroundColor: 'rgba(255, 255, 255, 0.15)',
-            padding: '1px 6px',
-            borderRadius: 3,
-            fontSize: 12,
-            fontWeight: 700,
-            letterSpacing: 0.5,
-          }}>F</span>
-          <span>to flip</span>
-        </div>
-      )}
       {isRoom && card.cardFaces && card.cardFaces.length === 2 && card.cardFaces.map((face, idx) => {
         if (face.isUnlocked) return null
         // After +90° image rotation: face[1] (source top half) → right of visible,
@@ -274,6 +265,7 @@ export function CardPreview() {
       extraHeight={extraHeight}
       imageRotateDeg={previewImageRotateDeg}
       overlay={previewOverlay}
+      hint={isDfc ? <DfcFlipHint flipped={showingBackFace} /> : undefined}
     >
       {/* Ways to play, with what each one costs. The badge on the image can only fit the two ends of
           the range; this is where an adventure face, a kicker, a morph, an alternative cost or a
@@ -370,6 +362,41 @@ export function CardPreview() {
         </div>
       )}
 
+      {/* Battle panel — who defends it and who controls it. On the board a battle sits in front of
+          its protector, so a Siege you cast shows up across the table; this says whose it is. */}
+      {card.protectorId && (
+        <div style={styles.cardPreviewEffects}>
+          <div style={styles.cardPreviewEffect}>
+            <span style={styles.cardPreviewEffectName}>Protected by</span>
+            <span style={styles.cardPreviewEffectText}>{playerName(card.protectorId)}</span>
+          </div>
+          {card.controllerId !== card.protectorId && (
+            <div style={styles.cardPreviewEffect}>
+              <span style={styles.cardPreviewEffectName}>Controlled by</span>
+              <span style={styles.cardPreviewEffectText}>{playerName(card.controllerId)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Counters panel — the card's full counter inventory, whatever its card type. */}
+      {allCounters.length > 0 && (
+        <div style={styles.cardPreviewCounters}>
+          <div style={styles.cardPreviewCountersHeading}>Counters</div>
+          {allCounters.map(({ type, label, count }) => (
+            <div key={type} style={styles.cardPreviewCounterRow}>
+              <span style={styles.cardPreviewCounterLabel}>
+                {counterManaClass[type] && (
+                  <i className={`ms ms-${counterManaClass[type]}`} style={{ fontSize: 11 }} />
+                )}
+                {label}
+              </span>
+              <span style={styles.cardPreviewCounterValue}>{count}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Keywords/abilities info panel */}
       {(card.keywords.length > 0 || (card.abilityFlags && card.abilityFlags.length > 0)) && (
         <div style={styles.cardPreviewKeywords}>
@@ -416,8 +443,8 @@ export function CardPreview() {
         <div style={styles.cardPreviewEffects}>
           {card.activeEffects
             .filter((e) => e.description)
-            .map((effect) => (
-              <div key={effect.effectId} style={styles.cardPreviewEffect}>
+            .map((effect, index) => (
+              <div key={`${effect.effectId}-${index}`} style={styles.cardPreviewEffect}>
                 <span style={styles.cardPreviewEffectName}>{effect.name}</span>
                 <span style={styles.cardPreviewEffectText}>
                   <AbilityText text={effect.description ?? ''} size={13} />
@@ -433,31 +460,39 @@ export function CardPreview() {
 /**
  * Mobile fullscreen card preview overlay (game-specific).
  */
-function MobileCardPreview({ card }: { card: import('@/types').ClientCard }) {
+function MobileCardPreview({ card, dismissible = false }: { card: import('@/types').ClientCard; dismissible?: boolean }) {
+  const hoverCard = useGameStore((state) => state.hoverCard)
   const isRevealedFaceDown = card.isFaceDown && !!card.revealedName
   const cardImageUrl = isRevealedFaceDown
     ? getCardImageUrl(card.revealedName!, card.revealedImageUri ?? undefined, 'large')
     : getCardImageUrl(card.name, card.imageUri, 'large')
 
-  const previewWidth = 200
-  const previewHeight = Math.round(previewWidth * 1.4)
+  // As wide as the desktop preview wherever the viewport allows, shrinking to fit narrow or short
+  // screens — the point of opening it is to read the rules text, which 200px can't carry.
+  const previewWidth = 'min(280px, 78vw, calc((100vh - 140px) / 1.4))'
 
   // Portalled to <body> for the same reason HoverCardPreview is: the spectator/replay shells
   // wrap the board in their own stacking context, and the zone browsers (graveyard/exile/deck)
   // portal to <body> — an in-tree preview lands underneath them.
   return createPortal(
-    <div style={{
-      ...styles.cardPreviewOverlay,
-      top: 0, left: 0, right: 0, bottom: 0,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    }}>
-      <div style={{ ...styles.cardPreviewContainer, width: previewWidth }}>
+    <div
+      style={{
+        ...styles.cardPreviewOverlay,
+        top: 0, left: 0, right: 0, bottom: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        backgroundColor: 'rgba(0, 0, 0, 0.6)',
+        // A long-press preview clears itself on touchend; one opened from the action menu's
+        // "View card" has no such gesture behind it, so the backdrop takes the next tap.
+        ...(dismissible ? { pointerEvents: 'auto' as const, cursor: 'pointer' } : null),
+      }}
+      onClick={dismissible ? () => hoverCard(null) : undefined}
+    >
+      <div style={{ ...styles.cardPreviewContainer, width: previewWidth, alignItems: 'center' }}>
         <div style={{
           ...styles.cardPreviewCard,
           position: 'relative',
           width: previewWidth,
-          height: previewHeight,
+          aspectRatio: '63 / 88',
         }}>
           {card.isToken && card.imageUri?.includes('/art_crop/') ? (
             <div style={{
@@ -501,6 +536,18 @@ function MobileCardPreview({ card }: { card: import('@/types').ClientCard }) {
               onError={(e) => handleImageError(e, isRevealedFaceDown ? card.revealedName! : card.name, 'large')}
             />
           )}
+          {/* Same marker as on the battlefield card: a token that copies a real card shows that
+              card's image, so only this says it is a token. */}
+          {card.isToken && !card.imageUri?.includes('/art_crop/') && (
+            <div style={{
+              position: 'absolute', top: 8, left: 8,
+              backgroundColor: 'rgba(0, 0, 0, 0.78)', color: '#f0f0f0',
+              fontSize: 11, fontWeight: 700, letterSpacing: 0.5, padding: '2px 8px', borderRadius: 4,
+              border: '1px solid rgba(255, 255, 255, 0.55)', pointerEvents: 'none', whiteSpace: 'nowrap',
+            }}>
+              TOKEN
+            </div>
+          )}
           {isRevealedFaceDown && (
             <div style={{
               position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)',
@@ -512,6 +559,16 @@ function MobileCardPreview({ card }: { card: import('@/types').ClientCard }) {
             </div>
           )}
         </div>
+        {dismissible && (
+          <div style={{
+            color: '#aaa',
+            fontSize: 12,
+            textAlign: 'center',
+            textShadow: '0 1px 3px rgba(0, 0, 0, 0.9)',
+          }}>
+            Tap anywhere to close
+          </div>
+        )}
       </div>
     </div>,
     document.body,

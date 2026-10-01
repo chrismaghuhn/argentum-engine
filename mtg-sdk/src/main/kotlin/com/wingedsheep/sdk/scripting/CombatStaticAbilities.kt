@@ -1,8 +1,8 @@
 package com.wingedsheep.sdk.scripting
 
-import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.scripting.conditions.Condition
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
+import com.wingedsheep.sdk.scripting.filters.unified.Scope
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.text.TextReplacer
 import kotlinx.serialization.SerialName
@@ -29,13 +29,19 @@ data class CantAttack(
  * Forces the affected permanents to attack each combat if able.
  * Use [GroupFilter.source] for "this creature attacks each combat", or any battlefield
  * filter for "All creatures attack each combat if able" effects (e.g. Grand Melee).
+ *
+ * @property playersOnly "attacks **a player** each combat if able" (Nahiri, the Unforgiving): the
+ *   requirement is only met by attacking a player, so attacking a planeswalker or battle is an
+ *   error while some player could legally be attacked (CR 508.1d — maximize requirements obeyed).
  */
 @SerialName("MustAttack")
 @Serializable
 data class MustAttack(
-    val filter: GroupFilter = GroupFilter.source()
+    val filter: GroupFilter = GroupFilter.source(),
+    val playersOnly: Boolean = false
 ) : StaticAbility {
-    override val description: String = "${filter.description} attack each combat if able"
+    override val description: String =
+        "${filter.description} attack${if (playersOnly) " a player" else ""} each combat if able"
     override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
         val newFilter = filter.applyTextReplacement(replacer)
         return if (newFilter !== filter) copy(filter = newFilter) else this
@@ -105,6 +111,11 @@ data class MustBeBlocked(
  * Creature assigns combat damage equal to its toughness rather than its power.
  * Conditional variant: only when toughness is greater than power.
  * Used for cards like Bark of Doran, Doran the Siege Tower, etc.
+ *
+ * The description reads off [filter], because this ability is not equipment-only: Doran and
+ * Bedrock Tortoise scope it to a battlefield group, and The Kingpin of Crime grants that group form
+ * to itself for a turn (see `Effects.GrantStaticAbility`). Hardcoding "equipped creature" here
+ * rendered equipment flavour on every one of those.
  */
 @SerialName("AssignDamageEqualToToughness")
 @Serializable
@@ -112,13 +123,27 @@ data class AssignDamageEqualToToughness(
     val filter: GroupFilter = GroupFilter.attachedCreature(),
     val onlyWhenToughnessGreaterThanPower: Boolean = true
 ) : StaticAbility {
-    override val description: String = buildString {
-        if (onlyWhenToughnessGreaterThanPower) {
-            append("As long as equipped creature's toughness is greater than its power, it ")
-        } else {
-            append("This creature ")
+    override val description: String = when (filter.scope) {
+        // The single-permanent scopes read naturally in the singular ("As long as X's toughness …
+        // it assigns"); a battlefield group needs the plural, and takes its subject from the filter
+        // exactly as CantAttack / CantBlock do.
+        is Scope.Self, is Scope.AttachedTo -> {
+            val subject = filter.description
+            if (onlyWhenToughnessGreaterThanPower) {
+                "As long as $subject's toughness is greater than its power, it assigns " +
+                    "combat damage equal to its toughness rather than its power"
+            } else {
+                "${subject.replaceFirstChar(Char::uppercaseChar)} assigns combat damage equal to " +
+                    "its toughness rather than its power"
+            }
         }
-        append("assigns combat damage equal to its toughness rather than its power")
+        else -> buildString {
+            append(filter.description.replaceFirstChar(Char::uppercaseChar))
+            if (onlyWhenToughnessGreaterThanPower) {
+                append(" with toughness greater than their power")
+            }
+            append(" assign combat damage equal to their toughness rather than their power")
+        }
     }
     override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
         val newFilter = filter.applyTextReplacement(replacer)
@@ -138,7 +163,7 @@ data class AssignDamageEqualToToughness(
  * is on the battlefield, the evaluator substitutes toughness for power when the tapped creature's
  * controller matches and toughness > power. The substitution is re-evaluated at resolution time
  * and uses last-known characteristics if the tapped creature has left the battlefield (Rule
- * 112.7a — Tapestry Warden 2025-07-25 rulings). A per-creature filter is not currently supported;
+ * 113.7a — Tapestry Warden 2025-07-25 rulings). A per-creature filter is not currently supported;
  * the override applies to all of the controller's creatures meeting the toughness > power condition.
  *
  * Used for Tapestry Warden: "Each creature you control with toughness greater than its
@@ -172,17 +197,48 @@ data class DivideCombatDamageFreely(
 }
 
 /**
- * This creature may assign its combat damage as though it weren't blocked.
- * When blocked, the controller chooses whether to assign damage to blockers
- * or to the defending player/planeswalker. Used for Thorn Elemental.
+ * A creature may assign its combat damage as though it weren't blocked. When it is
+ * blocked, its controller chooses, at each combat damage step it deals damage in, whether to
+ * assign to its blockers or to the player, planeswalker or battle it is attacking.
+ *
+ * [filter] picks which creatures: the default [GroupFilter.source] is "this creature" (Thorn
+ * Elemental); a battlefield-scoped group covers every creature it matches, evaluated against the
+ * source's controller (Zilortha, Apex of Ikoria — "for each non-Human creature you control, you may
+ * have that creature assign its combat damage as though it weren't blocked").
  */
 @SerialName("AssignCombatDamageAsUnblocked")
 @Serializable
 data class AssignCombatDamageAsUnblocked(
     val filter: GroupFilter = GroupFilter.source()
 ) : StaticAbility {
+    override val description: String = when (filter.scope) {
+        is Scope.Battlefield ->
+            "For each ${filter.baseFilter.description}, you may have that creature assign its combat damage as though it weren't blocked"
+        else -> "You may have ${filter.description} assign its combat damage as though it weren't blocked"
+    }
+    override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
+        val newFilter = filter.applyTextReplacement(replacer)
+        return if (newFilter !== filter) copy(filter = newFilter) else this
+    }
+}
+
+/**
+ * If this creature is unblocked, its controller may have it assign all its combat damage to one
+ * creature the defending player controls instead of to the player, planeswalker or battle it is
+ * attacking. Used for Cunning Giant.
+ *
+ * The mirror of [AssignCombatDamageAsUnblocked]: that one lets a *blocked* creature skip its
+ * blockers, this one lets an *unblocked* creature reach a creature that isn't blocking it. The
+ * choice is made as combat damage is assigned, once per combat damage step (CR 510.1), among the
+ * creatures the defending player controls at that moment — for a battle, its protector's (CR 508.5).
+ */
+@SerialName("AssignUnblockedCombatDamageToDefendingCreature")
+@Serializable
+data class AssignUnblockedCombatDamageToDefendingCreature(
+    val filter: GroupFilter = GroupFilter.source()
+) : StaticAbility {
     override val description: String =
-        "You may have this creature assign its combat damage as though it weren't blocked"
+        "If this creature is unblocked, you may have it assign its combat damage to a creature defending player controls"
     override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
         val newFilter = filter.applyTextReplacement(replacer)
         return if (newFilter !== filter) copy(filter = newFilter) else this
@@ -199,6 +255,38 @@ data class AssignCombatDamageAsUnblocked(
  * @property condition The condition that must be met for the creature to attack
  * @property filter What this ability applies to
  */
+/**
+ * This creature can't attack unless its controller sacrifices [count] permanents matching
+ * [sacrificeFilter], paid as attackers are declared — Leviathan's "this creature can't attack
+ * unless you sacrifice two Islands".
+ *
+ * A **cost**, not a condition, which is why it is not [CantAttackUnless]: merely controlling two
+ * Islands is not enough, they have to go. It is also not an *optional* attack cost (CR 508.1g,
+ * "costs a player may pay as a creature attacks"): the clause is a restriction checked at
+ * CR 508.1c, and its cost is determined and paid at CR 508.1h–j. CR 508.1d is the reason an
+ * unpayable one simply keeps the creature home rather than making the whole declaration illegal. The declaration is illegal up front when the controller
+ * doesn't control enough matching permanents to pay (a cost you can't pay can't be paid), and
+ * otherwise the declare-attackers step pauses for the choice of which to sacrifice, in the same
+ * window the generic-mana [AttackTax] pauses to be paid.
+ *
+ * Unlike [CantAttackOrBlockUnlessPay] this has no blocking half: the printed line is attack-only,
+ * and a blocking sibling would need its own pause in the blocker step.
+ */
+@SerialName("CantAttackUnlessSacrifice")
+@Serializable
+data class CantAttackUnlessSacrifice(
+    val sacrificeFilter: GameObjectFilter,
+    val count: Int = 1,
+) : StaticAbility {
+    override val description: String =
+        "can't attack unless you sacrifice $count ${sacrificeFilter.description}"
+
+    override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
+        val newFilter = sacrificeFilter.applyTextReplacement(replacer)
+        return if (newFilter !== sacrificeFilter) copy(sacrificeFilter = newFilter) else this
+    }
+}
+
 @SerialName("CantAttackUnless")
 @Serializable
 data class CantAttackUnless(
@@ -293,8 +381,11 @@ data class CantBlockUnlessCoBlocker(
  * attacking creature. Used for Ghostly Prison, Propaganda, Windborn Muse, and
  * Domain-scaled variants like Collective Restraint.
  *
- * Only applies when attacking the controller of this permanent (not their planeswalkers).
- * Multiple AttackTax effects from different permanents stack additively.
+ * Only attacks on this permanent's controller are taxed — "creatures can't attack you" — unless
+ * [coversPlaneswalkers] widens it to "you or planeswalkers you control" (Archangel of Tithes, Baird).
+ * Attacks on a battle the controller protects are never taxed: no printed tax names battles, and a
+ * battle is neither "you" nor a planeswalker. Multiple AttackTax effects from different permanents
+ * stack additively.
  *
  * The per-attacker amount is a [DynamicAmount] so it can scale with game state
  * (e.g., [com.wingedsheep.sdk.dsl.DynamicAmounts.domain] for "{X} where X is your
@@ -307,23 +398,66 @@ data class CantBlockUnlessCoBlocker(
  *
  * @property amountPerAttacker Generic mana to pay per attacking creature.
  * @property condition Optional gate on the source's state; tax is inactive when it fails.
+ * @property coversPlaneswalkers Also tax attacks on planeswalkers the controller controls.
  */
 @SerialName("AttackTax")
 @Serializable
 data class AttackTax(
     val amountPerAttacker: DynamicAmount,
     val condition: Condition? = null,
+    val coversPlaneswalkers: Boolean = false,
 ) : StaticAbility {
     override val description: String = buildString {
         if (condition != null) append("As long as ${condition.description}, ")
         append("creatures can't attack you")
-        if (condition != null) append(" or planeswalkers you control")
+        if (coversPlaneswalkers) append(" or planeswalkers you control")
         append(" unless their controller pays {${amountPerAttacker.description}} for each ")
-        append(if (condition != null) "of those creatures" else "creature they control that's attacking you")
+        append(if (coversPlaneswalkers) "of those creatures" else "creature they control that's attacking you")
     }
     override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
         val newCondition = condition?.applyTextReplacement(replacer)
         return if (newCondition !== condition) copy(condition = newCondition) else this
+    }
+}
+
+/**
+ * This permanent can't attack or block unless its controller pays [amount] generic mana for it
+ * (CR 508.1a / 509.1a — the payment is part of the cost of declaring it).
+ *
+ * The self-scoped counterpart of [AttackTax] and [BlockTax], which tax *other* players' creatures
+ * from the side of the board they are aimed at. Here the taxed creature and the taxing permanent
+ * are the same object, so there is no filter and no per-attacker multiplier: the amount is what
+ * this one creature costs to send.
+ *
+ * Used for Myr Prototype ("This creature can't attack or block unless you pay {1} for each +1/+1
+ * counter on it"), where [amount] counts the source's own counters — the reason the amount is a
+ * [DynamicAmount] rather than an `Int`, since the price changes every upkeep.
+ *
+ * Attack and block are one ability rather than two flags because the printed line is one sentence.
+ * A card that taxes only one half wants its own variant, not a boolean here.
+ *
+ * @property amount Generic mana the controller must pay to declare this creature as an attacker,
+ *           and again to declare it as a blocker. Evaluated with this permanent as the source.
+ */
+@SerialName("CantAttackOrBlockUnlessPay")
+@Serializable
+data class CantAttackOrBlockUnlessPay(
+    val amount: DynamicAmount,
+    /**
+     * Whether the tax also applies to declaring this creature as a *blocker*. True (the default) is
+     * the printed "can't attack or block unless …" of Myr Prototype; set false for the attack-only
+     * wording — Brainwash's "Enchanted creature can't attack unless its controller pays {3}".
+     *
+     * A separate flag rather than a separate ability because the two wordings differ in exactly one
+     * clause and share every other rule: same per-creature charge, same payment step, same
+     * evaluation source.
+     */
+    val appliesToBlocking: Boolean = true,
+) : StaticAbility {
+    override val description: String = buildString {
+        append("can't attack")
+        if (appliesToBlocking) append(" or block")
+        append(" unless you pay {${amount.description}}")
     }
 }
 
@@ -364,57 +498,95 @@ data class BlockTax(
 }
 
 /**
- * This creature can attack as though it didn't have defender, as long as a condition is met.
- * "As long as this creature has a counter on it, it can attack as though it didn't have defender."
+ * Creatures matching [filter] can attack as though they didn't have defender, as long as
+ * [condition] holds (always, when it is null).
  *
- * Checked at attack declaration time. The condition is evaluated with "you" = the creature's
- * controller. The filter defaults to the source creature itself.
+ *  - Self scope (the default) — "As long as this creature has a counter on it, it can attack as
+ *    though it didn't have defender." (Faithbound Judge, Shipwreck Sentry.)
+ *  - Battlefield scope — "Creatures you control can attack as though they didn't have defender."
+ *    (Ghalta the Immovable): `CanAttackDespiteDefender(filter = GroupFilter.AllCreaturesYouControl)`.
+ *    The group filter is matched against the would-be attacker with the permanent carrying this
+ *    ability as predicate source, so `youControl()` means that permanent's controller.
  *
- * @property condition The condition under which the defender restriction is bypassed
+ * Checked at attack declaration time by `DefenderBypass`, never through projection: it is a rule
+ * modification (CR 702.3b's restriction lifted), not a characteristic, so the affected set is
+ * re-asked each time attackers are declared. The condition is evaluated with the permanent
+ * carrying this ability as source and its controller as "you".
+ *
+ * @property condition The condition under which the defender restriction is bypassed; null = always
  * @property filter What this ability applies to
  */
 @SerialName("CanAttackDespiteDefender")
 @Serializable
 data class CanAttackDespiteDefender(
-    val condition: Condition,
+    val condition: Condition? = null,
     val filter: GroupFilter = GroupFilter.source()
 ) : StaticAbility {
-    override val description: String = "can attack as though it didn't have defender as long as ${condition.description}"
+    override val description: String = buildString {
+        if (filter.scope is Scope.Self) {
+            append("can attack as though it didn't have defender")
+        } else {
+            append(filter.description.replaceFirstChar(Char::uppercaseChar))
+            append(" can attack as though they didn't have defender")
+        }
+        if (condition != null) append(" as long as ${condition.description}")
+    }
     override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
         val newFilter = filter.applyTextReplacement(replacer)
-        return if (newFilter !== filter) copy(filter = newFilter) else this
+        val newCondition = condition?.applyTextReplacement(replacer)
+        return if (newFilter !== filter || newCondition !== condition) {
+            copy(filter = newFilter, condition = newCondition)
+        } else {
+            this
+        }
     }
 }
 
 /**
- * Creatures without a specified keyword can't attack the controller of this permanent.
- * Used for Form of the Dragon: "Creatures without flying can't attack you."
+ * Creatures matching [attackerFilter] can't attack the controller of this permanent — the general
+ * defender-side attack restriction (CR 508.1c).
  *
- * This is a defender-side restriction — the engine checks the defending player's battlefield
- * for permanents with this ability, and blocks any attacker that lacks the required keyword.
+ * The engine checks the *defending* player's battlefield for permanents with this ability and
+ * rejects any attacker that matches the filter. The filter is evaluated with this permanent as the
+ * predicate source and the defending player as "you", so `youControl()` / chosen-color / chosen-
+ * subtype predicates all resolve against the restriction's own side.
  *
- * An optional [attackerFilter] narrows which attackers the restriction applies to. When set,
- * only attackers matching the filter (evaluated with this permanent as the predicate source,
- * so chosen-color/subtype predicates resolve against it) are restricted; all others may attack
- * freely. Used for Teferi's Moat: "Creatures of the chosen color without flying can't attack
- * you." When null (the default) the restriction applies to every attacker (Form of the Dragon).
+ * The filter carries the whole restriction, positive or negative — there is no separate
+ * "…without keyword" shape:
+ *  - Storm, Windrider — "Creatures with flying can't attack you":
+ *    `CantBeAttackedBy(GameObjectFilter.Creature.withKeyword(Keyword.FLYING))`
+ *  - Form of the Dragon — "Creatures without flying can't attack you":
+ *    `CantBeAttackedBy(GameObjectFilter.Creature.withoutKeyword(Keyword.FLYING))`
+ *  - Teferi's Moat — "Creatures of the chosen color without flying can't attack you":
+ *    `CantBeAttackedBy(GameObjectFilter.Creature.sharingChosenColorWithSource().withoutKeyword(FLYING))`
  *
- * @property requiredKeyword The keyword attackers must have (e.g., FLYING)
- * @property attackerFilter Optional filter limiting which attackers are restricted
+ * @property attackerFilter Which attackers are restricted.
  */
-@SerialName("CantBeAttackedWithout")
+@SerialName("CantBeAttackedBy")
 @Serializable
-data class CantBeAttackedWithout(
-    val requiredKeyword: Keyword,
-    val attackerFilter: com.wingedsheep.sdk.scripting.GameObjectFilter? = null
+data class CantBeAttackedBy(
+    val attackerFilter: com.wingedsheep.sdk.scripting.GameObjectFilter
 ) : StaticAbility {
-    override val description: String =
-        if (attackerFilter == null) {
-            "Creatures without ${requiredKeyword.displayName.lowercase()} can't attack you"
-        } else {
-            "${attackerFilter.description} without ${requiredKeyword.displayName.lowercase()} can't attack you"
-        }
+    override val description: String = "${pluralAttackerSubject(attackerFilter)} can't attack you"
+
+    override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
+        val newFilter = attackerFilter.applyTextReplacement(replacer)
+        return if (newFilter !== attackerFilter) copy(attackerFilter = newFilter) else this
+    }
 }
+
+/**
+ * Sentence-subject rendering of an attacker filter: "creature with flying" → "Creatures with
+ * flying". This string is user-visible — it is the attack-rejection message and the label of a
+ * granted static — and the clause it heads is always plural ("Creatures without flying can't
+ * attack you").
+ *
+ * [GameObjectFilter.description] is a *singular* noun phrase whose qualifiers trail the type word
+ * ("creature of the chosen color without flying"); [pluralNounPhrase][com.wingedsheep.sdk.scripting.util.pluralNounPhrase]
+ * pluralizes the type word, never the trailing qualifier ("creature with flyings").
+ */
+private fun pluralAttackerSubject(filter: GameObjectFilter): String =
+    com.wingedsheep.sdk.scripting.util.pluralNounPhrase(filter.description).replaceFirstChar { it.uppercase() }
 
 /**
  * The source permanent can't be chosen as an attack defender while it is attached to another
@@ -428,21 +600,38 @@ data object CantBeAttackedWhileAttached : StaticAbility {
 }
 
 /**
- * Global cap on how many creatures may attack in a single combat (Dueling Grounds —
- * "No more than one creature can attack each combat").
+ * Cap on how many creatures may attack in a single combat.
  *
- * Unlike per-creature restrictions, this constrains the *total* declared attacker set
- * regardless of controller, so it is enforced as a whole-declaration check rather than a
- * per-attacker [AttackRestrictionRule]. While any permanent with this ability is on the
- * battlefield, an attack declaration with more than [maxAttackers] attackers is illegal.
+ * Unlike per-creature restrictions, this constrains the declared attacker *set*, so it is
+ * enforced as a whole-declaration check rather than a per-attacker [AttackRestrictionRule].
+ *
+ * - [defenders] `== null` — a **global** cap (Dueling Grounds — "No more than one creature can
+ *   attack each combat"): while any permanent with this ability is on the battlefield, an attack
+ *   declaration with more than [maxAttackers] attackers in total, regardless of controller, is
+ *   illegal.
+ * - [defenders] set — a **per-defender** cap: each battlefield permanent matching [defenders]
+ *   (evaluated relative to this ability's controller, against projected state) may be attacked
+ *   by at most [maxAttackers] creatures in one combat; attacks on anything else are unaffected.
+ *   Tomik, Orzhov Lawmage — "Planeswalkers you control have 'No more than one creature can
+ *   attack this planeswalker each combat.'" — is
+ *   `AttackerCountLimit(1, defenders = GroupFilter.PlaneswalkersYouControl)`.
  */
 @SerialName("AttackerCountLimit")
 @Serializable
 data class AttackerCountLimit(
-    val maxAttackers: Int
+    val maxAttackers: Int,
+    val defenders: GroupFilter? = null
 ) : StaticAbility {
-    override val description: String =
-        "No more than $maxAttackers creature${if (maxAttackers == 1) "" else "s"} can attack each combat"
+    override val description: String
+        get() {
+            val creatures = "No more than $maxAttackers creature${if (maxAttackers == 1) "" else "s"}"
+            return if (defenders == null) {
+                "$creatures can attack each combat"
+            } else {
+                "${defenders.description.replaceFirstChar { it.uppercase() }} have " +
+                    "\"$creatures can attack this permanent each combat.\""
+            }
+        }
 }
 
 /**

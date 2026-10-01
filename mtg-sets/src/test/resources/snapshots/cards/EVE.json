@@ -14,7 +14,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Archon of Justice:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "from": "Battlefield",
@@ -24,7 +24,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target permanent"
+                        "name": "t0"
                     },
                     "destination": "Exile"
                 },
@@ -33,7 +33,7 @@
                     "filter": {
                         "baseFilter": "permanent"
                     },
-                    "id": "target permanent"
+                    "id": "t0"
                 }
             }
         ]
@@ -50,6 +50,121 @@
     ]
 }
 
+// Duskdale Wurm
+{
+    "name": "Duskdale Wurm",
+    "manaCost": "{5}{G}{G}",
+    "typeLine": "Creature — Wurm",
+    "oracleText": "Trample (This creature can deal excess combat damage to the player or planeswalker it's attacking.)",
+    "creatureStats": {
+        "power": 7,
+        "toughness": 7
+    },
+    "keywords": [
+        "TRAMPLE"
+    ],
+    "metadata": {
+        "collectorNumber": "67",
+        "rarity": "UNCOMMON",
+        "artist": "Dan Dos Santos",
+        "flavorText": "\"Last time, it tore up the Wilt-Leaf, turned Mistmeadow into a mudhole, and made the river jump its banks. On the bright side, we were eating venison for weeks.\"\n—Donal Alloway, cenn of Kinscaer",
+        "imageUri": "https://cards.scryfall.io/normal/front/8/d/8d10736d-047b-423f-9017-f59732d446bf.jpg?1783942679"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
+// Scarecrone
+{
+    "name": "Scarecrone",
+    "manaCost": "{3}",
+    "typeLine": "Artifact Creature — Scarecrow",
+    "oracleText": "{1}, Sacrifice a Scarecrow: Draw a card.\n{4}, {T}: Return target artifact creature card from your graveyard to the battlefield.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 2
+    },
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Scarecrone:1",
+                "cost": {
+                    "type": "CostComposite",
+                    "costs": [
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomMana",
+                                "cost": "{1}"
+                            }
+                        },
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomSacrifice",
+                                "filter": "permanent Scarecrow"
+                            }
+                        }
+                    ]
+                },
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                "descriptionOverride": "{1}, Sacrifice a Scarecrow: Draw a card."
+            },
+            {
+                "id": "Scarecrone:2",
+                "cost": {
+                    "type": "CostComposite",
+                    "costs": [
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomMana",
+                                "cost": "{4}"
+                            }
+                        },
+                        "CostTap"
+                    ]
+                },
+                "effect": {
+                    "type": "MoveToZone",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    },
+                    "destination": "Battlefield",
+                    "fromZone": "Graveyard"
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": "artifact creature own:you",
+                            "zone": "Graveyard"
+                        },
+                        "id": "t0"
+                    }
+                ],
+                "descriptionOverride": "{4}, {T}: Return target artifact creature card from your graveyard to the battlefield."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "172",
+        "rarity": "RARE",
+        "artist": "Jesper Ejsing",
+        "flavorText": "Her poppets bring joy to the truly depraved.",
+        "imageUri": "https://cards.scryfall.io/normal/front/1/9/1978400d-a8f1-4df7-8caf-b9ca81334bce.jpg?1783942656"
+    },
+    "colorIdentityOverride": []
+}
+
 // Wickerbough Elder
 {
     "name": "Wickerbough Elder",
@@ -63,7 +178,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Wickerbough Elder:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -78,7 +193,7 @@
                             "type": "CostAtomWrapper",
                             "atom": {
                                 "type": "AtomRemoveCounters",
-                                "counterType": "-1/-1",
+                                "counterType": "MINUS_ONE_MINUS_ONE",
                                 "self": true
                             }
                         }
@@ -87,8 +202,8 @@
                 "effect": {
                     "type": "MoveToZone",
                     "target": {
-                        "type": "ContextTarget",
-                        "index": 0
+                        "type": "BoundVariable",
+                        "name": "t0"
                     },
                     "destination": "Graveyard",
                     "byDestruction": true
@@ -98,7 +213,8 @@
                         "type": "TargetObject",
                         "filter": {
                             "baseFilter": "artifact|enchantment"
-                        }
+                        },
+                        "id": "t0"
                     }
                 ]
             }
@@ -106,7 +222,7 @@
         "replacementEffects": [
             {
                 "type": "EntersWithCounters",
-                "counterType": "MinusOneMinusOne",
+                "counterType": "MINUS_ONE_MINUS_ONE",
                 "count": 1,
                 "selfOnly": true
             }

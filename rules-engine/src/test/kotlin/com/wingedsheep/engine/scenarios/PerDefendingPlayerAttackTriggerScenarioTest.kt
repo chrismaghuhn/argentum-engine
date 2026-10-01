@@ -29,6 +29,7 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.AdditionalAttackTriggers
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
@@ -42,6 +43,8 @@ import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
+import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Generic acceptance matrix for "whenever you attack a player with one or more
@@ -96,7 +99,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         manaCost = "{2}"
         typeLine = "Enchantment"
         triggeredAbility {
-            trigger = Triggers.YouAttackPlayerWithFilter(qualifyingFilter)
+            trigger = Triggers.you.attacksAPlayer(with = qualifyingFilter)
             effect = Effects.DrawCards(1)
         }
     }
@@ -105,7 +108,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         manaCost = "{2}"
         typeLine = "Legendary Enchantment"
         triggeredAbility {
-            trigger = Triggers.YouAttackPlayerWithFilter(qualifyingFilter)
+            trigger = Triggers.you.attacksAPlayer(with = qualifyingFilter)
             triggerZones = setOf(Zone.COMMAND)
             effect = Effects.DrawCards(1)
         }
@@ -130,7 +133,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         manaCost = "{2}"
         typeLine = "Enchantment"
         triggeredAbility {
-            trigger = Triggers.YouAttack
+            trigger = Triggers.you.attacks()
             effect = Effects.DrawCards(1)
         }
     }
@@ -139,7 +142,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         manaCost = "{2}"
         typeLine = "Enchantment"
         triggeredAbility {
-            trigger = Triggers.YouAttackWithFilter(qualifyingFilter)
+            trigger = Triggers.you.attacks(with = qualifyingFilter)
             effect = Effects.DrawCards(1)
         }
     }
@@ -208,6 +211,13 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         return Pod(driver, players[0], players[1], players[2])
     }
 
+    /** A fresh detector over the pod driver's engine evaluators. */
+    fun triggerDetector(pod: Pod): TriggerDetector = TriggerDetector(
+        pod.driver.cardRegistry,
+        predicateEvaluator = pod.driver.services.predicateEvaluator,
+        conditionEvaluator = pod.driver.services.conditionEvaluator,
+    )
+
     fun attackEvent(pod: Pod, vararg attacks: Pair<EntityId, EntityId>): AttackersDeclaredEvent {
         val entries = attacks.toList()
         return AttackersDeclaredEvent(
@@ -225,7 +235,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         event: AttackersDeclaredEvent,
     ): List<PendingTrigger> {
         pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, watcherName)
-        return TriggerDetector(pod.driver.cardRegistry)
+        return triggerDetector(pod)
             .detectTriggers(pod.driver.state, listOf(event))
             .filter { it.sourceName == watcherName }
     }
@@ -417,7 +427,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
         val sourceId = pod.driver.putCardInCommandZone(pod.attackingPlayer, commandZoneWatcher.name)
 
-        val pending = TriggerDetector(pod.driver.cardRegistry)
+        val pending = triggerDetector(pod)
             .detectTriggers(
                 pod.driver.state,
                 listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)),
@@ -439,6 +449,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
                 trigger = EventPattern.YouAttackPlayerEvent(attackerFilter = qualifyingFilter),
                 binding = TriggerBinding.ANY,
                 effect = Effects.DrawCards(1),
+                id = AbilityId("PerDefendingPlayerAttackTriggerScenarioTest-ability-1"),
             ),
             controllerId = pod.attackingPlayer,
             sourceId = sourceId,
@@ -446,7 +457,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             duration = Duration.Permanent,
         )
 
-        val pending = TriggerDetector(pod.driver.cardRegistry)
+        val pending = triggerDetector(pod)
             .detectTriggers(
                 pod.driver.state.copy(globalGrantedTriggeredAbilities = listOf(global)),
                 listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)),
@@ -496,7 +507,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
         val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
         pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, perPlayerWatcher.name)
-        val detector = TriggerDetector(pod.driver.cardRegistry)
+        val detector = triggerDetector(pod)
 
         val forward = detector
             .detectTriggers(
@@ -550,7 +561,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         json.encodeToString(GameEvent.serializer(), forwardEvent) shouldBe
             json.encodeToString(GameEvent.serializer(), reverseEvent)
 
-        val detector = TriggerDetector(pod.driver.cardRegistry)
+        val detector = triggerDetector(pod)
         val forwardOrder = detector.detectTriggers(baseState, listOf(forwardEvent))
             .filter { it.sourceName == perPlayerWatcher.name }
             .map { it.triggerContext.triggeringPlayerId }
@@ -566,7 +577,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
         pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, perPlayerWatcher.name)
         val event = attackEvent(pod, first to pod.playerB, second to pod.playerC)
-        val detector = TriggerDetector(pod.driver.cardRegistry)
+        val detector = triggerDetector(pod)
 
         fun bindingOrder(state: com.wingedsheep.engine.state.GameState): List<EntityId> =
             detector.detectTriggers(state, listOf(event))
@@ -585,7 +596,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
         pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, perPlayerWatcher.name)
         val event = attackEvent(pod, first to pod.playerB, second to pod.playerC)
-        val detector = TriggerDetector(pod.driver.cardRegistry)
+        val detector = triggerDetector(pod)
         val json = Json {
             serializersModule = engineSerializersModule
             allowStructuredMapKeys = true
@@ -666,7 +677,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, perPlayerWatcher.name)
         pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, attackDoubler.name)
 
-        val pending = TriggerDetector(pod.driver.cardRegistry)
+        val pending = triggerDetector(pod)
             .detectTriggers(
                 pod.driver.state,
                 listOf(attackEvent(pod, warrior to pod.playerB, bear to pod.playerC)),
@@ -698,7 +709,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             ),
         )
 
-        val pending = TriggerDetector(pod.driver.cardRegistry)
+        val pending = triggerDetector(pod)
             .detectTriggers(
                 pod.driver.state.copy(delayedTriggers = listOf(delayed)),
                 listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)),
@@ -731,7 +742,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             fireOnce = true,
         )
 
-        val pending = TriggerDetector(pod.driver.cardRegistry)
+        val pending = triggerDetector(pod)
             .detectTriggers(
                 pod.driver.state.copy(delayedTriggers = listOf(delayed)),
                 listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)),
@@ -773,7 +784,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             fireOnce = true,
         )
 
-        val pending = TriggerDetector(pod.driver.cardRegistry).detectTriggers(
+        val pending = triggerDetector(pod).detectTriggers(
             pod.driver.state.copy(delayedTriggers = listOf(delayed)),
             listOf(
                 attackEvent(pod, attacker to pod.playerB),
@@ -806,13 +817,13 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             fireOnce = true,
         )
         val state = pod.driver.state.copy(delayedTriggers = listOf(delayed))
-        val pending = TriggerDetector(pod.driver.cardRegistry)
+        val pending = triggerDetector(pod)
             .detectTriggers(state, listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)))
             .filter { it.sourceName == delayedWatcher.name }
         val services = EngineServices(pod.driver.cardRegistry)
         val paused = services.triggerProcessor.processTriggers(state, pending)
 
-        paused.isPaused shouldBe true
+        paused.outcome.shouldBeInstanceOf<Outcome.Paused>()
         val decision = paused.pendingDecision as ChooseOptionDecision
         decision.options shouldHaveSize 2
         decision.options shouldBe listOf(
@@ -876,7 +887,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         val stackTrigger = stackTop?.let {
             resumed.state.getEntity(it)?.get<com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent>()
         }
-        stackTrigger?.triggeringPlayerId shouldBe pod.playerC
+        stackTrigger?.triggerContext?.triggeringPlayerId shouldBe pod.playerC
 
         val encoded = json.encodeToString(ContinuationFrame.serializer(), continuation)
         val decoded = json.decodeFromString(ContinuationFrame.serializer(), encoded)
@@ -894,6 +905,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         replayed.state.getTopOfStack()?.let {
             replayed.state.getEntity(it)
                 ?.get<com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent>()
+                ?.triggerContext
                 ?.triggeringPlayerId
         } shouldBe pod.playerB
 
@@ -914,11 +926,13 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         forkB.state.getTopOfStack()?.let {
             forkB.state.getEntity(it)
                 ?.get<com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent>()
+                ?.triggerContext
                 ?.triggeringPlayerId
         } shouldBe pod.playerB
         forkC.state.getTopOfStack()?.let {
             forkC.state.getEntity(it)
                 ?.get<com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent>()
+                ?.triggerContext
                 ?.triggeringPlayerId
         } shouldBe pod.playerC
     }
@@ -945,7 +959,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             fireOnce = true,
         )
 
-        val pending = TriggerDetector(pod.driver.cardRegistry)
+        val pending = triggerDetector(pod)
             .detectTriggers(
                 pod.driver.state.copy(delayedTriggers = listOf(delayed)),
                 listOf(attackEvent(pod, attacker to pod.playerB)),

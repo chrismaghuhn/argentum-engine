@@ -21,6 +21,7 @@ import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SourceActivationV2
 import com.wingedsheep.engine.core.canonicalizeInitialPoolBucketsV1
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
@@ -875,7 +876,9 @@ class PaymentConstructionGrammarCompletenessTest : FunSpec({
             walk.maxDepth.toLong() shouldBeLessThanOrEqual bounds.depth
 
             // Gate A+: Rules authority, trusted seam, and execution agree with every reachable plan.
-            val validator = PaymentPlanValidator(ManaSolver(fixture.cardRegistry))
+            val validator = PaymentPlanValidator(
+                ManaSolver(fixture.cardRegistry, PredicateEvaluator(fixture.cardRegistry)),
+            )
             val observationBuilder = ObservationBuilder(cardRegistry = fixture.cardRegistry)
             val snapshot = fixture.environment.state
             val playerIds = fixture.environment.playerIds
@@ -1140,7 +1143,7 @@ class PaymentConstructionGrammarCompletenessTest : FunSpec({
             var maxBranching = 0
             var maxDepth = 0
             var maxWork = 0L
-            val validator = PaymentPlanValidator(ManaSolver(cardRegistry))
+            val validator = PaymentPlanValidator(ManaSolver(cardRegistry, PredicateEvaluator(cardRegistry)))
             val root = PaymentConstructionGrammarV1.initial(domain)
                 .shouldBeInstanceOf<PaymentConstructionResultV1.Ok<PaymentConstructionStateV1>>().value
             repeat(ENVELOPE_WALKS) {

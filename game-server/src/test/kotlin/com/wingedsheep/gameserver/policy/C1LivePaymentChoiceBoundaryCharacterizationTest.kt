@@ -242,6 +242,8 @@ class C1LivePaymentChoiceBoundaryCharacterizationTest : FunSpec({
     }
 }) {
     companion object {
+        private const val PREPARATION_SEED = 20260901L
+
         private data class PreparedState(
             val environment: GameEnvironment,
             val cardRegistry: CardRegistry,
@@ -283,6 +285,10 @@ class C1LivePaymentChoiceBoundaryCharacterizationTest : FunSpec({
                     skipMulligans = true,
                     startingPlayerIndex = 0,
                     format = Format.Standard,
+                    // Deck entity ids are handed out in a seeded shuffled order, so a fixed seed is
+                    // what makes every preparation the identical state these tests compare across
+                    // (bucket order and land ids in preparedA must match preparedB).
+                    seed = PREPARATION_SEED,
                 ),
             )
 

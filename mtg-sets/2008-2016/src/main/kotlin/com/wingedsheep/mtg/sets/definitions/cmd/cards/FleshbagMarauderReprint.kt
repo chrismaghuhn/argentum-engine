@@ -4,7 +4,7 @@ import com.wingedsheep.sdk.model.Printing
 import com.wingedsheep.sdk.model.Rarity
 
 /**
- * Fleshbag Marauder reprint in Commander 2011. Canonical CardDefinition lives in Shards of Alara.
+ * Fleshbag Marauder reprint in CMD. Canonical CardDefinition lives in its earliest set.
  */
 val FleshbagMarauderReprint = Printing(
     oracleId = "4b1bf05e-753e-4350-a913-894cf3cecc0c",
@@ -13,7 +13,7 @@ val FleshbagMarauderReprint = Printing(
     collectorNumber = "83",
     scryfallId = "7cccf5f9-ec1a-4207-aaa1-69c9429ca4d3",
     artist = "Pete Venters",
-    imageUri = "https://cards.scryfall.io/normal/front/7/c/7cccf5f9-ec1a-4207-aaa1-69c9429ca4d3.jpg?1783941224",
+    imageUri = "https://cards.scryfall.io/normal/front/7/c/7cccf5f9-ec1a-4207-aaa1-69c9429ca4d3.jpg",
     releaseDate = "2011-06-17",
     rarity = Rarity.UNCOMMON,
 )

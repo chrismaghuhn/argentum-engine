@@ -12,6 +12,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /** Thrilling Discovery (STX #243) — gain life, then optionally discard two to draw three. */
 class ThrillingDiscoveryScenarioTest : FunSpec({
@@ -28,7 +29,7 @@ class ThrillingDiscoveryScenarioTest : FunSpec({
         val spell = driver.putCardInHand(player, "Thrilling Discovery")
         driver.giveMana(player, Color.RED)
         driver.giveMana(player, Color.WHITE)
-        driver.castSpell(player, spell).isSuccess shouldBe true
+        driver.castSpell(player, spell).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -51,7 +52,7 @@ class ThrillingDiscoveryScenarioTest : FunSpec({
         discard.playerId shouldBe player
         discard.minSelections shouldBe 2
         discard.maxSelections shouldBe 2
-        driver.submitCardSelection(player, listOf(firstDiscard, secondDiscard)).isSuccess shouldBe true
+        driver.submitCardSelection(player, listOf(firstDiscard, secondDiscard)).outcome shouldBe Outcome.Done
 
         driver.getGraveyardCardNames(player) shouldContain "Forest"
         driver.getGraveyardCardNames(player) shouldContain "Swamp"

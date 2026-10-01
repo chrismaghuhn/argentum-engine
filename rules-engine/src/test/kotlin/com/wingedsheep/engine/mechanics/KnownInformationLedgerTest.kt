@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.HandLookedAtEvent
+import com.wingedsheep.engine.core.LibraryReorderedEvent
 import com.wingedsheep.engine.core.LibrarySearchedEvent
 import com.wingedsheep.engine.core.LibraryShuffledEvent
 import com.wingedsheep.engine.core.LookedAtCardsEvent
@@ -44,12 +45,18 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.effects.LibraryPlacement
+import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 
 /** Rules-state contract tests for the perspective-scoped known-information ledger. */
 class KnownInformationLedgerTest : FunSpec({
     val p1 = EntityId.of("p1")
     val p2 = EntityId.of("p2")
     val registry = CardRegistry()
+    val predicateEvaluator = PredicateEvaluator(cardRegistry = null)
+    val zones = ZoneTransitionService(registry, predicateEvaluator = predicateEvaluator)
 
     data class CardSpec(
         val id: EntityId,
@@ -260,7 +267,7 @@ class KnownInformationLedgerTest : FunSpec({
         val initial = stateWith(CardSpec(cardId, p1, Zone.HAND))
         val oldStamp = initial.objectIdentityStamps[cardId]
 
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = initial,
             entityId = cardId,
             destinationZone = Zone.LIBRARY,
@@ -285,7 +292,7 @@ class KnownInformationLedgerTest : FunSpec({
                 KnownInformationLedger.recordLibraryOrder(initial, p1, listOf(first, second)),
             ),
         )
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = known,
             entityId = entering,
             destinationZone = Zone.LIBRARY,
@@ -312,7 +319,7 @@ class KnownInformationLedgerTest : FunSpec({
                 KnownInformationLedger.recordLibraryOrder(initial, p1, listOf(first, second)),
             ),
         )
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = known,
             entityId = first,
             destinationZone = Zone.HAND,
@@ -325,6 +332,42 @@ class KnownInformationLedgerTest : FunSpec({
         } shouldBe true
     }
 
+    test("a card put on the bottom of its own library invalidates the other cards' stale positions") {
+        // Scry to the bottom: the card never leaves the library, so no ZoneChangeEvent reports
+        // the move, yet every card above it shifts one position.
+        val first = EntityId.of("same-zone-first")
+        val second = EntityId.of("same-zone-second")
+        val initial = stateWith(
+            CardSpec(first, p1, Zone.LIBRARY),
+            CardSpec(second, p1, Zone.LIBRARY),
+        )
+        val known = apply(
+            initial,
+            ExecutionResult.success(
+                KnownInformationLedger.recordLibraryOrder(initial, p1, listOf(first, second)),
+            ),
+        )
+        val moved = zones.moveToZone(
+            state = known,
+            entityId = first,
+            destinationZone = Zone.LIBRARY,
+            options = ZoneEntryOptions(libraryPlacement = LibraryPlacement.Bottom),
+            fromZoneKey = ZoneKey(p1, Zone.LIBRARY),
+        )
+        moved.events.filterIsInstance<ZoneChangeEvent>().shouldBeEmpty()
+        moved.events.filterIsInstance<LibraryReorderedEvent>().single().sameZonePlacement shouldBe true
+        val after = apply(known, ExecutionResult.success(moved.state, moved.events))
+
+        after.getLibrary(p1) shouldBe listOf(second, first)
+        facts(after, p1).none {
+            it.factKind == KnownInformationFactKind.POSITION_OR_ORDER &&
+                it.subjectEntityId in setOf(first, second)
+        } shouldBe true
+        // Still the same card in the same library: its identity moves onto the new incarnation.
+        fact(after, p1, first, KnownInformationFactKind.IDENTITY).objectIdentityStamp shouldBe
+            after.objectIdentityStamps[first]
+    }
+
     test("HISTB-05 private search records searched library cards but not to the opponent") {
         val first = EntityId.of("search-card-a")
         val second = EntityId.of("search-card-b")
@@ -332,7 +375,7 @@ class KnownInformationLedgerTest : FunSpec({
             CardSpec(first, p1, Zone.LIBRARY, "Card A"),
             CardSpec(second, p1, Zone.LIBRARY, "Card B"),
         )
-        val gather = GatherCardsExecutor().execute(
+        val gather = GatherCardsExecutor(predicateEvaluator = predicateEvaluator).execute(
             state = state,
             effect = GatherCardsEffect(
                 source = CardSource.FromZone(Zone.LIBRARY, Player.You, GameObjectFilter.Any),
@@ -517,7 +560,7 @@ class KnownInformationLedgerTest : FunSpec({
                 ),
             ),
         )
-        val movedResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val movedResult = zones.moveToZone(
             state = known,
             entityId = cardId,
             destinationZone = Zone.HAND,
@@ -730,7 +773,7 @@ class KnownInformationLedgerTest : FunSpec({
             includeLibraryPositions = true,
         )
         fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = known,
             entityId = cardId,
             destinationZone = Zone.HAND,
@@ -763,7 +806,7 @@ class KnownInformationLedgerTest : FunSpec({
     test("HISTB-REVIEW-27 hidden draw does not invent opponent continuity knowledge") {
         val cardId = EntityId.of("draw-hidden-card")
         val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Hidden Draw Card"))
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = initial,
             entityId = cardId,
             destinationZone = Zone.HAND,
@@ -792,7 +835,7 @@ class KnownInformationLedgerTest : FunSpec({
             acquisitionReason = KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK,
         )
         val revealed = apply(initial, ExecutionResult.success(known))
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = revealed,
             entityId = cardId,
             destinationZone = Zone.HAND,
@@ -825,7 +868,7 @@ class KnownInformationLedgerTest : FunSpec({
             acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
             includeLibraryPositions = false,
         )
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = known,
             entityId = cardId,
             destinationZone = Zone.HAND,
@@ -859,7 +902,7 @@ class KnownInformationLedgerTest : FunSpec({
             includeLibraryPositions = true,
         )
         fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 1
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = known,
             entityId = cardId,
             destinationZone = Zone.HAND,
@@ -892,13 +935,13 @@ class KnownInformationLedgerTest : FunSpec({
             acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
             includeLibraryPositions = true,
         )
-        val firstMoved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val firstMoved = zones.moveToZone(
             state = known,
             entityId = first,
             destinationZone = Zone.HAND,
             fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
         )
-        val secondMoved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val secondMoved = zones.moveToZone(
             state = firstMoved.state,
             entityId = second,
             destinationZone = Zone.HAND,
@@ -946,7 +989,7 @@ class KnownInformationLedgerTest : FunSpec({
         facts(shuffled, p1).none {
             it.subjectEntityId == cardId && it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
         } shouldBe true
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = shuffled,
             entityId = cardId,
             destinationZone = Zone.HAND,
@@ -976,7 +1019,7 @@ class KnownInformationLedgerTest : FunSpec({
             includeLibraryPositions = true,
         )
         fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = known,
             entityId = cardId,
             destinationZone = Zone.HAND,
@@ -1012,7 +1055,7 @@ class KnownInformationLedgerTest : FunSpec({
             acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
             includeLibraryPositions = true,
         )
-        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val moved = zones.moveToZone(
             state = known,
             entityId = cardId,
             destinationZone = Zone.HAND,
@@ -1049,13 +1092,13 @@ class KnownInformationLedgerTest : FunSpec({
             includeLibraryPositions = true,
         )
         fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
-        val movedCard = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val movedCard = zones.moveToZone(
             state = known,
             entityId = cardId,
             destinationZone = Zone.HAND,
             fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
         )
-        val movedEntering = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val movedEntering = zones.moveToZone(
             state = movedCard.state,
             entityId = enteringId,
             destinationZone = Zone.LIBRARY,
@@ -1093,19 +1136,19 @@ class KnownInformationLedgerTest : FunSpec({
             includeLibraryPositions = true,
         )
         fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
-        val firstDraw = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val firstDraw = zones.moveToZone(
             state = known,
             entityId = cardId,
             destinationZone = Zone.HAND,
             fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
         )
-        val returnedToLibrary = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val returnedToLibrary = zones.moveToZone(
             state = firstDraw.state,
             entityId = cardId,
             destinationZone = Zone.LIBRARY,
             fromZoneKey = ZoneKey(p2, Zone.HAND),
         )
-        val drawnAgain = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val drawnAgain = zones.moveToZone(
             state = returnedToLibrary.state,
             entityId = cardId,
             destinationZone = Zone.HAND,

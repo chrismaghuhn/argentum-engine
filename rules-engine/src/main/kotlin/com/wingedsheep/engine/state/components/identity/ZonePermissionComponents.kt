@@ -2,6 +2,7 @@ package com.wingedsheep.engine.state.components.identity
 
 import com.wingedsheep.engine.state.Component
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.effects.AfterResolveDestination
 import kotlinx.serialization.Serializable
 
 /**
@@ -21,6 +22,39 @@ data class RevealedToComponent(
     companion object {
         fun to(playerId: EntityId): RevealedToComponent =
             RevealedToComponent(setOf(playerId))
+    }
+}
+
+/**
+ * The players who may look under a face-down card **while it is in exile** — the
+ * "You may look at that card for as long as it remains exiled" rider (Jacob Hauken, Inspector;
+ * Hauken's Insight).
+ *
+ * CR 708.5 grants nothing here ("You can't look at face-down cards in any other zone"), so every
+ * peek into face-down exile comes from an effect that names its grantee. This component is that
+ * grant in its plainest form — knowledge with no attached permission to play the card — and sits
+ * alongside the two grants [com.wingedsheep.engine.view.Visibility] already honours: foretell
+ * (via [ForetoldComponent]) and an active may-play permission.
+ *
+ * Read only from the exile branch of the face-down visibility check, so the grant is exile-scoped
+ * by construction: a card that leaves exile stops being covered by it, which is exactly what "for
+ * as long as it remains exiled" says.
+ *
+ * @param playerIds The players entitled to look. Accumulates — two effects can each grant a look
+ *   at the same exiled card.
+ */
+@Serializable
+data class MayLookAtInExileComponent(
+    val playerIds: Set<EntityId>
+) : Component {
+    fun withPlayer(playerId: EntityId): MayLookAtInExileComponent =
+        copy(playerIds = playerIds + playerId)
+
+    fun mayLook(playerId: EntityId): Boolean = playerId in playerIds
+
+    companion object {
+        fun to(playerId: EntityId): MayLookAtInExileComponent =
+            MayLookAtInExileComponent(setOf(playerId))
     }
 }
 
@@ -167,13 +201,20 @@ data class PlayWithFixedAlternativeManaCostComponent(
 ) : Component
 
 /**
- * Marks a spell so that if it would be put into a graveyard after resolving or being
- * countered, it is exiled instead. Used by effects like Daring Waverider that grant
- * one-shot free casts from exile with "exile it instead" clauses.
+ * Marks a spell so that if it would be put into a graveyard after resolving, being countered or
+ * fizzling, it goes to [destination] instead. Used by effects like Daring Waverider that grant
+ * one-shot free casts from exile with "exile it instead" clauses, and by Kylox's Voltstrider,
+ * whose cast-from-the-linked-pile rider reads "put it on the bottom of its owner's library
+ * instead".
  *
- * The [StackResolver] checks for this component when determining the destination zone
- * after a spell resolves or fizzles.
+ * The [StackResolver] checks for this component at each of the four points a spell can leave the
+ * stack for a graveyard (resolve, paused-resolve, fizzle, counter). It is stamped on the *card*
+ * rather than registered as a continuous effect, so it is scoped to the one spell the granting
+ * effect is casting and travels with it onto the stack.
  *
+ * @param destination Where the card goes instead of its owner's graveyard. Defaults to
+ *   [AfterResolveDestination.EXILE] — every rider that predates the enum is an "exile it
+ *   instead" one, and the extras below are all exile-only riders.
  * @param withCounters Counter types to add to the card after it is exiled (one of each).
  *   Used by Goliath Daydreamer's "exile that card with a dream counter on it" wording.
  * @param linkedSourceId When set, the spell is added to this permanent's
@@ -188,10 +229,11 @@ data class PlayWithFixedAlternativeManaCostComponent(
  *   resolves. If you do, it becomes plotted." Only applied when the card actually lands in exile.
  */
 @Serializable
-data class ExileAfterResolveComponent(
+data class AfterResolveDestinationComponent(
+    val destination: AfterResolveDestination = AfterResolveDestination.EXILE,
     val withCounters: List<com.wingedsheep.sdk.core.CounterType> = emptyList(),
     /**
-     * When true, the spell only goes to exile if it actually resolves. If it is
+     * When true, the spell only goes to [destination] if it actually resolves. If it is
      * countered or fizzles, it goes to its owner's graveyard normally. Used by
      * Goliath Daydreamer per ruling: "If a spell is countered or otherwise fails
      * to resolve, Goliath Daydreamer's first ability won't exile it."
@@ -199,4 +241,11 @@ data class ExileAfterResolveComponent(
     val onlyIfResolved: Boolean = false,
     val linkedSourceId: EntityId? = null,
     val makePlotted: Boolean = false
-) : Component
+) : Component {
+    /** The zone [destination] names — the two members differ in placement, not only in zone. */
+    val zone: com.wingedsheep.sdk.core.Zone
+        get() = when (destination) {
+            AfterResolveDestination.EXILE -> com.wingedsheep.sdk.core.Zone.EXILE
+            AfterResolveDestination.BOTTOM_OF_LIBRARY -> com.wingedsheep.sdk.core.Zone.LIBRARY
+        }
+}

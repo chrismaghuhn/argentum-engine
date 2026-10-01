@@ -11,7 +11,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Chandra's Magmutt:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "DealDamage",
@@ -21,13 +21,13 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "player or planeswalker"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
                     {
                         "type": "TargetPlayerOrPlaneswalker",
-                        "id": "player or planeswalker"
+                        "id": "t0"
                     }
                 ]
             }
@@ -57,7 +57,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Daybreak Charger:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -74,7 +74,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature"
+                        "name": "t0"
                     }
                 },
                 "targetRequirement": {
@@ -82,7 +82,7 @@
                     "filter": {
                         "baseFilter": "creature"
                     },
-                    "id": "target creature"
+                    "id": "t0"
                 }
             }
         ]
@@ -95,6 +95,118 @@
     },
     "colorIdentityOverride": [
         "WHITE"
+    ]
+}
+
+// Elder Gargaroth
+{
+    "name": "Elder Gargaroth",
+    "manaCost": "{3}{G}{G}",
+    "typeLine": "Creature — Beast",
+    "oracleText": "Reach, vigilance, trample\nWhenever this creature attacks or blocks, choose one —\n• Create a 3/3 green Beast creature token.\n• You gain 3 life.\n• Draw a card.",
+    "creatureStats": {
+        "power": 6,
+        "toughness": 6
+    },
+    "keywords": [
+        "REACH",
+        "VIGILANCE",
+        "TRAMPLE"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Elder Gargaroth:1",
+                "trigger": "AttackEvent",
+                "effect": {
+                    "type": "Modal",
+                    "modes": [
+                        {
+                            "effect": {
+                                "type": "CreateToken",
+                                "power": 3,
+                                "toughness": 3,
+                                "colors": [
+                                    "GREEN"
+                                ],
+                                "creatureTypes": [
+                                    "Beast"
+                                ],
+                                "imageUri": "https://cards.scryfall.io/normal/front/8/8/882247ba-99d2-46db-8314-f800f3366b7f.jpg?1783930590"
+                            }
+                        },
+                        {
+                            "effect": {
+                                "type": "GainLife",
+                                "amount": {
+                                    "type": "Fixed",
+                                    "amount": 3
+                                }
+                            }
+                        },
+                        {
+                            "effect": {
+                                "type": "DrawCards",
+                                "count": {
+                                    "type": "Fixed",
+                                    "amount": 1
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "Elder Gargaroth:2",
+                "trigger": "BlockEvent",
+                "effect": {
+                    "type": "Modal",
+                    "modes": [
+                        {
+                            "effect": {
+                                "type": "CreateToken",
+                                "power": 3,
+                                "toughness": 3,
+                                "colors": [
+                                    "GREEN"
+                                ],
+                                "creatureTypes": [
+                                    "Beast"
+                                ],
+                                "imageUri": "https://cards.scryfall.io/normal/front/8/8/882247ba-99d2-46db-8314-f800f3366b7f.jpg?1783930590"
+                            }
+                        },
+                        {
+                            "effect": {
+                                "type": "GainLife",
+                                "amount": {
+                                    "type": "Fixed",
+                                    "amount": 3
+                                }
+                            }
+                        },
+                        {
+                            "effect": {
+                                "type": "DrawCards",
+                                "count": {
+                                    "type": "Fixed",
+                                    "amount": 1
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "179",
+        "rarity": "MYTHIC",
+        "artist": "Nicholas Gregory",
+        "imageUri": "https://cards.scryfall.io/normal/front/d/5/d51269cf-a333-4a64-94cd-245798d840d2.jpg?1783930678"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
     ]
 }
 
@@ -127,7 +239,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Garruk's Uprising:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -147,7 +259,7 @@
                 }
             },
             {
-                "id": "ability_2",
+                "id": "Garruk's Uprising:2",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "filter": "creature pow>=4 ctrl:you",
@@ -218,7 +330,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Heartfire Immolator:1",
                 "trigger": {
                     "type": "SpellCastEvent",
                     "spellFilter": {
@@ -244,7 +356,7 @@
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Heartfire Immolator:2",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -262,18 +374,18 @@
                     "type": "DealDamage",
                     "amount": {
                         "type": "EntityProperty",
-                        "entity": "Source",
+                        "entity": "Self",
                         "numericProperty": "Power"
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
                     {
                         "type": "TargetCreatureOrPlaneswalker",
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
@@ -307,7 +419,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Hooded Blightfang:1",
                 "trigger": {
                     "type": "AttackEvent",
                     "filter": "creature kw:deathtouch ctrl:you"
@@ -338,11 +450,11 @@
                 }
             },
             {
-                "id": "ability_2",
+                "id": "Hooded Blightfang:2",
                 "trigger": {
                     "type": "DealsDamageEvent",
                     "recipient": {
-                        "type": "RecipientMatching",
+                        "type": "RecipientObject",
                         "filter": "planeswalker"
                     },
                     "sourceFilter": "creature kw:deathtouch ctrl:you"
@@ -381,7 +493,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Library Larcenist:1",
                 "trigger": "AttackEvent",
                 "effect": {
                     "type": "DrawCards",
@@ -420,18 +532,15 @@
     "script": {
         "stateTriggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Mazemind Tome:3",
                 "condition": {
                     "type": "Compare",
                     "left": {
                         "type": "EntityProperty",
-                        "entity": "Source",
+                        "entity": "Self",
                         "numericProperty": {
                             "type": "CounterCount",
-                            "counterType": {
-                                "type": "Named",
-                                "name": "page"
-                            }
+                            "counterType": "PAGE"
                         }
                     },
                     "operator": "GTE",
@@ -464,7 +573,7 @@
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Mazemind Tome:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -473,7 +582,7 @@
                             "type": "CostAtomWrapper",
                             "atom": {
                                 "type": "AtomPutCountersOnSelf",
-                                "counterType": "page"
+                                "counterType": "PAGE"
                             }
                         }
                     ]
@@ -484,7 +593,7 @@
                 }
             },
             {
-                "id": "ability_3",
+                "id": "Mazemind Tome:2",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -500,7 +609,7 @@
                             "type": "CostAtomWrapper",
                             "atom": {
                                 "type": "AtomPutCountersOnSelf",
-                                "counterType": "page"
+                                "counterType": "PAGE"
                             }
                         }
                     ]
@@ -546,7 +655,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ornery Dilophosaur:1",
                 "trigger": "AttackEvent",
                 "effect": {
                     "type": "ModifyStats",
@@ -613,18 +722,18 @@
                     "toughnessModifier": "XValue",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target creature you control"
+                        "name": "t0"
                     }
                 },
                 {
                     "type": "Fight",
                     "target1": {
                         "type": "BoundVariable",
-                        "name": "target creature you control"
+                        "name": "t0"
                     },
                     "target2": {
                         "type": "BoundVariable",
-                        "name": "up to one target creature you don't control"
+                        "name": "t1"
                     }
                 }
             ]
@@ -635,7 +744,7 @@
                 "filter": {
                     "baseFilter": "creature ctrl:you"
                 },
-                "id": "target creature you control"
+                "id": "t0"
             },
             {
                 "type": "TargetObject",
@@ -643,7 +752,7 @@
                 "filter": {
                     "baseFilter": "creature ctrl:opponent"
                 },
-                "id": "up to one target creature you don't control"
+                "id": "t1"
             }
         ]
     },
@@ -672,7 +781,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Rambunctious Mutt:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -681,7 +790,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "destination": "Graveyard",
                     "byDestruction": true
@@ -691,7 +800,7 @@
                     "filter": {
                         "baseFilter": "artifact|enchantment ctrl:opponent"
                     },
-                    "id": "target"
+                    "id": "t0"
                 },
                 "descriptionOverride": "When this creature enters, destroy target artifact or enchantment an opponent controls."
             }
@@ -792,7 +901,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Shipwreck Dowser:1",
                 "trigger": {
                     "type": "SpellCastEvent",
                     "spellFilter": {
@@ -816,7 +925,7 @@
                 }
             },
             {
-                "id": "ability_2",
+                "id": "Shipwreck Dowser:2",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -825,7 +934,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "destination": "Hand"
                 },
@@ -835,7 +944,7 @@
                         "baseFilter": "instant|sorcery own:you",
                         "zone": "Graveyard"
                     },
-                    "id": "target"
+                    "id": "t0"
                 }
             }
         ]
@@ -885,7 +994,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Teferi's Protege:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -982,7 +1091,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Valorous Steed:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -1063,10 +1172,10 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Wildwood Scourge:1",
                 "trigger": {
                     "type": "CountersPlacedEvent",
-                    "counterType": "+1/+1",
+                    "counterType": "PLUS_ONE_PLUS_ONE",
                     "filter": {
                         "cardPredicates": [
                             "IsCreature",
@@ -1081,7 +1190,7 @@
                 "binding": "OTHER",
                 "effect": {
                     "type": "AddCounters",
-                    "counterType": "+1/+1",
+                    "counterType": "PLUS_ONE_PLUS_ONE",
                     "count": 1,
                     "target": "Self"
                 }
@@ -1124,7 +1233,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Witch's Cauldron:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [

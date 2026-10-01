@@ -14,6 +14,8 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Faithless Looting (DKA #87) — draw two, discard two; flashback {2}{R}.
@@ -34,7 +36,7 @@ class FaithlessLootingScenarioTest : FunSpec({
         decision.playerId shouldBe player
         decision.minSelections shouldBe 2
         decision.maxSelections shouldBe 2
-        driver.submitCardSelection(player, driver.getHand(player).take(2)).isSuccess shouldBe true
+        driver.submitCardSelection(player, driver.getHand(player).take(2)).outcome shouldBe Outcome.Done
     }
 
     test("matches current DKA Scryfall Oracle and canonical metadata") {
@@ -56,7 +58,7 @@ class FaithlessLootingScenarioTest : FunSpec({
         val graveyardBefore = driver.getGraveyard(player).size
         driver.giveMana(player, Color.RED, 1)
 
-        driver.castSpell(player, spell).isSuccess shouldBe true
+        driver.castSpell(player, spell).outcome shouldBe Outcome.Done
         resolveLootingAndChooseTwo(driver, player)
 
         driver.getHandSize(player) shouldBe 7
@@ -78,7 +80,7 @@ class FaithlessLootingScenarioTest : FunSpec({
                 paymentStrategy = PaymentStrategy.FromPool
             )
         )
-        cast.isSuccess shouldBe true
+        cast.outcome shouldBe Outcome.Done
         resolveLootingAndChooseTwo(driver, player)
 
         driver.getGraveyardCardNames(player).count { it == "Faithless Looting" } shouldBe 0
@@ -93,7 +95,7 @@ class FaithlessLootingScenarioTest : FunSpec({
         val drawnSecond = driver.putCardOnTopOfLibrary(player, "Island")
         driver.giveMana(player, Color.RED, 1)
 
-        driver.castSpell(player, spell).isSuccess shouldBe true
+        driver.castSpell(player, spell).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val decision = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
@@ -110,10 +112,10 @@ class FaithlessLootingScenarioTest : FunSpec({
             decision.options shouldContain drawnSecond
         }
 
-        driver.submitCardSelection(player, handAtChoice.take(1)).isSuccess shouldBe false
+        driver.submitCardSelection(player, handAtChoice.take(1)).outcome shouldNotBe Outcome.Done
         driver.pendingDecision shouldBe decision
-        driver.submitCardSelection(player, handAtChoice.take(3)).isSuccess shouldBe false
+        driver.submitCardSelection(player, handAtChoice.take(3)).outcome shouldNotBe Outcome.Done
         driver.pendingDecision shouldBe decision
-        driver.submitCardSelection(player, handAtChoice.take(2)).isSuccess shouldBe true
+        driver.submitCardSelection(player, handAtChoice.take(2)).outcome shouldBe Outcome.Done
     }
 })

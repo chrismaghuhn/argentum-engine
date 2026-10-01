@@ -16,6 +16,7 @@ import com.wingedsheep.sdk.scripting.effects.ForEachEffect
 import com.wingedsheep.sdk.scripting.effects.IterationSpace
 import com.wingedsheep.sdk.scripting.references.Player
 import kotlin.reflect.KClass
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Executor for [ForEachCapturedControllerEffect].
@@ -104,7 +105,6 @@ class ForEachCapturedControllerExecutor(
 
             val stateForExecution = if (remaining.isNotEmpty()) {
                 val continuation = ForEachContinuation(
-                    decisionId = "pending",
                     remainingItems = remaining.map { ForEachItem.OfPlayer(it) },
                     effect = ForEachEffect(
                         // Resume-only carrier: the items are already enumerated, so the
@@ -121,10 +121,9 @@ class ForEachCapturedControllerExecutor(
 
             val result = executeSubEffects(stateForExecution, effect.effects, perIterationContext)
 
-            if (result.isPaused) {
-                return EffectResult.paused(
+            if (result.outcome is Outcome.Paused) {
+                return EffectResult.propagatePause(
                     result.state,
-                    result.pendingDecision!!,
                     allEvents + result.events
                 )
             }
@@ -155,7 +154,6 @@ class ForEachCapturedControllerExecutor(
 
             val stateForExecution = if (remainingEffects.isNotEmpty()) {
                 val continuation = EffectContinuation(
-                    decisionId = "pending",
                     remainingEffects = remainingEffects,
                     effectContext = currentContext
                 )
@@ -166,7 +164,7 @@ class ForEachCapturedControllerExecutor(
 
             val result = effectExecutor(stateForExecution, subEffect, currentContext)
 
-            if (!result.isSuccess && !result.isPaused) {
+            if (result.outcome !is Outcome.Done && result.outcome !is Outcome.Paused) {
                 currentState = if (remainingEffects.isNotEmpty()) {
                     val (_, stateWithoutCont) = result.state.popContinuation()
                     stateWithoutCont
@@ -177,10 +175,9 @@ class ForEachCapturedControllerExecutor(
                 continue
             }
 
-            if (result.isPaused) {
-                return EffectResult.paused(
+            if (result.outcome is Outcome.Paused) {
+                return EffectResult.propagatePause(
                     result.state,
-                    result.pendingDecision!!,
                     allEvents + result.events
                 )
             }

@@ -9,7 +9,7 @@
             "type": "MoveToZone",
             "target": {
                 "type": "BoundVariable",
-                "name": "target"
+                "name": "t0"
             },
             "destination": "Graveyard",
             "byDestruction": true
@@ -20,7 +20,7 @@
                 "filter": {
                     "baseFilter": "creature green|white"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -94,7 +94,7 @@
                     "baseFilter": "red|green",
                     "zone": "Stack"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },
@@ -130,6 +130,54 @@
     ]
 }
 
+// Ronom Unicorn
+{
+    "name": "Ronom Unicorn",
+    "manaCost": "{1}{W}",
+    "typeLine": "Creature — Unicorn",
+    "oracleText": "Sacrifice this creature: Destroy target enchantment.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Ronom Unicorn:1",
+                "cost": "CostSacrificeSelf",
+                "effect": {
+                    "type": "MoveToZone",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    },
+                    "destination": "Graveyard",
+                    "byDestruction": true
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": "enchantment"
+                        },
+                        "id": "t0"
+                    }
+                ],
+                "descriptionOverride": "Sacrifice this creature: Destroy target enchantment."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "16",
+        "artist": "Carl Critchlow",
+        "flavorText": "The aberrant magic of the Rimewind drew the unicorns back from the northern wastes to do battle once again.",
+        "imageUri": "https://cards.scryfall.io/normal/front/a/e/ae4764e1-e47c-4934-86a5-9b432c29a158.jpg?1783943367"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Simian Brawler
 {
     "name": "Simian Brawler",
@@ -143,7 +191,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Simian Brawler:1",
                 "cost": {
                     "type": "CostAtomWrapper",
                     "atom": {
@@ -193,7 +241,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Zur the Enchanter:1",
                 "trigger": "AttackEvent",
                 "effect": {
                     "type": "Gated",
@@ -205,9 +253,11 @@
                                 "type": "GatherCards",
                                 "source": {
                                     "type": "FromZone",
-                                    "zone": "Library"
+                                    "zone": "Library",
+                                    "filter": "enchantment mv<=3"
                                 },
-                                "storeAs": "searchable"
+                                "storeAs": "searchable",
+                                "search": true
                             },
                             {
                                 "type": "SelectFromCollection",
@@ -216,7 +266,7 @@
                                     "type": "ChooseUpTo",
                                     "count": {
                                         "type": "Fixed",
-                                        "amount": 3
+                                        "amount": 1
                                     }
                                 },
                                 "storeSelected": "found"

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useGameStore } from '@/store/gameStore.ts'
+import { useIsSharedLifeTeamGame } from '@/store/selectors'
 import { useResponsiveContext } from '../board/shared'
 
 /**
@@ -7,6 +8,15 @@ import { useResponsiveContext } from '../board/shared'
  */
 export function ConcedeButton() {
   const concede = useGameStore((state) => state.concede)
+  // In a pod, conceding eliminates *you* while the game goes on (CR 800.4a) — say so, since
+  // "Concede" reads as "end the game" everywhere else. Two-Headed Giant is the exception: a team
+  // wins and loses together, so one concession takes the whole team out (CR 810.8b).
+  const isPod = useGameStore((state) => (state.gameState?.players.length ?? 0) > 2)
+  const teamConcedes = useIsSharedLifeTeamGame()
+  const confirmLabel = teamConcedes ? 'Concede for the team' : isPod ? 'Concede & leave' : 'Confirm'
+  // Rides inside the button so the confirm row keeps its width — beside the buttons it ran into
+  // the top-right board's name plate, below them into that cell's collapse button.
+  const podNote = teamConcedes ? 'your team is out' : isPod ? 'the others play on' : null
   const [confirming, setConfirming] = useState(false)
   const responsive = useResponsiveContext()
 
@@ -27,24 +37,31 @@ export function ConcedeButton() {
           style={{
             padding: responsive.isMobile ? '6px 10px' : '8px 14px',
             fontSize: responsive.fontSize.small,
-            backgroundColor: '#cc0000',
+            background: 'var(--gradient-danger)',
             color: 'white',
-            border: 'none',
+            border: '1px solid rgba(255, 255, 255, 0.15)',
             borderRadius: 6,
             cursor: 'pointer',
             fontWeight: 600,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            lineHeight: 1.15,
           }}
         >
-          Confirm
+          <span>{confirmLabel}</span>
+          {podNote && !responsive.isMobile && (
+            <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.85 }}>{podNote}</span>
+          )}
         </button>
         <button
           onClick={() => setConfirming(false)}
           style={{
             padding: responsive.isMobile ? '6px 10px' : '8px 14px',
             fontSize: responsive.fontSize.small,
-            backgroundColor: '#222',
-            color: '#aaa',
-            border: '1px solid #333',
+            backgroundColor: 'var(--chrome-bg)',
+            color: 'var(--chrome-text)',
+            border: '1px solid var(--chrome-border)',
             borderRadius: 6,
             cursor: 'pointer',
           }}
@@ -62,9 +79,9 @@ export function ConcedeButton() {
         style={{
           padding: responsive.isMobile ? '6px 10px' : '8px 14px',
           fontSize: responsive.fontSize.small,
-          backgroundColor: 'transparent',
-          color: '#cc0000',
-          border: '1px solid #cc0000',
+          backgroundColor: 'var(--chrome-bg)',
+          color: 'var(--chrome-danger-text)',
+          border: '1px solid var(--chrome-danger-border)',
           borderRadius: 6,
           cursor: 'pointer',
         }}
@@ -100,9 +117,9 @@ export function StandaloneConcedeButton() {
           style={{
             padding: '8px 14px',
             fontSize: 13,
-            backgroundColor: '#cc0000',
+            background: 'var(--gradient-danger)',
             color: 'white',
-            border: 'none',
+            border: '1px solid rgba(255, 255, 255, 0.15)',
             borderRadius: 6,
             cursor: 'pointer',
             fontWeight: 600,
@@ -115,9 +132,9 @@ export function StandaloneConcedeButton() {
           style={{
             padding: '8px 14px',
             fontSize: 13,
-            backgroundColor: '#222',
-            color: '#aaa',
-            border: '1px solid #333',
+            backgroundColor: 'var(--chrome-bg)',
+            color: 'var(--chrome-text)',
+            border: '1px solid var(--chrome-border)',
             borderRadius: 6,
             cursor: 'pointer',
           }}
@@ -135,9 +152,9 @@ export function StandaloneConcedeButton() {
         style={{
           padding: '8px 14px',
           fontSize: 13,
-          backgroundColor: 'transparent',
-          color: '#cc0000',
-          border: '1px solid #cc0000',
+          backgroundColor: 'var(--chrome-bg)',
+          color: 'var(--chrome-danger-text)',
+          border: '1px solid var(--chrome-danger-border)',
           borderRadius: 6,
           cursor: 'pointer',
         }}
@@ -281,9 +298,9 @@ export function FullscreenButton() {
         zIndex: 100,
         padding: responsive.isMobile ? '6px 10px' : '8px 14px',
         fontSize: responsive.fontSize.small,
-        backgroundColor: 'transparent',
-        color: '#888',
-        border: '1px solid #444',
+        backgroundColor: 'var(--chrome-bg)',
+        color: 'var(--chrome-text)',
+        border: '1px solid var(--chrome-border)',
         borderRadius: 6,
         cursor: 'pointer',
         display: 'flex',

@@ -11,6 +11,11 @@ interface StepStripProps {
   hasPriority: boolean
   priorityMode: PriorityMode
   activePlayerName?: string | undefined
+  /**
+   * Multiplayer: where the viewer sits in the turn order relative to the active player —
+   * "You're next" / "You in 2". Rendered after the status text; absent on your own turn.
+   */
+  turnQueueHint?: string | undefined
   /** Which side the active player sits on relative to the board: 'top' = opponent, 'bottom' = viewing player. */
   activeSide: 'top' | 'bottom'
   stopOverrides: { myTurnStops: Step[]; opponentTurnStops: Step[] }
@@ -64,14 +69,14 @@ type ColorSet = { border: string; glow: string; highlight: string; text: string 
 
 const modeColors: Record<PriorityMode, ColorSet> = {
   ownTurn: {
-    border: '#4fc3f7',
-    glow: '0 0 8px rgba(79, 195, 247, 0.4)',
+    border: 'rgba(79, 195, 247, 0.75)',
+    glow: '0 0 16px rgba(79, 195, 247, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
     highlight: '#4fc3f7',
     text: '#4fc3f7',
   },
   responding: {
-    border: '#ffc107',
-    glow: '0 0 8px rgba(255, 193, 7, 0.4)',
+    border: 'rgba(255, 193, 7, 0.8)',
+    glow: '0 0 16px rgba(255, 193, 7, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
     highlight: '#ffc107',
     text: '#ffc107',
   },
@@ -98,6 +103,7 @@ export function StepStrip({
   hasPriority,
   priorityMode,
   activePlayerName,
+  turnQueueHint,
   activeSide,
   stopOverrides,
   onToggleStop,
@@ -181,9 +187,10 @@ export function StepStrip({
     >
       {renderTriangle(activeSide === 'top', 'top')}
       <div
+        data-learn="phase-strip"
         style={{
-          backgroundColor: 'rgba(0, 0, 0, 0.85)',
-          borderRadius: isMobile ? 6 : 8,
+          background: 'linear-gradient(180deg, rgba(26, 30, 46, 0.92) 0%, rgba(10, 12, 20, 0.92) 100%)',
+          borderRadius: isMobile ? 6 : 10,
           padding: isMobile ? '5px 8px' : '6px 12px',
           display: 'flex',
           flexDirection: 'column',
@@ -213,6 +220,18 @@ export function StepStrip({
         }}>
           {statusText}
         </span>
+        {turnQueueHint && (
+          <span style={{
+            color: '#7d8494',
+            fontSize: isMobile ? 8 : 9,
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            letterSpacing: '0.5px',
+            whiteSpace: 'nowrap',
+          }}>
+            · {turnQueueHint}
+          </span>
+        )}
         <span style={{
           color: '#555',
           fontSize: isMobile ? 7 : 9,

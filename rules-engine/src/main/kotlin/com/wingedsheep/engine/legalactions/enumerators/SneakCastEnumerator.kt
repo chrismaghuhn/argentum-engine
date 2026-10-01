@@ -51,7 +51,7 @@ class SneakCastEnumerator : ActionEnumerator {
             val sneakKeywordName = sneakAbility.keyword?.displayName ?: "Sneak"
 
             // Honor cast restrictions exactly like the normal cast path (CR 601.3).
-            if (!context.castPermissionUtils.checkCastRestrictions(
+            if (!context.legality.castRestrictionsMet(
                     state, playerId, cardDef.script.castRestrictions
                 )
             ) continue
@@ -66,7 +66,7 @@ class SneakCastEnumerator : ActionEnumerator {
 
             val targetReqs = buildList {
                 addAll(cardDef.script.targetRequirements)
-                cardDef.script.auraTarget?.let { add(it) }
+                cardDef.script.castAuraTarget?.let { add(it) }
             }
             val targetReqInfos = if (targetReqs.isEmpty()) {
                 TargetInfoProjection(emptyList(), TargetDomainSupport.SUPPORTED)
@@ -110,7 +110,7 @@ class SneakCastEnumerator : ActionEnumerator {
                     minTargets = firstReq?.effectiveMinCount ?: (firstReq?.count ?: 1),
                     targetDescription = firstReq?.description,
                     targetRequirements = targetReqInfos.infos,
-                                     targetDomainSupport = targetReqInfos.support,
+                    targetDomainSupport = targetReqInfos.support,
                     manaCostString = sneakMana.toString(),
                     additionalCostInfo = bounceCostInfo,
                     autoTapPreview = autoTapPreview
@@ -130,7 +130,7 @@ class SneakCastEnumerator : ActionEnumerator {
                 if (context.cantCastSpell(cardId)) continue
 
                 val cardDef = context.cardRegistry.getCard(cardComponent.name) ?: continue
-                if (!context.castPermissionUtils.checkCastRestrictions(
+                if (!context.legality.castRestrictionsMet(
                         state, playerId, cardDef.script.castRestrictions
                     )
                 ) continue
@@ -142,7 +142,7 @@ class SneakCastEnumerator : ActionEnumerator {
 
                 val targetReqs = buildList {
                     addAll(cardDef.script.targetRequirements)
-                    cardDef.script.auraTarget?.let { add(it) }
+                    cardDef.script.castAuraTarget?.let { add(it) }
                 }
                 val targetReqInfos = if (targetReqs.isEmpty()) {
                     TargetInfoProjection(emptyList(), TargetDomainSupport.SUPPORTED)
@@ -180,7 +180,7 @@ class SneakCastEnumerator : ActionEnumerator {
                         minTargets = firstReq?.effectiveMinCount ?: (firstReq?.count ?: 1),
                         targetDescription = firstReq?.description,
                         targetRequirements = targetReqInfos.infos,
-                                     targetDomainSupport = targetReqInfos.support,
+                        targetDomainSupport = targetReqInfos.support,
                         manaCostString = sneakMana.toString(),
                         additionalCostInfo = bounceCostInfo,
                         autoTapPreview = autoTapPreview

@@ -145,7 +145,7 @@ export function OrderObjectsUI({ decision, responsive }: OrderObjectsUIProps) {
 
       <button
         type="button"
-        onClick={() => submitOrderedDecision(orderedObjects)}
+        onClick={() => submitOrderedDecision(decision.id, orderedObjects)}
         style={{
           padding: '10px 24px',
           backgroundColor: '#2563eb',

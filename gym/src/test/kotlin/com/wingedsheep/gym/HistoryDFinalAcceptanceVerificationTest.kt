@@ -130,6 +130,8 @@ private fun executeFreshRun(label: String): AcceptanceRun {
         startingPlayerIndex = 0,
         format = Format.Commander(),
         seed = 0L,
+        // The pinned trajectory predates upstream-sync-05's shuffled deck ids.
+        shuffledDeckIds = false,
     )
     val environment = GameEnvironment.create(
         cardRegistry = registry,

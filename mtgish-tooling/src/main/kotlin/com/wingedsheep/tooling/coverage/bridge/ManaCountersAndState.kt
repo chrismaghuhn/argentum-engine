@@ -3,6 +3,8 @@ package com.wingedsheep.tooling.coverage.bridge
 /** Mana, counters, control, and combat/untap-state effects. Mostly the "universal" verbs that Portal
  *  never exercised but every later set does — each line lifts recall on every set at once. */
 internal fun BridgeBuilder.manaCountersAndState() {
+    supported("SharesANameWithASpellCastThisTurn", "GameObjectFilter.sharesNameWithSpellCastThisTurn; cast-time names from all players")
+
     // AddMana's exact Effect depends on the produced symbol — colorless ({C}) serialises as
     // AddColorlessMana, "any color" as AddManaOfChoice, a fixed colour as AddMana — and the capability
     // scorer can't see the symbol arg, so name the whole mana family the action can lower to.
@@ -40,6 +42,7 @@ internal fun BridgeBuilder.manaCountersAndState() {
     // trample" cycle — but every corpus card with this tag also carries SetPT / activated-ability /
     // until-EOT riders the shape doesn't cover, so there is no calibrated card to render and the
     // emitter keeps declining.)
+    effect("SwitchPT", "SwitchPowerToughness", UNIVERSAL)
     effect("SetPT", "SetBaseStats", "set base power/toughness via an enters-with layer effect (Ghost Vacuum)")
     effect("AddCreatureType", "AddCreatureType", "add a creature subtype in addition to other types (Ghost Vacuum)")
     // The mtgish IR routes every put-counter action through a `PutCounters` envelope whose nested
@@ -128,7 +131,7 @@ internal fun BridgeBuilder.manaCountersAndState() {
     effect("UnpreparePermanent", "Unprepare", "a prepared permanent becomes unprepared (Biblioplex Tomekeeper)")
     // "Reveal target face-down permanent" (Hauntwoods Shrieker) — make the hidden card public (CR
     // 708.2). Informational only; the follow-up "if it's a creature card, you may turn it face up"
-    // composes a TargetIsCreatureCard gate + MayEffect(TurnFaceUp).
+    // composes a TargetIsCreatureCard gate + Effects.May(TurnFaceUp).
     effect("RevealFaceDownPermanent", "RevealFaceDownPermanent", "reveal a face-down permanent (Hauntwoods Shrieker)")
     // "turn it face up" — the free, no-cost flip of a revealed creature card (Hauntwoods Shrieker),
     // distinct from paying a morph/manifest turn-up cost. Maps to the TurnFaceUp effect.
@@ -155,6 +158,12 @@ internal fun BridgeBuilder.manaCountersAndState() {
 
     effect("EachPermanentDoesntUntapDuringControllersNextUntap", "SkipUntap",
         "Exhaustion: target player's creatures+lands don't untap next untap step")
+    // The *single-permanent* sibling is a different primitive, not a narrower SkipUntap: SkipUntap is
+    // player-scoped ("that player's creatures and lands"), so one creature not untapping is a granted
+    // AbilityFlag.DOESNT_UNTAP bounded to Duration.UntilAfterAffectedControllersNextUntap
+    // (Crippling Chill, and Entangling Trap's win rider).
+    effect("PermanentDoesntUntapDuringControllersNextUntap", "GrantKeyword",
+        "Crippling Chill: one permanent doesn't untap next untap step -> GrantKeyword(DOESNT_UNTAP, UntilAfterAffectedControllersNextUntap)")
     effect("SkipAllCombatPhasesTheirNextTurn", "SkipCombatPhases",
         "False Peace: target skips all combat phases of their next turn")
 
@@ -174,7 +183,7 @@ internal fun BridgeBuilder.manaCountersAndState() {
     // unmapped so they keep blocking until their scoping/rendering is verified.
     composed("EntersTapped", "enters tapped (EntersTapped replacement)")
     // "enters with a +1/+1 counter" or a keyword counter (e.g. a lifelink counter, Dust Animus) ->
-    // EntersWithCounters (default PlusOnePlusOne, or a Named CounterTypeFilter for keyword counters).
+    // EntersWithCounters (default +1/+1, or the keyword counter's CounterType).
     composed("EntersWithACounter", "enters with one counter — +1/+1 or a keyword counter (EntersWithCounters replacement)")
     // "enters with N +1/+1 counters" — a fixed count renders EntersWithCounters(count = N), a dynamic
     // count (Stag Beetle) renders EntersWithDynamicCounters.

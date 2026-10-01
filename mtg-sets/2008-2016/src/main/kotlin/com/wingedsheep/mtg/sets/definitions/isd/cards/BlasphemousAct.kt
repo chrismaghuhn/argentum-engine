@@ -8,7 +8,6 @@ import com.wingedsheep.sdk.scripting.CostModification
 import com.wingedsheep.sdk.scripting.CostReductionSource
 import com.wingedsheep.sdk.scripting.ModifySpellCost
 import com.wingedsheep.sdk.scripting.SpellCostTarget
-import com.wingedsheep.sdk.scripting.effects.DealDamageEffect
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
@@ -42,7 +41,7 @@ val BlasphemousAct = card("Blasphemous Act") {
     spell {
         effect = Effects.ForEachInGroup(
             filter = GroupFilter.AllCreatures,
-            effect = DealDamageEffect(13, EffectTarget.Self),
+            effect = Effects.DealDamage(13, EffectTarget.IterationEntity),
         )
     }
 

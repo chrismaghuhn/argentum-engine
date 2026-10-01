@@ -24,9 +24,12 @@ import com.wingedsheep.sdk.scripting.effects.Effect
  *   cards gathered earlier in the same resolution.
  */
 data class CostPaymentContext(
+    val objectReferences: com.wingedsheep.engine.handlers.ObjectReferenceEnvironment = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(),
     val onPaid: Effect? = null,
     val onDeclined: Effect? = null,
     val targets: List<ChosenTarget> = emptyList(),
     val namedTargets: Map<String, ChosenTarget> = emptyMap(),
-    val storedCollections: Map<String, List<EntityId>> = emptyMap()
+    val storedCollections: Map<String, List<EntityId>> = emptyMap(),
+    /** Preserve the resolving effect's perspective when its payer is a different player. */
+    val effectContext: com.wingedsheep.engine.handlers.EffectContext? = null,
 )

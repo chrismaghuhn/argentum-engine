@@ -2,9 +2,9 @@ package com.wingedsheep.mtg.sets.definitions.nph.cards
 
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
 /**
@@ -21,19 +21,15 @@ val BeastWithin = card("Beast Within") {
     oracleText = "Destroy target permanent. Its controller creates a 3/3 green Beast creature token."
 
     spell {
-        val permanent = target("target permanent", Targets.Permanent)
-        effect = Effects.Composite(
-            listOf(
-                Effects.Destroy(permanent),
-                Effects.CreateToken(
-                    power = 3,
-                    toughness = 3,
-                    colors = setOf(Color.GREEN),
-                    creatureTypes = setOf("Beast"),
-                    controller = EffectTarget.TargetController,
-                ),
-            ),
-        )
+        val permanent = target(TargetFilter.Permanent)
+        effect = Effects.Destroy(permanent) then
+            Effects.CreateToken(
+                power = 3,
+                toughness = 3,
+                colors = setOf(Color.GREEN),
+                creatureTypes = setOf("Beast"),
+                controller = EffectTarget.TargetController,
+            )
     }
 
     metadata {

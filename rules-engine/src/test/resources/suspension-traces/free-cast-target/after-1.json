@@ -1,0 +1,237 @@
+{
+    "entities": {
+        "player-1": {
+            "com.wingedsheep.engine.state.components.identity.PlayerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.PlayerComponent",
+                "name": "Player1"
+            },
+            "com.wingedsheep.engine.state.components.identity.LifeTotalComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.LifeTotalComponent",
+                "life": 20
+            },
+            "com.wingedsheep.engine.state.components.player.ManaPoolComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.ManaPoolComponent"
+            },
+            "com.wingedsheep.engine.state.components.player.LandDropsComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.LandDropsComponent"
+            }
+        },
+        "player-2": {
+            "com.wingedsheep.engine.state.components.identity.PlayerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.PlayerComponent",
+                "name": "Player2"
+            },
+            "com.wingedsheep.engine.state.components.identity.LifeTotalComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.LifeTotalComponent",
+                "life": 20
+            },
+            "com.wingedsheep.engine.state.components.player.ManaPoolComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.ManaPoolComponent"
+            },
+            "com.wingedsheep.engine.state.components.player.LandDropsComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.LandDropsComponent"
+            }
+        },
+        "card-1001": {
+            "com.wingedsheep.engine.state.components.identity.CardComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.CardComponent",
+                "cardDefinitionId": "Naturalize",
+                "name": "Naturalize",
+                "manaCost": "{1}{G}",
+                "typeLine": "Instant",
+                "oracleText": "Destroy target artifact or enchantment.",
+                "colors": [
+                    "GREEN"
+                ],
+                "ownerId": "player-1",
+                "spellEffect": {
+                    "type": "MoveToZone",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    },
+                    "destination": "Graveyard",
+                    "byDestruction": true
+                },
+                "imageUri": "https://cards.scryfall.io/normal/front/c/0/c0acc41f-b55b-47cb-8803-d39d72788799.jpg?1562940493"
+            },
+            "com.wingedsheep.engine.state.components.identity.OwnerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.OwnerComponent",
+                "playerId": "player-1"
+            },
+            "com.wingedsheep.engine.state.components.identity.ControllerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.ControllerComponent",
+                "playerId": "player-1"
+            },
+            "com.wingedsheep.engine.state.components.stack.SpellOnStackComponent": {
+                "type": "com.wingedsheep.engine.state.components.stack.SpellOnStackComponent",
+                "casterId": "player-1",
+                "castFromZone": "Hand"
+            },
+            "com.wingedsheep.engine.state.components.stack.TargetsComponent": {
+                "type": "com.wingedsheep.engine.state.components.stack.TargetsComponent",
+                "targets": [
+                    {
+                        "type": "Permanent",
+                        "entityId": "card-1002"
+                    }
+                ],
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": {
+                                "cardPredicates": [
+                                    {
+                                        "type": "Or",
+                                        "predicates": [
+                                            {
+                                                "type": "IsArtifact"
+                                            },
+                                            {
+                                                "type": "IsEnchantment"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        "id": "t0"
+                    }
+                ],
+                "targetEntryStamps": {
+                    "card-1002": 0
+                }
+            }
+        },
+        "card-1002": {
+            "com.wingedsheep.engine.state.components.identity.CardComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.CardComponent",
+                "cardDefinitionId": "Sol Ring",
+                "name": "Sol Ring",
+                "manaCost": "{1}",
+                "typeLine": "Artifact",
+                "oracleText": "{T}: Add {C}{C}.",
+                "ownerId": "player-2",
+                "imageUri": "https://cards.scryfall.io/normal/front/c/4/c4300d24-1cae-4dd5-be7e-38cc677cf5bd.jpg?1559591399"
+            },
+            "com.wingedsheep.engine.state.components.identity.OwnerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.OwnerComponent",
+                "playerId": "player-2"
+            },
+            "com.wingedsheep.engine.state.components.identity.ControllerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.ControllerComponent",
+                "playerId": "player-2"
+            },
+            "com.wingedsheep.engine.state.components.battlefield.TargetedByControllerThisTurnComponent": {
+                "type": "com.wingedsheep.engine.state.components.battlefield.TargetedByControllerThisTurnComponent",
+                "controllerIds": [
+                    "player-1"
+                ]
+            }
+        }
+    },
+    "zones": [
+        {
+            "ownerId": "player-1",
+            "zoneType": "Hand"
+        },
+        [],
+        {
+            "ownerId": "player-1",
+            "zoneType": "Library"
+        },
+        [],
+        {
+            "ownerId": "player-1",
+            "zoneType": "Graveyard"
+        },
+        [],
+        {
+            "ownerId": "player-1",
+            "zoneType": "Battlefield"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Hand"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Library"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Graveyard"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Battlefield"
+        },
+        [
+            "card-1002"
+        ]
+    ],
+    "turnNumber": 1,
+    "activePlayerId": "player-1",
+    "phase": "PRECOMBAT_MAIN",
+    "step": "PRECOMBAT_MAIN",
+    "priorityPlayerId": "player-1",
+    "stack": [
+        "card-1001"
+    ],
+    "objectIdentities": {
+        "card-1001": {
+            "generation": 3,
+            "logicalZone": {
+                "ownerId": "card-1001",
+                "zoneType": "Stack"
+            }
+        },
+        "card-1002": {
+            "generation": 2,
+            "logicalZone": {
+                "ownerId": "player-2",
+                "zoneType": "Battlefield"
+            }
+        }
+    },
+    "timestamp": 1,
+    "turnOrder": [
+        "player-1",
+        "player-2"
+    ],
+    "spellsCastThisTurn": 1,
+    "playerSpellsCastThisTurn": {
+        "player-1": 1
+    },
+    "spellsCastThisTurnByPlayer": {
+        "player-1": [
+            {
+                "typeLine": "Instant",
+                "manaValue": 2,
+                "colors": [
+                    "GREEN"
+                ],
+                "isFaceDown": false,
+                "sourceEntityId": "card-1001",
+                "castFromZone": "Hand",
+                "name": "Naturalize"
+            }
+        ]
+    },
+    "playersWhoCommittedCrimeThisTurn": [
+        "player-1"
+    ],
+    "lastCastSpellColors": [
+        "GREEN"
+    ],
+    "rng": {
+        "state": 1704
+    },
+    "nextEntityId": 1,
+    "nextRoutingId": 1
+}

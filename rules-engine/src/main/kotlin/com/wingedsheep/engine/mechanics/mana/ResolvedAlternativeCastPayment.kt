@@ -22,6 +22,9 @@ fun isResolvedFixedAlternativeCastPayment(
         action.xValue != null ||
         action.castFaceDown ||
         action.declaredCostSlot != null ||
+        action.declaredCostTimes != 1 ||
+        action.additionalCostChoices.isNotEmpty() ||
+        action.additionalManaForCounters != 0 ||
         action.wasWaterbendPaid ||
         action.giftRecipient != null ||
         action.splicedCardIds.isNotEmpty() ||

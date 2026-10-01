@@ -13,6 +13,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Golgari Rot Farm (RAV #278) — enters tapped; when it enters, return a land you control;
@@ -37,7 +38,7 @@ class GolgariRotFarmScenarioTest : FunSpec({
         val farmCard = driver.putCardInHand(player, "Golgari Rot Farm")
 
         val play = driver.playLand(player, farmCard)
-        withClue("Playing Rot Farm failed: ${play.error}") { (play.isSuccess || play.isPaused) shouldBe true }
+        withClue("Playing Rot Farm failed: ${play.error}") { ((play.outcome is Outcome.Done) || (play.outcome is Outcome.Paused)) shouldBe true }
         val farm = driver.findPermanent(player, "Golgari Rot Farm")
         farm shouldNotBe null
         driver.isTapped(farm!!) shouldBe true
@@ -45,7 +46,7 @@ class GolgariRotFarmScenarioTest : FunSpec({
         if (driver.pendingDecision == null) driver.bothPass()
         val decision = driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
         decision.legalTargets.getValue(0) shouldContain forest
-        driver.submitTargetSelection(player, listOf(forest)).isSuccess shouldBe true
+        driver.submitTargetSelection(player, listOf(forest)).outcome shouldBe Outcome.Done
         while (driver.stackSize > 0) driver.bothPass()
 
         driver.findPermanent(player, "Forest") shouldBe null
@@ -59,11 +60,11 @@ class GolgariRotFarmScenarioTest : FunSpec({
         val farmCard = driver.putCardInHand(player, "Golgari Rot Farm")
 
         val play = driver.playLand(player, farmCard)
-        withClue("Playing Rot Farm failed: ${play.error}") { (play.isSuccess || play.isPaused) shouldBe true }
+        withClue("Playing Rot Farm failed: ${play.error}") { ((play.outcome is Outcome.Done) || (play.outcome is Outcome.Paused)) shouldBe true }
         if (driver.pendingDecision == null) driver.bothPass()
         val decision = driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
         decision.legalTargets.getValue(0) shouldContain farmCard
-        driver.submitTargetSelection(player, listOf(farmCard)).isSuccess shouldBe true
+        driver.submitTargetSelection(player, listOf(farmCard)).outcome shouldBe Outcome.Done
         while (driver.stackSize > 0) driver.bothPass()
 
         driver.findPermanent(player, "Golgari Rot Farm") shouldBe null
@@ -78,7 +79,7 @@ class GolgariRotFarmScenarioTest : FunSpec({
 
         driver.submit(
             ActivateAbility(playerId = player, sourceId = farm, abilityId = manaAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(player)?.get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()!!
         pool.black shouldBe 1

@@ -2,7 +2,6 @@ package com.wingedsheep.engine.handlers.continuations
 
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.DecisionHandler
-import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.drawing.EachPlayerDiscardsOrLoseLifeExecutor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -41,7 +40,7 @@ class DiscardAndDrawContinuationResumer(
         }
         val chosenX = response.number.coerceAtLeast(0)
         val result = cycleCardHandler.execute(state, continuation.action.copy(xValue = chosenX))
-        return if (result.isPaused || result.error != null) result
+        return if (result.outcome is Outcome.Paused || result.error != null) result
         else checkForMore(result.newState, result.events).withDiagnosticsFrom(result.diagnostics)
     }
 
@@ -55,7 +54,7 @@ class DiscardAndDrawContinuationResumer(
             return ExecutionResult.error(state, "Expected card selection response for hand size discard")
         }
 
-        val result = ZoneTransitionService.discardCards(state, continuation.playerId, response.selectedCards)
+        val result = services.zones.discardCards(state, continuation.playerId, response.selectedCards)
         // The hand-size discard (CR 514.1) interrupted the cleanup step: performCleanupStep
         // early-returned to ask for this discard before performing the CR 514.2 turn-based
         // actions. Finish them now — otherwise marked damage (notably deathtouch damage that an
@@ -85,7 +84,7 @@ class DiscardAndDrawContinuationResumer(
             state.getEntity(cardId)?.get<CardComponent>()?.isCreature == true
         }
 
-        val discardResult = ZoneTransitionService.discardCards(state, currentPlayerId, selectedCards)
+        val discardResult = services.zones.discardCards(state, currentPlayerId, selectedCards)
         val newState = discardResult.state
         val discardEvents: List<GameEvent> = discardResult.events
 
@@ -117,7 +116,7 @@ class DiscardAndDrawContinuationResumer(
             if (nextHand.size == 1) {
                 val cardId = nextHand.first()
                 val isCreature = newState.getEntity(cardId)?.get<CardComponent>()?.isCreature == true
-                val autoResult = ZoneTransitionService.discardCard(newState, nextPlayer, cardId)
+                val autoResult = services.zones.discardCard(newState, nextPlayer, cardId)
                 val autoDiscardedCreature = newDiscardedCreature + (nextPlayer to isCreature)
 
                 return continueEachPlayerDiscardsOrLoseLife(
@@ -133,6 +132,12 @@ class DiscardAndDrawContinuationResumer(
 
             // Create decision for next player
             val decisionHandler = DecisionHandler()
+            val newContinuation = continuation.copy(
+                currentPlayerId = nextPlayer,
+                remainingPlayers = nextRemainingPlayers,
+                discardedCreature = newDiscardedCreature
+            )
+
             val decisionResult = decisionHandler.createCardSelectionDecision(
                 state = newState,
                 playerId = nextPlayer,
@@ -143,21 +148,12 @@ class DiscardAndDrawContinuationResumer(
                 minSelections = 1,
                 maxSelections = 1,
                 ordered = false,
-                phase = DecisionPhase.RESOLUTION
+                phase = DecisionPhase.RESOLUTION,
+                answer = newContinuation,
             )
 
-            val newContinuation = continuation.copy(
-                decisionId = decisionResult.pendingDecision!!.id,
-                currentPlayerId = nextPlayer,
-                remainingPlayers = nextRemainingPlayers,
-                discardedCreature = newDiscardedCreature
-            )
-
-            val stateWithContinuation = decisionResult.state.pushContinuation(newContinuation)
-
-            return ExecutionResult.paused(
-                stateWithContinuation,
-                decisionResult.pendingDecision,
+            return ExecutionResult.propagatePause(
+                decisionResult.state,
                 discardEvents + decisionResult.events
             )
         }
@@ -168,9 +164,9 @@ class DiscardAndDrawContinuationResumer(
         )
 
         return ExecutionResult(
-            state = lifeLossResult.state,
-            events = discardEvents + lifeLossResult.events,
-            error = lifeLossResult.error,
+            lifeLossResult.state,
+            discardEvents + lifeLossResult.events,
+            lifeLossResult.outcome,
             diagnostics = lifeLossResult.diagnostics,
         )
     }
@@ -187,9 +183,9 @@ class DiscardAndDrawContinuationResumer(
                 state, continuation.discardedCreature, continuation.lifeLoss
             )
             return ExecutionResult(
-                state = lifeLossResult.state,
-                events = priorEvents + lifeLossResult.events,
-                error = lifeLossResult.error,
+                lifeLossResult.state,
+                priorEvents + lifeLossResult.events,
+                lifeLossResult.outcome,
                 diagnostics = lifeLossResult.diagnostics,
             )
         }
@@ -218,7 +214,7 @@ class DiscardAndDrawContinuationResumer(
         if (nextHand.size == 1) {
             val cardId = nextHand.first()
             val isCreature = state.getEntity(cardId)?.get<CardComponent>()?.isCreature == true
-            val autoResult = ZoneTransitionService.discardCard(state, nextPlayer, cardId)
+            val autoResult = services.zones.discardCard(state, nextPlayer, cardId)
             val autoDiscardedCreature = continuation.discardedCreature + (nextPlayer to isCreature)
 
             return continueEachPlayerDiscardsOrLoseLife(
@@ -234,6 +230,11 @@ class DiscardAndDrawContinuationResumer(
 
         // Create decision for next player
         val decisionHandler = DecisionHandler()
+        val newContinuation = continuation.copy(
+            currentPlayerId = nextPlayer,
+            remainingPlayers = nextRemainingPlayers
+        )
+
         val decisionResult = decisionHandler.createCardSelectionDecision(
             state = state,
             playerId = nextPlayer,
@@ -244,20 +245,12 @@ class DiscardAndDrawContinuationResumer(
             minSelections = 1,
             maxSelections = 1,
             ordered = false,
-            phase = DecisionPhase.RESOLUTION
+            phase = DecisionPhase.RESOLUTION,
+            answer = newContinuation,
         )
 
-        val newContinuation = continuation.copy(
-            decisionId = decisionResult.pendingDecision!!.id,
-            currentPlayerId = nextPlayer,
-            remainingPlayers = nextRemainingPlayers
-        )
-
-        val stateWithContinuation = decisionResult.state.pushContinuation(newContinuation)
-
-        return ExecutionResult.paused(
-            stateWithContinuation,
-            decisionResult.pendingDecision,
+        return ExecutionResult.propagatePause(
+            decisionResult.state,
             priorEvents + decisionResult.events
         )
     }

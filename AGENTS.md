@@ -15,22 +15,46 @@ docs it points at; load those when the work needs them.
   revert, stash, or discard others' changes — that's likely another agent's in-flight work. Pause until
   the user confirms it's safe to continue. If the user confirms or explicitly asks for a PR despite the
   unrelated failure, opening the PR is allowed; disclose the failure and the verification that did pass
-  in the PR body.
+  in the PR body. **Exception: mtgish-only issues are non-blocking**, as specified below; continue without
+  asking for confirmation.
 - **Pull-request destination.** Every PR created by Codex, subagents, or repository automation for this
   project MUST target `chrismaghuhn/argentum-engine` (`https://github.com/chrismaghuhn/argentum-engine`).
   Before opening a PR, verify that `origin` is
   `https://github.com/chrismaghuhn/argentum-engine.git`; when using GitHub tooling, pass the target
   repository explicitly. Never target `wingedsheep/argentum-engine` or `Card-Forge/forge`, and never
   create a PR unless the user explicitly asks.
+- **Assay supersedes mtgish as the Oracle-to-SDK verification method.** mtgish differences, coverage
+  gaps, generated-draft mismatches, and mtgish-only tooling/test failures are accepted limitations and
+  must not stop implementation, verification of unaffected modules, commits, or PR creation. Report
+  them briefly in the verification summary and continue; do not ask for permission to proceed or take
+  on mtgish repairs unless the task explicitly requests them. This exception takes precedence over
+  skill instructions requiring mtgish checks, generator updates, or stopping on unrelated failures.
+  Use the applicable Assay gates and behavioral scenario tests instead. Assay divergences and actual
+  engine/card regressions remain actionable; an Assay decline is not a pass. If a mtgish failure prevents
+  a broader gate from completing, report that gate as incomplete and run the unaffected checks rather
+  than claiming it passed.
 - **Route to the matching skill, don't freelance:**
   - Implementing a card — or a batch of them — from a backlog file or by name → **`add-card`** (Scryfall
     lookup, oracle errata, canonical-printing placement, scenario test).
   - Any engine/SDK/server/client capability that isn't a single card — effect, trigger, condition,
     keyword, decision flow → **`add-feature`** (composition-first design, cross-layer tracing, perf + UX).
+  - Starting a set that has no `backlog/sets/` entry yet → **`create-backlog-for-set`** (Scryfall dump,
+    `cards.md` checklist, `definitions/<code>/` scaffold, `mechanics.md`). It runs *before* `set-loop`.
+  - Implementing every *Assay-ready* card for a set — the ⚡ badge on the Set Completion view, i.e.
+    the cards Argentum Assay reads whole that the set hasn't authored → **`assay-ready-sweep`**
+    (`just assay-ready <CODE>` for the four-way split; canonical placement + reprint rows are half
+    the job, and the half that gets forgotten).
   - Running the build/test gates and reading the results → **`verify`**.
   - Working autonomously through a whole set, one PR at a time, until it's done → **`set-loop`** (launches
     the harness's own loop — Claude Code `/loop`, Codex `/goal`; every PR it opens is titled
     `[agent-loop: <model-id>]`).
+  - Widening Assay's grammar autonomously, one band per PR, over Oracle text the engine already
+    expresses (declines on hand-written cards; never new SDK vocabulary) → **`just assay-loop [model]
+    [focus]`** (fresh headless session per step, like `just set-loop`), or the **`assay-loop`** skill for an
+    in-session `/loop`.
+  - Proving a set is *actually* finished once its backlog reads N/N, and archiving it → **`verify-set`**
+    (Scryfall field verification of every compiled card, reprint and basic-land coverage, self-play pass).
+    A green backlog is a claim; that skill is the proof.
 - **Verify MTG rule numbers before citing them** in code, comments, commit messages, PR bodies, or chat.
   613.8 vs 613.7 and 704.5 vs 704.6 are easy to swap. Check the official Comprehensive Rules
   <https://magic.wizards.com/en/rules> — the plain-text `.txt` is too large to fetch into context, so
@@ -52,6 +76,7 @@ docs it points at; load those when the work needs them.
 | Module | Purpose | Deps |
 |--------|---------|------|
 | `mtg-sdk` | DSLs, data models, primitives — pure data, no logic | — |
+| `mtg-sdk-tooling` | Tooling over SDK data: card-JSON load/export + compact form, filter query language, `CardValidator`, `CardLinter` | sdk |
 | `mtg-sets` | Aggregator — re-exports the whole card corpus; catalog, Scryfall sync, corpus-wide tests | sdk, sets/* |
 | `mtg-sets/core` | `CardDiscovery`, token art, the setless `custom/` cards | sdk |
 | `mtg-sets/<era>` | Card definitions, one module per fixed release-year range, chained oldest→newest | sdk, sets/core |
@@ -105,7 +130,7 @@ These are the ones that have actually caused bugs here.
 - **Events, not silent mutations** — every state change emits a `GameEvent` so triggers and animations
   can react.
 - **Server is authoritative** — never compute legal actions in the client; the server sends them.
-- **Last-known information** — dies/leaves triggers read `triggerLastKnownPower`,
+- **Last-known information** — dies/leaves triggers read `triggerContext.lastKnownPower`,
   `lastKnownCardDefinitionId`, and `lastKnownCounters` off the `ZoneChangeEvent`; the entity is already
   gone when the trigger resolves.
 
@@ -139,7 +164,11 @@ capabilities — for backlog triage ("which feature unlocks the most cards?") an
 cards. `just coverage-dashboard` is the TUI over it; recipe docs live in the `justfile` comments and
 [`mtgish-tooling/README.md`](mtgish-tooling/README.md).
 
-It is **predictive and non-authoritative — never a card loader.** Two rules follow from that:
+It is **predictive and non-authoritative — never a card loader.**
+
+Assay is the current verification method. mtgish is optional legacy triage/drafting tooling, and its
+issues do not block other work (see Hard rules). Updating its emitter for new SDK capabilities is
+optional unless explicitly requested. The following rules apply when working on mtgish itself:
 
 - Generated `.kt` are drafts in a staging dir. `coverage-verify` proves *compile + capabilities*, not
   behaviour — a human-reviewed `cardDef` with a passing scenario test is the only ground truth.

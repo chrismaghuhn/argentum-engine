@@ -6,10 +6,10 @@ import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.Duration
-import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.GameObjectFilter
 
 /**
  * The Vision — Marvel Super Heroes #255
@@ -22,8 +22,8 @@ import com.wingedsheep.sdk.scripting.targets.EffectTarget
  * • Technopathy — Draw a card.
  *
  * Implementation notes:
- * - The trigger is [Triggers.youCastSpell] filtered to [GameObjectFilter.Noncreature]; it fires
- *   on cast, so the modal choice is made (and resolves) before the spell itself resolves.
+ * - The trigger is the shared `Triggers.you.casts(GameObjectFilter.Noncreature)` constant; it fires on cast, so the
+ *   modal choice is made (and resolves) before the spell itself resolves.
  * - "Choose one that hasn't been chosen this turn" is
  *   [ModalEffect.chooseOneNotYetChosenThisTurn], the Breeches, Eager Pillager primitive: the
  *   engine remembers which modes *this* Vision has chosen during the current turn (per-source,
@@ -49,7 +49,7 @@ val TheVision = card("The Vision") {
     keywords(Keyword.FLYING, Keyword.VIGILANCE)
 
     triggeredAbility {
-        trigger = Triggers.youCastSpell(GameObjectFilter.Noncreature)
+        trigger = Triggers.you.casts(GameObjectFilter.Noncreature)
         effect = ModalEffect.chooseOneNotYetChosenThisTurn(
             // • Solar Beam — The Vision gains double strike until end of turn.
             Mode.noTarget(

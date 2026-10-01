@@ -6,9 +6,7 @@ import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.TriggerBinding
-import com.wingedsheep.sdk.scripting.events.DamageType
-import com.wingedsheep.sdk.scripting.events.RecipientFilter
+import com.wingedsheep.sdk.scripting.events.Recipient
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
@@ -38,23 +36,14 @@ val HoodedBlightfang = card("Hooded Blightfang") {
     keywords(Keyword.DEATHTOUCH)
 
     triggeredAbility {
-        trigger = Triggers.attacks(
-            filter = GameObjectFilter.Creature.youControl().withKeyword(Keyword.DEATHTOUCH),
-            binding = TriggerBinding.ANY,
-        )
-        effect = Effects.Composite(
-            Effects.LoseLife(1, EffectTarget.PlayerRef(Player.EachOpponent)),
-            Effects.GainLife(1),
-        )
+        trigger = Triggers.a(GameObjectFilter.Creature.youControl().withKeyword(Keyword.DEATHTOUCH)).attacks()
+        effect = Effects.LoseLife(1, EffectTarget.PlayerRef(Player.EachOpponent)) then
+            Effects.GainLife(1)
     }
 
     triggeredAbility {
-        trigger = Triggers.dealsDamage(
-            damageType = DamageType.Any,
-            recipient = RecipientFilter.Matching(GameObjectFilter.Planeswalker),
-            sourceFilter = GameObjectFilter.Creature.youControl().withKeyword(Keyword.DEATHTOUCH),
-            binding = TriggerBinding.ANY,
-        )
+        trigger = Triggers.a(GameObjectFilter.Creature.youControl().withKeyword(Keyword.DEATHTOUCH))
+            .dealsDamage(to = Recipient.Object(GameObjectFilter.Planeswalker))
         effect = Effects.Destroy(EffectTarget.DamageRecipient)
     }
 

@@ -62,7 +62,8 @@ internal object LivePregameDecisionSource {
         }
 
         val result = observationBuilder.build(
-            state = state.copy(pendingDecision = decision),
+            state = state,
+            pendingDecisionOverride = decision,
             perspectivePlayerId = perspectivePlayerId,
             legalActions = emptyList(),
             truncated = false,

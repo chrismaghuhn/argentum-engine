@@ -57,15 +57,11 @@ object CombatRemovalHelper {
             for ((entityId, components) in newState.entities) {
                 val blockingComponent = components.get<BlockingComponent>() ?: continue
                 if (targetId in blockingComponent.blockedAttackerIds) {
+                    // A blocker stays a blocking creature after the attackers it blocked are
+                    // removed from combat (CR 509.1g); it just assigns no damage (CR 510.1d).
                     val updatedIds = blockingComponent.blockedAttackerIds - targetId
-                    newState = if (updatedIds.isEmpty()) {
-                        newState.updateEntity(entityId) { container ->
-                            container.without<BlockingComponent>().without<AttackerOrderComponent>()
-                        }
-                    } else {
-                        newState.updateEntity(entityId) { container ->
-                            container.with(BlockingComponent(updatedIds))
-                        }
+                    newState = newState.updateEntity(entityId) { container ->
+                        container.with(BlockingComponent(updatedIds))
                     }
                 }
             }

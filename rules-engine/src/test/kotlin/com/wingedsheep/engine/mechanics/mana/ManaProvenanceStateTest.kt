@@ -196,7 +196,7 @@ class ManaProvenanceStateTest : FunSpec({
             subtypes = setOf(Subtype.FOREST),
         )
 
-        val after = pool.emptyAtBoundary(convertToRed = false, retain = setOf(Color.GREEN))
+        val after = pool.emptyAtBoundary(convertTo = null, retain = setOf(Color.GREEN))
 
         after.green shouldBe 1
         after.manaBySourceAndColor shouldBe emptyMap()
@@ -210,7 +210,7 @@ class ManaProvenanceStateTest : FunSpec({
             color = PaymentManaColor.RED,
             sourceId = sourceId,
             subtypes = emptySet(),
-        ).emptyAtBoundary(convertToRed = false, retain = setOf(Color.GREEN))
+        ).emptyAtBoundary(convertTo = null, retain = setOf(Color.GREEN))
 
         after shouldBe ManaPoolComponent()
         after.manaByFloatingBucket shouldBe emptyMap()

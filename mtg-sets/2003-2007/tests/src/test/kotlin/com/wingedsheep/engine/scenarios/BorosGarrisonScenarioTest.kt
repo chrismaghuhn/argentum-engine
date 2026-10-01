@@ -13,6 +13,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Boros Garrison (RAV #275) — enters tapped; when it enters, return a land you control;
@@ -37,7 +38,7 @@ class BorosGarrisonScenarioTest : FunSpec({
         val garrisonCard = driver.putCardInHand(player, "Boros Garrison")
 
         val play = driver.playLand(player, garrisonCard)
-        withClue("Playing Boros Garrison failed: ${play.error}") { (play.isSuccess || play.isPaused) shouldBe true }
+        withClue("Playing Boros Garrison failed: ${play.error}") { ((play.outcome is Outcome.Done) || (play.outcome is Outcome.Paused)) shouldBe true }
         val garrison = driver.findPermanent(player, "Boros Garrison")
         garrison shouldNotBe null
         driver.isTapped(garrison!!) shouldBe true
@@ -45,7 +46,7 @@ class BorosGarrisonScenarioTest : FunSpec({
         if (driver.pendingDecision == null) driver.bothPass()
         val decision = driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
         decision.legalTargets.getValue(0) shouldContain forest
-        driver.submitTargetSelection(player, listOf(forest)).isSuccess shouldBe true
+        driver.submitTargetSelection(player, listOf(forest)).outcome shouldBe Outcome.Done
         while (driver.stackSize > 0) driver.bothPass()
 
         driver.findPermanent(player, "Forest") shouldBe null
@@ -59,11 +60,11 @@ class BorosGarrisonScenarioTest : FunSpec({
         val garrisonCard = driver.putCardInHand(player, "Boros Garrison")
 
         val play = driver.playLand(player, garrisonCard)
-        withClue("Playing Boros Garrison failed: ${play.error}") { (play.isSuccess || play.isPaused) shouldBe true }
+        withClue("Playing Boros Garrison failed: ${play.error}") { ((play.outcome is Outcome.Done) || (play.outcome is Outcome.Paused)) shouldBe true }
         if (driver.pendingDecision == null) driver.bothPass()
         val decision = driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
         decision.legalTargets.getValue(0) shouldContain garrisonCard
-        driver.submitTargetSelection(player, listOf(garrisonCard)).isSuccess shouldBe true
+        driver.submitTargetSelection(player, listOf(garrisonCard)).outcome shouldBe Outcome.Done
         while (driver.stackSize > 0) driver.bothPass()
 
         driver.findPermanent(player, "Boros Garrison") shouldBe null
@@ -78,7 +79,7 @@ class BorosGarrisonScenarioTest : FunSpec({
 
         driver.submit(
             ActivateAbility(playerId = player, sourceId = garrison, abilityId = manaAbilityId)
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(player)?.get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()!!
         pool.red shouldBe 1

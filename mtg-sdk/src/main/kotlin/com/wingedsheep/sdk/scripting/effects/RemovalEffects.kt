@@ -5,6 +5,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.targets.selfNounToken
 import com.wingedsheep.sdk.scripting.text.TextReplacer
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import kotlinx.serialization.SerialName
@@ -56,7 +57,7 @@ data class RemoveDamageShieldEffect(
  * Mark target as unable to regenerate.
  * "It can't be regenerated."
  *
- * Designed to be used BEFORE a destroy effect via .then() for cards like Smother.
+ * Designed to be used BEFORE a destroy effect via `then` for cards like Smother.
  * Places a floating effect that prevents regeneration shields from being used.
  */
 @SerialName("CantBeRegenerated")
@@ -71,7 +72,7 @@ data class CantBeRegeneratedEffect(
  * Mark target creature so that if it would die this turn, it goes to exile instead of graveyard.
  * "If it would die this turn, exile it instead."
  *
- * Designed to be composed with damage/destroy effects via .then() for cards like Carbonize.
+ * Designed to be composed with damage/destroy effects via `then` for cards like Carbonize.
  * Only applies to creatures — if the target is a player, this effect does nothing.
  */
 @SerialName("MarkExileOnDeath")
@@ -120,7 +121,11 @@ data class SacrificeEffect(
     override val description: String = buildString {
         append("sacrifice ")
         when {
-            any -> append("any number of ${filter.description}s")
+            any -> {
+                append("any number of ")
+                if (excludeSource) append("other ")
+                append("${filter.description}s")
+            }
             count == 1 -> {
                 if (excludeSource) append("another ") else append("a ")
                 append(filter.description)
@@ -171,8 +176,12 @@ data object SacrificeSelfEffect : Effect {
 data class SacrificeTargetEffect(
     val target: EffectTarget = EffectTarget.ContextTarget(0),
     val sacrificedByItsController: Boolean = false
-) : Effect {
-    override val description: String = "sacrifice ${target.description}"
+) : Effect, SelfReferentialDescription {
+    // `EffectTarget.Self.description` is the legacy "this creature", which is wrong the moment a
+    // land or artifact sacrifices itself (Safe Haven's upkeep trigger read "you may sacrifice this
+    // creature"). Route Self through the self-noun token so the render layer can say "this land".
+    override val descriptionTemplate: String = "sacrifice ${target.selfNounToken}"
+    override val description: String get() = defaultResolvedDescription
 }
 
 /**
@@ -426,14 +435,29 @@ data class ExileAndGrantOwnerPlayPermissionEffect(
  * which return from the graveyard when a creature with high mana value enters the battlefield.
  *
  * The [target] specifies what the aura attaches to (typically [EffectTarget.TriggeringEntity]).
+ * It may resolve to a **player** as well as a permanent — "attached to target opponent" for a
+ * Curse (Radiant Grace). The two cases differ in who ends up controlling the returned Aura: a
+ * permanent host hands control to *that permanent's* controller (the Dragon cycle's "attached to
+ * that creature" reads as an ordinary Aura following its host), while a player host leaves it
+ * under the **ability's** controller, which is the only reading "under your control attached to
+ * target opponent" allows.
+ *
+ * @property transformed Return the card **transformed** — back face up (CR 712.8). A card in a
+ *   non-battlefield zone is always front-face-up, so "transformed" can only mean the back face.
+ *   Per the standing ruling a single-faced card told to enter transformed doesn't move at all, so
+ *   this is a no-op rather than an error on a card with no back face.
  */
 @SerialName("ReturnSelfToBattlefieldAttached")
 @Serializable
 data class ReturnSelfToBattlefieldAttachedEffect(
-    val target: EffectTarget = EffectTarget.TriggeringEntity
+    val target: EffectTarget = EffectTarget.TriggeringEntity,
+    val transformed: Boolean = false,
 ) : Effect {
-    override val description: String =
-        "Return this card from your graveyard to the battlefield attached to ${target.description}"
+    override val description: String = buildString {
+        append("Return this card from your graveyard to the battlefield")
+        if (transformed) append(" transformed")
+        append(" attached to ${target.description}")
+    }
 }
 
 /**
@@ -540,6 +564,14 @@ enum class LibraryChoicePosition {
             SecondFromTop -> "Second from top of library"
             Bottom -> "Bottom of library"
         }
+
+    /** Lower-case phrase for rules text — "the top of its owner's library". */
+    val phrase: String
+        get() = when (this) {
+            Top -> "top"
+            SecondFromTop -> "second from the top"
+            Bottom -> "bottom"
+        }
 }
 
 /**
@@ -551,7 +583,8 @@ enum class LibraryChoicePosition {
  * or creature") — the executor handles each case.
  *
  * Common configurations:
- * - `[Top, Bottom]` (default) — Hinder/Spell Crumple style
+ * - `[Top, Bottom]` (default) — Dire Downdraft / Swat Away style (for *countering* a spell
+ *   into its library — Hinder — use `CounterDestination.Library` instead)
  * - `[SecondFromTop, Bottom]` — Temporal Cleansing style
  *
  * @property target The entity to put into its owner's library
@@ -620,4 +653,22 @@ data class MoveTrackedBattlefieldObjectEffect(
 ) : Effect {
     override val description: String =
         "Move ${target.description} to its owner's ${destination.displayName}"
+}
+
+/**
+ * Move an object out of its zone until this source leaves the battlefield. The return is a
+ * one-shot effect, not a triggered ability: it happens immediately, even during resolution.
+ * Both the source's battlefield visit and the moved object's destination visit are remembered.
+ */
+@SerialName("MoveUntilSourceLeaves")
+@Serializable
+data class MoveUntilSourceLeavesEffect(
+    val target: EffectTarget,
+    val destination: Zone
+) : Effect {
+    init {
+        require(destination != Zone.BATTLEFIELD && destination != Zone.STACK)
+    }
+    override val description: String =
+        "Move ${target.description} to ${destination.name.lowercase()} until this permanent leaves the battlefield"
 }

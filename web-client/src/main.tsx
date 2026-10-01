@@ -2,6 +2,7 @@ import { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import './styles/variables.css'
+import './styles/base.css'
 import './styles/responsive.css'
 import 'mana-font/css/mana.min.css'
 import 'keyrune/css/keyrune.min.css'
@@ -50,6 +51,9 @@ const FriendsPage = lazy(() =>
 const StatsPage = lazy(() =>
   import('./pages/StatsPage').then(({ StatsPage }) => ({ default: StatsPage }))
 )
+const LearnPage = lazy(() =>
+  import('./pages/LearnPage').then(({ LearnPage }) => ({ default: LearnPage }))
+)
 const HelpPage = lazy(() =>
   import('./pages/HelpPage').then(({ HelpPage }) => ({ default: HelpPage }))
 )
@@ -84,6 +88,8 @@ createRoot(rootElement).render(
           <Route path="/friends" element={<FriendsPage />} />
           <Route path="/help" element={<HelpPage />} />
           <Route path="/help/:section" element={<HelpPage />} />
+          <Route path="/learn" element={<LearnPage />} />
+          <Route path="/learn/:missionId" element={<LearnPage />} />
           <Route path="/llm-tournament" element={<LlmTournamentPage />} />
           <Route path="/llm-tournament/:id" element={<LlmTournamentPage />} />
           <Route path="/ai-sandbox" element={<AiSandboxPage />} />

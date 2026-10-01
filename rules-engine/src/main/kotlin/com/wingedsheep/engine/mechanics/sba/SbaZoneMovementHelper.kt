@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -37,12 +38,24 @@ object SbaZoneMovementHelper {
      * Move a creature to graveyard via SBA (zero toughness, lethal damage).
      * Emits both CreatureDestroyedEvent and ZoneChangeEvent.
      * Respects ExileOnDeath, zone change redirects, and ExileControllerGraveyardOnDeath.
+     *
+     * @param passStartState The state as it stood when the SBA check pass began, before any
+     *        creature in this batch was moved. CR 704.3 performs all applicable state-based
+     *        actions simultaneously as a single event, so a permanent hosting a "would die →
+     *        exile it instead" replacement (Head of the Hunt, The Darkness Crystal, Valgavoth)
+     *        still shields the creatures dying alongside it — it is on the battlefield right up
+     *        until the event happens (CR 614.1). Callers move creatures one at a time through a
+     *        progressively mutated state, so the replacement lookup must read this snapshot
+     *        instead; otherwise battlefield iteration order decides whether the shield applies.
+     *        Defaults to [state] for callers outside a batch.
      */
     fun putCreatureInGraveyard(
+        zones: ZoneTransitionService,
         state: GameState,
         entityId: EntityId,
         cardComponent: CardComponent,
-        reason: String
+        reason: String,
+        passStartState: GameState = state
     ): ExecutionResult {
         val container = state.getEntity(entityId) ?: return ExecutionResult.success(state)
         val controllerId = container.get<ControllerComponent>()?.playerId
@@ -56,9 +69,12 @@ object SbaZoneMovementHelper {
         }
         val exileInstead = exileOnDeathIndex != -1
 
-        // Check for RedirectZoneChange replacement effects
+        // Check for RedirectZoneChange replacement effects. Battlefield-sourced shields are read
+        // off the pass-start snapshot so a shield dying in the same SBA batch still applies.
         val redirectResult = ZoneMovementUtils.checkZoneChangeRedirect(
-            state, entityId, Zone.BATTLEFIELD, Zone.GRAVEYARD
+            state, entityId, Zone.BATTLEFIELD, Zone.GRAVEYARD,
+            battlefieldSourceState = passStartState,
+            predicateEvaluator = zones.predicateEvaluator
         )
         val destinationZone = if (exileInstead) Zone.EXILE else redirectResult.destinationZone
 
@@ -100,11 +116,16 @@ object SbaZoneMovementHelper {
             } else {
                 com.wingedsheep.engine.handlers.effects.LibraryPlacement.Top
             }
-        val transitionResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val transitionResult = zones.moveToZone(
             newState, entityId, destinationZone,
             com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(
                 skipZoneChangeRedirect = true,
-                libraryPlacement = deathLibraryPlacement
+                libraryPlacement = deathLibraryPlacement,
+                // The whole SBA pass is one simultaneous event (CR 704.3), so its dies triggers
+                // look back to the pass start, not to the partly-moved state (CR 603.10a).
+                conditionalSelfGrantIds = com.wingedsheep.engine.event.ConditionalSelfGrants.activeIds(
+                    passStartState, entityId, zones.cardRegistry, zones.predicateEvaluator.conditions
+                )
             )
         )
         newState = transitionResult.state
@@ -124,6 +145,7 @@ object SbaZoneMovementHelper {
                 val cardOwnerId = cardComp?.ownerId ?: controllerId
                 val ownerExileZone = ZoneKey(cardOwnerId, Zone.EXILE)
                 newState = newState.removeFromZone(graveyardZone, cardId)
+                val oldObjectRef = newState.objectRef(cardId)
                 newState = newState.addToZone(ownerExileZone, cardId)
                 // Same stamp ZoneTransitionService writes on an effect-driven exile — these cards
                 // came from a graveyard, so a later CR 610.3 "return it to its previous zone"
@@ -140,7 +162,9 @@ object SbaZoneMovementHelper {
                         cardComp?.name ?: "Unknown",
                         Zone.GRAVEYARD,
                         Zone.EXILE,
-                        cardOwnerId
+                        cardOwnerId,
+                        oldObject = oldObjectRef,
+                        newObject = newState.objectRef(cardId)
                     )
                 )
             }
@@ -148,7 +172,17 @@ object SbaZoneMovementHelper {
 
         // Link the exiled card to a RedirectZoneChange(linkToSource) source (Valgavoth) — the
         // move above ran with skipZoneChangeRedirect=true, so the link is applied here.
-        if (!exileInstead && destinationZone == Zone.EXILE && redirectResult.linkSourceId != null) {
+        //
+        // Only while the source is still on the battlefield *after* this move. Since the
+        // replacement is now looked up in the pass-start snapshot, the source may itself have died
+        // in this same SBA batch — the shield still applies (CR 704.3), but a permanent that left
+        // has had its LinkedExileComponent stripped, and writing one back would leave a stale exile
+        // list on a card in the graveyard that nothing cleans up (removeFromLinkedExiles only walks
+        // the battlefield). Returning to the battlefield makes it a new object with no memory of
+        // what the old one exiled (CR 400.7), so the link must not survive the source's death.
+        if (!exileInstead && destinationZone == Zone.EXILE && redirectResult.linkSourceId != null &&
+            redirectResult.linkSourceId in newState.getBattlefield()
+        ) {
             newState = ZoneMovementUtils.linkExiledToSource(newState, entityId, redirectResult.linkSourceId)
         }
 
@@ -156,7 +190,9 @@ object SbaZoneMovementHelper {
         // counters, The Darkness Crystal's "you gain 2 life").
         if (redirectResult.additionalEffect != null) {
             val (updatedState, extraEvents) = ZoneMovementUtils.applyReplacementAdditionalEffect(
-                newState, redirectResult.additionalEffect, redirectResult.effectControllerId, entityId
+                zones,
+                newState, redirectResult.additionalEffect, redirectResult.effectControllerId, entityId,
+                sourceId = redirectResult.effectSourceId
             )
             newState = updatedState
             events.addAll(extraEvents)
@@ -171,13 +207,14 @@ object SbaZoneMovementHelper {
      * Respects zone change redirects.
      */
     fun putPermanentInGraveyard(
+        zones: ZoneTransitionService,
         state: GameState,
         entityId: EntityId,
         cardComponent: CardComponent,
         lastKnownAttachedTo: EntityId? = null
     ): ExecutionResult {
         // Delegate zone movement to ZoneTransitionService for full cleanup
-        val transitionResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+        val transitionResult = zones.moveToZone(
             state, entityId, Zone.GRAVEYARD,
             com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(lastKnownAttachedTo = lastKnownAttachedTo)
         )

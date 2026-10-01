@@ -1,12 +1,12 @@
 package com.wingedsheep.engine.handlers.effects.library
 
 import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.ExileFromTopRepeatingContinuation
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
-import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.DamageUtils
@@ -23,6 +23,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.ExileFromTopRepeatingEffect
 import kotlin.reflect.KClass
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Executor for [ExileFromTopRepeatingEffect].
@@ -38,11 +39,10 @@ import kotlin.reflect.KClass
  * - Empty library during iteration: process stops, damage is dealt for cards already put in hand
  * - No nonland card found: process stops (no card put in hand for that iteration)
  */
-class ExileFromTopRepeatingExecutor : EffectExecutor<ExileFromTopRepeatingEffect> {
+class ExileFromTopRepeatingExecutor(private val zones: ZoneTransitionService) : EffectExecutor<ExileFromTopRepeatingEffect> {
+    private val predicateEvaluator = zones.predicateEvaluator
 
     override val effectType: KClass<ExileFromTopRepeatingEffect> = ExileFromTopRepeatingEffect::class
-
-    private val predicateEvaluator = PredicateEvaluator()
 
     override fun execute(
         state: GameState,
@@ -81,6 +81,7 @@ class ExileFromTopRepeatingExecutor : EffectExecutor<ExileFromTopRepeatingEffect
         val predicateContext = PredicateContext.fromEffectContext(context)
         var currentState = state
         val allEvents = mutableListOf<EngineGameEvent>()
+        val diagnostics = mutableListOf<DiagnosticSignal>()
         var cardsToHand = initialCardsToHand
 
         // Repeat loop: exile until match, put in hand, repeat if MV >= threshold
@@ -133,8 +134,8 @@ class ExileFromTopRepeatingExecutor : EffectExecutor<ExileFromTopRepeatingEffect
             }
 
             for (cardId in cardsToExile) {
-                val exileResult = ZoneMovementUtils.moveCardToZone(currentState, cardId, Zone.EXILE)
-                if (exileResult.isSuccess) {
+                val exileResult = ZoneMovementUtils.moveCardToZone(zones, currentState, cardId, Zone.EXILE)
+                if (exileResult.outcome is Outcome.Done) {
                     currentState = exileResult.state
                     allEvents.addAll(exileResult.events)
                 }
@@ -147,14 +148,15 @@ class ExileFromTopRepeatingExecutor : EffectExecutor<ExileFromTopRepeatingEffect
                     ?.get<CardComponent>()?.manaValue ?: 0
                 val repeatAfterMatch = matchManaValue >= effect.repeatIfManaValueAtLeast
                 val outerContinuation = ExileFromTopRepeatingContinuation(
-                    decisionId = "pending",
                     effect = effect,
                     context = context,
                     cardsToHand = cardsToHand,
                     matchCardId = matchCard,
                     repeatAfterMatch = repeatAfterMatch,
                 )
-                val handResult = ZoneTransitionService.moveToZoneWithReplacements(
+                // The hand move is a CR 903.9b replacement boundary that may pause; queue the rest
+                // of the loop underneath that question before the move runs.
+                val handResult = zones.moveToZoneWithReplacements(
                     state = currentState.pushContinuation(outerContinuation),
                     entityId = matchCard,
                     destinationZone = Zone.HAND,
@@ -162,19 +164,21 @@ class ExileFromTopRepeatingExecutor : EffectExecutor<ExileFromTopRepeatingEffect
                     context = context,
                     completion = PendingGameEvent.PlainZoneChangeCompletion,
                 )
-                if (handResult.isPaused) {
-                    return EffectResult.paused(
+                if (handResult.outcome is Outcome.Paused) {
+                    return EffectResult.propagatePause(
                         handResult.state,
-                        handResult.pendingDecision!!,
                         allEvents + handResult.events,
+                        diagnostics + handResult.diagnostics,
                     )
                 }
-                if (!handResult.isSuccess) {
+                if (handResult.outcome is Outcome.Rejected) {
                     return EffectResult.error(
                         handResult.state,
                         handResult.error ?: "Matching card could not be moved to hand",
+                        diagnostics + handResult.diagnostics,
                     )
                 }
+                diagnostics.addAll(handResult.diagnostics)
 
                 // The continuation is only needed when the pending move paused. Remove the
                 // sentinel we pushed for the synchronous path before continuing this loop.
@@ -195,13 +199,14 @@ class ExileFromTopRepeatingExecutor : EffectExecutor<ExileFromTopRepeatingEffect
         if (cardsToHand > 0 && effect.damagePerCard > 0) {
             val totalDamage = cardsToHand * effect.damagePerCard
             val damageResult = DamageUtils.dealDamageToTarget(
+                zones,
                 currentState, controllerId, totalDamage, sourceId
             )
             currentState = damageResult.state
             allEvents.addAll(damageResult.events)
         }
 
-        return EffectResult.success(currentState, allEvents)
+        return EffectResult.success(currentState, allEvents, diagnostics)
     }
 
     private fun ownerIdOf(state: GameState, entityId: EntityId): EntityId =

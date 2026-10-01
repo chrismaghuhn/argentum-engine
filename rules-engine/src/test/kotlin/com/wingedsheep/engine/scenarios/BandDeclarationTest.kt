@@ -18,6 +18,7 @@ import io.kotest.matchers.shouldNotBe
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Tests for declaring attacking bands (CR 702.22). A band groups one or more attacking
@@ -45,7 +46,7 @@ class BandDeclarationTest : FunSpec({
         driver.removeSummoningSickness(courser)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackingBand(active, listOf(scout, courser), opponent).isSuccess shouldBe true
+        driver.declareAttackingBand(active, listOf(scout, courser), opponent).outcome shouldBe Outcome.Done
 
         // Both attackers carry the same, non-null band id (CR 702.22).
         val scoutBand = driver.state.getEntity(scout)?.get<AttackingComponent>()?.bandId
@@ -66,7 +67,7 @@ class BandDeclarationTest : FunSpec({
         driver.removeSummoningSickness(scout)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(active, listOf(scout), opponent).isSuccess shouldBe true
+        driver.declareAttackers(active, listOf(scout), opponent).outcome shouldBe Outcome.Done
 
         driver.state.getEntity(scout)?.get<AttackingComponent>()?.bandId shouldBe null
     }
@@ -85,7 +86,7 @@ class BandDeclarationTest : FunSpec({
         val result = driver.submit(
             DeclareAttackers(active, mapOf(scout to opponent), bands = listOf(setOf(scout)))
         )
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         result.error shouldNotBe null
     }
 
@@ -103,7 +104,7 @@ class BandDeclarationTest : FunSpec({
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
         val result = driver.declareAttackingBand(active, listOf(courserA, courserB), opponent)
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         result.error shouldNotBe null
     }
 
@@ -124,7 +125,7 @@ class BandDeclarationTest : FunSpec({
             // declaration boundary use the same explicit seed before submitting the same choice.
             driver.replaceState(driver.state.copy(rng = GameRng(7L)))
             driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-            driver.declareAttackingBand(active, listOf(scout, courser), opponent).isSuccess shouldBe true
+            driver.declareAttackingBand(active, listOf(scout, courser), opponent).outcome shouldBe Outcome.Done
 
             return checkNotNull(driver.state.getEntity(scout)?.get<AttackingComponent>()?.bandId)
         }
@@ -173,8 +174,8 @@ class BandDeclarationTest : FunSpec({
             ),
         )
 
-        forward.driver.submit(forwardAction).isSuccess shouldBe true
-        reversed.driver.submit(reversedAction).isSuccess shouldBe true
+        forward.driver.submit(forwardAction).outcome shouldBe Outcome.Done
+        reversed.driver.submit(reversedAction).outcome shouldBe Outcome.Done
 
         forward.driver.state shouldBe reversed.driver.state
         bandIdsByRank(forward) shouldBe bandIdsByRank(reversed)
@@ -195,7 +196,7 @@ class BandDeclarationTest : FunSpec({
                     setOf(secondBanding, firstNonBanding),
                 ),
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         bandIdsByRank(first) shouldNotBe bandIdsByRank(second)
     }
@@ -227,8 +228,8 @@ class BandDeclarationTest : FunSpec({
             bands = listOf(setOf(first.attackers[0], first.attackers[1])),
         )
 
-        first.driver.submit(action).isSuccess shouldBe true
-        second.driver.submit(action).isSuccess shouldBe true
+        first.driver.submit(action).outcome shouldBe Outcome.Done
+        second.driver.submit(action).outcome shouldBe Outcome.Done
 
         first.driver.state shouldBe second.driver.state
     }
@@ -250,8 +251,8 @@ class BandDeclarationTest : FunSpec({
             bands = listOf(fixture.attackers.toSet()),
         )
 
-        fixture.driver.submit(action).isSuccess shouldBe true
-        restored.driver.submit(action).isSuccess shouldBe true
+        fixture.driver.submit(action).outcome shouldBe Outcome.Done
+        restored.driver.submit(action).outcome shouldBe Outcome.Done
 
         fixture.driver.state shouldBe restored.driver.state
         fixture.driver.state.getEntity(fixture.attackers[0])
@@ -279,7 +280,7 @@ class BandDeclarationTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         fixture.driver.state shouldBe before
     }
 
@@ -289,15 +290,16 @@ class BandDeclarationTest : FunSpec({
             fixture.active,
             fixture.attackers,
             fixture.opponent,
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
 
         val combat = CombatManager(
+            fixture.driver.zones,
             fixture.driver.cardRegistry,
-            ManaAbilitySideEffectExecutor.noOp(fixture.driver.cardRegistry),
+            ManaAbilitySideEffectExecutor.noOp(fixture.driver.zones),
         )
         val ended = combat.endCombat(fixture.driver.state)
 
-        ended.isSuccess shouldBe true
+        ended.outcome shouldBe Outcome.Done
         fixture.attackers.forEach { attacker ->
             ended.newState.getEntity(attacker)?.get<AttackingComponent>() shouldBe null
         }
@@ -366,6 +368,7 @@ private fun remapAttackers(
         entities = state.entities.entries.associate { (id, entity) -> remap(id) to entity },
         zones = state.zones.mapValues { (_, ids) -> ids.map(::remap) },
         objectIdentityStamps = state.objectIdentityStamps.entries.associate { (id, stamp) -> remap(id) to stamp },
+        objectIdentities = state.objectIdentities.entries.associate { (id, identity) -> remap(id) to identity },
     )
     return cloneFixture(source, remappedState).copy(attackers = source.attackers.map(::remap))
 }
@@ -381,7 +384,7 @@ private fun declareTwoBands(fixture: BandFixture) {
                 setOf(secondBanding, secondNonBanding),
             ),
         )
-    ).isSuccess shouldBe true
+    ).outcome shouldBe Outcome.Done
 }
 
 private fun bandIdsByRank(fixture: BandFixture): Map<Long, String?> = fixture.attackers

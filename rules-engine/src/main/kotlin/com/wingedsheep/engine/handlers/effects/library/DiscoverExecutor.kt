@@ -8,12 +8,11 @@ import com.wingedsheep.engine.core.DiscoverNoHitBottomContinuation
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
 import com.wingedsheep.engine.handlers.DecisionHandler
-import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
-import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -24,6 +23,7 @@ import com.wingedsheep.sdk.scripting.effects.DiscoverEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.EmitDiscoveredEventEffect
 import kotlin.reflect.KClass
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Executor for [DiscoverEffect] (CR 701.57).
@@ -49,15 +49,14 @@ import kotlin.reflect.KClass
  * ≤ threshold and keeps the discovered card on the non-cast branch.
  */
 class DiscoverExecutor(
-    /** Runs a [DiscoverEffect.thenEffect] through the registry (the late-bound recursion entry). */
+    private val zones: ZoneTransitionService,
+    /** Runs a [DiscoverEffect.thenEffect] through the registry. */
     private val runEffect: (GameState, Effect, EffectContext) -> EffectResult,
-    private val decisionHandler: DecisionHandler = DecisionHandler(),
-    private val cardRegistry: CardRegistry = CardRegistry(),
+    private val decisionHandler: DecisionHandler = DecisionHandler()
 ) : EffectExecutor<DiscoverEffect> {
+    private val amountEvaluator = zones.predicateEvaluator.amounts
 
     override val effectType: KClass<DiscoverEffect> = DiscoverEffect::class
-
-    private val amountEvaluator = DynamicAmountEvaluator()
 
     override fun execute(
         state: GameState,
@@ -115,8 +114,8 @@ class DiscoverExecutor(
         )
 
         for (cardId in exiledCards) {
-            val result = ZoneMovementUtils.moveCardToZone(currentState, cardId, Zone.EXILE)
-            if (result.isSuccess) {
+            val result = ZoneMovementUtils.moveCardToZone(zones, currentState, cardId, Zone.EXILE)
+            if (result.outcome is Outcome.Done) {
                 currentState = result.state
                 allEvents.addAll(result.events)
             }
@@ -128,8 +127,9 @@ class DiscoverExecutor(
             val hasCommanderRemainder = currentState.format.usesCommanders && exiledCards.any { cardId ->
                 currentState.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
             }
+            // A Commander in the remainder can pause the library move under CR 903.9b; queue the
+            // rest of discover underneath that question before the move runs.
             val bottomContinuation = DiscoverNoHitBottomContinuation(
-                decisionId = "pending",
                 effect = effect,
                 context = context,
                 threshold = threshold,
@@ -139,20 +139,20 @@ class DiscoverExecutor(
                 currentState.pushContinuation(bottomContinuation)
             } else currentState
             val bottomResult = CascadeExecutor.bottomRandomizeWithReplacements(
+                zones = zones,
                 state = bottomInputState,
                 playerId = controllerId,
                 cards = exiledCards,
                 context = context,
-                cardRegistry = cardRegistry,
             )
-            if (bottomResult.isPaused) {
-                return EffectResult.paused(
+            if (bottomResult.outcome is Outcome.Paused) {
+                return EffectResult.propagatePause(
                     bottomResult.state,
-                    bottomResult.pendingDecision!!,
                     allEvents + bottomResult.events,
+                    bottomResult.diagnostics,
                 )
             }
-            if (!bottomResult.isSuccess) return bottomResult
+            if (bottomResult.outcome is Outcome.Rejected) return bottomResult
             currentState = if (hasCommanderRemainder) {
                 bottomResult.state.popContinuation().second
             } else bottomResult.state
@@ -173,36 +173,25 @@ class DiscoverExecutor(
                 tail,
                 EffectContext(
                     sourceId = context.sourceId,
+            objectReferences = context.objectReferences,
                     controllerId = controllerId,
                     pipeline = PipelineState.EMPTY.copy(storedCollections = discoveredCollections)
                 )
             )
-            return if (thenResult.isPaused) {
-                EffectResult.paused(thenResult.state, thenResult.pendingDecision!!, allEvents + bottomEvents + thenResult.events)
+            val diagnostics = bottomResult.diagnostics + thenResult.diagnostics
+            return if (thenResult.outcome is Outcome.Paused) {
+                EffectResult.propagatePause(thenResult.state, allEvents + bottomEvents + thenResult.events, diagnostics)
             } else {
-                EffectResult.success(thenResult.state, allEvents + bottomEvents + thenResult.events)
+                EffectResult.success(thenResult.state, allEvents + bottomEvents + thenResult.events, diagnostics)
             }
         }
 
         val discoveredName = currentState.getEntity(discoveredCard)
             ?.get<CardComponent>()?.name ?: "the discovered card"
-        val pause = decisionHandler.createYesNoDecision(
-            state = currentState,
-            playerId = controllerId,
-            sourceId = context.sourceId,
-            sourceName = sourceName,
-            prompt = "Cast $discoveredName without paying its mana cost? (Decline to put it into your hand.)",
-            yesText = "Cast for free",
-            noText = "Put into hand",
-            phase = DecisionPhase.RESOLUTION
-        )
-
-        val pendingDecision = pause.pendingDecision
-            ?: error("createYesNoDecision must return a pending decision")
         val continuation = DiscoverMayCastContinuation(
-            decisionId = pendingDecision.id,
             playerId = controllerId,
             sourceId = context.sourceId,
+            objectReferences = context.objectReferences,
             exiledCards = exiledCards.toList(),
             discoveredCardId = discoveredCard,
             storeDiscoveredAs = effect.storeDiscoveredAs,
@@ -212,11 +201,23 @@ class DiscoverExecutor(
             // always non-null.
             thenEffect = CompositeEffect(listOfNotNull(effect.thenEffect, emitDiscovered))
         )
-        val stateWithCont = pause.state.pushContinuation(continuation)
 
-        return EffectResult.paused(
+        val pause = decisionHandler.createYesNoDecision(
+            state = currentState,
+            playerId = controllerId,
+            sourceId = context.sourceId,
+            sourceName = sourceName,
+            prompt = "Cast $discoveredName without paying its mana cost? (Decline to put it into your hand.)",
+            yesText = "Cast for free",
+            noText = "Put into hand",
+            phase = DecisionPhase.RESOLUTION,
+            answer = continuation
+        )
+
+        val stateWithCont = pause.state
+
+        return EffectResult.propagatePause(
             stateWithCont,
-            pendingDecision,
             allEvents + pause.events
         )
     }

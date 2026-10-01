@@ -35,36 +35,35 @@ class ConvertCountersToTokensExecutor(
         val sourceId = context.sourceId ?: return EffectResult.success(state)
         val sourceEntity = state.getEntity(sourceId) ?: return EffectResult.success(state)
 
-        val counterType = EntersWithReplacements.resolveCounterType(effect.counterType)
+        val counterType = effect.counterType
         val available = sourceEntity.get<CountersComponent>()?.getCount(counterType) ?: 0
         if (available <= 0) return EffectResult.success(state)
 
         val sourceName = sourceEntity.get<CardComponent>()?.name ?: "this permanent"
 
-        val decisionResult = decisionHandler.createNumberDecision(
-            state = state,
-            playerId = context.controllerId,
-            sourceId = sourceId,
-            sourceName = sourceName,
-            prompt = "Remove how many ${effect.counterType.description} counters from $sourceName? (0-$available)",
-            minValue = 0,
-            maxValue = available,
-            phase = DecisionPhase.RESOLUTION
-        )
-
-        val decision = decisionResult.pendingDecision!!
-
         val continuation = ConvertCountersToTokensContinuation(
-            decisionId = decision.id,
             sourceId = sourceId,
             controllerId = context.controllerId,
             counterType = effect.counterType,
             tokenFactory = effect.tokenFactory
         )
 
-        return EffectResult.paused(
-            decisionResult.state.pushContinuation(continuation),
-            decision,
+        val decisionResult = decisionHandler.createNumberDecision(
+            state = state,
+            playerId = context.controllerId,
+            sourceId = sourceId,
+            sourceName = sourceName,
+            prompt = "Remove how many ${effect.counterType.printed} counters from $sourceName? (0-$available)",
+            minValue = 0,
+            maxValue = available,
+            phase = DecisionPhase.RESOLUTION,
+            answer = continuation
+        )
+
+        val decision = decisionResult.pendingDecision!!
+
+        return EffectResult.propagatePause(
+            decisionResult.state,
             decisionResult.events
         )
     }

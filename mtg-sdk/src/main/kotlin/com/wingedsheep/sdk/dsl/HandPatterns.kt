@@ -1,15 +1,19 @@
 package com.wingedsheep.sdk.dsl
 
-import com.wingedsheep.sdk.core.Counters
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.AddCountersEffect
+import com.wingedsheep.sdk.scripting.effects.AddDynamicCountersEffect
+import com.wingedsheep.sdk.scripting.effects.FilterCollectionEffect
+import com.wingedsheep.sdk.scripting.effects.StoreNumberEffect
 import com.wingedsheep.sdk.scripting.effects.CardDestination
 import com.wingedsheep.sdk.scripting.effects.CardSource
 import com.wingedsheep.sdk.scripting.effects.ChooseActionEffect
 import com.wingedsheep.sdk.scripting.effects.Chooser
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
 import com.wingedsheep.sdk.scripting.effects.ConditionalOnCollectionEffect
+import com.wingedsheep.sdk.scripting.effects.ConniveEffect
 import com.wingedsheep.sdk.scripting.effects.DrawCardsEffect
 import com.wingedsheep.sdk.scripting.effects.DrawUpToEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
@@ -17,6 +21,7 @@ import com.wingedsheep.sdk.scripting.effects.EffectChoice
 import com.wingedsheep.sdk.scripting.effects.FeasibilityCheck
 import com.wingedsheep.sdk.scripting.effects.ForEachEffect
 import com.wingedsheep.sdk.scripting.effects.ForEachPlayerEffect
+import com.wingedsheep.sdk.scripting.effects.ForEachPlayerCollectingEffect
 import com.wingedsheep.sdk.scripting.effects.GainLifeEffect
 import com.wingedsheep.sdk.scripting.effects.GatherCardsEffect
 import com.wingedsheep.sdk.scripting.effects.MoveCollectionEffect
@@ -39,32 +44,53 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
  */
 object HandPatterns {
 
+    // Fixed output collections of the patterns below, as typed handles — a card that reads what
+    // a pattern put somewhere ("draw a card for each card discarded this way") uses these rather
+    // than spelling the pattern's key.
+
+    /** The cards [discardCards] / [discardAnyNumber] (default `storeAs`) discarded. */
+    val discarded: CollectionSlot = CollectionSlot("discarded")
+
+    /** The hand [discardHand] discarded. */
+    val discardedHand: CollectionSlot = CollectionSlot("discardedHand")
+
+    /** The card(s) [putFromHand] chose to put onto the battlefield. */
+    val putFromHandCards: CollectionSlot = CollectionSlot("putting")
+
     fun eachOpponentDiscards(count: Int, controllerDrawsPerDiscard: Int = 0): Effect {
         if (controllerDrawsPerDiscard > 0) {
             val drawCount: DynamicAmount = if (controllerDrawsPerDiscard == 1) {
-                DynamicAmount.VariableReference("discarded_count")
+                DynamicAmount.DistinctEntitiesInCollections(listOf("discarded_by_opponents"))
             } else {
-                DynamicAmount.Multiply(DynamicAmount.VariableReference("discarded_count"), controllerDrawsPerDiscard)
+                DynamicAmount.Multiply(
+                    DynamicAmount.DistinctEntitiesInCollections(listOf("discarded_by_opponents")),
+                    controllerDrawsPerDiscard
+                )
             }
             return CompositeEffect(listOf(
-                GatherCardsEffect(
-                    // TODO(multiplayer Phase 1, backlog/multiplayer.md): "each opponent discards,
-                    //  you draw per discard" needs cross-iteration count accumulation; until then
-                    //  this hits one opponent (identical in two-player games).
-                    source = CardSource.FromZone(Zone.HAND, Player.AnOpponent),
-                    storeAs = "hand"
-                ),
-                SelectFromCollectionEffect(
-                    from = "hand",
-                    selection = SelectionMode.ChooseExactly(DynamicAmount.Fixed(count)),
-                    chooser = Chooser.Opponent,
-                    storeSelected = "discarded",
-                    prompt = "Choose ${if (count == 1) "a card" else "$count cards"} to discard"
-                ),
-                MoveCollectionEffect(
-                    from = "discarded",
-                    destination = CardDestination.ToZone(Zone.GRAVEYARD, player = Player.AnOpponent),
-                    moveType = MoveType.Discard
+                ForEachPlayerCollectingEffect(
+                    players = Player.EachOpponent,
+                    effects = listOf(
+                        GatherCardsEffect(
+                            source = CardSource.FromZone(Zone.HAND, Player.You),
+                            storeAs = "hand"
+                        ),
+                        SelectFromCollectionEffect(
+                            from = "hand",
+                            selection = SelectionMode.ChooseExactly(DynamicAmount.Fixed(count)),
+                            storeSelected = "discarded",
+                            prompt = "Choose ${if (count == 1) "a card" else "$count cards"} to discard"
+                        ),
+                        MoveCollectionEffect(
+                            from = "discarded",
+                            destination = CardDestination.ToZone(Zone.GRAVEYARD),
+                            moveType = MoveType.Discard,
+                            storeMovedAs = "discarded_this_opponent"
+                        )
+                    ),
+                    collectCollections = mapOf(
+                        "discarded_this_opponent" to "discarded_by_opponents"
+                    )
                 ),
                 DrawCardsEffect(count = drawCount)
             ))
@@ -123,6 +149,48 @@ object HandPatterns {
                     from = "discarded",
                     destination = CardDestination.ToZone(Zone.GRAVEYARD),
                     moveType = MoveType.Discard
+                )
+            )
+        )
+
+    /**
+     * "Each player puts a card from their hand on top of their library" — Sadistic Augermage's dies
+     * trigger. The same [ForEachPlayerEffect] shape as [eachPlayerDiscards] in **APNAP order**
+     * (CR 101.4), with the destination swapped from the graveyard to the top of the iterated
+     * player's own library: `Player.You` rebinds per iteration, so each player gathers *their own*
+     * hand, chooses their own card, and it lands on top of *their own* library.
+     *
+     * [MoveType.Default], not [MoveType.Discard] — a card put on top of a library is not discarded,
+     * so nothing here should feed a discard trigger or a madness cast.
+     *
+     * The same APNAP deviation [eachPlayerDiscards] documents applies: iterations run one after
+     * another rather than choosing face-down and moving simultaneously. It is visible here only in
+     * that a later player picks knowing an earlier player has already moved a card — the cards
+     * themselves are hidden either way.
+     *
+     * @param count how many cards each player puts on top of their library.
+     */
+    fun eachPlayerPutsCardsOnTopOfLibrary(count: Int = 1): Effect =
+        ForEachPlayerEffect(
+            players = Player.ActivePlayerFirst,
+            effects = listOf(
+                GatherCardsEffect(
+                    source = CardSource.FromZone(Zone.HAND, Player.You),
+                    storeAs = "hand"
+                ),
+                SelectFromCollectionEffect(
+                    from = "hand",
+                    selection = SelectionMode.ChooseExactly(DynamicAmount.Fixed(count)),
+                    storeSelected = "toLibrary",
+                    prompt = "Choose ${if (count == 1) "a card" else "$count cards"} to put on top of your library"
+                ),
+                MoveCollectionEffect(
+                    from = "toLibrary",
+                    destination = CardDestination.ToZone(
+                        zone = Zone.LIBRARY,
+                        player = Player.You,
+                        placement = ZonePlacement.Top
+                    )
                 )
             )
         )
@@ -631,14 +699,73 @@ object HandPatterns {
     /**
      * Connive (CR 701.50): draw a card, then discard a card. If the discarded card
      * is a nonland, put a +1/+1 counter on [target].
+     *
+     * The pipeline is wrapped in [ConniveEffect] so the keyword action has a name and a subject —
+     * [target] is the conniving permanent (CR 701.50a puts the counter on it). That is what lets a
+     * printed replacement reach it ("If a creature you control would connive, instead …", Leader,
+     * Super-Genius) and what lets the connive emit its CR 701.50f event. The pipeline itself is
+     * unchanged and still runs step for step; see [ConniveEffect].
      */
-    fun connive(target: EffectTarget = EffectTarget.Self): CompositeEffect = connivePipeline(
-        AddCountersEffect(
-            counterType = Counters.PLUS_ONE_PLUS_ONE,
-            count = 1,
-            target = target
+    fun connive(target: EffectTarget = EffectTarget.Self): Effect = ConniveEffect(
+        subject = target,
+        body = connivePipeline(
+            AddCountersEffect(
+                counterType = CounterType.PLUS_ONE_PLUS_ONE,
+                count = 1,
+                target = target
+            )
         )
     )
+
+    /**
+     * Connive N (CR 701.50d): draw [count] cards, then discard that many, then put a +1/+1 counter
+     * on [target] for each nonland card discarded this way — "target creature you control connives
+     * X, where X is …" (Spymaster's Vault).
+     *
+     * N is evaluated once, before the draw, and stored as `connive_n`, so an amount the connive
+     * itself changes (cards in hand) can't drift between the draw and the discard. A hand smaller
+     * than N after the draw discards what it has. Wrapped in [ConniveEffect] with [count], so it is
+     * replaced and observed like any connive — and a connive 0 does nothing at all (CR 701.50e).
+     */
+    fun connive(target: EffectTarget, count: DynamicAmount): Effect =
+        if (count == DynamicAmount.Fixed(1)) connive(target)
+        else ConniveEffect(
+            subject = target,
+            count = count,
+            body = CompositeEffect(
+                listOf(
+                    StoreNumberEffect("connive_n", count),
+                    DrawCardsEffect(DynamicAmount.VariableReference("connive_n"), EffectTarget.Controller),
+                    GatherCardsEffect(
+                        source = CardSource.FromZone(Zone.HAND, Player.You),
+                        storeAs = "connive_hand"
+                    ),
+                    SelectFromCollectionEffect(
+                        from = "connive_hand",
+                        selection = SelectionMode.ChooseExactly(DynamicAmount.VariableReference("connive_n")),
+                        chooser = Chooser.Controller,
+                        storeSelected = "connive_discarded",
+                        prompt = "Choose cards to discard"
+                    ),
+                    MoveCollectionEffect(
+                        from = "connive_discarded",
+                        destination = CardDestination.ToZone(Zone.GRAVEYARD, Player.You),
+                        moveType = MoveType.Discard
+                    ),
+                    FilterCollectionEffect(
+                        from = "connive_discarded",
+                        filter = GameObjectFilter.Nonland,
+                        storeMatching = "connive_nonland"
+                    ),
+                    AddDynamicCountersEffect(
+                        counterType = CounterType.PLUS_ONE_PLUS_ONE,
+                        amount = DynamicAmount.VariableReference("connive_nonland_count"),
+                        target = target
+                    )
+                ),
+                descriptionOverride = "Connive ${count.description}"
+            )
+        )
 
     /**
      * Connive variant whose +1/+1 counter lands on a *chosen target* rather than the conniving
@@ -651,8 +778,13 @@ object HandPatterns {
      * never up front, and never when the discard turns out to be a land (or the hand was empty). The
      * counter then lands on that [EffectTarget.PipelineTarget].
      *
+     * Deliberately *not* wrapped in [ConniveEffect], unlike [connive]: Teo's printed text spells the
+     * looting out ("draw a card, then discard a card…") and never uses the word connive, so it is
+     * not the keyword action. Wrapping it would wrongly expose it to "if a creature you control
+     * would connive" replacements and make it fire connive triggers.
+     *
      * @param requirement what the chosen counter recipient must satisfy (e.g.
-     *   `Targets.CreatureYouControl`).
+     *   `TargetObject(filter = TargetFilter.CreatureYouControl)`).
      */
     fun conniveTargeting(
         requirement: TargetRequirement,
@@ -662,7 +794,7 @@ object HandPatterns {
             listOf(
                 SelectTargetEffect(requirement = requirement, storeAs = storeAs),
                 AddCountersEffect(
-                    counterType = Counters.PLUS_ONE_PLUS_ONE,
+                    counterType = CounterType.PLUS_ONE_PLUS_ONE,
                     count = 1,
                     target = EffectTarget.PipelineTarget(storeAs)
                 )
@@ -724,7 +856,7 @@ object HandPatterns {
      *   how a hand exile joins the same pile.
      */
     fun revealHandAndExileChosen(
-        target: EffectTarget = EffectTarget.ContextTarget(0),
+        target: EffectTarget,
         filter: GameObjectFilter = GameObjectFilter.Nonland,
         prompt: String = "Choose a nonland card to exile",
         storeChosenAs: String = "chosenCard",
@@ -761,7 +893,7 @@ object HandPatterns {
      * Target player exiles cards from their hand.
      * "Target opponent exiles a card from their hand."
      */
-    fun exileFromHand(count: Int = 1, target: EffectTarget = EffectTarget.ContextTarget(0)): CompositeEffect {
+    fun exileFromHand(count: Int = 1, target: EffectTarget): CompositeEffect {
         val player = effectTargetToPlayer(target)
         val chooser = effectTargetToChooser(target)
         return CompositeEffect(

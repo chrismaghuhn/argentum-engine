@@ -12,6 +12,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Sunhome, Fortress of the Legion (RAV #282)
@@ -42,7 +43,7 @@ class SunhomeFortressOfTheLegionScenarioTest : FunSpec({
         val player = driver.activePlayer!!
         val sunhome = driver.putPermanentOnBattlefield(player, "Sunhome, Fortress of the Legion")
 
-        driver.submit(ActivateAbility(player, sunhome, manaAbilityId)).isSuccess shouldBe true
+        driver.submit(ActivateAbility(player, sunhome, manaAbilityId)).outcome shouldBe Outcome.Done
         driver.state.getEntity(player)?.get<ManaPoolComponent>()?.colorless shouldBe 1
     }
 
@@ -63,7 +64,7 @@ class SunhomeFortressOfTheLegionScenarioTest : FunSpec({
                 abilityId = doubleStrikeAbilityId,
                 targets = listOf(ChosenTarget.Permanent(chosen))
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.state.projectedState.hasKeyword(chosen, Keyword.DOUBLE_STRIKE) shouldBe true

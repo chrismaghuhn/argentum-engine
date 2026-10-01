@@ -53,6 +53,13 @@ export interface AnimationSliceState {
      * single-player reveals, which use [isYourReveal] for the whole group.
      */
     cardOwnerIsYours?: readonly boolean[]
+    /**
+     * Owner of each revealed card (parallel to cardIds), present alongside [cardOwnerIsYours].
+     * Lets a multiplayer reveal name *which* opponent a card belongs to (clash).
+     */
+    cardOwnerIds?: readonly EntityId[]
+    /** Player who performed the reveal; absent for locally-triggered reveals. */
+    revealingPlayerId?: EntityId
     fromZone?: string | null
     toZone?: string | null
   } | null
@@ -109,7 +116,9 @@ export const createAnimationSlice: SliceCreator<AnimationSlice> = (set, get) => 
 
   // Card selection actions
   selectCard: (cardId) => {
-    set({ selectedCardId: cardId })
+    // Opening a card's action menu drops any hover preview: the pointer is still over the card
+    // that was clicked, and the preview would sit on top of the menu's buttons.
+    set(cardId ? { selectedCardId: cardId, hoveredCardId: null, autoTapPreview: null } : { selectedCardId: cardId })
   },
 
   hoverCard: (cardId, position) => {

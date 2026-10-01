@@ -18,6 +18,7 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.KeywordAbility
+import com.wingedsheep.sdk.scripting.effects.WardCost
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldNotBeEmpty
@@ -53,7 +54,7 @@ class GameGymEnvStrictExecutionTest : FunSpec({
         typeLine = "Creature — Bear"
         power = 2
         toughness = 2
-        keywordAbility(KeywordAbility.ward("{1}"))
+        keywordAbility(KeywordAbility.Ward(WardCost.Mana("{1}")))
     }
 
     fun wardRegistry() = registry().apply {

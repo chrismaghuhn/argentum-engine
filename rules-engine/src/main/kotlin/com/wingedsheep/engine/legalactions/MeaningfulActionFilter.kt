@@ -103,6 +103,8 @@ object MeaningfulActionFilter {
         "CastSpellModal",
         "CastWithAlternativeCost",
         "CastWithFlashback",
+        // Escape (CR 702.138) — an instant or flash card escapes at instant speed.
+        "CastWithEscape",
         "CastWithHarmonize",
         "CastWithWarp",
         "CastWithKicker",
@@ -241,6 +243,11 @@ object MeaningfulActionFilter {
         stopsMode: Boolean = false,
         cardRegistry: CardRegistry? = null,
     ): AutoPassVerdict {
+        // Deliberately the *baton*, not [GameState.hasPriority]: auto-pass stays bound to the seat
+        // holding [GameState.priorityPlayerId]. Under team priority (CR 805.5) a teammate may act
+        // in this window too, and letting their auto-pass fire here would spend their window
+        // before they ever saw it — a bot partner would pass away every response its human partner
+        // was about to make. Teams still advance the phase only once every seat has passed.
         if (state.priorityPlayerId != playerId) return STOP_NO_PRIORITY
         if (state.pendingDecision != null) return STOP_PENDING_DECISION
 

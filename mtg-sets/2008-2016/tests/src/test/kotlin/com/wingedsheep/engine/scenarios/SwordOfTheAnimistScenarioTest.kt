@@ -20,6 +20,7 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Sword of the Animist (ORI #240).
@@ -88,7 +89,7 @@ class SwordOfTheAnimistScenarioTest : FunSpec({
                 abilityId = SwordOfTheAnimist.activatedAbilities.first().id,
                 targets = listOf(ChosenTarget.Permanent(opposingCreature)),
             ),
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
 
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe second
     }

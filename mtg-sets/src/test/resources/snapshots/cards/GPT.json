@@ -16,7 +16,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "creature"
+                        "name": "t0"
                     }
                 },
                 {
@@ -34,7 +34,7 @@
                 "filter": {
                     "baseFilter": "creature"
                 },
-                "id": "creature"
+                "id": "t0"
             }
         ]
     },
@@ -114,7 +114,8 @@
                         ]
                     },
                     "zone": "Stack"
-                }
+                },
+                "id": "t0"
             }
         ]
     },
@@ -142,7 +143,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ghost Warden:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "ModifyStats",
@@ -156,7 +157,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -165,7 +166,7 @@
                         "filter": {
                             "baseFilter": "creature"
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }
@@ -227,7 +228,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Gruul Signet:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -279,7 +280,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Gruul Turf:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -288,7 +289,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "a land you control"
+                        "name": "t0"
                     },
                     "destination": "Hand"
                 },
@@ -297,13 +298,13 @@
                     "filter": {
                         "baseFilter": "land ctrl:you"
                     },
-                    "id": "a land you control"
+                    "id": "t0"
                 }
             }
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Gruul Turf:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "Composite",
@@ -346,7 +347,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Izzet Boilerworks:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -355,7 +356,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "a land you control"
+                        "name": "t0"
                     },
                     "destination": "Hand"
                 },
@@ -364,13 +365,13 @@
                     "filter": {
                         "baseFilter": "land ctrl:you"
                     },
-                    "id": "a land you control"
+                    "id": "t0"
                 }
             }
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Izzet Boilerworks:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "Composite",
@@ -423,7 +424,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Izzet Chronarch:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -432,7 +433,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "destination": "Hand"
                 },
@@ -442,7 +443,7 @@
                         "baseFilter": "instant|sorcery own:you",
                         "zone": "Graveyard"
                     },
-                    "id": "target"
+                    "id": "t0"
                 }
             }
         ]
@@ -467,7 +468,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Izzet Signet:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -554,7 +555,7 @@
             "type": "MoveToZone",
             "target": {
                 "type": "BoundVariable",
-                "name": "creature or enchantment"
+                "name": "t0"
             },
             "destination": "Graveyard",
             "byDestruction": true
@@ -565,7 +566,7 @@
                 "filter": {
                     "baseFilter": "creature|enchantment"
                 },
-                "id": "creature or enchantment"
+                "id": "t0"
             }
         ]
     },
@@ -591,7 +592,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Orzhov Basilica:1",
                 "trigger": {
                     "type": "ZoneChangeEvent",
                     "to": "Battlefield"
@@ -600,7 +601,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "a land you control"
+                        "name": "t0"
                     },
                     "destination": "Hand"
                 },
@@ -609,13 +610,13 @@
                     "filter": {
                         "baseFilter": "land ctrl:you"
                     },
-                    "id": "a land you control"
+                    "id": "t0"
                 }
             }
         ],
         "activatedAbilities": [
             {
-                "id": "ability_2",
+                "id": "Orzhov Basilica:2",
                 "cost": "CostTap",
                 "effect": {
                     "type": "Composite",
@@ -664,7 +665,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Orzhov Signet:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -721,7 +722,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Ostiary Thrull:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -739,7 +740,7 @@
                     "type": "TapUntap",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "creature"
+                        "name": "t0"
                     }
                 },
                 "targetRequirements": [
@@ -748,7 +749,7 @@
                         "filter": {
                             "baseFilter": "creature"
                         },
-                        "id": "creature"
+                        "id": "t0"
                     }
                 ]
             }
@@ -762,6 +763,79 @@
     },
     "colorIdentityOverride": [
         "WHITE",
+        "BLACK"
+    ]
+}
+
+// Plagued Rusalka
+{
+    "name": "Plagued Rusalka",
+    "manaCost": "{B}",
+    "typeLine": "Creature — Spirit",
+    "oracleText": "{B}, Sacrifice a creature: Target creature gets -1/-1 until end of turn.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 1
+    },
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "Plagued Rusalka:1",
+                "cost": {
+                    "type": "CostComposite",
+                    "costs": [
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomMana",
+                                "cost": "{B}"
+                            }
+                        },
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomSacrifice",
+                                "filter": "creature"
+                            }
+                        }
+                    ]
+                },
+                "effect": {
+                    "type": "ModifyStats",
+                    "powerModifier": {
+                        "type": "Fixed",
+                        "amount": -1
+                    },
+                    "toughnessModifier": {
+                        "type": "Fixed",
+                        "amount": -1
+                    },
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "t0"
+                    }
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": "creature"
+                        },
+                        "id": "t0"
+                    }
+                ],
+                "descriptionOverride": "{B}, Sacrifice a creature: Target creature gets -1/-1 until end of turn."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "56",
+        "rarity": "UNCOMMON",
+        "artist": "Alex Horley-Orlandelli",
+        "flavorText": "\"Look at her, once filled with innocence. Death has a way of wringing away such . . . deficiencies.\"\n—Savra",
+        "imageUri": "https://cards.scryfall.io/normal/front/c/d/cd84bbb3-8b99-4e6d-b514-b094ec93eaa0.jpg?1783943506"
+    },
+    "colorIdentityOverride": [
         "BLACK"
     ]
 }
@@ -780,7 +854,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "nonland permanent"
+                        "name": "t0"
                     },
                     "destination": "Hand"
                 },
@@ -805,7 +879,7 @@
                         ]
                     }
                 },
-                "id": "nonland permanent"
+                "id": "t0"
             }
         ]
     },
@@ -911,6 +985,65 @@
     ]
 }
 
+// Wee Dragonauts
+{
+    "name": "Wee Dragonauts",
+    "manaCost": "{1}{U}{R}",
+    "typeLine": "Creature — Faerie Wizard",
+    "oracleText": "Flying\nWhenever you cast an instant or sorcery spell, this creature gets +2/+0 until end of turn.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 3
+    },
+    "keywords": [
+        "FLYING"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Wee Dragonauts:1",
+                "trigger": {
+                    "type": "SpellCastEvent",
+                    "spellFilter": {
+                        "cardPredicates": [
+                            {
+                                "type": "Or",
+                                "predicates": [
+                                    "IsInstant",
+                                    "IsSorcery"
+                                ]
+                            }
+                        ]
+                    }
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "ModifyStats",
+                    "powerModifier": {
+                        "type": "Fixed",
+                        "amount": 2
+                    },
+                    "toughnessModifier": {
+                        "type": "Fixed",
+                        "amount": 0
+                    },
+                    "target": "Self"
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "137",
+        "artist": "Greg Staples",
+        "flavorText": "\"The blazekite is a simple concept, really—just a vehicular application of dragscoop ionics and electropropulsion magnetronics.\"\n—Juzba, Izzet tinker",
+        "imageUri": "https://cards.scryfall.io/normal/front/1/4/14fd3734-8c28-4bd0-b202-eee1ab98c328.jpg?1783943466"
+    },
+    "colorIdentityOverride": [
+        "BLUE",
+        "RED"
+    ]
+}
+
 // Wild Cantor
 {
     "name": "Wild Cantor",
@@ -924,7 +1057,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Wild Cantor:1",
                 "cost": "CostSacrificeSelf",
                 "effect": "AddManaOfChoice",
                 "timing": "ManaAbility",
@@ -965,7 +1098,7 @@
                     },
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 {
@@ -973,7 +1106,7 @@
                     "keyword": "TRAMPLE",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     }
                 },
                 {
@@ -991,7 +1124,7 @@
                 "filter": {
                     "baseFilter": "creature"
                 },
-                "id": "target"
+                "id": "t0"
             }
         ]
     },

@@ -64,7 +64,7 @@ data class ReturnTransformedFromGraveyard(
  *         TriggeredAbility.create(
  *             trigger = OnEnterBattlefield(),
  *             effect = DealDamageEffect(4, EffectTarget.ContextTarget(0)),
- *             targetRequirement = TargetCreature()
+ *             targetRequirement = TargetObject(filter = TargetFilter.Creature)
  *         )
  *     )
  * )
@@ -75,7 +75,7 @@ data class ReturnTransformedFromGraveyard(
  * CardScript(
  *     activatedAbilities = listOf(
  *         ActivatedAbility(
- *             id = AbilityId.generate(),
+ *             id = AbilityId.next(),
  *             cost = AbilityCost.Tap,
  *             effect = AddColorlessManaEffect(2),
  *             isManaAbility = true
@@ -176,9 +176,20 @@ data class CardScript(
     /**
      * For Aura spells, defines what the aura can enchant.
      * If set, this permanent is an Aura that attaches to valid targets.
-     * Example: TargetCreature() for "Enchant creature"
+     * Example: `TargetObject(filter = TargetFilter.Creature)` for "Enchant creature"
      */
     val auraTarget: TargetRequirement? = null,
+
+    /**
+     * A narrower requirement an Aura *spell's* target must meet **as it is cast** — and only then.
+     * Dream Leash: "Enchant permanent / You can't choose an untapped permanent as this spell's
+     * target as you cast it." The printed restriction applies to the choice only (its 2005-10-01
+     * ruling), so it is not what the spell re-checks on resolution (CR 608.2b re-checks [auraTarget]),
+     * not what the enchant state-based action reads, and not what an Aura put onto the battlefield
+     * without being cast checks. Null for every Aura whose cast target is just its enchant
+     * restriction. Read through [castAuraTarget].
+     */
+    val auraCastTarget: TargetRequirement? = null,
 
     /**
      * Timing and conditional restrictions on when this spell can be cast.
@@ -282,6 +293,45 @@ data class CardScript(
     val selfExileOnResolve: Boolean = false,
 
     /**
+     * Whether this spell shuffles itself into its owner's library on resolution instead of going to
+     * the graveyard. Used for cards that say "Shuffle <card name> into its owner's library." — the
+     * Mirrodin Besieged Zenith cycle (Green Sun's Zenith and its four siblings).
+     *
+     * The sibling of [selfExileOnResolve], and the same seam: both replace the destination of
+     * CR 608.2n ("as the final part of an instant or sorcery spell's resolution, the spell is put
+     * into its owner's graveyard"). The two are mutually exclusive — a card prints one clause or the
+     * other, never both — and setting both is **rejected**, by the `init` block below and again in
+     * the DSL, where the message can name the offending card.
+     *
+     * Three things this deliberately is **not**:
+     *  - not a zone-change replacement — [com.wingedsheep.sdk.scripting.ReplacementEffect] shapes
+     *    such as `RedirectZoneChange` apply to any card heading to a graveyard from anywhere, while
+     *    this is one printed instruction about the spell's own resolution;
+     *  - not the cast-this-way rider
+     *    ([com.wingedsheep.sdk.scripting.effects.AfterResolveDestination]), which another effect
+     *    stamps onto a spell *it* is casting — and which this **outranks**: those riders are
+     *    written "if that spell *would be put into a graveyard*, [somewhere] instead" (Kylox's
+     *    Voltstrider), and a spell that shuffles itself into its owner's library never would be, so
+     *    the rider has nothing to replace. On the countered and fizzled paths, where the card really
+     *    is put into a graveyard, the rider still wins;
+     *  - not "put it on the bottom of its owner's library" — the card is shuffled in, so the
+     *    library is randomized and a `LibraryShuffledEvent` is emitted (contrast
+     *    [com.wingedsheep.sdk.scripting.effects.AfterResolveDestination.BOTTOM_OF_LIBRARY], which
+     *    does not shuffle).
+     *
+     * It does **not** outrank flashback (CR 702.34a) or harmonize (CR 702.180a), printed or granted.
+     * Those two are worded "exile this card instead of putting it anywhere else any time it would
+     * leave the stack" rather than naming the graveyard, so unlike every other clause at this seam
+     * they still apply to a spell that shuffles itself in: a flashbacked Blue Sun's Zenith is
+     * exiled, not shuffled into its owner's library.
+     *
+     * Read at resolution-destination time, so — like [selfExileOnResolve] — it is correctly inert
+     * when the spell is countered or fizzles: those paths never reach CR 608.2n, and the card goes
+     * to its owner's graveyard as usual.
+     */
+    val selfShuffleIntoLibraryOnResolve: Boolean = false,
+
+    /**
      * Paradigm (Secrets of Strixhaven). When true, this spell exiles itself on resolution
      * (implies [selfExileOnResolve]) and is tagged with the paradigm marker as it lands in
      * exile, so the engine synthesizes the recurring free-recast triggered ability
@@ -358,6 +408,18 @@ data class CardScript(
      */
     val castTimeCaptures: List<CastTimeCapture> = emptyList()
 ) {
+    init {
+        // "Exile <card name>." and "Shuffle <card name> into its owner's library." are two
+        // spellings of one slot — the CR 608.2n destination — so a script that sets both has no
+        // answer, only whichever clause `StackResolver` happens to test first. The DSL rejects it
+        // too, with a message that names the card; this backstop covers the paths that build a
+        // CardScript directly (test fixtures, the Assay compiler), where the DSL guard never runs.
+        require(!(selfExileOnResolve && selfShuffleIntoLibraryOnResolve)) {
+            "A CardScript sets both selfExileOnResolve and selfShuffleIntoLibraryOnResolve; a " +
+                "spell has one CR 608.2n destination, so pick the clause the card actually prints"
+        }
+    }
+
     /**
      * Whether this card has any scripted behavior.
      * Vanilla creatures and basic lands return false.
@@ -388,6 +450,15 @@ data class CardScript(
      */
     val isAura: Boolean
         get() = auraTarget != null
+
+    /**
+     * The requirement an Aura spell's target is chosen against while casting: [auraCastTarget]
+     * when the card narrows the choice, otherwise its [auraTarget]. Legal-action enumeration and
+     * cast validation read this; the requirement captured on the stack for resolution stays
+     * [auraTarget].
+     */
+    val castAuraTarget: TargetRequirement?
+        get() = auraCastTarget ?: auraTarget
 
     /**
      * Whether this spell requires targets when cast.

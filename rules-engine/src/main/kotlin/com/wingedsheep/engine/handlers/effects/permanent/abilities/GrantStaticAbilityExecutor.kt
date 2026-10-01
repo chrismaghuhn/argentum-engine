@@ -6,6 +6,7 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.effects.GrantStaticAbilityEffect
 import kotlin.reflect.KClass
 
@@ -31,19 +32,49 @@ class GrantStaticAbilityExecutor : EffectExecutor<GrantStaticAbilityEffect> {
         val targetId = context.resolveTarget(effect.target)
             ?: return EffectResult.error(state, "No valid target for static ability grant")
 
-        val targetContainer = state.getEntity(targetId)
+        state.getEntity(targetId)
             ?: return EffectResult.error(state, "Target no longer exists")
-        targetContainer.get<CardComponent>()
+
+        // A *player* may hold a grant. Some static abilities describe a rule about the game rather
+        // than about an object — High Tide's "until end of turn, whenever a player taps an Island
+        // for mana, that player adds an additional {U}" — and a spell has no permanent to anchor
+        // one to. The holder then only supplies the "you" of any controller predicate in the
+        // static's own filters; it is not the thing the static acts on.
+        if (state.turnOrder.contains(targetId)) {
+            return EffectResult.success(
+                state.copy(
+                    grantedStaticAbilities = state.grantedStaticAbilities + GrantedStaticAbility(
+                        entityId = targetId,
+                        ability = effect.ability,
+                        duration = effect.duration,
+                        sourceId = context.sourceId,
+                        controllerId = context.controllerId
+                    )
+                )
+            )
+        }
+
+        state.getEntity(targetId)?.get<CardComponent>()
             ?: return EffectResult.error(state, "Target is not a card")
-        if (!state.getBattlefield().contains(targetId)) {
-            return EffectResult.error(state, "Target is not on the battlefield")
+        // Battlefield permanents are the common case, but a static ability can also be handed to a
+        // *card* — "creature cards in your graveyard gain 'You may cast this card from your
+        // graveyard' until end of turn" (Case of the Uneaten Feast). The graveyard-cast read sites
+        // treat a grant anchored to a graveyard card as that card's own permission, so the grant
+        // has to be allowed to land there. Anywhere else is still rejected.
+        val onBattlefield = state.getBattlefield().contains(targetId)
+        val inAGraveyard = state.zones.any { (key, ids) ->
+            key.zoneType == Zone.GRAVEYARD && targetId in ids
+        }
+        if (!onBattlefield && !inAGraveyard) {
+            return EffectResult.error(state, "Target is not on the battlefield or in a graveyard")
         }
 
         val grant = GrantedStaticAbility(
             entityId = targetId,
             ability = effect.ability,
             duration = effect.duration,
-            sourceId = context.sourceId
+            sourceId = context.sourceId,
+            controllerId = context.controllerId
         )
 
         val newState = state.copy(

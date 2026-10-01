@@ -55,7 +55,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Druid of the Cowl:1",
                 "cost": "CostTap",
                 "effect": {
                     "type": "AddMana",
@@ -74,6 +74,32 @@
     },
     "colorIdentityOverride": [
         "GREEN"
+    ]
+}
+
+// Gifted Aetherborn
+{
+    "name": "Gifted Aetherborn",
+    "manaCost": "{B}{B}",
+    "typeLine": "Creature — Aetherborn Vampire",
+    "oracleText": "Deathtouch, lifelink",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 3
+    },
+    "keywords": [
+        "DEATHTOUCH",
+        "LIFELINK"
+    ],
+    "metadata": {
+        "collectorNumber": "61",
+        "rarity": "UNCOMMON",
+        "artist": "Ryan Yee",
+        "flavorText": "A few aetherborn have discovered a way to sustain their own existences at the cost of an insatiable hunger for the life essence of other beings.",
+        "imageUri": "https://cards.scryfall.io/normal/front/a/b/abceb4fd-e3c5-400d-af7a-6dd17108a4b4.jpg?1783936763"
+    },
+    "colorIdentityOverride": [
+        "BLACK"
     ]
 }
 
@@ -106,7 +132,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Lifecrafter's Bestiary:1",
                 "trigger": {
                     "type": "StepEvent",
                     "step": "UPKEEP"
@@ -118,7 +144,7 @@
                 }
             },
             {
-                "id": "ability_2",
+                "id": "Lifecrafter's Bestiary:2",
                 "trigger": {
                     "type": "SpellCastEvent",
                     "spellFilter": {
@@ -224,6 +250,67 @@
     "colorIdentityOverride": []
 }
 
+// Pendulum of Patterns
+{
+    "name": "Pendulum of Patterns",
+    "manaCost": "{2}",
+    "typeLine": "Artifact",
+    "oracleText": "When this artifact enters, you gain 3 life.\n{5}, {T}, Sacrifice this artifact: Draw a card.",
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "Pendulum of Patterns:1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "to": "Battlefield"
+                },
+                "effect": {
+                    "type": "GainLife",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 3
+                    }
+                },
+                "descriptionOverride": "When this artifact enters, you gain 3 life."
+            }
+        ],
+        "activatedAbilities": [
+            {
+                "id": "Pendulum of Patterns:2",
+                "cost": {
+                    "type": "CostComposite",
+                    "costs": [
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomMana",
+                                "cost": "{5}"
+                            }
+                        },
+                        "CostTap",
+                        "CostSacrificeSelf"
+                    ]
+                },
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                "descriptionOverride": "{5}, {T}, Sacrifice this artifact: Draw a card."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "192",
+        "artist": "Raoul Vitale",
+        "flavorText": "Its elaborate designs reveal secrets of aether's flow.",
+        "imageUri": "https://cards.scryfall.io/normal/front/d/1/d19751aa-823e-4a0f-a004-dee333b34327.jpg"
+    },
+    "colorIdentityOverride": []
+}
+
 // Prizefighter Construct
 {
     "name": "Prizefighter Construct",
@@ -255,7 +342,7 @@
     "script": {
         "triggeredAbilities": [
             {
-                "id": "ability_1",
+                "id": "Sram, Senior Edificer:1",
                 "trigger": {
                     "type": "SpellCastEvent",
                     "spellFilter": {
@@ -311,7 +398,7 @@
     "script": {
         "activatedAbilities": [
             {
-                "id": "ability_1",
+                "id": "Universal Solvent:1",
                 "cost": {
                     "type": "CostComposite",
                     "costs": [
@@ -330,7 +417,7 @@
                     "type": "MoveToZone",
                     "target": {
                         "type": "BoundVariable",
-                        "name": "target"
+                        "name": "t0"
                     },
                     "destination": "Graveyard",
                     "byDestruction": true
@@ -341,7 +428,7 @@
                         "filter": {
                             "baseFilter": "permanent"
                         },
-                        "id": "target"
+                        "id": "t0"
                     }
                 ]
             }

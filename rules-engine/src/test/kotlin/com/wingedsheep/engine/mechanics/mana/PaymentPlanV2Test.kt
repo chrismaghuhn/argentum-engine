@@ -50,7 +50,7 @@ class PaymentPlanV2Test : FunSpec({
             .addTracked(PaymentManaColor.BLACK, e2, setOf(Subtype.CAVE))
         driver.addComponent(player, pool)
 
-        val validation = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validateV2(
+        val validation = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validateV2(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -121,7 +121,7 @@ class PaymentPlanV2Test : FunSpec({
             ),
         )
 
-        val validation = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validateV2(
+        val validation = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validateV2(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}{B}{1}"),
@@ -145,7 +145,7 @@ class PaymentPlanV2Test : FunSpec({
             ManaPoolComponent().addTracked(PaymentManaColor.GREEN, e1, setOf(Subtype.FOREST)),
         )
 
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validateV2(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validateV2(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}{G}"),
@@ -189,7 +189,7 @@ class PaymentPlanV2Test : FunSpec({
         val pool = ManaPoolComponent().addTracked(PaymentManaColor.GREEN, e1, setOf(Subtype.FOREST))
         driver.addComponent(player, pool)
 
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validateV2(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validateV2(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -213,7 +213,7 @@ class PaymentPlanV2Test : FunSpec({
             ManaPoolComponent().addTracked(PaymentManaColor.GREEN, e1, setOf(Subtype.FOREST)),
         )
 
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validateV2(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validateV2(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),

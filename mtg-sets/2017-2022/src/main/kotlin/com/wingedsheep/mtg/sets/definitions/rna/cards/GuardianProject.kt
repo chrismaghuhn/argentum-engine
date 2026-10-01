@@ -6,7 +6,6 @@ import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.TriggerBinding
 
 /**
  * Guardian Project (RNA #130)
@@ -24,10 +23,7 @@ val GuardianProject = card("Guardian Project") {
         "name as another creature you control or a creature card in your graveyard, draw a card."
 
     triggeredAbility {
-        trigger = Triggers.entersBattlefield(
-            filter = GameObjectFilter.Creature.nontoken().youControl(),
-            binding = TriggerBinding.ANY,
-        )
+        trigger = Triggers.a(GameObjectFilter.Creature.nontoken().youControl()).enters()
         interveningIf = Conditions.TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard
         effect = Effects.DrawCards(1)
     }

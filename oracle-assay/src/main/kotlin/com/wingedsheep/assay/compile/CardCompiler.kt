@@ -16,8 +16,9 @@ import com.wingedsheep.sdk.model.CharacteristicValue
 import com.wingedsheep.sdk.model.CreatureStats
 import com.wingedsheep.sdk.model.ScryfallMetadata
 import com.wingedsheep.sdk.scripting.AbilityId
-import com.wingedsheep.sdk.serialization.CardValidator
-import com.wingedsheep.sdk.serialization.LintSeverity
+import com.wingedsheep.sdk.scripting.AbilityIdScope
+import com.wingedsheep.sdk.tooling.CardValidator
+import com.wingedsheep.sdk.tooling.LintSeverity
 
 /**
  * Scryfall JSON in, a whole [CardDefinition] out — Assay's reading of a card turned into a card the
@@ -120,6 +121,9 @@ object CardCompiler {
         val fragment = faceResult.lines
             .mapNotNull { it.model }
             .fold<CardFragment, CardFragment?>(CardFragment.EMPTY) { acc, next -> acc?.merge(next) }
+            // CR 607's linked abilities are a whole-card fact, resolved once every line is in —
+            // see [CardFragment.deriveExileLinkage]. The differential's own fold does the same.
+            ?.deriveExileLinkage()
         if (fragment == null) {
             declines += CompileDecline(
                 DeclineKind.LINES_DO_NOT_FOLD,
@@ -295,7 +299,7 @@ object CardCompiler {
         keywords = fragment.keywordAbilities.mapNotNull { it.keyword }.toSet(),
         flags = fragment.flags,
         keywordAbilities = fragment.keywordAbilities,
-        script = withDistinctAbilityIds(fragment.script),
+        script = withDistinctAbilityIds(card.name, fragment.script),
         // Derivation 3 (`CardBuilder.equipAbility`): "Equip {1}" is one line filling two slots, and
         // the field half is not decoration — `CardValidator` requires an Equipment type line
         // wherever it is set, and the engine's equip permissions read it.
@@ -320,12 +324,16 @@ object CardCompiler {
      * `activatedAbilities.find { it.id == action.abilityId }` and activation limits are tracked per
      * id, so two abilities sharing one would activate the wrong ability and share one once-per-turn
      * counter. Nothing Assay produces points *at* an id, which is what makes re-minting safe here
-     * and wrong in the grammar.
+     * and wrong in the grammar. Minted under the card's name, exactly as `card(name) { }` mints a
+     * hand-written card's, so a compile is as deterministic as the card text it reads.
      */
-    private fun withDistinctAbilityIds(script: CardScript): CardScript = script.copy(
-        triggeredAbilities = script.triggeredAbilities.map { it.copy(id = AbilityId.generate()) },
-        activatedAbilities = script.activatedAbilities.map { it.copy(id = AbilityId.generate()) },
-    )
+    private fun withDistinctAbilityIds(cardName: String, script: CardScript): CardScript =
+        AbilityIdScope.within(cardName) {
+            script.copy(
+                triggeredAbilities = script.triggeredAbilities.map { it.copy(id = AbilityId.next()) },
+                activatedAbilities = script.activatedAbilities.map { it.copy(id = AbilityId.next()) },
+            )
+        }
 
     private data class Header(
         val typeLine: TypeLine,

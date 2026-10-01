@@ -35,14 +35,14 @@ val TeachersPest = card("Teacher's Pest") {
     keywords(Keyword.MENACE)
 
     triggeredAbility {
-        trigger = Triggers.Attacks
+        trigger = Triggers.self.attacks()
         effect = Effects.GainLife(1)
         description = "Whenever this creature attacks, you gain 1 life."
     }
 
     activatedAbility {
         cost = Costs.Mana("{B}{G}")
-        effect = Effects.PutOntoBattlefield(EffectTarget.Self, tapped = true)
+        effect = Effects.PutOntoBattlefieldFromGraveyard(EffectTarget.Self, tapped = true)
         activateFromZone = Zone.GRAVEYARD
         description = "Return this card from your graveyard to the battlefield tapped."
     }

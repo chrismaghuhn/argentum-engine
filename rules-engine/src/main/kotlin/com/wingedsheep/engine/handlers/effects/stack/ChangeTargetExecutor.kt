@@ -8,7 +8,9 @@ import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
+import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
@@ -29,13 +31,14 @@ import kotlin.reflect.KClass
  * 4. Present a selection decision to the controller
  * 5. Push ChangeSpellTargetContinuation (reused)
  */
-class ChangeTargetExecutor : EffectExecutor<ChangeTargetEffect> {
+class ChangeTargetExecutor(
+    private val predicateEvaluator: PredicateEvaluator,
+    private val targetFinder: TargetFinder
+) : EffectExecutor<ChangeTargetEffect> {
 
     override val effectType: KClass<ChangeTargetEffect> = ChangeTargetEffect::class
 
     private val decisionHandler = DecisionHandler()
-    private val predicateEvaluator = PredicateEvaluator()
-
     override fun execute(
         state: GameState,
         effect: ChangeTargetEffect,
@@ -62,8 +65,25 @@ class ChangeTargetExecutor : EffectExecutor<ChangeTargetEffect> {
         val currentTarget = spellTargets.first()
         val targetRequirements = targetsComponent?.targetRequirements ?: emptyList()
 
+        // "…if that target is you" (Reflecting Mirror). Checked at resolution, so a spell whose
+        // target changed hands in response is no longer redirectable.
+        if (effect.onlyIfCurrentTargetIsController &&
+            getTargetEntityId(currentTarget) != context.controllerId
+        ) {
+            return EffectResult.success(state)
+        }
+
         // 3. Find all legal new targets based on target requirements
-        val legalNewTargets = findLegalNewTargets(state, currentTarget, targetRequirements, context.controllerId)
+        val spellController = stackEntity.get<ControllerComponent>()?.playerId ?: context.controllerId
+        var legalNewTargets = findLegalNewTargets(
+            state, currentTarget, targetRequirements, spellController, targetSpell.spellEntityId
+        )
+
+        // "The new target must be a player" (Reflecting Mirror) — narrowed *after* the spell's own
+        // requirement, so the redirect can never make an otherwise-illegal choice legal.
+        if (effect.newTargetMustBePlayer) {
+            legalNewTargets = legalNewTargets.filter { it in state.turnOrder }
+        }
 
         if (legalNewTargets.isEmpty()) {
             // No other legal targets to redirect to
@@ -72,6 +92,12 @@ class ChangeTargetExecutor : EffectExecutor<ChangeTargetEffect> {
 
         // 4. Present selection decision to the controller
         val sourceName = context.sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name }
+        val continuation = ChangeSpellTargetContinuation(
+            spellEntityId = targetSpell.spellEntityId,
+            sourceId = context.sourceId,
+            objectReferences = context.objectReferences
+        )
+
         val decisionResult = decisionHandler.createCardSelectionDecision(
             state = state,
             playerId = context.controllerId,
@@ -81,21 +107,12 @@ class ChangeTargetExecutor : EffectExecutor<ChangeTargetEffect> {
             options = legalNewTargets,
             minSelections = 1,
             maxSelections = 1,
-            useTargetingUI = true
+            useTargetingUI = true,
+            answer = continuation
         )
 
-        // 5. Push continuation (reuse ChangeSpellTargetContinuation)
-        val continuation = ChangeSpellTargetContinuation(
-            decisionId = decisionResult.pendingDecision!!.id,
-            spellEntityId = targetSpell.spellEntityId,
-            sourceId = context.sourceId
-        )
-
-        val stateWithContinuation = decisionResult.state.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decisionResult.pendingDecision,
+        return EffectResult.propagatePause(
+            decisionResult.state,
             decisionResult.events
         )
     }
@@ -108,7 +125,8 @@ class ChangeTargetExecutor : EffectExecutor<ChangeTargetEffect> {
         state: GameState,
         currentTarget: ChosenTarget,
         targetRequirements: List<TargetRequirement>,
-        controllerId: EntityId
+        controllerId: EntityId,
+        sourceId: EntityId
     ): List<EntityId> {
         val projected = state.projectedState
         val currentTargetId = getTargetEntityId(currentTarget)
@@ -119,11 +137,7 @@ class ChangeTargetExecutor : EffectExecutor<ChangeTargetEffect> {
         return when {
             // AnyTarget: creatures/planeswalkers on battlefield + players
             requirement is AnyTarget -> {
-                val permanents = state.getBattlefield().filter { entityId ->
-                    projected.hasType(entityId, "CREATURE") || projected.hasType(entityId, "PLANESWALKER")
-                }
-                val players = state.turnOrder.filter { state.hasEntity(it) }
-                (permanents + players).filter { it != currentTargetId }
+                targetFinder.findLegalTargets(state, requirement, controllerId, sourceId).filter { it != currentTargetId }
             }
 
             // TargetCreatureOrPlayer: creatures on battlefield + players
@@ -143,7 +157,9 @@ class ChangeTargetExecutor : EffectExecutor<ChangeTargetEffect> {
                         state, projected, entityId, requirement.permanentFilter.baseFilter, predContext
                     )
                 }
-                val players = state.turnOrder.filter { state.hasEntity(it) }
+                val players = state.turnOrder.filter {
+                    state.hasEntity(it) && (!requirement.opponentsOnly || state.isOpponentOf(it, controllerId))
+                }
                 (permanents + players).filter { it != currentTargetId }
             }
 

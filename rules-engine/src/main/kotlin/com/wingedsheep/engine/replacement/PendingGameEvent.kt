@@ -123,14 +123,12 @@ sealed interface PendingGameEvent {
      * Most event domains return null (no optional replacement support), causing the
      * processor to treat the effect as mandatory via [applyReplacement].
      *
-     * @param decisionId Unique ID for the decision
      * @param gathered The matched replacement effect
      * @param state Current game state
      * @param context Execution context
      * @return An [OptionalPromptResult] with the decision and continuation, or null
      */
     fun createOptionalPrompt(
-        decisionId: String,
         gathered: GatheredReplacement,
         state: GameState,
         context: EffectContext?,
@@ -147,7 +145,7 @@ sealed interface PendingGameEvent {
      * (CR 614.11a — complete the replacement, then resume the sequence).
      * Most event domains return null (no remainder concept).
      */
-    fun remainderContinuation(state: GameState): ContinuationFrame? = null
+    fun remainderContinuation(state: GameState): AutomaticContinuation? = null
 
     /**
      * Return a continuation frame that **performs this event** once every
@@ -165,7 +163,7 @@ sealed interface PendingGameEvent {
      * Called on the **modified** event, so implementations read their own
      * post-replacement fields.
      */
-    fun performContinuation(state: GameState): ContinuationFrame? = null
+    fun performContinuation(state: GameState): AutomaticContinuation? = null
 
     /** Work required after a replacement-resolved zone change reaches the physical atom. */
     @Serializable
@@ -204,7 +202,11 @@ sealed interface PendingGameEvent {
     @Serializable
     data object LibraryRevealZoneChangeCompletion : ZoneChangeCompletion
 
-    /** Emit the legacy spell-return event after a stack spell enters its library. */
+    /**
+     * Mark a stack spell publicly revealed at its new library slot after it physically enters the
+     * library ("the owner puts it on top or bottom of their library" — a move, not a counter, so no
+     * SpellCounteredEvent is emitted).
+     */
     @Serializable
     data object StackSpellToLibraryZoneChangeCompletion : ZoneChangeCompletion
 
@@ -419,7 +421,7 @@ sealed interface PendingGameEvent {
                     )
                 }
 
-                is RedirectZoneChangeWithEffect -> {
+                is RedirectZoneChangeWith -> {
                     val redirect = com.wingedsheep.engine.handlers.effects.ZoneChangeRedirectResult(
                         destinationZone = effect.newDestination,
                         additionalEffect = effect.additionalEffect,
@@ -448,7 +450,6 @@ sealed interface PendingGameEvent {
             effect is CommanderZoneReplacement
 
         override fun createOptionalPrompt(
-            decisionId: String,
             gathered: GatheredReplacement,
             state: GameState,
             context: EffectContext?,
@@ -460,7 +461,7 @@ sealed interface PendingGameEvent {
                 ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
                 ?.name
                 ?: "Commander"
-            val decision = YesNoDecision(
+            val question = { decisionId: String -> YesNoDecision(
                 id = decisionId,
                 playerId = ownerId,
                 prompt = "Put $cardName into the command zone instead of putting it into your ${destinationZone.displayName}?",
@@ -469,11 +470,10 @@ sealed interface PendingGameEvent {
                     sourceName = cardName,
                     phase = DecisionPhase.RESOLUTION,
                 )
-            )
+            ) }
             return OptionalPromptResult(
-                decision = decision,
+                question = question,
                 continuation = OptionalReplacementContinuation(
-                    decisionId = decisionId,
                     pendingEvent = this,
                     gathered = gathered,
                     alreadyApplied = alreadyApplied,
@@ -482,11 +482,8 @@ sealed interface PendingGameEvent {
             )
         }
 
-        override fun performContinuation(state: GameState): ContinuationFrame =
-            ZoneChangeContinuation(
-                decisionId = "pending",
-                pendingEvent = this,
-            )
+        override fun performContinuation(state: GameState): AutomaticContinuation =
+            ZoneChangeContinuation(pendingEvent = this)
     }
 
     /**
@@ -526,12 +523,12 @@ sealed interface PendingGameEvent {
         override fun applyReplacement(effect: ReplacementEffect, state: GameState): ReplacementOutcome {
             return when (effect) {
                 is PreventDraw -> ReplacementOutcome.Consumed
-                is ReplaceDrawWithEffect -> ReplacementOutcome.Replaced(effect.replacementEffect)
+                is ReplaceDrawWith -> ReplacementOutcome.Replaced(effect.replacementEffect)
                 else -> error("Unsupported replacement effect type '${effect::class.simpleName}' for ${this::class.simpleName}")
             }
         }
 
-        override fun remainderContinuation(state: GameState): ContinuationFrame? {
+        override fun remainderContinuation(state: GameState): AutomaticContinuation? {
             if (remainingDraws > 0) {
                 return DrawReplacementRemainingDrawsContinuation(
                     drawingPlayerId = playerId,
@@ -546,13 +543,12 @@ sealed interface PendingGameEvent {
         }
 
         override fun createOptionalPrompt(
-            decisionId: String,
-            gathered: GatheredReplacement,
+                gathered: GatheredReplacement,
             state: GameState,
             context: EffectContext?,
             alreadyApplied: Set<ReplacementEffectIdentity>,
         ): OptionalPromptResult? {
-            val replaceEffect = gathered.effect as? ReplaceDrawWithEffect ?: return null
+            val replaceEffect = gathered.effect as? ReplaceDrawWith ?: return null
             val sourceEntityId = gathered.sourceEntityId(state)
             val sourceEntity = sourceEntityId?.let { state.getEntity(it) }
             val card = sourceEntity?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
@@ -561,7 +557,7 @@ sealed interface PendingGameEvent {
                 ?.get<com.wingedsheep.engine.state.components.battlefield.LinkedExileComponent>()
             val pileCount = linkedExile?.exiledIds?.size
 
-            val prompt = buildString {
+            val prompt = gathered.optionalPrompt ?: buildString {
                 // The effect's own text, not gathered.description — the latter is already
                 // prefixed with the card name, which this line supplies.
                 append("Use $cardName? ${replaceEffect.description}")
@@ -570,7 +566,7 @@ sealed interface PendingGameEvent {
                 }
             }
 
-            val decision = YesNoDecision(
+            val question = { decisionId: String -> YesNoDecision(
                 id = decisionId,
                 playerId = affectedPlayerId,
                 prompt = prompt,
@@ -579,22 +575,26 @@ sealed interface PendingGameEvent {
                     sourceName = cardName,
                     phase = DecisionPhase.RESOLUTION
                 )
-            )
+            ) }
 
             val continuation = StaticDrawReplacementContinuation(
-                decisionId = decisionId,
                 drawingPlayerId = playerId,
                 sourceId = sourceEntityId ?: EntityId(""),
+                objectReferences = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(captured = true,
+                    origin = sourceEntityId?.let(state::objectRef), source = sourceEntityId?.let(state::objectRef),
+                    resolutionKey = "replacement:${gathered.identity}:" +
+                        "${sourceEntityId?.let(state::objectRef)?.generation}"),
                 sourceName = cardName,
                 replacementEffect = replaceEffect.replacementEffect,
                 drawCount = drawsLeft,
                 isDrawStep = isDrawStep,
                 drawnCardsSoFar = drawnCardsSoFar,
-                declinedIdentity = gathered.identity
+                declinedIdentity = gathered.identity,
+                alreadyApplied = state.activeReplacementChain ?: emptySet()
             )
 
             return OptionalPromptResult(
-                decision = decision,
+                question = question,
                 continuation = continuation
             )
         }
@@ -638,7 +638,7 @@ sealed interface PendingGameEvent {
                     )
                 )
                 is PreventDraw -> ReplacementOutcome.Consumed
-                is ReplaceDrawWithEffect -> ReplacementOutcome.Replaced(effect.replacementEffect)
+                is ReplaceDrawWith -> ReplacementOutcome.Replaced(effect.replacementEffect)
                 else -> error("Unsupported replacement effect type '${effect::class.simpleName}' for ${this::class.simpleName}")
             }
         }
@@ -649,7 +649,7 @@ sealed interface PendingGameEvent {
          * have run that loop has already returned, so the modified instruction is carried
          * forward as a draw of [totalCount] with the announcement marked as done.
          */
-        override fun performContinuation(state: GameState): ContinuationFrame? {
+        override fun performContinuation(state: GameState): AutomaticContinuation? {
             if (totalCount <= 0) return null
             return DrawReplacementRemainingDrawsContinuation(
                 drawingPlayerId = playerId,
@@ -664,12 +664,12 @@ sealed interface PendingGameEvent {
 /**
  * Result of [PendingGameEvent.createOptionalPrompt].
  *
- * @property decision The yes/no decision to present to the player
+ * @property question The unallocated yes/no question to present to the player
  * @property continuation The continuation frame to resume after the player answers
  */
 data class OptionalPromptResult(
-    val decision: PendingDecision,
-    val continuation: ContinuationFrame
+    val question: (String) -> PendingDecision,
+    val continuation: AnswerContinuation
 )
 
 private fun matchesPlayerFilter(

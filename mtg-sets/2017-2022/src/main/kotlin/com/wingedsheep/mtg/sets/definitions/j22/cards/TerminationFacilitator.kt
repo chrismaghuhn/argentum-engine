@@ -1,6 +1,6 @@
 package com.wingedsheep.mtg.sets.definitions.j22.cards
 
-import com.wingedsheep.sdk.core.Counters
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Targets
@@ -9,8 +9,7 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TimingRule
-import com.wingedsheep.sdk.scripting.TriggerBinding
-import com.wingedsheep.sdk.scripting.events.RecipientFilter
+import com.wingedsheep.sdk.scripting.events.Recipient
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
 /**
@@ -39,18 +38,17 @@ val TerminationFacilitator = card("Termination Facilitator") {
     activatedAbility {
         cost = Costs.Tap
         timing = TimingRule.SorcerySpeed
-        val target = target("target creature or planeswalker", Targets.CreatureOrPlaneswalker)
-        effect = Effects.AddCounters(Counters.BOUNTY, 1, target)
+        val target = target(Targets.CreatureOrPlaneswalker)
+        effect = Effects.AddCounters(CounterType.BOUNTY, 1, target)
     }
 
     triggeredAbility {
-        trigger = Triggers.dealsDamage(
-            recipient = RecipientFilter.Matching(
+        trigger = Triggers.a().dealsDamage(
+            to = Recipient.Object(
                 GameObjectFilter.CreatureOrPlaneswalker
                     .opponentControls()
-                    .withCounter(Counters.BOUNTY),
+                    .withCounter(CounterType.BOUNTY),
             ),
-            binding = TriggerBinding.ANY,
         )
         effect = Effects.Destroy(EffectTarget.TriggeringEntity)
     }

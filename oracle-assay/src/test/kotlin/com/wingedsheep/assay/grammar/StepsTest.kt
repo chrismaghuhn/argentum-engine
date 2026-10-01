@@ -3,11 +3,22 @@ package com.wingedsheep.assay.grammar
 import com.wingedsheep.assay.syntax.ParseOutcome
 import com.wingedsheep.assay.syntax.parseLine
 import com.wingedsheep.assay.syntax.printLine
+import com.wingedsheep.sdk.core.Keyword
+import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.Patterns
+import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.effects.CreateDelayedTriggerEffect
+import com.wingedsheep.sdk.scripting.effects.ForEachTargetEffect
+import com.wingedsheep.sdk.scripting.effects.SacrificeSelfEffect
+import com.wingedsheep.sdk.scripting.effects.SuccessCriterion
+import com.wingedsheep.sdk.scripting.effects.TransformEffect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetPermanent
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -120,6 +131,154 @@ class StepsTest : StringSpec({
         ).forEach { roundTrips(it) }
     }
 
+    // The quantifier table: "target", "up to one target", "N target", "up to N target", "up to X
+    // target". Every verb of the family gets every row, which is the property the table exists for —
+    // before it, "tap up to three target creatures" was written and "destroy up to three" was not.
+    "every quantifier reaches every verb of the family" {
+        listOf("Destroy", "Exile", "Tap", "Untap").forEach { verb ->
+            roundTrips("$verb target creature.")
+            roundTrips("$verb up to one target creature.")
+            roundTrips("$verb two target creatures.")
+            roundTrips("$verb up to three target creatures.")
+            roundTrips("$verb up to X target creatures.")
+            roundTrips("$verb any number of target creatures.")
+        }
+    }
+
+    // "Up to one" is one field on the requirement and one clause in the sentence: the count stays at
+    // one and `optional` is what lets the spell be cast choosing nothing (CR 601.2c).
+    "up to one is the singular requirement with optional set" {
+        fragment("Destroy up to one target creature.") shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = Effects.Destroy(Targets.bound()),
+                targetRequirements = listOf(Targets.permanent(GameObjectFilter.Creature, optional = true)),
+            )
+        )
+        roundTrips("Destroy up to one target creature.")
+    }
+
+    // …and a plural quantifier is exactly one that admits several targets, so the effect is written
+    // once per chosen target rather than once against the requirement.
+    "a plural quantifier iterates the effect over the chosen targets" {
+        fragment("Exile up to two target creatures.") shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = ForEachTargetEffect(listOf(Effects.Exile(EffectTarget.ContextTarget(0)))),
+                targetRequirements = listOf(
+                    Targets.several(2, GameObjectFilter.Creature, optional = true)
+                ),
+            )
+        )
+        fragment("Exile two target creatures.").script.targetRequirements shouldBe
+            listOf(Targets.several(2, GameObjectFilter.Creature, optional = false))
+        fragment("Exile up to X target creatures.").script.targetRequirements shouldBe
+            listOf(Targets.upToX(GameObjectFilter.Creature))
+        fragment("Exile any number of target creatures.").script.targetRequirements shouldBe
+            listOf(Targets.anyNumber(GameObjectFilter.Creature))
+    }
+
+    // "Another" and "other" are the quantifier rows with the source excluded — `excludeSelf` on the
+    // target filter, the spelling 88 hand-written goldens use — and "another" is English's singular
+    // for "one other", so the four rows are the singular pair and the counted plural pair.
+    "another and other exclude the source from the target" {
+        fragment("Destroy another target creature you control.") shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = Effects.Destroy(Targets.bound()),
+                targetRequirements = listOf(
+                    TargetObject(
+                        filter = TargetFilter(GameObjectFilter.Creature.youControl(), excludeSelf = true),
+                        id = Targets.SLOT,
+                    )
+                ),
+            )
+        )
+        fragment("Exile up to one other target creature.").script.targetRequirements shouldBe listOf(
+            TargetObject(optional = true, filter = TargetFilter(GameObjectFilter.Creature, excludeSelf = true), id = Targets.SLOT)
+        )
+        fragment("Tap up to two other target creatures.").script.targetRequirements shouldBe listOf(
+            TargetObject(
+                count = 2,
+                optional = true,
+                filter = TargetFilter(GameObjectFilter.Creature, excludeSelf = true),
+                id = Targets.SLOT,
+            )
+        )
+        listOf(
+            "Destroy another target creature.",
+            "Destroy up to one other target creature.",
+            "Destroy two other target creatures.",
+            "Destroy up to three other target creatures.",
+            "Return another target creature you control to its owner's hand.",
+        ).forEach { roundTrips(it) }
+        // "one other" is the singular pair's alone, exactly as bare "up to one" is.
+        Grammar.abilityLine.parseLine("Destroy up to one other target creatures.")
+            .shouldBeInstanceOf<ParseOutcome.Declined>()
+    }
+
+    // After a first target, "another" contrasts with *that target* (the SDK's `TargetOther`), not
+    // with the source — Drooling Groodion and Mabel's Mettle. Reading it as `excludeSelf` would let
+    // one creature take both halves, so the second position declines.
+    "another after a first target declines rather than excluding the source" {
+        listOf(
+            "Target creature gets +2/+2 until end of turn. Another target creature gets -2/-2 until end of turn.",
+            "Target creature gets +2/+2 until end of turn. Up to one other target creature gets +1/+1 until end of turn.",
+        ).forEach { Grammar.abilityLine.parseLine(it).shouldBeInstanceOf<ParseOutcome.Declined>() }
+        roundTrips("Another target creature gets +2/+2 until end of turn.")
+    }
+
+    // Oracle prints the plural possessive both ways, 110 lines to 55. One rule, two spellings, and
+    // the minority never prints — so Scapegoat's line survives as a variant rather than a decline.
+    "the older plural possessive parses and never prints" {
+        fragment("Return any number of target creatures you control to their owner's hand.") shouldBe
+            fragment("Return any number of target creatures you control to their owners' hands.")
+        Grammar.abilityLine.printLine(
+            fragment("Return any number of target creatures you control to their owner's hand.")
+        ) shouldBe "Return any number of target creatures you control to their owners' hands."
+    }
+
+    // The agreement reaches past the noun phrase, which is why the shape takes two templates: the
+    // possessive after the target is singular for one creature and plural for several.
+    "a possessive past the noun agrees with the quantifier" {
+        listOf(
+            "Return target creature to its owner's hand.",
+            "Return up to one target creature to its owner's hand.",
+            "Return up to two target creatures to their owners' hands.",
+            "Put target creature on top of its owner's library.",
+            "Put two target lands on top of their owners' libraries.",
+        ).forEach { roundTrips(it) }
+    }
+
+    // Singular and plural must not overlap, or every quantified card in the corpus reports
+    // AMBIGUOUS — the same property `Draw one cards.` proves for the counting rules. "Up to one" is
+    // the singular row's, so the plural rows still refuse one.
+    "the quantifier rows take disjoint counts and disjoint nouns" {
+        listOf(
+            "Destroy up to one target creatures.",
+            "Destroy up to two target creature.",
+            // Digits are Oracle's convention for damage and life, never for a target count.
+            "Destroy up to 1 target creature.",
+        ).forEach { Grammar.abilityLine.parseLine(it).shouldBeInstanceOf<ParseOutcome.Declined>() }
+    }
+
+    // Fail-closed, and here it is also what tells the rows apart: a count no row can spell, and an
+    // `optional` flag the bare row does not say, must refuse to print rather than print a sentence
+    // that drops the difference.
+    "a requirement carrying more than its row spells refuses to print" {
+        fun printed(requirement: TargetRequirement) =
+            Grammar.abilityLine.printLine(
+                CardFragment(
+                    script = CardScript(
+                        spellEffect = ForEachTargetEffect(listOf(Effects.Destroy(EffectTarget.ContextTarget(0)))),
+                        targetRequirements = listOf(requirement),
+                    )
+                )
+            )
+
+        printed(Targets.several(2, GameObjectFilter.Creature, optional = true)) shouldBe
+            "Destroy up to two target creatures."
+        // Twenty is past the number vocabulary, which stops where Oracle's own convention does.
+        printed(Targets.several(20, GameObjectFilter.Creature, optional = true)) shouldBe null
+    }
+
     "the controller clause is a suffix on the model as well as on the sentence" {
         fragment("Destroy target creature you control.") shouldBe CardFragment(
             script = CardScript(
@@ -173,6 +332,104 @@ class StepsTest : StringSpec({
         ).forEach { roundTrips(it) }
     }
 
+    // The pump sentence is the second family to slot the quantifier table, and its verb agrees in
+    // number: one creature "gets", several "each get". Second Breakfast prints the plural.
+    "the pump sentence takes every quantifier, and its verb agrees in number" {
+        fragment("Up to two target creatures each get +2/+1 until end of turn.") shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = ForEachTargetEffect(
+                    listOf(Effects.ModifyStats(2, 1, EffectTarget.ContextTarget(0)))
+                ),
+                targetRequirements = listOf(Targets.several(2, GameObjectFilter.Creature, optional = true)),
+            )
+        )
+        listOf(
+            "Up to one target creature gets +2/+0 until end of turn.",
+            "Up to two target creatures each get +2/+1 until end of turn.",
+            "Up to three target creatures each get -1/-1 until end of turn.",
+            "Up to X target creatures each get +1/+1 until end of turn.",
+            "Two target creatures each get +1/+0 until end of turn.",
+        ).forEach { roundTrips(it) }
+        // The fronted spelling comes along, because it is the same rule with one word moved.
+        fragment("Until end of turn, up to one target creature gets +2/+0.") shouldBe
+            fragment("Up to one target creature gets +2/+0 until end of turn.")
+    }
+
+    // The keyword-grant sibling takes the same rows, and its verb agrees the same way: "gains" for
+    // one, "each gain" for several. Phalanx Formation prints the plural.
+    "the keyword grant takes every quantifier" {
+        fragment("Any number of target creatures each gain double strike until end of turn.") shouldBe
+            CardFragment(
+                script = CardScript(
+                    spellEffect = ForEachTargetEffect(
+                        listOf(Effects.GrantKeyword(Keyword.DOUBLE_STRIKE, EffectTarget.ContextTarget(0)))
+                    ),
+                    targetRequirements = listOf(Targets.anyNumber(GameObjectFilter.Creature)),
+                )
+            )
+        listOf(
+            "Target creature gains flying until end of turn.",
+            "Up to one target creature gains first strike and vigilance until end of turn.",
+            "Two target creatures each gain flying until end of turn.",
+            "Up to two target creatures each gain trample until end of turn.",
+            "Up to X target creatures each gain haste until end of turn.",
+            "Any number of target creatures each gain double strike until end of turn.",
+        ).forEach { roundTrips(it) }
+    }
+
+    // The compound sentence is where the plural rows actually pay — every quantified line the corpus
+    // prints for it is plural. Both halves are per-target, so the whole composite goes *inside* the
+    // iteration rather than the iteration being split in two.
+    "the pump-and-grant sentence puts the whole compound inside one iteration" {
+        fragment("Up to two target creatures each get +1/+1 and gain lifelink until end of turn.") shouldBe
+            CardFragment(
+                script = CardScript(
+                    spellEffect = ForEachTargetEffect(
+                        listOf(
+                            Effects.ModifyStats(1, 1, EffectTarget.ContextTarget(0)) then
+                                Effects.GrantKeyword(Keyword.LIFELINK, EffectTarget.ContextTarget(0))
+                        )
+                    ),
+                    targetRequirements = listOf(Targets.several(2, GameObjectFilter.Creature, optional = true)),
+                )
+            )
+        listOf(
+            "Target creature gets +4/+0 and gains trample until end of turn.",
+            "Up to one target creature gets +1/+1 and gains lifelink until end of turn.",
+            // Windborne Charge, Coordinated Assault, Rouse the Mob.
+            "Two target creatures you control each get +2/+2 and gain flying until end of turn.",
+            "Up to two target creatures each get +1/+0 and gain first strike until end of turn.",
+            "Any number of target creatures each get +2/+0 and gain trample until end of turn.",
+        ).forEach { roundTrips(it) }
+        // The second verb takes no "each" of its own — the adverb attaches once to the pair — so the
+        // doubled spelling is not a variant, it is not this sentence.
+        Grammar.abilityLine
+            .parseLine("Up to two target creatures each get +1/+1 and each gain lifelink until end of turn.")
+            .shouldBeInstanceOf<ParseOutcome.Declined>()
+    }
+
+    // Damage and counters take the *singular* rows only. Their plural is a different sentence —
+    // "divided as you choose among …" and "on each of up to two target creatures" — so a plural row
+    // here would read a distribute model as a sentence that means something else.
+    "damage and counters take the singular quantifier rows and refuse the plural ones" {
+        listOf(
+            "~ deals 3 damage to up to one target creature.",
+            "~ deals 5 damage to up to one target creature or planeswalker.",
+            "Put a +1/+1 counter on up to one target creature.",
+            "Put a -1/-1 counter on up to one target creature.",
+            "Put two +1/+1 counters on up to one target creature you control.",
+        ).forEach { roundTrips(it) }
+
+        listOf(
+            // Never printed: damage over several targets is "divided as you choose among …".
+            "~ deals 3 damage to up to two target creatures.",
+            "~ deals 3 damage to any number of target creatures.",
+            // Never printed: the distribute sentence says "on each of up to two target creatures".
+            "Put a +1/+1 counter on up to two target creatures.",
+            "Put a +1/+1 counter on any number of target creatures.",
+        ).forEach { Grammar.abilityLine.parseLine(it).shouldBeInstanceOf<ParseOutcome.Declined>() }
+    }
+
     // The sign of a zero modifier is not in the model — `Fixed(0)` is `Fixed(0)` — so the printer
     // derives it from the other component, which is the rule the whole corpus follows. Getting this
     // wrong is a print mismatch on ~250 cards rather than a wrong reading, but the gate must be 0.
@@ -211,14 +468,15 @@ class StepsTest : StringSpec({
     }
 
     // Fail-closed the other way: a requirement carrying a restriction the phrase does not spell
-    // must not print as though it did. `excludeSelf` is "other target creature", a different card.
+    // must not print as though it did. `excludeTriggeringEntity` is "target creature other than that
+    // creature", a different card. (`excludeSelf` used to stand here; the "another" rows spell it now.)
     "a target requirement the phrase does not spell refuses to print" {
         val other = CardFragment(
             script = CardScript(
                 spellEffect = Effects.Destroy(Targets.bound()),
                 targetRequirements = listOf(
-                    TargetPermanent(
-                        filter = TargetFilter(GameObjectFilter.Creature, excludeSelf = true),
+                    TargetObject(
+                        filter = TargetFilter(GameObjectFilter.Creature, excludeTriggeringEntity = true),
                         id = Targets.SLOT,
                     )
                 ),
@@ -229,7 +487,7 @@ class StepsTest : StringSpec({
     }
 
     // The mass effects: one iteration over a GroupFilter with the per-member effect written against
-    // EffectTarget.Self. Four printed shapes for one model, which is why the templates are
+    // EffectTarget.IterationEntity. Four printed shapes for one model, which is why the templates are
     // enumerated and the group filter is Filters slotted whole.
     "a group effect is one iteration over a filter" {
         fragment("Creatures you control get +1/+1 until end of turn.") shouldBe CardFragment(
@@ -238,7 +496,7 @@ class StepsTest : StringSpec({
                     com.wingedsheep.sdk.scripting.filters.unified.GroupFilter(
                         GameObjectFilter.Creature.youControl()
                     ),
-                    Effects.ModifyStats(1, 1, com.wingedsheep.sdk.scripting.targets.EffectTarget.Self),
+                    Effects.ModifyStats(1, 1, com.wingedsheep.sdk.scripting.targets.EffectTarget.IterationEntity),
                 )
             )
         )
@@ -259,6 +517,47 @@ class StepsTest : StringSpec({
             fragment("Destroy all creatures.")
     }
 
+    // The rider is something English adds to the sentence, not something the sentence is made of.
+    // The four "unless" rules had it written into their templates, so "Sacrifice ~." — a complete
+    // Oracle sentence — died on its own full stop, which is the shape of the whole `.` decline
+    // family. The bare model is the sacrifice with no cost in front of it, so the two do not collide.
+    "the bare sacrifice is a sentence, not the front of the unless one" {
+        roundTrips("At the beginning of each end step, sacrifice ~.")
+        roundTrips("{1}{R}: Sacrifice ~.")
+        roundTrips("At the beginning of your upkeep, sacrifice ~ unless you pay {2}.")
+        fragment("At the beginning of each end step, sacrifice ~.") shouldNotBe
+            fragment("At the beginning of each end step, sacrifice ~ unless you pay {2}.")
+    }
+
+    // The shuffle rides the move rather than being a second clause: `ZonePlacement.Shuffled` puts
+    // each card into its *owner's* library and shuffles that one, which is what "their library"
+    // means when the graveyard is "their graveyard". A separate `ShuffleLibraryEffect()` step would
+    // shuffle the controller's instead, and would also split the sentence into two clauses.
+    "shuffling targets out of a graveyard is one effect per card" {
+        fragment(
+            "Target player shuffles up to four target cards from their graveyard into their library."
+        ) shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = ForEachTargetEffect(
+                    listOf(Effects.ShuffleIntoLibrary(EffectTarget.ContextTarget(0)))
+                ),
+                targetRequirements = listOf(
+                    com.wingedsheep.sdk.scripting.targets.TargetObject(
+                        count = 4,
+                        optional = true,
+                        filter = TargetFilter.CardInGraveyard,
+                    ),
+                ),
+            )
+        )
+        roundTrips(
+            "Target player shuffles up to four target cards from their graveyard into their library."
+        )
+        roundTrips(
+            "Target player shuffles up to three target cards from their graveyard into their library."
+        )
+    }
+
     // Both leaves in one file: a quantity of cards is a word, a quantity of life or damage a numeral.
     "the counted verbs keep the two number conventions apart" {
         roundTrips("You gain 3 life.")
@@ -266,5 +565,233 @@ class StepsTest : StringSpec({
         roundTrips("You gain 2 life for each Mountain target opponent controls.")
         roundTrips("~ deals X damage to any target.")
         roundTrips("Target creature gets +3/+3 and gains flying until end of turn.")
+    }
+    "a forced sacrifice names its player and reads the whole four-by-two product" {
+        fragment("Each player sacrifices two creatures of their choice.") shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = Effects.Sacrifice(
+                    GameObjectFilter.Creature,
+                    count = 2,
+                    target = EffectTarget.PlayerRef(com.wingedsheep.sdk.scripting.references.Player.Each),
+                )
+            )
+        )
+        listOf("each player", "each opponent", "target player", "target opponent").forEach { who ->
+            val subject = who.replaceFirstChar { c -> c.uppercase() }
+            roundTrips("$subject sacrifices a creature of their choice.")
+            roundTrips("$subject sacrifices two lands of their choice.")
+        }
+    }
+
+    // The bare imperative is a different SDK type (`SacrificeEffect`, no player), so the two
+    // sentences must not collapse onto one model — this is the pair the differential watches.
+    "the bare sacrifice imperative stays a different rule from the named one" {
+        fragment("Sacrifice a creature.") shouldNotBe
+            fragment("Each player sacrifices a creature of their choice.")
+        roundTrips("Sacrifice a creature.")
+    }
+
+    "an announced number is spent by the sentence that follows it" {
+        fragment("Choose a number between 0 and 13. Each player sacrifices that many creatures of their choice.") shouldBe
+            CardFragment(
+                script = CardScript(
+                    spellEffect = Effects.ChooseNumberThen(
+                        then = Effects.Sacrifice(
+                            GameObjectFilter.Creature,
+                            count = com.wingedsheep.sdk.scripting.values.DynamicAmount.XValue,
+                            target = EffectTarget.PlayerRef(com.wingedsheep.sdk.scripting.references.Player.Each),
+                        ),
+                        minValue = 0,
+                        maxValue = 13,
+                        prompt = "Choose a number between 0 and 13",
+                    )
+                )
+            )
+        roundTrips("Choose a number between 0 and 13. Each player sacrifices that many creatures of their choice.")
+        roundTrips("Choose a number between 1 and 4. Target opponent sacrifices that many lands of their choice.")
+    }
+
+    // "that many" is only legal where a preceding sentence announced the number. Offered at the
+    // top level it would read a bare `XValue` out of nowhere — the reversible-but-wrong class.
+    "the announced-count sacrifice is unreachable without its antecedent" {
+        Grammar.abilityLine.parseLine("Each player sacrifices that many creatures of their choice.")
+            .shouldBeInstanceOf<ParseOutcome.Declined>()
+    }
+
+    // CR 701.28's verb about the source, a row of the retargetable shape rather than a rule of its
+    // own — which is what puts it in every position that shape reaches: an activated flip, a step
+    // trigger, an intervening-if trigger. The corpus's top "Transform" decline row was this line.
+    "transform is a clause about the source in every position that takes one" {
+        fragment("Transform ~.") shouldBe
+            CardFragment(script = CardScript(spellEffect = TransformEffect(EffectTarget.Self)))
+        roundTrips("Transform ~.")
+        roundTrips("{5}{G}{G}: Transform ~.")
+        roundTrips("At the beginning of your end step, if you discarded a card this turn, transform ~.")
+    }
+
+    // The rider says *when*, the clause says *what*, and `CreateDelayedTriggerEffect` is the SDK's
+    // own split of the two — so it wraps every clause the grammar can read instead of being written
+    // into each verb's template. CR 603.7a: created on resolution, fires once at end of combat.
+    "at end of combat defers whatever clause precedes it" {
+        fragment("Sacrifice ~ at end of combat.") shouldBe
+            CardFragment(
+                script = CardScript(
+                    spellEffect = CreateDelayedTriggerEffect(
+                        step = Step.END_COMBAT,
+                        effect = SacrificeSelfEffect,
+                    )
+                )
+            )
+        roundTrips("Sacrifice ~ at end of combat.")
+        roundTrips("Whenever ~ attacks, sacrifice ~ at end of combat.")
+        // The bare clause and the deferred one are different models, so neither prints the other.
+        roundTrips("Sacrifice ~.")
+    }
+
+    // "If you do" gates the second clause on the first having happened, not on the choice: an empty
+    // hand still "may discard", and must not draw. So it is `May(IfYouDo(…))`, never `May(A then B)`.
+    "you may do an action, and if you do, the consequence follows" {
+        fragment("You may discard a card. If you do, draw a card.") shouldBe
+            CardFragment(
+                script = CardScript(
+                    spellEffect = Effects.May(Effects.IfYouDo(Effects.Discard(1), Effects.DrawCards(1))),
+                )
+            )
+        roundTrips("You may discard a card. If you do, draw a card.")
+        roundTrips("When ~ enters, you may discard a card. If you do, draw two cards.")
+        // The plain sequence under a choice is a different model, and still its own sentence.
+        Grammar.abilityLine.printLine(
+            CardFragment(script = CardScript(spellEffect = Effects.May(Effects.Discard(1) then Effects.DrawCards(1))))
+        ) shouldNotBe "You may discard a card. If you do, draw a card."
+    }
+
+    // An empty hand can still be discarded (the Narset ruling), so the gate cannot ask whether
+    // cards moved: the criterion is `Always`, which is what Narset and Sauron already carry.
+    "discarding your hand always counts as done" {
+        fragment("You may discard your hand. If you do, draw two cards.") shouldBe
+            CardFragment(
+                script = CardScript(
+                    spellEffect = Effects.May(
+                        Effects.IfYouDo(
+                            Patterns.Hand.discardHand(),
+                            Effects.DrawCards(2),
+                            successCriterion = SuccessCriterion.Always,
+                        )
+                    ),
+                )
+            )
+        roundTrips("You may discard your hand. If you do, draw two cards.")
+    }
+
+    // Auto infers "did it happen" only from a terminal zone move; a gate over anything else would
+    // be a card the validator refuses, so the rule neither builds nor prints one.
+    "an action the SDK cannot tell happened is not gated" {
+        Grammar.abilityLine.printLine(
+            CardFragment(
+                script = CardScript(
+                    spellEffect = Effects.May(Effects.IfYouDo(Effects.DrawCards(1), Effects.DrawCards(1))),
+                )
+            )
+        ) shouldBe null
+        Grammar.abilityLine.parseLine("You may draw a card. If you do, draw a card.")
+            .shouldBeInstanceOf<ParseOutcome.Declined>()
+    }
+
+    // Another row of the life-loss recipient list, not a slot over `Player`: the recipient is a
+    // value on the effect, and one rule with a player slot would print four separate sentences.
+    "defending player is a recipient row beside each opponent and target player" {
+        fragment("Defending player loses 1 life.") shouldBe
+            CardFragment(
+                script = CardScript(
+                    spellEffect = Effects.LoseLife(
+                        1,
+                        EffectTarget.PlayerRef(com.wingedsheep.sdk.scripting.references.Player.DefendingPlayer),
+                    )
+                )
+            )
+        roundTrips("Defending player loses 1 life.")
+        roundTrips("Whenever ~ attacks, defending player loses 2 life.")
+    }
+
+    // "You draw three cards" is the same model as "Draw three cards", so the subject cannot be
+    // canonical — it is an `alsoSpelled` on the same row, which is what makes Ancient Craving and
+    // Ambition's Cost VARIANTs rather than declines.
+    "the printed subject on a draw parses and never prints" {
+        fragment("You draw three cards.") shouldBe fragment("Draw three cards.")
+        fragment("You draw a card.") shouldBe fragment("Draw a card.")
+        Grammar.abilityLine.printLine(fragment("You draw three cards.")) shouldBe "Draw three cards."
+        Grammar.abilityLine.printLine(fragment("You draw a card.")) shouldBe "Draw a card."
+    }
+
+    // `TargetOpponent` is a different requirement from `TargetPlayer`, not a narrowing of it, so the
+    // two subjects are rows rather than a slot and neither can print the other.
+    "target opponent is a draw subject beside target player" {
+        fragment("Target opponent draws a card.") shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = Effects.DrawCards(1, Targets.bound()),
+                targetRequirements = listOf(Targets.opponent()),
+            )
+        )
+        fragment("Target opponent draws a card.") shouldNotBe fragment("Target player draws a card.")
+        roundTrips("Target opponent draws a card.")
+        roundTrips("Target opponent draws two cards.")
+    }
+
+    // Ancient Craving, whole: the subject alternate plus the " and " join, both non-canonical, over
+    // two clauses that already had rules.
+    "a subject-marked draw joins a life loss the way the corpus prints it" {
+        fragment("You draw three cards and you lose 3 life.") shouldBe
+            fragment("Draw three cards. You lose 3 life.")
+        Grammar.abilityLine.printLine(fragment("You draw three cards and you lose 3 life.")) shouldBe
+            "Draw three cards. You lose 3 life."
+    }
+
+    // The spell nouns are rows in [Stack] rather than a [Filters] slot, because the noun ends in
+    // "spell" and the zone is part of the requirement. A form nobody wrote down declines.
+    "the counter target rows cover each spell type the SDK names" {
+        fragment("Counter target sorcery spell.") shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = Effects.CounterSpell(),
+                targetRequirements = listOf(
+                    TargetObject(filter = TargetFilter.SorcerySpellOnStack, id = Targets.SLOT),
+                ),
+            )
+        )
+        roundTrips("Counter target sorcery spell.")
+        roundTrips("Counter target instant or sorcery spell.")
+        roundTrips("Counter target noncreature spell.")
+        // The two-type noun shares its first word with the one-type row; alternation order is what
+        // keeps "instant spell" from swallowing "instant or sorcery spell".
+        fragment("Counter target instant or sorcery spell.") shouldNotBe
+            fragment("Counter target instant spell.")
+    }
+
+    // A bounce sweep is the gather-then-move pipeline, not a `ForEachInGroup`, because the gather
+    // reads the battlefield through projected state — the same argument `destroyAll` records.
+    "each other is the excludeSelf group, over the singular noun" {
+        fragment("Return each other creature you control to its owner's hand.") shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = Patterns.Group.returnAllToHand(
+                    GroupFilter(GameObjectFilter.Creature.youControl(), excludeSelf = true),
+                ),
+            )
+        )
+        roundTrips("Return each other creature you control to its owner's hand.")
+    }
+
+    // The causative moves the subject inside "have" and drops the verb's agreement, and the model
+    // gains a `Effects.May` — which is why it is a parameter on the row and not an `alsoSpelled`.
+    "the causative sacrifice prints its own sentence rather than the composed may" {
+        fragment("You may have target opponent sacrifice a creature of their choice.") shouldBe
+            CardFragment(
+                script = CardScript(
+                    spellEffect = Effects.May(
+                        Effects.Sacrifice(GameObjectFilter.Creature, 1, Targets.bound()),
+                    ),
+                    targetRequirements = listOf(Targets.opponent()),
+                )
+            )
+        roundTrips("You may have target opponent sacrifice a creature of their choice.")
+        roundTrips("Target opponent sacrifices a creature of their choice.")
     }
 })

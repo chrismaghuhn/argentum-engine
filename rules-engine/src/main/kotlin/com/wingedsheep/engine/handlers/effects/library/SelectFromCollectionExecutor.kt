@@ -1,7 +1,6 @@
 package com.wingedsheep.engine.handlers.effects.library
 
 import com.wingedsheep.engine.core.*
-import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
@@ -26,7 +25,6 @@ import com.wingedsheep.sdk.scripting.effects.SelectFromCollectionEffect
 import com.wingedsheep.sdk.scripting.effects.SelectionMode
 import com.wingedsheep.sdk.scripting.effects.SelectionRestriction
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -41,16 +39,15 @@ import kotlin.reflect.KClass
  * the player responds.
  */
 class SelectFromCollectionExecutor(
-    private val cardRegistry: CardRegistry
+    private val cardRegistry: CardRegistry,
+    private val predicateEvaluator: PredicateEvaluator
 ) : EffectExecutor<SelectFromCollectionEffect> {
+    private val amountEvaluator = predicateEvaluator.amounts
 
     override val effectType: KClass<SelectFromCollectionEffect> = SelectFromCollectionEffect::class
 
-    private val amountEvaluator = DynamicAmountEvaluator()
-    private val predicateEvaluator = PredicateEvaluator()
-    private val manaSolver by lazy { ManaSolver(cardRegistry) }
-    private val targetFinder = TargetFinder()
-    private val auraHostLegality = AuraHostLegality(cardRegistry, targetFinder)
+    private val manaSolver by lazy { ManaSolver(cardRegistry, predicateEvaluator) }
+    private val auraHostLegality = AuraHostLegality(cardRegistry, TargetFinder(predicateEvaluator))
 
     override fun execute(
         state: GameState,
@@ -74,6 +71,25 @@ class SelectFromCollectionExecutor(
                 collections[remainderName] = emptyList()
             }
             return EffectResult.success(state).copy(updatedCollections = collections)
+        }
+
+        if (effect.selection == SelectionMode.ChooseSpell) {
+            require(effect.restrictions.isEmpty() && !effect.matchChosenCreatureType) {
+                "ChooseSpell expresses eligibility through its face filter, not card-selection restrictions"
+            }
+            val faces = spellFaces(state, cards, effect, context)
+            val chooser = when (val outcome = ChooserResolution.resolve(state, effect.chooser, context, cards)) {
+                is ChooserResolution.Outcome.Resolved -> outcome.playerId
+                is ChooserResolution.Outcome.NeedsOpponentPick -> return ChooserResolution.pauseForOpponentPick(
+                    state, outcome.opponents, effect, context, prompt = "Choose which opponent chooses the spell"
+                )
+                is ChooserResolution.Outcome.Unresolvable -> return EffectResult.error(state, outcome.reason)
+            }
+            return createDecision(
+                state, context, effect, faces.keys.toList(), 0, minOf(1, faces.size), decidingPlayerId = chooser,
+                allCards = cards, nonSelectableCards = if (effect.showAllCards) cards - faces.keys else emptyList(),
+                spellFaces = faces
+            )
         }
 
         // Apply filter to narrow selectable cards (e.g., "creature card" for Animal Magnetism)
@@ -158,6 +174,7 @@ class SelectFromCollectionExecutor(
         val restrictionCeiling = restrictionCeiling(effect.restrictions, state, context, eligibleCards, controllerPermanentColors)
 
         return when (val selection = effect.selection) {
+            SelectionMode.ChooseSpell -> error("Spell selection is handled before card filtering")
             is SelectionMode.All -> {
                 // Auto-select all eligible, no decision needed
                 val collections = mutableMapOf(effect.storeSelected to eligibleCards)
@@ -417,6 +434,41 @@ class SelectFromCollectionExecutor(
         return ceiling
     }
 
+    private fun spellFaces(
+        state: GameState, cards: List<EntityId>, effect: SelectFromCollectionEffect, context: EffectContext
+    ): Map<EntityId, List<Int>> = buildMap {
+        val predicateContext = PredicateContext.fromEffectContext(context)
+        for (id in cards) {
+            if (id in state.getBattlefield()) continue
+            val card = state.getEntity(id)?.get<CardComponent>() ?: continue
+            val definition = cardRegistry.getCard(card.cardDefinitionId) ?: continue
+            val faces = buildList {
+                // A split card's combined characteristics are not a castable face.
+                if (!definition.isSplit) add(-1 to card)
+                if (definition.layout == com.wingedsheep.sdk.model.CardLayout.MODAL_DFC) {
+                    definition.backFace?.let { face ->
+                        add(-2 to card.copy(
+                            name = face.name, typeLine = face.typeLine, manaCost = face.manaCost,
+                            oracleText = face.oracleText, baseStats = face.creatureStats,
+                            baseKeywords = face.keywords, colors = face.colors
+                        ))
+                    }
+                }
+                if (!definition.isPreparation) definition.cardFaces.forEachIndexed { index, face ->
+                    add(index to card.copy(
+                        name = face.name, typeLine = face.typeLine, manaCost = face.manaCost,
+                        oracleText = face.oracleText, baseKeywords = face.keywords, colors = face.manaCost.colors
+                    ))
+                }
+            }.filter { (_, face) -> !face.typeLine.isLand }.filter { (_, face) ->
+                val candidateState = if (face === card) state else state.updateEntity(id) { it.with(face) }
+                // The candidate is outside the battlefield; its face overlay changes no projected permanent.
+                predicateEvaluator.matches(candidateState, state.projectedState, id, effect.filter, predicateContext)
+            }.map { it.first }
+            if (faces.isNotEmpty()) put(id, faces)
+        }
+    }
+
     /**
      * @param cards The cards presented as selectable options in the decision
      * @param allCards The full collection for remainder computation (defaults to [cards]).
@@ -434,10 +486,10 @@ class SelectFromCollectionExecutor(
         allCards: List<EntityId> = cards,
         nonSelectableCards: List<EntityId> = emptyList(),
         controllerPermanentColors: Set<com.wingedsheep.sdk.core.Color>? = null,
-        conditionalMinimums: List<ConditionalSelectionMinimum> = emptyList()
+        conditionalMinimums: List<ConditionalSelectionMinimum> = emptyList(),
+        spellFaces: Map<EntityId, List<Int>>? = null
     ): EffectResult {
         val playerId = decidingPlayerId ?: context.controllerId
-        val decisionId = UUID.randomUUID().toString()
         val sourceName = context.sourceId?.let { sourceId ->
             state.getEntity(sourceId)?.get<CardComponent>()?.name
         }
@@ -463,7 +515,7 @@ class SelectFromCollectionExecutor(
             else -> "Choose $minSelections to $maxSelections cards"
         }
 
-        val decision = SelectCardsDecision(
+        val decision = { decisionId: String -> SelectCardsDecision(
             id = decisionId,
             playerId = playerId,
             prompt = prompt,
@@ -506,18 +558,19 @@ class SelectFromCollectionExecutor(
                 }
                 .singleOrNull()?.max,
             conditionalMinimums = conditionalMinimums
-        )
+        ) }
 
         val continuation = SelectFromCollectionContinuation(
-            decisionId = decisionId,
             playerId = playerId,
             sourceId = context.sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             allCards = allCards,
             storeSelected = effect.storeSelected,
             storeRemainder = effect.storeRemainder,
             storedCollections = context.pipeline.storedCollections,
-            restrictions = effect.restrictions
+            restrictions = effect.restrictions,
+            spellFaces = spellFaces
         )
 
         // A hidden collection shown in the typed decision is a legitimate private information
@@ -530,21 +583,7 @@ class SelectFromCollectionExecutor(
             audience = KnownInformationAudience.PERSPECTIVE_PRIVATE,
             acquisitionReason = KnownInformationAcquisitionReason.PRIVATE_DECISION_LOOK,
         )
-        val stateWithDecision = stateWithKnowledge.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = playerId,
-                    decisionType = "SELECT_CARDS",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(stateWithKnowledge.suspendForDecision(decision, continuation))
     }
 
     private fun conditionalMinimumsFor(

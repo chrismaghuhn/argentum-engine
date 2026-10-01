@@ -1,8 +1,9 @@
 package com.wingedsheep.engine.handlers.effects.damage
 
+import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
-import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.DistributeDecision
 import com.wingedsheep.engine.core.DistributeDamageContinuation
 import com.wingedsheep.engine.core.EffectResult
@@ -11,11 +12,12 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.DamageUtils.dealDamageToTarget
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils.toEntityId
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.scripting.effects.DividedDamageEffect
-import java.util.UUID
 import kotlin.reflect.KClass
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Executor for DividedDamageEffect.
@@ -29,9 +31,9 @@ import kotlin.reflect.KClass
  * non-interactive controller) does it deal the whole total or ask for the division at resolution.
  */
 class DividedDamageExecutor(
+    private val zones: ZoneTransitionService,
     private val decisionHandler: DecisionHandler,
-    private val amountEvaluator: com.wingedsheep.engine.handlers.DynamicAmountEvaluator =
-        com.wingedsheep.engine.handlers.DynamicAmountEvaluator()
+    private val amountEvaluator: DynamicAmountEvaluator
 ) : EffectExecutor<DividedDamageEffect> {
 
     override val effectType: KClass<DividedDamageEffect> = DividedDamageEffect::class
@@ -63,13 +65,23 @@ class DividedDamageExecutor(
             // the survivors keep exactly what they were assigned. This is why the assigned shares
             // can sum to less than [total] and must not be recomputed from the surviving count.
             val stillLegal = targets.toSet()
-            var currentState = state
+            val (readyState, pause) = OptionalDamageRedirect.beforeDealing(
+                state,
+                distribution
+                    .filter { (targetId, amount) -> amount > 0 && targetId in stillLegal }
+                    .map { (targetId, amount) -> OptionalDamageRedirect.Instance(context.sourceId, targetId, amount) },
+                effect,
+                context
+            )
+            if (pause != null) return pause
+
+            var currentState = readyState
             val events = mutableListOf<com.wingedsheep.engine.core.GameEvent>()
 
             for ((targetId, amount) in distribution) {
                 if (amount <= 0 || targetId !in stillLegal) continue
-                val result = dealDamageToTarget(currentState, targetId, amount, context.sourceId)
-                if (!result.isSuccess) {
+                val result = dealDamageToTarget(zones, currentState, targetId, amount, context.sourceId)
+                if (result.outcome !is Outcome.Done) {
                     return result
                 }
                 currentState = result.newState
@@ -83,7 +95,14 @@ class DividedDamageExecutor(
         // otherwise fall back to asking for the division now (the path non-interactive controllers
         // and engine-direct actions take).
         if (targets.size == 1) {
-            return dealDamageToTarget(state, targets.first(), total, context.sourceId)
+            val (readyState, pause) = OptionalDamageRedirect.beforeDealing(
+                state,
+                listOf(OptionalDamageRedirect.Instance(context.sourceId, targets.first(), total)),
+                effect,
+                context
+            )
+            if (pause != null) return pause
+            return dealDamageToTarget(zones, readyState, targets.first(), total, context.sourceId)
         }
         return createDistributionDecision(state, effect, context, targets, total)
     }
@@ -103,8 +122,7 @@ class DividedDamageExecutor(
             state.getEntity(sourceId)?.get<CardComponent>()?.name
         } ?: "Effect"
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = DistributeDecision(
+        val decision = { decisionId: String -> DistributeDecision(
             id = decisionId,
             playerId = context.controllerId,
             prompt = "Divide $total damage among ${targets.size} targets",
@@ -116,29 +134,15 @@ class DividedDamageExecutor(
             totalAmount = total,
             targets = targets,
             minPerTarget = 1 // Per MTG rules, must assign at least 1 damage to each target
-        )
+        ) }
 
-        // Push continuation so we know how to resume
         val continuation = DistributeDamageContinuation(
-            decisionId = decisionId,
             sourceId = context.sourceId,
+            objectReferences = context.objectReferences,
             controllerId = context.controllerId,
             targets = targets
         )
 
-        val newState = state
-            .withPendingDecision(decision)
-            .pushContinuation(continuation)
-
-        val events = listOf(
-            DecisionRequestedEvent(
-                decisionId = decisionId,
-                playerId = context.controllerId,
-                decisionType = "DISTRIBUTE",
-                prompt = decision.prompt
-            )
-        )
-
-        return EffectResult.paused(newState, decision, events)
+        return EffectResult.from(state.suspendForDecision(decision, continuation, eventType = "DISTRIBUTE"))
     }
 }

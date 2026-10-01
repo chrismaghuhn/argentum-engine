@@ -1,20 +1,24 @@
 package com.wingedsheep.engine.handlers.actions.land
 
+import com.wingedsheep.engine.legality.LegalityKernel
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.suspendForDecision
 import com.wingedsheep.engine.core.PlayLand
 import com.wingedsheep.engine.core.ZoneChangeEvent
-import com.wingedsheep.engine.event.TriggerDetector
-import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.handlers.actions.ActionHandler
+import com.wingedsheep.engine.handlers.effects.permanent.types.setDfcFace
+import com.wingedsheep.engine.handlers.effects.permanent.types.stampDoubleFacedFrontFace
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.EnteredThisTurnComponent
+import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.permissions.activeMayPlayFor
+import com.wingedsheep.engine.state.permissions.consumeSingleUseMayPlayFor
 import com.wingedsheep.engine.state.permissions.hasMayPlayFor
 import com.wingedsheep.engine.state.permissions.removeMayPlayPermissionsForCard
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
@@ -30,15 +34,16 @@ import com.wingedsheep.sdk.scripting.EntersAsCopy
 import com.wingedsheep.sdk.scripting.EntersTapped
 import com.wingedsheep.sdk.scripting.ChoiceType
 import com.wingedsheep.sdk.scripting.EntersWithChoice
-import com.wingedsheep.sdk.scripting.OnEnterRunEffect
 import com.wingedsheep.sdk.scripting.ConditionalStaticAbility
 import com.wingedsheep.sdk.scripting.MayPlayLandsFromGraveyard
+import com.wingedsheep.engine.state.components.identity.emblemStaticAbilitiesOf
 import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.sdk.scripting.MayPlayPermanentsFromGraveyard
 import com.wingedsheep.engine.legalactions.utils.LandDropUtils
 import com.wingedsheep.sdk.scripting.PlayFromTopOfLibrary
 import com.wingedsheep.sdk.scripting.PlayLandsAndCastFilteredFromTopOfLibrary
 import kotlin.reflect.KClass
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Handler for the PlayLand action.
@@ -48,28 +53,35 @@ import kotlin.reflect.KClass
  */
 class PlayLandHandler(
     private val cardRegistry: CardRegistry,
-    private val triggerDetector: TriggerDetector,
-    private val triggerProcessor: TriggerProcessor,
     private val conditionEvaluator: ConditionEvaluator,
     private val effectExecutor: (com.wingedsheep.engine.state.GameState,
                                  com.wingedsheep.sdk.scripting.effects.Effect,
                                  com.wingedsheep.engine.handlers.EffectContext) ->
         com.wingedsheep.engine.core.EffectResult,
+    private val legality: LegalityKernel
 ) : ActionHandler<PlayLand> {
+    private val predicateEvaluator = conditionEvaluator.predicates
     override val actionType: KClass<PlayLand> = PlayLand::class
 
-    private val predicateEvaluator = com.wingedsheep.engine.handlers.PredicateEvaluator()
+    override fun validate(state: GameState, action: PlayLand): String? =
+        validate(state, action, duringResolution = false)
 
-    override fun validate(state: GameState, action: PlayLand): String? {
+    private fun validate(state: GameState, action: PlayLand, duringResolution: Boolean): String? {
         if (!state.isActiveTurnFor(action.playerId)) {
             // CR 805.4c — each player on the active team may play a land on the team's turn.
             return "You can only play lands on your turn"
         }
-        if (!state.step.isMainPhase) {
+        if (!duringResolution && !state.step.isMainPhase) {
             return "You can only play lands during a main phase"
         }
-        if (state.stack.isNotEmpty()) {
+        if (!duringResolution && state.stack.isNotEmpty()) {
             return "You can only play lands when the stack is empty"
+        }
+
+        // Blanket "players can't play lands" lock (Worms of the Earth). Checked before the land
+        // drop so the message says why, rather than blaming a drop the player still has.
+        if (LandDropUtils.playerCantPlayLands(state, action.playerId, cardRegistry, conditionEvaluator)) {
+            return "You can't play lands"
         }
 
         // Check land drop availability (accounts for static ability bonuses)
@@ -88,8 +100,27 @@ class PlayLandHandler(
         val cardComponent = container.get<CardComponent>()
             ?: return "Not a card: ${action.cardId}"
 
-        if (!cardComponent.typeLine.isLand) {
+        // CR 712.11c's play-a-land analogue: only the face being played is evaluated. A modal DFC
+        // played as its back face is legal on the strength of *that* face's type line, and the
+        // printed front's (which is what `cardComponent` carries off the battlefield, CR 712.8a)
+        // is not consulted at all.
+        val playedFace = if (action.asBackFace) {
+            com.wingedsheep.engine.mechanics.ModalDfcCasts
+                .landFace(cardRegistry.getCard(cardComponent.cardDefinitionId))
+                ?: return "${cardComponent.name} has no land back face to play"
+        } else null
+        if (playedFace == null && !cardComponent.typeLine.isLand) {
             return "You can only play land cards as lands"
+        }
+
+        // Filtered "players can't play <these> lands" lock (City in a Bottle). The blanket probe
+        // above deliberately ignores filtered locks, so the named card is asked about here — the
+        // mirror of PlayLandEnumerator's per-candidate check.
+        if (LandDropUtils.playerCantPlayLands(
+                state, action.playerId, cardRegistry, conditionEvaluator, landCardId = action.cardId
+            )
+        ) {
+            return "You can't play ${cardComponent.name}"
         }
 
         // Check card is in hand, on top of library with PlayFromTopOfLibrary, in exile with MayPlayPermission,
@@ -101,7 +132,7 @@ class PlayLandHandler(
         // Lands exiled with a permanent granting "you may play cards exiled with this" (Valgavoth).
         val mayPlayFromLinkedExile = !inHand && !onTopOfLibrary && !mayPlayFromExile &&
             com.wingedsheep.engine.handlers.effects.linkedexile.LinkedExilePlayUtils
-                .canPlayLand(state, action.playerId, action.cardId, cardRegistry)
+                .canPlayLand(state, action.playerId, action.cardId, legality)
         val mayPlayFromGraveyard = !inHand && !onTopOfLibrary && !mayPlayFromExile && !mayPlayFromLinkedExile &&
             isInGraveyardWithPlayPermission(state, action.playerId, action.cardId)
         if (!inHand && !onTopOfLibrary && !mayPlayFromExile && !mayPlayFromLinkedExile && !mayPlayFromGraveyard) {
@@ -117,11 +148,27 @@ class PlayLandHandler(
         return null
     }
 
-    override fun execute(state: GameState, action: PlayLand): ExecutionResult {
+    /** Play a land when a resolving effect explicitly instructs the player to do so. */
+    fun executeDuringResolution(state: GameState, action: PlayLand): ExecutionResult {
+        val validationError = validate(state, action, duringResolution = true)
+        return if (validationError != null) ExecutionResult.error(state, validationError)
+        else execute(state, action)
+    }
+
+    /**
+     * Playing a land is a special action (CR 116.2a): it uses no stack and the player keeps
+     * priority afterwards. The settle boundary puts the land's entry triggers (landfall) on the
+     * stack and checks state-based actions before that player receives priority again (CR 704.3).
+     * That check is what culls a second copy of a legendary land (CR 704.5j), and it runs after
+     * detection, so a landfall trigger whose land the legend rule removes still fires (CR 603.10).
+     */
+    override fun execute(state: GameState, action: PlayLand): ExecutionResult = executePlay(state, action)
+
+    private fun executePlay(state: GameState, action: PlayLand): ExecutionResult {
         val container = state.getEntity(action.cardId)
             ?: return ExecutionResult.error(state, "Card not found")
 
-        val cardComponent = container.get<CardComponent>()
+        val printedCardComponent = container.get<CardComponent>()
             ?: return ExecutionResult.error(state, "Not a card")
 
         var newState = state
@@ -189,8 +236,26 @@ class PlayLandHandler(
         newState = newState.updateEntity(action.cardId) { c ->
             c.with(ControllerComponent(action.playerId))
         }
+
+        // CR 712.12 — a modal double-faced card played as a land chooses a land face *before*
+        // putting it onto the battlefield, and it enters with that face up. So the face swap
+        // happens here, ahead of everything that reads the permanent's characteristics: the
+        // ETB-by-type record below, the static/replacement registration, the enters-tapped and
+        // as-enters replacements, and the entry event's name. Choosing a face is not a transform
+        // (CR 712.9 excludes modal DFCs from transforming), so this fires no transform trigger and
+        // no "can't transform" effect can stop it — which is why it uses [setDfcFace] directly
+        // rather than the flip helper.
+        if (action.asBackFace) {
+            newState = stampDoubleFacedFrontFace(newState, cardRegistry, action.cardId)
+            newState = setDfcFace(
+                newState, cardRegistry, action.cardId,
+                com.wingedsheep.engine.state.components.identity.DoubleFacedComponent.Face.BACK
+            ) ?: return ExecutionResult.error(state, "Card has no back face to play")
+        }
+
         newState = com.wingedsheep.engine.handlers.effects.BattlefieldEntry
             .place(newState, action.playerId, action.cardId)
+        val enteredObject = newState.objectRef(action.cardId)
 
         // Lands bypass ZoneTransitionService, which is where every other zone-change path
         // stamps EnteredThisTurnComponent (cleared again at the controller's next untap step,
@@ -199,6 +264,26 @@ class PlayLandHandler(
         // GameObjectFilter.enteredThisTurn() check keyed on a land would never see it as true,
         // even on the very turn it was played.
         newState = newState.updateEntity(action.cardId) { c -> c.with(EnteredThisTurnComponent) }
+
+        // Same bypass, same consequence for CR 302.6/508.1a: ZoneTransitionService stamps
+        // SummoningSicknessComponent on every permanent it puts onto the battlefield (a no-op for
+        // an ordinary land, since only a {T}/{Q} cost or an attack check ever reads it, gated on
+        // isCreature). A land played from hand skips that stamp entirely, which was invisible
+        // until a land that's also a creature existed (Dryad Arbor) — its "{T}: Add {G}" must be
+        // blocked the turn it's played, and without this it never was.
+        newState = newState.updateEntity(action.cardId) { c -> c.with(SummoningSicknessComponent) }
+
+        // Same bypass, same consequence for Rule 712 face tracking: a double-faced *land* played
+        // from hand (Balamb Garden, SeeD Academy — "{5}{G}{U}, {T}: Transform this land") never went
+        // through ZoneTransitionService's stamp, so it arrived with no DoubleFacedComponent and its
+        // printed transform was silently a no-op. A land is always played face up (CR 305.1) and a
+        // double-faced card put onto the battlefield from a zone other than the stack enters with
+        // its front face up (CR 712.14), so the front face is the right one here — and the helper
+        // no-ops on a single-faced land and on an entity that is already face-tracked. (CR 712.12's
+        // "play a modal double-faced card as its land face" chooses the face before the entry; the
+        // engine doesn't model a back-face land play yet, and if it does, that path stamps the face
+        // it chose first and this call sees an already-tracked entity.)
+        newState = stampDoubleFacedFrontFace(newState, cardRegistry, action.cardId)
 
         // Lands bypass ZoneTransitionService (which bakes ETB components for everything else),
         // so install the land's own static + replacement effect components here — mirroring
@@ -220,7 +305,7 @@ class PlayLandHandler(
         // below (permission-forced, shock-land "pay or tapped", conditional tapped duals). The
         // land is on the battlefield with its controller set, so the filter resolves correctly.
         val landEntersUntapped = com.wingedsheep.engine.handlers.effects.EnterUntappedReplacements
-            .entersUntapped(newState, action.cardId, action.playerId)
+            .entersUntapped(newState, action.cardId, action.playerId, predicateEvaluator = predicateEvaluator)
 
         // A may-play permission with landEntersTapped=true forces the played land
         // tapped regardless of the card's own ETB script — Lightstall Inquisitor's
@@ -255,7 +340,27 @@ class PlayLandHandler(
         // through the stack, so StackResolver's removeMayPlayPermissionsForCard never runs
         // for them; without this, a permanent permission would silently re-authorize the
         // card if it later returned to exile.
+        // A single-use grant ("play one of those cards") is spent for its whole group, from exile or
+        // a graveyard alike — before the per-card cleanup below drops this card from it.
+        if (fromZone == Zone.EXILE || fromZone == Zone.GRAVEYARD) {
+            newState = newState.consumeSingleUseMayPlayFor(action.cardId, action.playerId)
+        }
         if (fromZone == Zone.EXILE) {
+            // Record once-per-turn linked-exile permission usage (Hauken's Insight — "Once during
+            // each of your turns, you may play a land or cast a spell"). Resolved against the
+            // pre-play `state`: the unlink below removes the card from its granter's pile, after
+            // which nothing connects the two. The marker is the same one `CastSpellHandler`
+            // stamps, which is what makes the land and the spell share one allowance.
+            val linkedGranter = com.wingedsheep.engine.handlers.effects.linkedexile.LinkedExilePlayUtils
+                .landGranterFor(state, action.playerId, action.cardId, legality)
+            if (linkedGranter?.ability?.oncePerTurn == true) {
+                newState = newState.updateEntity(linkedGranter.sourceId) { c ->
+                    c.with(
+                        com.wingedsheep.engine.state.components.battlefield
+                            .MayCastFromLinkedExileUsedThisTurnComponent
+                    )
+                }
+            }
             newState = newState.removeMayPlayPermissionsForCard(action.cardId)
             // Drop the card from any linked-exile granter (Valgavoth) now that it has left exile,
             // so the granter no longer lists it. (Lands bypass ZoneTransitionService, which would
@@ -271,16 +376,36 @@ class PlayLandHandler(
             newState = newState.removeMayPlayPermissionsForCard(action.cardId)
         }
 
+        // CR 712.8f — a modal double-faced permanent has only the characteristics of the face
+        // that's up. Everything below (the entry event's name, enters-tapped, the as-enters
+        // replacements) has to read the face actually played, not the printed front.
+        val cardComponent = newState.getEntity(action.cardId)?.get<CardComponent>()
+            ?: printedCardComponent
         val cardDef = cardRegistry.getCard(cardComponent.cardDefinitionId)
 
-        // OnEnterRunEffect — generic "as ~ enters, run [effect]" replacement.
+        // "This land enters with two charge counters on it" (the vivid lands) and the global
+        // enters-with replacements other permanents carry (Doubling Season's extra counters,
+        // keyword grants). Lands bypass ZoneTransitionService, so the entry counters that every
+        // other permanent gets from ZoneMovementUtils / StackResolver are applied here — before the
+        // tapped and as-enters branches below, since each of those is its own exit and the counters
+        // belong to the entry regardless of which branch finishes it. The events are carried into
+        // every exit so counter-placement triggers still see them.
+        val entersWithEvents: List<com.wingedsheep.engine.core.GameEvent> = if (cardDef != null) {
+            val (afterOwn, ownEvents) = com.wingedsheep.engine.handlers.effects.EntersWithReplacements
+                .applyFromDefinition(newState, action.cardId, cardDef, action.playerId, predicateEvaluator = predicateEvaluator)
+            val (afterGlobal, globalEvents) = com.wingedsheep.engine.handlers.effects.EntersWithReplacements
+                .applyGlobal(afterOwn, action.cardId, action.playerId, cardRegistry, predicateEvaluator = predicateEvaluator)
+            newState = afterGlobal
+            ownEvents + globalEvents
+        } else emptyList()
+
+        // OnEnterRun — generic "as ~ enters, run [effect]" replacement.
         // Runs BEFORE the EntersTapped check so effects like
         // Effects.Tap(EffectTarget.Self) (Game Trail's "otherwise" rider) apply
         // synchronously with entry. May pause for player input via continuations.
         if (cardDef != null) {
-            val onEnter = cardDef.script.replacementEffects
-                .filterIsInstance<OnEnterRunEffect>()
-                .firstOrNull()
+            val onEnter = com.wingedsheep.engine.handlers.effects.PermanentEntryReplacements
+                .onEnterRunEffectFor(cardDef)
             if (onEnter != null) {
                 // Use up the land drop and emit the entry event before running the
                 // effect — by this point the land is fully on the battlefield and
@@ -295,8 +420,11 @@ class PlayLandHandler(
                     fromZone,
                     Zone.BATTLEFIELD,
                     action.playerId,
+                    oldObject = state.objectRef(action.cardId),
+                    newObject = enteredObject,
                 )
                 val onEnterEvents = mutableListOf<com.wingedsheep.engine.core.GameEvent>(zoneChangeEvent)
+                onEnterEvents.addAll(entersWithEvents)
                 riderPlayEvent?.let { onEnterEvents.add(it) }
                 onEnterEvents.add(landPlayedEvent)
                 newState = newState.tick()
@@ -304,38 +432,21 @@ class PlayLandHandler(
                 val effectContext = EffectContext(
                     sourceId = action.cardId,
                     controllerId = action.playerId,
+                    objectReferences = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(
+                        captured = true, origin = enteredObject, source = enteredObject,
+                        resolutionKey = "entry:${action.cardId}:${enteredObject?.generation}"
+                    ),
                 )
                 val effectResult = effectExecutor(newState, onEnter.effect, effectContext)
-                if (effectResult.isPaused) {
-                    return ExecutionResult.paused(
+                if (effectResult.outcome is Outcome.Paused) {
+                    return ExecutionResult.propagatePause(
                         effectResult.state,
-                        effectResult.pendingDecision!!,
                         onEnterEvents + effectResult.events,
                         diagnostics = effectResult.diagnostics,
                     )
                 }
                 newState = effectResult.state
                 onEnterEvents.addAll(effectResult.events)
-
-                // Fire any triggers from the land entering (landfall, etc.).
-                val triggers = triggerDetector.detectTriggers(newState, onEnterEvents)
-                if (triggers.isNotEmpty()) {
-                    val triggerResult = triggerProcessor.processTriggers(newState, triggers)
-                    val allEvents = onEnterEvents + triggerResult.events
-                    if (triggerResult.isPaused) {
-                        return ExecutionResult.paused(
-                            triggerResult.state,
-                            triggerResult.pendingDecision!!,
-                            allEvents,
-                            diagnostics = effectResult.diagnostics + triggerResult.diagnostics,
-                        )
-                    }
-                    return ExecutionResult.success(
-                        triggerResult.newState,
-                        allEvents,
-                        effectResult.diagnostics + triggerResult.diagnostics,
-                    )
-                }
                 return ExecutionResult.success(newState, onEnterEvents, effectResult.diagnostics)
             }
         }
@@ -353,7 +464,7 @@ class PlayLandHandler(
                 .firstOrNull()
             if (entersAsCopy != null &&
                 com.wingedsheep.engine.handlers.effects.PermanentEntryReplacements
-                    .entersAsCopyCandidates(newState, action.cardId, action.playerId, entersAsCopy)
+                    .entersAsCopyCandidates(newState, action.cardId, action.playerId, entersAsCopy, predicateEvaluator = predicateEvaluator)
                     .isNotEmpty()
             ) {
                 // Use up a land drop before pausing. The entry ZoneChangeEvent is emitted by the
@@ -375,7 +486,10 @@ class PlayLandHandler(
                         cardComponent = cardComponent,
                         effect = entersAsCopy,
                         fromZone = fromZone,
+                        entryOldObject = state.objectRef(action.cardId),
+                        entryNewObject = enteredObject,
                         carryEvents = listOfNotNull(riderPlayEvent, landPlayedEvent),
+                        predicateEvaluator = predicateEvaluator
                     )
                 if (result != null) return result
             }
@@ -409,38 +523,35 @@ class PlayLandHandler(
                         c.with(landDrops.use())
                     }
 
-                    val zoneChangeEvent = com.wingedsheep.engine.core.ZoneChangeEvent(
-                        action.cardId,
-                        cardComponent.name,
-                        fromZone,
-                        Zone.BATTLEFIELD,
-                        action.playerId
-                    )
-                    val events = listOf(zoneChangeEvent) + listOfNotNull(riderPlayEvent, landPlayedEvent)
+                    // The entry ZoneChangeEvent is emitted by the resumer once the life payment is
+                    // settled, so the land's enters triggers are detected exactly once.
+                    val events = entersWithEvents + listOfNotNull(riderPlayEvent, landPlayedEvent)
                     newState = newState.tick()
 
-                    val decisionId = "pay-life-or-enter-tapped-${action.cardId.value}"
-                    val decision = com.wingedsheep.engine.core.YesNoDecision(
-                        id = decisionId,
-                        playerId = action.playerId,
-                        prompt = "Pay ${entersTapped.payLifeCost} life to have ${cardComponent.name} enter untapped?",
-                        context = com.wingedsheep.engine.core.DecisionContext(
-                            sourceId = action.cardId,
-                            sourceName = cardComponent.name,
-                            phase = com.wingedsheep.engine.core.DecisionPhase.RESOLUTION
-                        )
-                    )
                     val continuation = com.wingedsheep.engine.core.PayLifeOrEnterTappedLandContinuation(
-                        decisionId = decisionId,
                         landId = action.cardId,
                         controllerId = action.playerId,
                         lifeCost = entersTapped.payLifeCost!!,
-                        fromZone = fromZone
+                        fromZone = fromZone,
+                        entryOldObject = state.objectRef(action.cardId),
+                        entryNewObject = enteredObject,
                     )
-                    val pausedState = newState
-                        .pushContinuation(continuation)
-                        .withPendingDecision(decision)
-                    return ExecutionResult.paused(pausedState, decision, events)
+                    return newState.suspendForDecision(
+                        question = { decisionId ->
+                            com.wingedsheep.engine.core.YesNoDecision(
+                                id = decisionId,
+                                playerId = action.playerId,
+                                prompt = "Pay ${entersTapped.payLifeCost} life to have ${cardComponent.name} enter untapped?",
+                                context = com.wingedsheep.engine.core.DecisionContext(
+                                    sourceId = action.cardId,
+                                    sourceName = cardComponent.name,
+                                    phase = com.wingedsheep.engine.core.DecisionPhase.RESOLUTION
+                                )
+                            )
+                        },
+                        answer = continuation,
+                        events = events
+                    )
                 } else {
                     val shouldEnterTapped = if (entersTapped.unlessCondition != null) {
                         // Conditional: enters tapped UNLESS condition is met
@@ -448,7 +559,7 @@ class PlayLandHandler(
                             sourceId = action.cardId,
                             controllerId = action.playerId,
                         )
-                        !ConditionEvaluator().evaluate(newState, entersTapped.unlessCondition!!, context)
+                        !conditionEvaluator.evaluate(newState, entersTapped.unlessCondition!!, context)
                     } else {
                         true
                     }
@@ -468,7 +579,7 @@ class PlayLandHandler(
         // is a no-op).
         if (!landEntersUntapped &&
             com.wingedsheep.engine.handlers.effects.EnterTappedReplacements
-                .entersTapped(newState, action.cardId, action.playerId)
+                .entersTapped(newState, action.cardId, action.playerId, predicateEvaluator = predicateEvaluator)
         ) {
             newState = newState.updateEntity(action.cardId) { c -> c.with(TappedComponent) }
         }
@@ -495,19 +606,15 @@ class PlayLandHandler(
                     c.with(landDrops.use())
                 }
 
-                val zoneChangeEvent = ZoneChangeEvent(
-                    action.cardId,
-                    cardComponent.name,
-                    fromZone,
-                    Zone.BATTLEFIELD,
-                    action.playerId
-                )
-                val events = listOf(zoneChangeEvent) + listOfNotNull(riderPlayEvent, landPlayedEvent)
+                // The entry ZoneChangeEvent is emitted by the resumer once the choice is recorded
+                // (see PermanentEntryReplacements), so the land's enters triggers see the choice
+                // and are detected exactly once.
+                val events = entersWithEvents + listOfNotNull(riderPlayEvent, landPlayedEvent)
                 newState = newState.tick()
 
                 // Build the choice prompt + entity-keyed continuation via the shared on-battlefield
                 // entry helper (also used by Momir token minting). The land is already on the
-                // battlefield; the resumer records the choice and fires entry triggers afterward.
+                // battlefield; the resumer records the choice and emits the entry event afterward.
                 val result = com.wingedsheep.engine.handlers.effects.PermanentEntryReplacements
                     .pauseForEntersWithChoice(
                         state = newState,
@@ -516,6 +623,8 @@ class PlayLandHandler(
                         cardComponent = cardComponent,
                         choice = firstChoice,
                         fromZone = fromZone,
+                        entryOldObject = state.objectRef(action.cardId),
+                        entryNewObject = enteredObject,
                         carryEvents = events,
                         cardNameOptions = if (firstChoice.choiceType == ChoiceType.CARD_NAME) {
                             cardRegistry.cardNamesIn(firstChoice.cardNamePool).toList()
@@ -538,33 +647,13 @@ class PlayLandHandler(
             cardComponent.name,
             fromZone,
             Zone.BATTLEFIELD,
-            action.playerId
+            action.playerId,
+            oldObject = state.objectRef(action.cardId),
+            newObject = enteredObject,
         )
 
-        val events = listOf(zoneChangeEvent) + listOfNotNull(riderPlayEvent, landPlayedEvent)
+        val events = listOf(zoneChangeEvent) + entersWithEvents + listOfNotNull(riderPlayEvent, landPlayedEvent)
         newState = newState.tick()
-
-        // Detect and process any triggers from the land entering (e.g., landfall)
-        val triggers = triggerDetector.detectTriggers(newState, events)
-        if (triggers.isNotEmpty()) {
-            val triggerResult = triggerProcessor.processTriggers(newState, triggers)
-
-            if (triggerResult.isPaused) {
-                return ExecutionResult.paused(
-                    triggerResult.state,
-                    triggerResult.pendingDecision!!,
-                    events + triggerResult.events,
-                    diagnostics = triggerResult.diagnostics,
-                )
-            }
-
-            return ExecutionResult.success(
-                triggerResult.newState,
-                events + triggerResult.events,
-                triggerResult.diagnostics,
-            )
-        }
-
         return ExecutionResult.success(newState, events)
     }
 
@@ -668,8 +757,8 @@ class PlayLandHandler(
     }
 
     /**
-     * Returns true if the player controls a permanent with [MayPlayLandsFromGraveyard]
-     * (Crucible of Worlds style — no per-turn usage tracking needed).
+     * Returns true if the player controls a permanent — or has an emblem — with
+     * [MayPlayLandsFromGraveyard] (Crucible of Worlds style — no per-turn usage tracking needed).
      */
     private fun hasLandGraveyardPlayPermission(state: GameState, playerId: EntityId): Boolean {
         for (entityId in state.getBattlefield(playerId)) {
@@ -690,7 +779,8 @@ class PlayLandHandler(
                 }
             }
         }
-        return false
+        // An emblem the player has (Wrenn and Realmbreaker's −7) grants it from outside every zone.
+        return state.emblemStaticAbilitiesOf(playerId).any { (_, ability) -> ability is MayPlayLandsFromGraveyard }
     }
 
     /**
@@ -752,10 +842,9 @@ class PlayLandHandler(
         fun create(services: EngineServices): PlayLandHandler {
             return PlayLandHandler(
                 services.cardRegistry,
-                services.triggerDetector,
-                services.triggerProcessor,
                 services.conditionEvaluator,
                 services.effectExecutorRegistry::execute,
+                services.legalityKernel
             )
         }
     }

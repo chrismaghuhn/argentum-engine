@@ -1,9 +1,7 @@
 package com.wingedsheep.engine.event
 
 import com.wingedsheep.engine.core.*
-import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.PipelineState
-import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.state.Component
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -38,12 +36,10 @@ import com.wingedsheep.sdk.scripting.effects.CreateTokenEffect
 import com.wingedsheep.sdk.scripting.effects.EmitBendEventEffect
 import com.wingedsheep.sdk.scripting.effects.EmitTrainedEventEffect
 import com.wingedsheep.sdk.scripting.effects.GrantTriggeredAbilityEffect
-import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import com.wingedsheep.sdk.scripting.targets.TargetOther
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
@@ -93,7 +89,7 @@ class TriggerOrderingTest : FunSpec({
             OrderedResponse(decision.id, decision.objects.reversed())
         )
 
-        resumed.isSuccess shouldBe true
+        resumed.outcome shouldBe Outcome.Done
         stackedTriggers(resumed.state).map { it.description } shouldBe listOf("second", "first")
     }
 
@@ -124,7 +120,7 @@ class TriggerOrderingTest : FunSpec({
             nonActive,
             OrderedResponse(napOrder.id, napOrder.objects.reversed())
         )
-        final.isSuccess shouldBe true
+        final.outcome shouldBe Outcome.Done
         val expectedNapOrder = napOrder.objects.reversed().map {
             napOrder.objectLabels!!.getValue(it).substringBefore(": ")
         }
@@ -150,7 +146,7 @@ class TriggerOrderingTest : FunSpec({
     test("TO-14: CR 603.12 reflexive triggers use the normal CR 603.3b placement stage") {
         val driver = newDriver()
         val reflexiveSource = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
-        val reflexive = TriggerDetector(driver.cardRegistry).detectTriggers(
+        val reflexive = driver.services.triggerDetector.detectTriggers(
             driver.state,
             listOf(
                 ReflexiveAbilityTriggeredEvent(
@@ -220,7 +216,7 @@ class TriggerOrderingTest : FunSpec({
                 )
             )
         )
-        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val matcher = TriggerMatcher(driver.services.predicateEvaluator, driver.services.conditionEvaluator)
         val abilityTriggeredEvent = AbilityTriggeredEvent(
             sourceId = driver.player1,
             sourceName = "triggered source",
@@ -277,11 +273,17 @@ class TriggerOrderingTest : FunSpec({
             ),
             binding = TriggerBinding.SELF,
             effect = Effects.DrawCards(1),
+            id = AbilityId("TriggerOrderingTest-ability-1"),
         )
         val abilityRegistry = AbilityRegistry().also {
             it.register("Sol Ring", listOf(compositeAbility))
         }
-        val detector = TriggerDetector(driver.cardRegistry, abilityRegistry)
+        val detector = TriggerDetector(
+            driver.cardRegistry,
+            abilityRegistry,
+            predicateEvaluator = driver.services.predicateEvaluator,
+            conditionEvaluator = driver.services.conditionEvaluator,
+        )
 
         detector.detectTriggers(
             driver.state,
@@ -313,6 +315,7 @@ class TriggerOrderingTest : FunSpec({
             val result = process(driver, input.map { syntheticTrigger(driver, it) })
             result.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
             return result.state.peekContinuation()
+                .shouldBeInstanceOf<Suspension>().answer
                 .shouldBeInstanceOf<TriggerOrderingContinuation>()
                 .triggers
                 .map { it.sourceName }
@@ -358,6 +361,7 @@ class TriggerOrderingTest : FunSpec({
         fun normalized(input: List<PendingTrigger>): List<EntityId?> =
             process(driver, input).state
                 .peekContinuation()
+                .shouldBeInstanceOf<Suspension>().answer
                 .shouldBeInstanceOf<TriggerOrderingContinuation>()
                 .triggers
                 .map { it.triggerContext.triggeringEntityId }
@@ -502,7 +506,7 @@ class TriggerOrderingTest : FunSpec({
             effect = Effects.DrawCards(1),
             description = "copied ability"
         )
-        val baseRequirement = TargetCreature()
+        val baseRequirement = TargetObject(filter = TargetFilter.Creature)
         driver.replaceState(
             stateWithBothIds
                 .withEntity(
@@ -563,11 +567,14 @@ class TriggerOrderingTest : FunSpec({
                 )
             )
         )
+        // A referenced-player expression whose display text is the same "target player controls"
+        // as the targeted-player predicate. (The referenced-player description follows its
+        // reference, so a positional ContextTarget(0) would now read "target controls".)
         val referencedPlayerFilter = TargetObject(
             filter = TargetFilter(
                 GameObjectFilter(
                     controllerPredicate = ControllerPredicate.ControlledByReferencedPlayer(
-                        EffectTarget.ContextTarget(0)
+                        EffectTarget.PlayerRef(Player.TargetPlayer)
                     )
                 )
             )
@@ -875,10 +882,14 @@ class TriggerOrderingTest : FunSpec({
             controllerId = driver.player1,
             effect = Effects.DrawCards(1),
             description = "copied ability",
-            triggerLastKnownBlockingOrBlockedByIds = listOf(driver.player1, driver.player2),
+            triggerContext = TriggerContext(
+                lastKnownBlockingOrBlockedByIds = listOf(driver.player1, driver.player2),
+            ),
         )
         val secondStackAbility = firstStackAbility.copy(
-            triggerLastKnownBlockingOrBlockedByIds = listOf(driver.player2, driver.player1)
+            triggerContext = TriggerContext(
+                lastKnownBlockingOrBlockedByIds = listOf(driver.player2, driver.player1)
+            )
         )
         driver.replaceState(
             driver.state
@@ -1193,15 +1204,16 @@ class TriggerOrderingTest : FunSpec({
             OrderedResponse(decision.id, listOf(decision.objects.first(), decision.objects.first()))
         )
 
-        invalid.isSuccess shouldBe false
+        invalid.outcome shouldNotBe Outcome.Done
         driver.state shouldBe before
         driver.state.pendingDecision shouldBe decision
-        driver.state.peekContinuation().shouldBeInstanceOf<TriggerOrderingContinuation>()
+        driver.state.peekContinuation().shouldBeInstanceOf<Suspension>().answer
+            .shouldBeInstanceOf<TriggerOrderingContinuation>()
     }
 
     test("TO-05: same-controller targetless may triggers order before may choices") {
         val driver = newDriver()
-        val may = MayEffect(Effects.DrawCards(1))
+        val may = Effects.May(Effects.DrawCards(1))
         val result = process(driver, listOf(
             syntheticTrigger(driver, "may-first", effect = may),
             syntheticTrigger(driver, "may-second", effect = may)
@@ -1213,7 +1225,7 @@ class TriggerOrderingTest : FunSpec({
             driver.player1,
             OrderedResponse(order.id, order.objects.reversed())
         )
-        ordered.isSuccess shouldBe true
+        ordered.outcome shouldBe Outcome.Done
         val expectedOrder = order.objects.reversed().map {
             order.objectLabels!!.getValue(it).substringBefore(": ")
         }
@@ -1222,10 +1234,10 @@ class TriggerOrderingTest : FunSpec({
         driver.bothPass()
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
         val secondMay = driver.submitYesNo(driver.player1, choice = false)
-        secondMay.isSuccess shouldBe true
+        secondMay.outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
-        driver.submitYesNo(driver.player1, choice = false).isSuccess shouldBe true
+        driver.submitYesNo(driver.player1, choice = false).outcome shouldBe Outcome.Done
     }
 
     test("TO-06: chosen ordering survives later target selections without reordering") {
@@ -1246,13 +1258,13 @@ class TriggerOrderingTest : FunSpec({
         secondTarget.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
         val final = driver.submitTargetSelection(driver.player1, listOf(driver.player2))
 
-        final.isSuccess shouldBe true
+        final.outcome shouldBe Outcome.Done
         stackedTriggers(final.state).map { it.description } shouldBe listOf("target-second", "target-first")
     }
 
     test("TO-07: batched may triggers order before one shared may decision and retain that order") {
         val driver = newDriver()
-        val may = MayEffect(Effects.DrawCards(1))
+        val may = Effects.May(Effects.DrawCards(1))
         val result = process(driver, listOf(
             syntheticTrigger(driver, "batch-first", effect = may, targetRequirement = Targets.Player, abilityId = "batch"),
             syntheticTrigger(driver, "batch-second", effect = may, targetRequirement = Targets.Player, abilityId = "batch")
@@ -1272,7 +1284,7 @@ class TriggerOrderingTest : FunSpec({
         driver.submitTargetSelection(driver.player1, listOf(driver.player2))
         driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
         val final = driver.submitTargetSelection(driver.player1, listOf(driver.player2))
-        final.isSuccess shouldBe true
+        final.outcome shouldBe Outcome.Done
         stackedTriggers(final.state).map { it.description } shouldBe listOf("batch-second", "batch-first")
     }
 
@@ -1420,6 +1432,7 @@ class TriggerOrderingTest : FunSpec({
         )
         val occurrence = result.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
         val delayedContinuation = result.state.peekContinuation()
+            .shouldBeInstanceOf<Suspension>().answer
             .shouldBeInstanceOf<DelayedTriggerOccurrenceChoiceContinuation>()
         delayedContinuation.preorderedTriggerCount shouldBe 1
 
@@ -1465,7 +1478,7 @@ class TriggerOrderingTest : FunSpec({
             driver.player1,
             OrderedResponse(order.id, order.objects)
         )
-        final.isSuccess shouldBe true
+        final.outcome shouldBe Outcome.Done
         val components = stackedTriggers(final.state).associateBy { it.description }
         components.getValue("saga").sagaChapterInfo shouldBe SagaChapterInfo(2, 3)
         components.getValue("granted").granterId shouldBe granter
@@ -1489,7 +1502,8 @@ class TriggerOrderingTest : FunSpec({
         restored shouldBe result.state
         encoded.contains("PendingTrigger.toString") shouldBe false
         restored.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
-        restored.peekContinuation().shouldBeInstanceOf<TriggerOrderingContinuation>()
+        restored.peekContinuation().shouldBeInstanceOf<Suspension>().answer
+            .shouldBeInstanceOf<TriggerOrderingContinuation>()
     }
 
     test("TO-11: response is exactly once and forks can choose divergent orders") {
@@ -1518,7 +1532,7 @@ class TriggerOrderingTest : FunSpec({
             order.playerId,
             OrderedResponse(order.id, order.objects)
         )
-        stale.isSuccess shouldBe false
+        stale.outcome shouldNotBe Outcome.Done
         firstFork.state shouldBe after
     }
 })
@@ -1557,8 +1571,9 @@ private fun syntheticTrigger(
         trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
         effect = effect,
         targetRequirement = targetRequirement,
-        descriptionOverride = label
-    ).copy(id = AbilityId(abilityId)),
+        descriptionOverride = label,
+        id = AbilityId(abilityId),
+    ),
     sourceId = driver.putPermanentOnBattlefield(controllerId, "Sol Ring"),
     sourceName = label,
     controllerId = controllerId,

@@ -5,7 +5,6 @@ import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
-import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
@@ -104,10 +103,7 @@ class AbilityTriggeredSourceAuthorityMetadataTest : FunSpec({
         after: GameState,
         pending: PendingTrigger,
     ): Emission {
-        val result = TriggerProcessor(
-            cardRegistry = driver.cardRegistry,
-            stackResolver = StackResolver(driver.cardRegistry),
-        ).processTriggers(after, listOf(pending))
+        val result = driver.services.triggerProcessor.processTriggers(after, listOf(pending))
         val event = result.events.filterIsInstance<AbilityTriggeredEvent>().single()
         return Emission(before, after, result, event)
     }
@@ -133,7 +129,7 @@ class AbilityTriggeredSourceAuthorityMetadataTest : FunSpec({
             toZone = Zone.BATTLEFIELD,
             ownerId = driver.player1,
         )
-        val pending = TriggerDetector(driver.cardRegistry)
+        val pending = driver.services.triggerDetector
             .detectTriggers(after, listOf(event))
             .single { it.sourceId == sourceId }
         return process(driver, before, after, pending)
@@ -164,7 +160,7 @@ class AbilityTriggeredSourceAuthorityMetadataTest : FunSpec({
         val lastKnown = checkNotNull(event.lastKnown)
         lastKnown.entityId shouldBe sourceId
         lastKnown.objectIncarnationStamp shouldBe sourceStamp
-        val pending = TriggerDetector(driver.cardRegistry)
+        val pending = driver.services.triggerDetector
             .detectTriggers(after, listOf(event))
             .single { it.sourceId == sourceId }
         return process(driver, before, after, pending)
@@ -174,7 +170,7 @@ class AbilityTriggeredSourceAuthorityMetadataTest : FunSpec({
         val driver = driver()
         val sourceId = driver.putCreatureOnBattlefield(driver.player1, metadataPersistentSource.name)
         val before = driver.state
-        val pending = TriggerDetector(driver.cardRegistry)
+        val pending = driver.services.triggerDetector
             .detectPhaseStepTriggers(before, Step.UPKEEP, driver.player1)
             .single { it.sourceId == sourceId }
         return process(driver, before, before, pending)

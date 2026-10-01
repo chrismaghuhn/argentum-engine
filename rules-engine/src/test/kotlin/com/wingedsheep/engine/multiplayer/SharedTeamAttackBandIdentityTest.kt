@@ -26,10 +26,16 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * The shared active team may submit the combined attack through either teammate's input window.
  * Band ordinals therefore live for the whole combat, not only for one declaration call.
+ *
+ * The team has ONE combined attack (CR 805.10b): the declaration is recorded on both heads, so the
+ * teammate can't add a second wave. Both heads' bands are therefore declared together, and the
+ * combat-wide ordinal guard is exercised against an already-attacking band.
  */
 class SharedTeamAttackBandIdentityTest : FunSpec({
 
@@ -77,42 +83,46 @@ class SharedTeamAttackBandIdentityTest : FunSpec({
         return next to id
     }
 
-    test("separate teammate declarations keep distinct combat-local band ordinals") {
+    test("a combined teammate declaration keeps distinct combat-local band ordinals") {
         val (base, players) = init2hg()
         val (state1, first) = base.withBandedBear(players[0])
         val (state2, second) = state1.withBandedBear(players[0])
         val (state3, third) = state2.withBandedBear(players[1])
         val (state4, fourth) = state3.withBandedBear(players[1])
         val state = state4.copy(step = Step.DECLARE_ATTACKERS, phase = Phase.COMBAT)
-            .withPriority(players[0])
+            .withPriority(players[1])
         val processor = ActionProcessor(registry())
 
-        val firstDeclaration = processor.process(
+        // The second head submits the team's one combined attack: a band of each head's creatures.
+        val declaration = processor.process(
             state,
             DeclareAttackers(
-                players[0],
-                mapOf(first to players[2], second to players[2]),
-                bands = listOf(setOf(first, second)),
-            ),
-        ).result
-        check(firstDeclaration.isSuccess) { "first declaration failed: ${firstDeclaration.error}" }
-
-        val secondDeclaration = processor.process(
-            firstDeclaration.newState.withPriority(players[1]),
-            DeclareAttackers(
                 players[1],
-                mapOf(third to players[3], fourth to players[3]),
-                bands = listOf(setOf(third, fourth)),
+                mapOf(
+                    first to players[2], second to players[2],
+                    third to players[3], fourth to players[3],
+                ),
+                bands = listOf(setOf(first, second), setOf(third, fourth)),
             ),
         ).result
-        check(secondDeclaration.isSuccess) { "second declaration failed: ${secondDeclaration.error}" }
+        check((declaration.outcome is Outcome.Done)) { "combined declaration failed: ${declaration.error}" }
 
         val bandIds = listOf(first, second, third, fourth).map { attacker ->
-            secondDeclaration.newState.getEntity(attacker)
+            declaration.newState.getEntity(attacker)
                 ?.get<AttackingComponent>()?.bandId
         }
         bandIds.filterNotNull().toSet() shouldHaveSize 2
         bandIds.filterNotNull().toSet() shouldBe setOf("combat-band-0", "combat-band-1")
+        bandIds[0] shouldBe bandIds[1]
+        bandIds[2] shouldBe bandIds[3]
+
+        // No second declaration can open a fresh ordinal range this combat: the combined attack is
+        // recorded on both heads (CR 805.10b).
+        val secondWave = processor.process(
+            declaration.newState.withPriority(players[0]),
+            DeclareAttackers(players[0], emptyMap()),
+        ).result
+        secondWave.outcome shouldNotBe Outcome.Done
     }
 
     test("a multi-band ordinal range is rejected atomically when it would overflow") {
@@ -121,28 +131,20 @@ class SharedTeamAttackBandIdentityTest : FunSpec({
         val (state2, second) = state1.withBandedBear(players[0])
         val (state3, third) = state2.withBandedBear(players[1])
         val (state4, fourth) = state3.withBandedBear(players[1])
-        val state = state4.copy(step = Step.DECLARE_ATTACKERS, phase = Phase.COMBAT)
-            .withPriority(players[0])
         val processor = ActionProcessor(registry())
 
-        val firstDeclaration = processor.process(
-            state,
-            DeclareAttackers(
-                players[0],
-                mapOf(first to players[2], second to players[2]),
-                bands = listOf(setOf(first, second)),
-            ),
-        ).result
-        check(firstDeclaration.isSuccess) { "first declaration failed: ${firstDeclaration.error}" }
-
+        // A band already in combat holding the last ordinal. It is placed directly: a second
+        // declaration after the team's combined attack is refused outright (CR 805.10b), so that
+        // refusal must not be what this test observes.
         val exhaustedBandId = "combat-band-${Long.MAX_VALUE}"
-        val exhaustedState = firstDeclaration.newState
+        val exhaustedState = state4
             .updateEntity(first) {
-                it.with(it.get<AttackingComponent>()!!.copy(bandId = exhaustedBandId))
+                it.with(AttackingComponent(defenderId = players[2], bandId = exhaustedBandId))
             }
             .updateEntity(second) {
-                it.with(it.get<AttackingComponent>()!!.copy(bandId = exhaustedBandId))
+                it.with(AttackingComponent(defenderId = players[2], bandId = exhaustedBandId))
             }
+            .copy(step = Step.DECLARE_ATTACKERS, phase = Phase.COMBAT)
             .withPriority(players[1])
         val before = exhaustedState
         val rejected = processor.process(
@@ -154,7 +156,8 @@ class SharedTeamAttackBandIdentityTest : FunSpec({
             ),
         ).result
 
-        rejected.isSuccess shouldBe false
+        rejected.outcome shouldNotBe Outcome.Done
+        rejected.error shouldBe "Attack band ordinal space is exhausted"
         rejected.newState shouldBe before
     }
 })

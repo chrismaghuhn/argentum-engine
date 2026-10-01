@@ -16,6 +16,7 @@ import com.wingedsheep.engine.handlers.effects.BattlefieldEntry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.PaymentManaSideEffectCertificate
 import com.wingedsheep.engine.registry.CardRegistry
@@ -76,7 +77,7 @@ import kotlinx.serialization.json.Json
 class PaymentDomainV5ContractTest : FunSpec({
 
     test("current Gym schema identifies the V5 paid-source contract") {
-        SchemaHash.CURRENT shouldBe "argentum-gym-contract@v1.26-repeat-count-domain"
+        SchemaHash.CURRENT shouldBe "argentum-gym-contract@v1.27-upstream-sync-05"
     }
 
     val outerSpell = card("PAY106 V5 Outer Spell") {
@@ -219,8 +220,10 @@ class PaymentDomainV5ContractTest : FunSpec({
         typeLine = "Land — Forest"
     }
 
+    // Built outside card { } (no AbilityIdScope), so the ids are named; they only have to differ,
+    // since ManaAbilityIdentity.key ignores the id and V5 orders grants by the grantor's rank.
     val greenGrantAbility = ActivatedAbility(
-        id = AbilityId.generate(),
+        id = AbilityId("PAY106 V5 Green Grantor:granted-mana"),
         cost = Costs.Tap,
         effect = Effects.AddMana(Color.GREEN),
         timing = TimingRule.ManaAbility,
@@ -238,7 +241,7 @@ class PaymentDomainV5ContractTest : FunSpec({
     }
 
     val blackGrantAbility = ActivatedAbility(
-        id = AbilityId.generate(),
+        id = AbilityId("PAY106 V5 Black Grantor:granted-mana"),
         cost = Costs.Tap,
         effect = Effects.AddMana(Color.BLACK),
         timing = TimingRule.ManaAbility,
@@ -472,6 +475,57 @@ class PaymentDomainV5ContractTest : FunSpec({
             .paymentDomainV5For(state, fixture.legalAction) shouldBe null
     }
 
+    fun withFloating(
+        fixture: Fixture,
+        modification: com.wingedsheep.engine.mechanics.layers.SerializableModification,
+        affectedEntities: Set<EntityId>,
+    ): GameState = fixture.environment.state.copy(
+        floatingEffects = listOf(
+            com.wingedsheep.engine.mechanics.layers.ActiveFloatingEffect(
+                id = EntityId("pay106-floating-shield"),
+                effect = com.wingedsheep.engine.mechanics.layers.FloatingEffectData(
+                    layer = com.wingedsheep.engine.mechanics.layers.Layer.ABILITY,
+                    modification = modification,
+                    affectedEntities = affectedEntities,
+                ),
+                duration = Duration.EndOfTurn,
+                sourceId = null,
+                controllerId = fixture.playerId,
+                timestamp = 1L,
+            ),
+        ),
+    )
+
+    test("PAY106-FLOATING-SHIELD-01: protection on a permanent and combat-only shields keep pain certified") {
+        // Mother of Runes' protection floats on a creature and cannot reach the noncombat damage a
+        // pain land deals to its controller; neither can a combat-only shield.
+        val fixture = prepared(listOf(LlanowarWastes))
+        val builder = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+        for ((modification, affected) in listOf(
+            com.wingedsheep.engine.mechanics.layers.SerializableModification
+                .GrantProtectionFromColor("RED") to setOf(fixture.forestId),
+            com.wingedsheep.engine.mechanics.layers.SerializableModification
+                .PreventAllCombatDamage to emptySet(),
+            com.wingedsheep.engine.mechanics.layers.SerializableModification
+                .PreventAllDamageTo(combatOnly = true) to setOf(fixture.playerId),
+        )) {
+            builder.paymentDomainV5For(withFloating(fixture, modification, affected), fixture.legalAction) shouldNotBe null
+        }
+    }
+
+    test("PAY106-FLOATING-SHIELD-02: a shield that can reach the controller still closes pain certification") {
+        val fixture = prepared(listOf(LlanowarWastes))
+        val builder = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+        for ((modification, affected) in listOf(
+            com.wingedsheep.engine.mechanics.layers.SerializableModification
+                .PreventNextDamage(remainingAmount = 1) to setOf(fixture.playerId),
+            com.wingedsheep.engine.mechanics.layers.SerializableModification
+                .GrantProtectionFromColor("RED") to setOf(fixture.playerId),
+        )) {
+            builder.paymentDomainV5For(withFloating(fixture, modification, affected), fixture.legalAction) shouldBe null
+        }
+    }
+
     fun certifiedJointPool(
         fixture: Fixture,
         reverseInsertionOrder: Boolean = false,
@@ -587,12 +641,13 @@ class PaymentDomainV5ContractTest : FunSpec({
             val fixture = prepared(listOf(painSource))
             val sourceId = fixture.extraIds[painSource.name]
                 ?: error("PAY106 fixture did not capture ${painSource.name}")
-            val discovered = ManaSolver(fixture.cardRegistry).findAvailableManaSources(
-                state = fixture.environment.state,
-                playerId = fixture.playerId,
-                spellContext = null,
-                paymentOrderRequired = true,
-            )
+            val discovered = ManaSolver(fixture.cardRegistry, PredicateEvaluator(fixture.cardRegistry))
+                .findAvailableManaSources(
+                    state = fixture.environment.state,
+                    playerId = fixture.playerId,
+                    spellContext = null,
+                    paymentOrderRequired = true,
+                )
             val source = discovered.single { it.entityId == sourceId }
             source.paymentManaSideEffectCertificates.values.any {
                 it is PaymentManaSideEffectCertificate.FixedSelfDamage

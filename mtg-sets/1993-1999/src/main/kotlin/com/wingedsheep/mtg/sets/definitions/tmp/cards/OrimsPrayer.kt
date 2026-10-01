@@ -5,6 +5,8 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.references.Player
 
 /**
  * Orim's Prayer
@@ -22,8 +24,10 @@ val OrimsPrayer = card("Orim's Prayer") {
     oracleText = "Whenever one or more creatures attack you, you gain 1 life for each attacking creature."
 
     triggeredAbility {
-        trigger = Triggers.CreaturesAttackYou
-        effect = Effects.GainLife(DynamicAmounts.creaturesAttackingYou())
+        trigger = Triggers.you.isAttacked()
+        effect = Effects.GainLife(
+            DynamicAmounts.battlefield(Player.Each, GameObjectFilter.Creature.attacking()).count()
+        )
     }
 
     metadata {

@@ -7,9 +7,7 @@ import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Glissa, the Traitor
@@ -33,18 +31,9 @@ val GlissaTheTraitor = card("Glissa, the Traitor") {
     keywords(Keyword.FIRST_STRIKE, Keyword.DEATHTOUCH)
 
     triggeredAbility {
-        trigger = Triggers.leavesBattlefield(
-            filter = GameObjectFilter.Creature.opponentControls(),
-            to = Zone.GRAVEYARD,
-            binding = TriggerBinding.ANY,
-        )
+        trigger = Triggers.a(GameObjectFilter.Creature.opponentControls()).dies()
         optional = true
-        val target = target(
-            "target",
-            TargetObject(
-                filter = TargetFilter(GameObjectFilter.Artifact.ownedByYou(), zone = Zone.GRAVEYARD),
-            ),
-        )
+        val target = target(TargetFilter(GameObjectFilter.Artifact.ownedByYou(), zone = Zone.GRAVEYARD))
         effect = Effects.Move(target, Zone.HAND)
     }
 

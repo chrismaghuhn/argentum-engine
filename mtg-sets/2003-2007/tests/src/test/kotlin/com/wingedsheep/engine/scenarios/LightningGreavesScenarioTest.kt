@@ -14,6 +14,8 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.nulls.shouldBeNull
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Lightning Greaves (MRD #199) — "Equipped creature has haste and shroud. Equip {0}."
@@ -38,7 +40,7 @@ class LightningGreavesScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(creature))
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
     }
 
@@ -89,7 +91,7 @@ class LightningGreavesScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(opponentCreature))
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.attachedTo(greaves) shouldBe null
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
@@ -100,7 +102,7 @@ class LightningGreavesScenarioTest : FunSpec({
                 abilityId = equipAbilityId,
                 targets = listOf(ChosenTarget.Permanent(ownCreature))
             )
-        ).isSuccess shouldBe false
+        ).outcome shouldNotBe Outcome.Done
         driver.attachedTo(greaves) shouldBe null
     }
 
@@ -116,12 +118,12 @@ class LightningGreavesScenarioTest : FunSpec({
         val growth = driver.putCardInHand(player, "Giant Growth")
         driver.giveMana(player, com.wingedsheep.sdk.core.Color.GREEN, 1)
         driver.castSpellWithTargets(player, growth, listOf(ChosenTarget.Permanent(creature)))
-            .isSuccess shouldBe false
+            .outcome shouldNotBe Outcome.Done
 
         val otherGrowth = driver.putCardInHand(player, "Giant Growth")
         driver.giveMana(player, com.wingedsheep.sdk.core.Color.GREEN, 1)
         driver.castSpellWithTargets(player, otherGrowth, listOf(ChosenTarget.Permanent(other)))
-            .isSuccess shouldBe true
+            .outcome shouldBe Outcome.Done
     }
 
     test("when Lightning Greaves leaves, its granted keywords end") {
@@ -138,7 +140,7 @@ class LightningGreavesScenarioTest : FunSpec({
         driver.giveMana(player, com.wingedsheep.sdk.core.Color.WHITE, 1)
         driver.giveColorlessMana(player, 1)
         driver.castSpellWithTargets(player, disenchant, listOf(ChosenTarget.Permanent(greaves)))
-            .isSuccess shouldBe true
+            .outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.getPermanents(player) shouldNotContain greaves

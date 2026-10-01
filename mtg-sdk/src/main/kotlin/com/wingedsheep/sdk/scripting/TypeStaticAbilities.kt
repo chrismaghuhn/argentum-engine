@@ -1,5 +1,6 @@
 package com.wingedsheep.sdk.scripting
 
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.text.TextReplacer
@@ -103,23 +104,92 @@ data class IsAllCreatureTypes(
 }
 
 /**
+ * The permanents matching [filter] **have the creature types of the object [source] names**,
+ * replacing their own (CR 205.1b) while keeping every non-creature subtype.
+ *
+ * The type half of the "copy some characteristics of another object" family: [source] is an
+ * ordinary [com.wingedsheep.sdk.scripting.targets.EffectTarget.SingleEntity], so the same static reads a card
+ * exiled with this permanent (`LinkedExiledCard()` — Duplicant), the source itself, or any other
+ * reference the evaluator can resolve. Pair it with
+ * [SetBasePowerToughnessDynamicStatic] fed `DynamicAmount.EntityProperty(source, Power/Toughness)`
+ * for the full "has the power, toughness, and creature types of X" sentence.
+ *
+ * This is a Layer 4 (TYPE) continuous effect, re-read on every projection pass — so the gainer's
+ * types track the referenced object live (Duplicant's ruling: "constantly updated if the exiled
+ * card's power and/or toughness change" applies to its types too). When [source] resolves to
+ * nothing, or the object it names has no creature types, only [retainedTypes] remains.
+ *
+ * [retainedTypes] is the printed "It's still a Shapeshifter." rider — types the gainer keeps
+ * *in addition* to the ones it copies. It exists as a field rather than a separate
+ * [GrantSubtype] static because both would land in Layer 4 with the same timestamp, and a
+ * `SetCreatureSubtypes` applied after an `AddSubtype` would silently wipe it.
+ *
+ * @property source The object whose creature types are copied.
+ * @property retainedTypes Creature types the gainer keeps regardless of what it copies.
+ * @property filter Which permanents gain the types (defaults to the source permanent itself).
+ */
+@SerialName("HasCreatureTypesOf")
+@Serializable
+data class HasCreatureTypesOf(
+    val source: com.wingedsheep.sdk.scripting.targets.EffectTarget.SingleEntity,
+    val retainedTypes: Set<String> = emptySet(),
+    val filter: GroupFilter = GroupFilter.source()
+) : StaticAbility {
+    override val description: String = buildString {
+        append("${filter.description} has the creature types of ${source.description}")
+        if (retainedTypes.isNotEmpty()) {
+            append(". It's still ")
+            append(retainedTypes.sorted().joinToString(" and ") { "a $it" })
+        }
+    }
+
+    override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
+        val newFilter = filter.applyTextReplacement(replacer)
+        val newRetained = retainedTypes.map { replacer.replaceCreatureType(it) }.toSet()
+        return if (newFilter !== filter || newRetained != retainedTypes)
+            copy(filter = newFilter, retainedTypes = newRetained) else this
+    }
+}
+
+/**
  * Adds a card type (e.g., "CREATURE") to the target permanent, in addition to its other types.
  * Used for Spacecraft Station mechanic: "It's an artifact creature at 7+."
  *
  * This is a Layer 4 (type-changing) continuous effect that adds a card type.
  *
+ * The two cross-zone flags extend the grant beyond the battlefield, the card-type twin of
+ * [GrantChosenSubtype]'s flags — Encroaching Mycosynth's "The same is true for permanent spells
+ * you control and nonland permanent cards you own that aren't on the battlefield":
+ *  - [includeControlledSpells] — spells the source's controller controls (on the stack) that
+ *    match [filter]'s card predicates also have [cardType].
+ *  - [includeOwnedCardsOutsideBattlefield] — cards the source's controller owns in any
+ *    non-battlefield, non-stack zone that match [filter]'s card predicates also have [cardType].
+ *
+ * Off the battlefield only [filter]'s *card* predicates (type, colour, …) decide which objects
+ * qualify, read against printed characteristics; its controller/state predicates describe the
+ * battlefield half. So `filter = GroupFilter(GameObjectFilter.NonlandPermanent.youControl())`
+ * reaches "permanent spells" and "nonland permanent cards" without a second filter.
+ *
  * @property cardType The card type to add (e.g., "CREATURE", "ARTIFACT")
  * @property filter What this ability applies to
+ * @property includeControlledSpells Whether matching spells the controller controls gain the type.
+ * @property includeOwnedCardsOutsideBattlefield Whether matching cards the controller owns outside
+ *   the battlefield gain the type.
  */
 @SerialName("GrantCardType")
 @Serializable
 data class GrantCardType(
     val cardType: String,
-    val filter: GroupFilter = GroupFilter.source()
+    val filter: GroupFilter = GroupFilter.source(),
+    val includeControlledSpells: Boolean = false,
+    val includeOwnedCardsOutsideBattlefield: Boolean = false
 ) : StaticAbility {
-    override val description: String = "is also ${
-        if (cardType.first().lowercaseChar() in "aeiou") "an" else "a"
-    } ${cardType.lowercase()}"
+    override val description: String = buildString {
+        append("is also ${if (cardType.first().lowercaseChar() in "aeiou") "an" else "a"} ${cardType.lowercase()}")
+        if (includeControlledSpells || includeOwnedCardsOutsideBattlefield) {
+            append("; so are your matching spells and cards outside the battlefield")
+        }
+    }
 }
 
 /**
@@ -200,6 +270,26 @@ data class GrantChosenColor(
 }
 
 /**
+ * "All instances of color words in the text of spells and permanents are changed to the chosen
+ * color word." (Swirl the Mists)
+ *
+ * A global Layer 3 text-changing effect (CR 613.1c, CR 612). The chosen color is read from the
+ * source's `CastChoicesComponent`, so pair it with `EntersWithChoice(ChoiceType.COLOR)`. While the
+ * source is on the battlefield, every color word in the rules text of every spell and permanent —
+ * protection colors, color-word filters ("nonblack", "target red creature"), color-keyed amounts —
+ * reads as the chosen color. It changes *words*, not objects: mana symbols, card names and an
+ * object's actual colors are untouched (CR 612.2). It covers spells as they're cast (targets are
+ * chosen against the changed text) and permanents that enter later. Until a color is chosen it
+ * changes nothing.
+ */
+@SerialName("ChangeAllColorWordsToChosenColor")
+@Serializable
+data object ChangeAllColorWordsToChosenColor : StaticAbility {
+    override val description: String =
+        "All instances of color words in the text of spells and permanents are changed to the chosen color word"
+}
+
+/**
  * Adds a creature type to all creatures that have a specific counter type.
  * Used for Aurification: "Each creature with a gold counter on it is a Wall."
  *
@@ -210,10 +300,10 @@ data class GrantChosenColor(
 @Serializable
 data class AddCreatureTypeByCounter(
     val creatureType: String,
-    val counterType: String
+    val counterType: CounterType
 ) : StaticAbility {
     override val description: String =
-        "Each creature with a $counterType counter on it is a $creatureType in addition to its other creature types"
+        "Each creature with a ${counterType.printed} counter on it is a $creatureType in addition to its other creature types"
     override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
         val newCreatureType = replacer.replaceCreatureType(creatureType)
         return if (newCreatureType != creatureType) copy(creatureType = newCreatureType) else this
@@ -234,10 +324,10 @@ data class AddCreatureTypeByCounter(
 @Serializable
 data class AddLandTypeByCounter(
     val landType: String,
-    val counterType: String
+    val counterType: CounterType
 ) : StaticAbility {
     override val description: String =
-        "Each land with a $counterType counter on it is ${
+        "Each land with a ${counterType.printed} counter on it is ${
             if (landType.first().lowercaseChar() in "aeiou") "an" else "a"
         } $landType in addition to its other types"
 }

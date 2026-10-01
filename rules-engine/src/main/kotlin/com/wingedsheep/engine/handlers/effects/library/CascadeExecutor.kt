@@ -12,7 +12,6 @@ import com.wingedsheep.engine.handlers.effects.LibraryPlacement
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -23,6 +22,7 @@ import com.wingedsheep.sdk.scripting.effects.CardDestination
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
 import com.wingedsheep.sdk.scripting.references.Player
 import kotlin.reflect.KClass
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Executor for [CascadeEffect] (CR 702.85).
@@ -46,8 +46,8 @@ import kotlin.reflect.KClass
  *    here and no spell is offered.
  */
 class CascadeExecutor(
-    private val decisionHandler: DecisionHandler = DecisionHandler(),
-    private val cardRegistry: CardRegistry = CardRegistry(),
+    private val zones: ZoneTransitionService,
+    private val decisionHandler: DecisionHandler = DecisionHandler()
 ) : EffectExecutor<CascadeEffect> {
 
     override val effectType: KClass<CascadeEffect> = CascadeEffect::class
@@ -102,8 +102,8 @@ class CascadeExecutor(
         )
 
         for (cardId in exiledCards) {
-            val result = ZoneMovementUtils.moveCardToZone(currentState, cardId, Zone.EXILE)
-            if (result.isSuccess) {
+            val result = ZoneMovementUtils.moveCardToZone(zones, currentState, cardId, Zone.EXILE)
+            if (result.outcome is Outcome.Done) {
                 currentState = result.state
                 allEvents.addAll(result.events)
             }
@@ -113,25 +113,37 @@ class CascadeExecutor(
             // Library exhausted without a qualifying card — bottom-randomize everything
             // exiled this way and finish, no may-cast offered.
             val bottomResult = bottomRandomizeWithReplacements(
+                zones = zones,
                 state = currentState,
                 playerId = controllerId,
                 cards = exiledCards,
                 context = context,
-                cardRegistry = cardRegistry,
             )
-            if (bottomResult.isPaused) {
-                return EffectResult.paused(
+            if (bottomResult.outcome is Outcome.Paused) {
+                return EffectResult.propagatePause(
                     bottomResult.state,
-                    bottomResult.pendingDecision!!,
                     allEvents + bottomResult.events,
+                    bottomResult.diagnostics,
                 )
             }
-            if (!bottomResult.isSuccess) return bottomResult
-            return EffectResult.success(bottomResult.state, allEvents + bottomResult.events)
+            if (bottomResult.outcome is Outcome.Rejected) return bottomResult
+            return EffectResult.success(
+                bottomResult.state,
+                allEvents + bottomResult.events,
+                bottomResult.diagnostics,
+            )
         }
 
         val cascadeName = currentState.getEntity(cascadeCard)
             ?.get<CardComponent>()?.name ?: "the exiled card"
+        val continuation = CascadeMayCastContinuation(
+            playerId = controllerId,
+            sourceId = context.sourceId,
+            objectReferences = context.objectReferences,
+            exiledCards = exiledCards.toList(),
+            cascadeCardId = cascadeCard
+        )
+
         val pause = decisionHandler.createYesNoDecision(
             state = currentState,
             playerId = controllerId,
@@ -140,23 +152,14 @@ class CascadeExecutor(
             prompt = "Cast $cascadeName without paying its mana cost?",
             yesText = "Cast for free",
             noText = "Decline",
-            phase = DecisionPhase.RESOLUTION
+            phase = DecisionPhase.RESOLUTION,
+            answer = continuation
         )
 
-        val pendingDecision = pause.pendingDecision
-            ?: error("createYesNoDecision must return a pending decision")
-        val continuation = CascadeMayCastContinuation(
-            decisionId = pendingDecision.id,
-            playerId = controllerId,
-            sourceId = context.sourceId,
-            exiledCards = exiledCards.toList(),
-            cascadeCardId = cascadeCard
-        )
-        val stateWithCont = pause.state.pushContinuation(continuation)
+        val stateWithCont = pause.state
 
-        return EffectResult.paused(
+        return EffectResult.propagatePause(
             stateWithCont,
-            pendingDecision,
             allEvents + pause.events
         )
     }
@@ -168,18 +171,18 @@ class CascadeExecutor(
          * the old synchronous helper remains for discover's non-pausing legacy path.
          */
         fun bottomRandomizeWithReplacements(
+            zones: ZoneTransitionService,
             state: GameState,
             playerId: EntityId,
             cards: List<EntityId>,
             context: EffectContext,
-            cardRegistry: CardRegistry = CardRegistry(),
         ): EffectResult {
             val hasCommander = state.format.usesCommanders && cards.any { cardId ->
                 state.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
             }
             if (!hasCommander) {
                 var updatedState = state
-                val events = bottomRandomize(state, playerId, cards) { updatedState = it }
+                val events = bottomRandomize(zones, state, playerId, cards) { updatedState = it }
                 return EffectResult.success(updatedState, events)
             }
 
@@ -189,7 +192,7 @@ class CascadeExecutor(
                 player = Player.You,
                 placement = ZonePlacement.Bottom,
             )
-            return MoveCollectionExecutor(cardRegistry).moveCardsToZone(
+            return MoveCollectionExecutor(zones, zones.cardRegistry).moveCardsToZone(
                 state = shuffledState,
                 context = context,
                 cards = shuffledCards,
@@ -205,6 +208,7 @@ class CascadeExecutor(
          * outside the helper.
          */
         fun bottomRandomize(
+            zones: ZoneTransitionService,
             state: GameState,
             playerId: EntityId,
             cards: List<EntityId>,
@@ -215,7 +219,7 @@ class CascadeExecutor(
             val (shuffledCards, advanced) = current.nextRandom { shuffle(cards) }
             current = advanced
             for (cardId in shuffledCards) {
-                val result = ZoneTransitionService.moveToZone(
+                val result = zones.moveToZone(
                     state = current,
                     entityId = cardId,
                     destinationZone = Zone.LIBRARY,

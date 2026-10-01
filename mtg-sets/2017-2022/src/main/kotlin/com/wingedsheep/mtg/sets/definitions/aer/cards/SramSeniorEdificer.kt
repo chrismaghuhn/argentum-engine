@@ -20,9 +20,7 @@ val SramSeniorEdificer = card("Sram, Senior Edificer") {
     oracleText = "Whenever you cast an Aura, Equipment, or Vehicle spell, draw a card."
 
     triggeredAbility {
-        trigger = Triggers.youCastSpell(
-            spellFilter = GameObjectFilter.Any.withAnySubtype("Aura", "Equipment", "Vehicle")
-        )
+        trigger = Triggers.you.casts(GameObjectFilter.Any.withAnySubtype("Aura", "Equipment", "Vehicle"))
         effect = Effects.DrawCards(1)
     }
 

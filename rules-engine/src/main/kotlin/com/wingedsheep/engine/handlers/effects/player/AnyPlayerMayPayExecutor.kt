@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.effects.player
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.DecisionHandler
 import com.wingedsheep.engine.handlers.EffectContext
@@ -18,7 +19,6 @@ import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
 import com.wingedsheep.sdk.scripting.references.Player
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -38,6 +38,8 @@ import kotlin.reflect.KClass
 class AnyPlayerMayPayExecutor(
     private val decisionHandler: DecisionHandler = DecisionHandler(),
     private val executeEffect: ((GameState, Effect, EffectContext) -> EffectResult)? = null,
+    private val predicateEvaluator: PredicateEvaluator,
+    /** Resolves a dynamic life amount (a commander's colour identity) for the asked player. */
     private val cardRegistry: CardRegistry? = null
 ) : EffectExecutor<AnyPlayerMayPayEffect> {
 
@@ -112,15 +114,7 @@ class AnyPlayerMayPayExecutor(
 
         // No more players can pay - run the "none paid" branch (e.g., reanimate the card).
         if (index >= playerOrder.size) {
-            return runConsequence(
-                state,
-                effect.consequenceIfNonePaid,
-                context.controllerId,
-                sourceId,
-                context.pipeline.storedCollections,
-                context.triggeringEntityId,
-                context.triggeringPlayerId
-            )
+            return runConsequence(state, effect.consequenceIfNonePaid, context)
         }
 
         val playerId = playerOrder[index]
@@ -153,16 +147,15 @@ class AnyPlayerMayPayExecutor(
     ): Boolean {
         return when (val atom = (cost as? PayCost.Atom)?.atom) {
             is CostAtom.Sacrifice -> {
-                val validPermanents = findValidPermanentsOnBattlefield(
-                    state, playerId, atom.filter, sourceId, atom.excludeSelf
-                )
+                val validPermanents = findValidPermanentsOnBattlefield(state, playerId, atom, sourceId)
                 validPermanents.size >= atom.count
             }
             // CR 119.4: a player may pay life only if their life total is at least the amount.
             is CostAtom.PayLife -> {
-                val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
+                // CR 810.9a / 119.8 — team's shared total and the life-loss lock. The amount may be
+                // dynamic, resolved for this payer.
                 CostAmountResolver.resolve(state, atom.amount, sourceId, playerId, cardRegistry)
-                    ?.let { it >= 0 && life >= it } == true
+                    ?.let { it >= 0 && state.canPayLife(playerId, it) } == true
             }
             else -> false
         }
@@ -179,11 +172,20 @@ class AnyPlayerMayPayExecutor(
         playerOrder: List<EntityId>,
         currentIndex: Int
     ): EffectResult {
-        val validPermanents = findValidPermanentsOnBattlefield(
-            state, playerId, cost.filter, sourceId, cost.excludeSelf
-        )
+        val validPermanents = findValidPermanentsOnBattlefield(state, playerId, cost, sourceId)
 
         val prompt = "You may sacrifice ${cost.count} ${cost.filter.description}s to cause $sourceName to be sacrificed, or skip"
+
+        val continuation = anyPlayerMayPayContinuation(
+            effect, context,
+
+            currentPlayerId = playerId,
+            remainingPlayers = playerOrder.drop(currentIndex + 1),
+            sourceId = sourceId,
+            sourceName = sourceName,
+            requiredCount = cost.count,
+            filter = cost.filter
+        )
 
         val decisionResult = decisionHandler.createCardSelectionDecision(
             state = state,
@@ -196,25 +198,12 @@ class AnyPlayerMayPayExecutor(
             maxSelections = cost.count,
             ordered = false,
             phase = DecisionPhase.RESOLUTION,
-            useTargetingUI = true
+            useTargetingUI = true,
+            answer = continuation
         )
 
-        val continuation = anyPlayerMayPayContinuation(
-            effect, context,
-            decisionId = decisionResult.pendingDecision!!.id,
-            currentPlayerId = playerId,
-            remainingPlayers = playerOrder.drop(currentIndex + 1),
-            sourceId = sourceId,
-            sourceName = sourceName,
-            requiredCount = cost.count,
-            filter = cost.filter
-        )
-
-        val stateWithContinuation = decisionResult.state.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decisionResult.pendingDecision,
+        return EffectResult.propagatePause(
+            decisionResult.state,
             decisionResult.events
         )
     }
@@ -235,10 +224,9 @@ class AnyPlayerMayPayExecutor(
         if (amount < 0) {
             return EffectResult.error(state, "Life cost cannot be negative")
         }
-        val decisionId = UUID.randomUUID().toString()
         val prompt = "Pay $amount life to prevent $sourceName's effect?"
 
-        val decision = YesNoDecision(
+        val decision = { decisionId: String -> YesNoDecision(
             id = decisionId,
             playerId = playerId,
             prompt = prompt,
@@ -249,11 +237,11 @@ class AnyPlayerMayPayExecutor(
             ),
             yesText = "Pay $amount life",
             noText = "Don't pay"
-        )
+        ) }
 
         val continuation = anyPlayerMayPayContinuation(
             effect, context,
-            decisionId = decisionId,
+
             currentPlayerId = playerId,
             remainingPlayers = playerOrder.drop(currentIndex + 1),
             sourceId = sourceId,
@@ -262,27 +250,12 @@ class AnyPlayerMayPayExecutor(
             filter = com.wingedsheep.sdk.scripting.GameObjectFilter.Any
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = playerId,
-                    decisionType = "YES_NO",
-                    prompt = prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation, emptyList()))
     }
 
     private fun anyPlayerMayPayContinuation(
         effect: AnyPlayerMayPayEffect,
         context: EffectContext,
-        decisionId: String,
         currentPlayerId: EntityId,
         remainingPlayers: List<EntityId>,
         sourceId: EntityId,
@@ -290,7 +263,6 @@ class AnyPlayerMayPayExecutor(
         requiredCount: Int,
         filter: com.wingedsheep.sdk.scripting.GameObjectFilter
     ): AnyPlayerMayPayContinuation = AnyPlayerMayPayContinuation(
-        decisionId = decisionId,
         currentPlayerId = currentPlayerId,
         remainingPlayers = remainingPlayers,
         sourceId = sourceId,
@@ -303,46 +275,37 @@ class AnyPlayerMayPayExecutor(
         filter = filter,
         storedCollections = context.pipeline.storedCollections,
         triggeringEntityId = context.triggeringEntityId,
-        triggeringPlayerId = context.triggeringPlayerId
+        triggeringPlayerId = context.triggeringPlayerId,
+        objectReferences = context.objectReferences
     )
 
     /**
      * Run one of the two consequence branches (may be null = nothing). Carries the pipeline's
      * stored collections so the effect can reference cards gathered earlier this resolution.
      */
-    private fun runConsequence(
-        state: GameState,
-        consequence: Effect?,
-        controllerId: EntityId,
-        sourceId: EntityId,
-        storedCollections: Map<String, List<EntityId>>,
-        triggeringEntityId: EntityId? = null,
-        triggeringPlayerId: EntityId? = null
-    ): EffectResult {
+    private fun runConsequence(state: GameState, consequence: Effect?, context: EffectContext): EffectResult {
         if (consequence == null) return EffectResult.success(state)
         val executor = executeEffect ?: return EffectResult.success(state)
-        val context = EffectContext(
-            sourceId = sourceId,
-            controllerId = controllerId,
-            pipeline = PipelineState(storedCollections = storedCollections),
-            triggeringEntityId = triggeringEntityId,
-            triggeringPlayerId = triggeringPlayerId
-        )
         return executor(state, consequence, context)
     }
 
+    /**
+     * The permanents [playerId] may sacrifice to pay a [CostAtom.Sacrifice] whose source is
+     * [sourceId] — the same source-relative rule the resumer applies when it asks the *next* player
+     * (see `SacrificeAndPayContinuationResumer.askNextPlayerForAnyPlayerMayPay`): the atom's own
+     * `excludeSelf` decides whether the source is in the pool, and nothing else does.
+     */
     private fun findValidPermanentsOnBattlefield(
         state: GameState,
         playerId: EntityId,
-        filter: com.wingedsheep.sdk.scripting.GameObjectFilter,
-        sourceId: EntityId,
-        excludeSelf: Boolean
-    ): List<EntityId> {
-        return BattlefieldFilterUtils.findMatchingOnBattlefield(
+        cost: CostAtom.Sacrifice,
+        sourceId: EntityId
+    ): List<EntityId> =
+        BattlefieldFilterUtils.findMatchingOnBattlefield(
             state,
-            filter.youControl(),
+            cost.filter.youControl(),
             PredicateContext(controllerId = playerId),
-            excludeSelfId = if (excludeSelf) sourceId else null
+            excludeSelfId = if (cost.excludeSelf) sourceId else null,
+            predicateEvaluator = predicateEvaluator
         )
-    }
 }

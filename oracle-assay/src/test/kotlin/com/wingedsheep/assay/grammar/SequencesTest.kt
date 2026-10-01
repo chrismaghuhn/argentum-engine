@@ -3,9 +3,17 @@ package com.wingedsheep.assay.grammar
 import com.wingedsheep.assay.syntax.ParseOutcome
 import com.wingedsheep.assay.syntax.parseLine
 import com.wingedsheep.assay.syntax.printLine
+import com.wingedsheep.sdk.core.AbilityFlag
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.scripting.Duration
 import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.effects.CompositeEffect
+import com.wingedsheep.sdk.scripting.effects.DrawCardsEffect
+import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.sdk.scripting.effects.MoveToZoneEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
@@ -25,10 +33,17 @@ class SequencesTest : StringSpec({
         Grammar.abilityLine.printLine(fragment(line)) shouldBe line
     }
 
+    /** The slot one clause's effect reads, found the way a reader would: by looking at its target. */
+    fun referencedSlot(effect: Effect): String? = when (effect) {
+        is MoveToZoneEffect -> (effect.target as? EffectTarget.BoundVariable)?.name
+        is DrawCardsEffect -> (effect.target as? EffectTarget.BoundVariable)?.name
+        else -> null
+    }
+
     "two sentences on one line are one composite" {
         fragment("Draw a card. You gain 2 life.") shouldBe CardFragment(
             script = CardScript(
-                spellEffect = Effects.Composite(listOf(Effects.DrawCards(1), Effects.GainLife(2)))
+                spellEffect = Effects.DrawCards(1) then Effects.GainLife(2)
             )
         )
         roundTrips("Draw a card. You gain 2 life.")
@@ -40,16 +55,17 @@ class SequencesTest : StringSpec({
     "a target is declared at its first mention and referred to afterwards" {
         fragment("Target creature gets +1/+3 until end of turn. Untap that creature.") shouldBe CardFragment(
             script = CardScript(
-                spellEffect = Effects.Composite(
-                    listOf(
-                        Effects.ModifyStats(1, 3, Targets.bound()),
-                        Effects.Untap(Targets.bound()),
-                    )
-                ),
+                spellEffect = Effects.ModifyStats(1, 3, Targets.bound()) then Effects.Untap(Targets.bound()),
                 targetRequirements = listOf(Targets.permanent(GameObjectFilter.Creature)),
             )
         )
-        roundTrips("Target creature gets +1/+3 until end of turn. Untap that creature.")
+        // "That creature" is the demonstrative; the pronoun is what prints. See
+        // [Primitives.targetPronoun] — the choice of canonical is a corpus measurement, and untap is
+        // the one verb where the two spellings are near even.
+        Grammar.abilityLine.printLine(
+            fragment("Target creature gets +1/+3 until end of turn. Untap that creature.")
+        ) shouldBe "Target creature gets +1/+3 until end of turn. Untap it."
+        roundTrips("Target creature gets +1/+3 until end of turn. Untap it.")
     }
 
     // The bug the differential found: the same four words mean the source in one position and the
@@ -60,12 +76,7 @@ class SequencesTest : StringSpec({
         )
         fragment("Untap target creature. It gets +2/+4 until end of turn.") shouldBe CardFragment(
             script = CardScript(
-                spellEffect = Effects.Composite(
-                    listOf(
-                        Effects.Untap(Targets.bound()),
-                        Effects.ModifyStats(2, 4, Targets.bound()),
-                    )
-                ),
+                spellEffect = Effects.Untap(Targets.bound()) then Effects.ModifyStats(2, 4, Targets.bound()),
                 targetRequirements = listOf(Targets.permanent(GameObjectFilter.Creature)),
             )
         )
@@ -98,17 +109,107 @@ class SequencesTest : StringSpec({
             fragment("Scry 2. Draw two cards. You lose 2 life.")
     }
 
-    // Fail-closed: one slot name means two declared targets cannot both be referred to, so a line
-    // that would need two declines rather than producing a model whose second slot is unreachable.
-    "two clauses that each declare a target decline" {
+    // Two declared targets are numbered by the position their clause introduces them in, and the
+    // first one keeps the bare name so a single-target line folds through unchanged.
+    "two clauses that each declare a target are numbered by position" {
+        val line = fragment("Destroy target land. Draw a card. Target player draws a card.").script
+        line.targetRequirements.map { it.id } shouldBe listOf(Targets.slot(0), Targets.slot(1))
+        val effects = (line.spellEffect as CompositeEffect).effects
+        effects.map { referencedSlot(it) } shouldBe listOf(Targets.slot(0), null, Targets.slot(1))
+        roundTrips("Destroy target land. Draw a card. Target player draws a card.")
+        roundTrips("Destroy target land. ~ deals 13 damage to target creature.")
+        roundTrips("Counter target spell. Return target permanent to its owner's hand.")
+    }
+
+    // Fail-closed, and now the only case that is: a pronoun clause beside a second declared target
+    // would mean the most recent mention in English and the first slot in this grammar, and nothing
+    // in the printed line chooses between them.
+    "a pronoun clause beside a second target declines" {
         Grammar.abilityLine
-            .parseLine("Destroy target land. Draw a card. Target player draws a card.")
+            .parseLine("Destroy target land. ~ deals 13 damage to target creature. Untap that creature.")
             .shouldBeInstanceOf<ParseOutcome.Declined>()
     }
 
     // A continuation cannot start a line: the thing it names has not been introduced.
     "a dangling anaphor is not a line" {
         Grammar.abilityLine.parseLine("Untap that creature.").shouldBeInstanceOf<ParseOutcome.Declined>()
+    }
+
+    // Crippling Chill's second sentence, and the reason it is a continuation: the "it" is the
+    // creature the first clause tapped, not the source.
+    "the doesn't-untap rider reads the creature the previous clause tapped" {
+        fragment("Tap target creature. It doesn't untap during its controller's next untap step.") shouldBe
+            CardFragment(
+                script = CardScript(
+                    spellEffect = Effects.Tap(Targets.bound()) then
+                        Effects.GrantKeyword(
+                            AbilityFlag.DOESNT_UNTAP,
+                            Targets.bound(),
+                            Duration.UntilAfterAffectedControllersNextUntap,
+                        ),
+                    targetRequirements = listOf(Targets.permanent(GameObjectFilter.Creature)),
+                )
+            )
+        roundTrips("Tap target creature. It doesn't untap during its controller's next untap step.")
+        roundTrips(
+            "When ~ enters, tap target creature an opponent controls. " +
+                "It doesn't untap during its controller's next untap step."
+        )
+    }
+
+    // The `.` decline band. The name is not an anaphor — it denotes the card in any sentence — so a
+    // later clause can spell it, and ninety-four lines were dying on their own full stop for want of
+    // that one membership.
+    "the source's name reads in a later clause as well as a first one" {
+        fragment("Draw a card. Put a +1/+1 counter on ~.") shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = Effects.DrawCards(1) then
+                    Effects.AddCounters(CounterType.PLUS_ONE_PLUS_ONE, 1, EffectTarget.Self)
+            )
+        )
+        roundTrips("Draw a card. Put a +1/+1 counter on ~.")
+        roundTrips("{T}: Add {C}. Put a point counter on ~.")
+        roundTrips("{2}, {T}: Draw a card. Transform ~.")
+        // " and " is an alternate join, so the same line prints with the full stop the run canonicalizes on.
+        Grammar.abilityLine.printLine(
+            fragment("Whenever a land you control enters, draw a card and put a +1/+1 counter on ~.")
+        ) shouldBe "Whenever a land you control enters, draw a card. Put a +1/+1 counter on ~."
+    }
+
+    // …and the pronoun in that position is the *target*, over the whole retargetable vocabulary
+    // rather than the five sentences somebody had written out by hand.
+    "a later clause's pronoun reaches every verb the source's does" {
+        fragment("Put two +1/+1 counters on target creature. Untap it.") shouldBe CardFragment(
+            script = CardScript(
+                spellEffect = Effects.AddCounters(CounterType.PLUS_ONE_PLUS_ONE, 2, Targets.bound()) then
+                    Effects.Untap(Targets.bound()),
+                targetRequirements = listOf(Targets.permanent(GameObjectFilter.Creature)),
+            )
+        )
+        roundTrips("Put two +1/+1 counters on target creature. Untap it.")
+        roundTrips("Untap target creature. It gets +2/+4 and gains reach until end of turn.")
+        roundTrips("Target creature gets +2/+0 until end of turn. Regenerate it.")
+        roundTrips("Put a +1/+1 counter on target creature. It gains vigilance until end of turn.")
+    }
+
+    // A pronoun with nothing to point at is not a model — Creeping Tar Pit spells "it" about the
+    // permanent the same clause animated, and reading it as a target would round-trip perfectly.
+    "a run that reads the target slot without declaring it declines" {
+        Grammar.abilityLine
+            .parseLine("~ becomes a 3/3 Elemental creature until end of turn. Untap it.")
+            .shouldBeInstanceOf<ParseOutcome.Declined>()
+    }
+
+    // The four zone verbs the pronoun used to be frozen into. "Exile ~." is twenty-nine spells'
+    // whole second line, and it was unreadable because the rule spelled its subject in the template.
+    "the zone verbs take a subject like every other member" {
+        fragment("Exile ~.") shouldBe CardFragment(
+            script = CardScript(spellEffect = Effects.Move(EffectTarget.Self, Zone.EXILE))
+        )
+        roundTrips("Exile ~.")
+        roundTrips("{2}{U}{U}: Return ~ to its owner's hand.")
+        roundTrips("Shuffle ~ into its owner's library.")
+        roundTrips("Put ~ on top of its owner's library.")
     }
 
     // The wrappers are clauses, so a trigger and an activated ability get sequences for free.

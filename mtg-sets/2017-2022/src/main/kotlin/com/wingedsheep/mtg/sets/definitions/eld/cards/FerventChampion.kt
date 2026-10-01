@@ -8,8 +8,6 @@ import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.ReduceEquipCost
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
 
 /**
  * Fervent Champion — Throne of Eldraine #124
@@ -34,14 +32,14 @@ val FerventChampion = card("Fervent Champion") {
     keywords(Keyword.FIRST_STRIKE, Keyword.HASTE)
 
     triggeredAbility {
-        trigger = Triggers.Attacks
-        target = TargetCreature(
-            filter = TargetFilter(
+        trigger = Triggers.self.attacks()
+        val knight = target(
+            TargetFilter(
                 GameObjectFilter.Creature.attacking().withSubtype("Knight").youControl(),
                 excludeSelf = true,
             )
         )
-        effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
+        effect = Effects.ModifyStats(1, 0, knight)
     }
 
     staticAbility {

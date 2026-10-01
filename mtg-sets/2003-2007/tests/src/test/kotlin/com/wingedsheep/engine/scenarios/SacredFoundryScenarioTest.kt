@@ -11,6 +11,7 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Sacred Foundry (RAV #280)
@@ -32,7 +33,7 @@ class SacredFoundryScenarioTest : FunSpec({
         val player = driver.activePlayer!!
         val foundry = driver.putCardInHand(player, "Sacred Foundry")
 
-        driver.playLand(player, foundry).isPaused shouldBe true
+        driver.playLand(player, foundry).outcome.shouldBeInstanceOf<Outcome.Paused>()
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
         driver.submitYesNo(player, true).error shouldBe null
 
@@ -48,7 +49,7 @@ class SacredFoundryScenarioTest : FunSpec({
         val player = driver.activePlayer!!
         val foundry = driver.putCardInHand(player, "Sacred Foundry")
 
-        driver.playLand(player, foundry).isPaused shouldBe true
+        driver.playLand(player, foundry).outcome.shouldBeInstanceOf<Outcome.Paused>()
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
         driver.submitYesNo(player, false).error shouldBe null
 

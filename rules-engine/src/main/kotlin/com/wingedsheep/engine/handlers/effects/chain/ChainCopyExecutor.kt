@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.effects.chain
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
@@ -18,7 +19,6 @@ import com.wingedsheep.sdk.scripting.costs.PayCost
 import com.wingedsheep.sdk.scripting.effects.ChainCopyEffect
 import com.wingedsheep.sdk.scripting.effects.CopyRecipient
 import com.wingedsheep.sdk.scripting.effects.Effect
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -28,8 +28,9 @@ import kotlin.reflect.KClass
  * executor registry, then offers the chain copy to the recipient.
  */
 class ChainCopyExecutor(
-    private val targetFinder: TargetFinder = TargetFinder(),
-    private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult
+    private val effectExecutor: (GameState, Effect, EffectContext) -> EffectResult,
+    private val targetFinder: TargetFinder,
+    private val predicateEvaluator: PredicateEvaluator
 ) : EffectExecutor<ChainCopyEffect> {
 
     override val effectType: KClass<ChainCopyEffect> = ChainCopyEffect::class
@@ -44,11 +45,12 @@ class ChainCopyExecutor(
             ?: return EffectResult.success(state)
 
         // Step 2: Pre-push after-action continuation (sits below any inner continuations)
+
         val afterActionContinuation = ChainCopyAfterActionContinuation(
-            decisionId = "chain-after-action-${UUID.randomUUID()}",
             effect = effect,
             recipientPlayerId = recipientPlayerId,
-            sourceId = context.sourceId
+            sourceId = context.sourceId,
+            objectReferences = context.objectReferences
         )
         val stateWithContinuation = state.pushContinuation(afterActionContinuation)
 
@@ -65,7 +67,7 @@ class ChainCopyExecutor(
         // Step 4: Inner action completed (success or error) — pop the unused after-action continuation
         val (_, stateAfterPop) = actionResult.state.popContinuation()
 
-        if (!actionResult.isSuccess) {
+        if (actionResult.outcome !is Outcome.Done) {
             return actionResult.copy(state = stateAfterPop)
         }
 
@@ -122,7 +124,7 @@ class ChainCopyExecutor(
         context: EffectContext
     ): EffectResult {
         // Check cost prerequisites
-        if (!canPayCopyCost(state, recipientPlayerId, effect.copyCost)) {
+        if (!canPayCopyCost(state, recipientPlayerId, effect.copyCost, predicateEvaluator = predicateEvaluator)) {
             return EffectResult.success(state, events)
         }
 
@@ -140,16 +142,15 @@ class ChainCopyExecutor(
         }
 
         // Build the yes/no decision
-        val decisionId = UUID.randomUUID().toString()
         val sourceName = context.sourceId?.let { sourceId ->
             state.getEntity(sourceId)?.get<CardComponent>()?.name
-        } ?: effect.spellName
+        } ?: "this spell"
 
         val copyCost = effect.copyCost
         val prompt = if (copyCost == null) {
-            "Copy ${effect.spellName} and choose a new target?"
+            "Copy $sourceName and choose a new target?"
         } else {
-            "${copyCost.description.replaceFirstChar { it.uppercase() }} to copy ${effect.spellName} and choose a new target?"
+            "${copyCost.description.replaceFirstChar { it.uppercase() }} to copy $sourceName and choose a new target?"
         }
 
         val (yesText, noText) = if (copyCost == null) {
@@ -158,7 +159,7 @@ class ChainCopyExecutor(
             copyCost.description.replaceFirstChar { it.uppercase() } to "Decline"
         }
 
-        val decision = YesNoDecision(
+        val decision = { decisionId: String -> YesNoDecision(
             id = decisionId,
             playerId = recipientPlayerId,
             prompt = prompt,
@@ -169,40 +170,27 @@ class ChainCopyExecutor(
             ),
             yesText = yesText,
             noText = noText
-        )
+        ) }
 
         val continuation = ChainCopyDecisionContinuation(
-            decisionId = decisionId,
             effect = effect,
             copyControllerId = recipientPlayerId,
-            sourceId = context.sourceId
+            sourceId = context.sourceId,
+            objectReferences = context.objectReferences
         )
 
-        val newState = state.withPendingDecision(decision).pushContinuation(continuation)
-
-        return EffectResult.paused(
-            newState,
-            decision,
-            events + listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = recipientPlayerId,
-                    decisionType = "YES_NO",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation, events = events + emptyList()))
     }
 
     companion object {
         /**
          * Check if the recipient can pay the copy cost.
          */
-        fun canPayCopyCost(state: GameState, playerId: EntityId, cost: PayCost?): Boolean {
+        fun canPayCopyCost(state: GameState, playerId: EntityId, cost: PayCost?, predicateEvaluator: PredicateEvaluator): Boolean {
             if (cost == null) return true
             return when (val atom = (cost as? PayCost.Atom)?.atom) {
                 is CostAtom.Sacrifice -> {
-                    findMatchingPermanents(state, playerId, atom.filter).size >= atom.count
+                    findMatchingPermanents(state, playerId, atom.filter, predicateEvaluator = predicateEvaluator).size >= atom.count
                 }
                 is CostAtom.Discard -> {
                     val handZone = ZoneKey(playerId, Zone.HAND)
@@ -216,10 +204,12 @@ class ChainCopyExecutor(
         fun findMatchingPermanents(
             state: GameState,
             controllerId: EntityId,
-            filter: GameObjectFilter
+            filter: GameObjectFilter,
+            predicateEvaluator: PredicateEvaluator
         ): List<EntityId> {
             return BattlefieldFilterUtils.findMatchingOnBattlefield(
-                state, filter.youControl(), PredicateContext(controllerId = controllerId)
+                state, filter.youControl(), PredicateContext(controllerId = controllerId),
+                predicateEvaluator = predicateEvaluator
             )
         }
     }

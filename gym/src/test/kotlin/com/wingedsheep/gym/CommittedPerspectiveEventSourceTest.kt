@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.HandLookedAtEvent
+import com.wingedsheep.engine.core.LibraryReorderedEvent
 import com.wingedsheep.engine.core.LifeChangedEvent
 import com.wingedsheep.engine.core.LifeChangeReason
 import com.wingedsheep.engine.core.PhaseChangedEvent
@@ -20,6 +21,7 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.gym.contract.PerspectiveEventDisposition
 import com.wingedsheep.gym.contract.PerspectiveEventFamily
 import com.wingedsheep.gym.contract.PerspectiveEventProjector
+import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
@@ -325,6 +327,23 @@ class CommittedPerspectiveEventSourceTest : FunSpec({
         result.classifications.single().disposition shouldBe
             PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY
         shouldThrow<IllegalArgumentException> { result.requireComplete() }
+    }
+
+    test("a placement within a library stays hidden while a chosen library order waits for B") {
+        // Scry to the bottom keeps the card in its library. The Rules engine reports that as a
+        // same-zone placement instead of the LIBRARY -> LIBRARY zone change History A hid before.
+        for (perspective in listOf(p1, p2)) {
+            val placement = project(listOf(LibraryReorderedEvent(p2, 1, sameZonePlacement = true)), perspective)
+            placement.batch.entries.shouldBeEmpty()
+            placement.isComplete shouldBe true
+            placement.classifications.single().disposition shouldBe
+                PerspectiveEventDisposition.INTENTIONALLY_HIDDEN
+        }
+
+        val chosenOrder = project(listOf(LibraryReorderedEvent(p2, 2, source = "Omen")), p2)
+        chosenOrder.isComplete shouldBe false
+        chosenOrder.diagnostics.single().reason shouldBe
+            PerspectiveEventUnsupportedReason.REQUIRES_KNOWLEDGE_LEDGER_B
     }
 
     test("HISTA-12 identical seed and decision produce identical bytes and digest") {

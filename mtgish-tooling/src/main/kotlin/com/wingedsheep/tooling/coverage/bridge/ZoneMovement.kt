@@ -56,6 +56,17 @@ internal fun BridgeBuilder.zoneMovement() {
     effect("Discover", "Discover", "CR 701.57 — Effects.Discover(N)")
     composed("Surveil", "Patterns.Library.surveil -> Gather/Select/MoveCollection", composes = listOf("MoveCollection"))
     composed("Scry", "Patterns.Library.scry -> Gather/Select/MoveCollection", composes = listOf("MoveCollection"))
+    // Clash (CR 701.30) — Patterns.Mechanic.clash expands to ChooseOpponentForSource -> Gather(top 1,
+    // both libraries, revealed) -> two APNAP-ordered Selects -> MoveCollection(bottom), scored and
+    // gated by a Gate.DoAction over SuccessCriterion.CollectionNonEmpty. `ClashOpponent` is the
+    // opponent the clash named, read back through Player.ChosenOpponent.
+    composed("Clash", "Patterns.Mechanic.clash -> ChooseOpponentForSource + Gather/Select/MoveCollection, gated by Gate.DoAction", composes = listOf("MoveCollection"))
+    supported("ClashOpponent", "player: the opponent this clash named (Player.ChosenOpponent)")
+    // The "…, If you won, …" rider *inside* a clash trigger's effect (Entangling Trap, Rebellion of
+    // the Flamekin), which is a different thing from `Clash`'s own win gate: the clash has already
+    // ended, so the outcome is read off the trigger (ClashedEvent.won -> TriggerContext.clashWon)
+    // rather than out of the clash pipeline's collection.
+    supported("Trigger_WonTheClash", "condition: this trigger's clash was won by its controller (Conditions.YouWonTheClash, CR 701.30d)")
     composed("ManifestDread", "Patterns.Library.manifestDread -> Gather/Select/MoveCollection(face-down MANIFEST)", composes = listOf("MoveCollection"))
 
     // Cloak (CR 701.58) is manifest plus ward {2}, and on our side it is exactly one FaceDownMode
@@ -155,11 +166,8 @@ internal fun BridgeBuilder.zoneMovement() {
     // MoveToZone(fromZone = GRAVEYARD), which skips the move when the card has since left the graveyard
     // (by then it's a new object, CR 400.7).
     supported("CardInGraveyards", "exilable selector: a card in a graveyard (MoveToZone fromZone = GRAVEYARD; Trigger_ThatGraveyardCard -> EffectTarget.TriggeringEntity)")
-    // "exile target <permanent> until this <permanent> leaves the battlefield" — the Banishing Light
-    // O-Ring shape (Mystical Tether, Lassoed by the Law). Maps to the ExileUntilLeaves effect paired
-    // with a synthesized leaves-battlefield ReturnLinkedExile trigger; only the
-    // `UntilPermanentLeavesBattlefield ThisPermanent` expiration renders exactly (anything else scaffolds).
-    effect("ExilePermanentUntil", "ExileUntilLeaves")
+    // A one-shot return at source departure; only the ThisPermanent expiration renders.
+    effect("ExilePermanentUntil", "MoveUntilSourceLeaves")
     // "Exile the top card of your library" — the impulse-draw exile half (Irascible Wolverine, Alania's
     // Pathmaker). Gather(top of library) + MoveCollection -> exile; paired with a MayPlayExiledCard grant.
     composed("ExileTopCardOfLibrary", "Gather(top of library) + MoveCollection -> exile (impulse)", composes = listOf("MoveCollection"))

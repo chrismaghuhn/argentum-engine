@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.mechanics.mana.PaymentManaProductionProfile
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
@@ -212,7 +213,9 @@ class GameGymEnvPaymentBundleTest : FunSpec({
         val sourceId = environment.state.getZone(player, Zone.BATTLEFIELD).single { id ->
             environment.state.getEntity(id)?.get<CardComponent>()?.name == dampedBundleLand.name
         }
-        val profile = ManaSolver(registry()).findAvailableManaSources(environment.state, player)
+        val solverRegistry = registry()
+        val profile = ManaSolver(solverRegistry, PredicateEvaluator(solverRegistry))
+            .findAvailableManaSources(environment.state, player)
             .single { it.entityId == sourceId }
             .paymentManaProductionProfiles.values.single()
             .shouldBeInstanceOf<PaymentManaProductionProfile.Unsupported>()

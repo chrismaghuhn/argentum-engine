@@ -20,6 +20,8 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Verifies the engine emits the bipartite [CombatResolutionDecision] for combat
@@ -64,7 +66,7 @@ class CombatResolutionBoardTest : FunSpec({
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
         // declareBlockers takes a Map<blocker, List<attackers>>. With multiple blockers on
         // the same attacker, the engine immediately pauses on an OrderObjectsDecision so
-        // the chooser can provide the complete combat assignment; result.isPaused == true.
+        // the chooser can provide the complete combat assignment; the outcome is `Outcome.Paused`.
         driver.declareBlockers(defender, mapOf(lions to listOf(tusker), centaur to listOf(tusker)))
 
         // The modern board is emitted after blockers are declared; no blocker-order decision is inserted.
@@ -96,7 +98,7 @@ class CombatResolutionBoardTest : FunSpec({
             decisionId = decision.id,
             edges = decision.edges.map { DamageEdgeAmount(it.id, it.amount) },
         )
-        driver.submitDecision(decision.playerId, response).isSuccess shouldBe true
+        driver.submitDecision(decision.playerId, response).outcome shouldBe Outcome.Done
     }
 
     test("COMBAT-19 a banding blocker assigns the attacker's damage") {
@@ -258,7 +260,7 @@ class CombatResolutionBoardTest : FunSpec({
         // rejected. Banding alone cannot rescue this plan.
         val belowLethal = CombatResolutionResponse(decision.id, planEdges(0, 2, 2))
         val belowLethalResult = driver.submitDecision(decision.playerId, belowLethal)
-        belowLethalResult.isSuccess shouldBe false
+        belowLethalResult.outcome shouldNotBe Outcome.Done
         belowLethalResult.error shouldBe "Trample drain ${drain.id}: preceding blocker not at lethal"
 
         // State has not advanced — the original decision is still pending.
@@ -481,7 +483,7 @@ class CombatResolutionBoardTest : FunSpec({
                 (blocker to firstAttacker) to 1,
                 (blocker to secondAttacker) to 2,
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.state.getEntity(blocker)
             ?.get<com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent>()
             ?.assignments shouldBe mapOf(firstAttacker to 1, secondAttacker to 2)
@@ -672,7 +674,7 @@ class CombatResolutionBoardTest : FunSpec({
         )
         val afterAttacker = driver.submitDecision(decision.playerId, attackerResponse)
         afterAttacker.error shouldBe null
-        afterAttacker.isPaused shouldBe true
+        (afterAttacker.outcome is Outcome.Paused) shouldBe true
         afterAttacker.events.none { it is DamageDealtEvent } shouldBe true
         afterAttacker.state.getEntity(silvos1)?.get<DamageComponent>() shouldBe null
         afterAttacker.state.getEntity(crusher1)?.get<DamageComponent>() shouldBe null
@@ -834,9 +836,9 @@ class CombatResolutionBoardTest : FunSpec({
         driver.removeSummoningSickness(courser)
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(attacker, listOf(courser), defender).isSuccess shouldBe true
+        driver.declareAttackers(attacker, listOf(courser), defender).outcome shouldBe Outcome.Done
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
-        driver.declareBlockers(defender, mapOf(lions to listOf(courser))).isSuccess shouldBe true
+        driver.declareBlockers(defender, mapOf(lions to listOf(courser))).outcome shouldBe Outcome.Done
 
         // No manual assignment needed — engine auto-resolves combat damage internally.
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
@@ -1069,7 +1071,7 @@ class CombatResolutionBoardTest : FunSpec({
             DamageEdgeAmount(edge.id, plan[edge.sourceId to edge.targetId] ?: 0)
         }
         val response = CombatResolutionResponse(decisionId = decision.id, edges = customEdges)
-        driver.submitDecision(decision.playerId, response).isSuccess shouldBe true
+        driver.submitDecision(decision.playerId, response).outcome shouldBe Outcome.Done
 
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
         val battlefield = driver.state.getBattlefield()

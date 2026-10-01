@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useGameStore } from '@/store/gameStore'
 import { selectGameState, selectViewingPlayerId, useViewedOpponent } from '@/store/selectors'
-import { hasPendingInputSelection } from '@/store/slices/ui/boardViewSlice'
+import { hasPendingInputSelection, isFollowingAction } from '@/store/slices/ui/boardViewSlice'
+import { MOBILE_BREAKPOINT } from '@/hooks/useResponsive'
 import type { ClientPlayer, EntityId } from '@/types'
+import { defendingPlayerOf } from '@/utils/combatTargets'
 
 /**
  * Multiplayer camera controls: follow-the-action and keyboard board switching.
@@ -40,7 +42,7 @@ export function useMultiplayerView(enabled: boolean, opponents: readonly ClientP
     const attacksMe = combat.attackers.some((a) =>
       a.attackingTarget.type === 'Player'
         ? a.attackingTarget.playerId === viewingPlayerId
-        : gameState.cards[a.attackingTarget.permanentId]?.controllerId === viewingPlayerId
+        : defendingPlayerOf(a.attackingTarget.permanentId, gameState.cards) === viewingPlayerId
     )
     if (attacksMe) followViewTo(combat.attackingPlayerId)
   }, [enabled, combat, viewingPlayerId, gameState, followViewTo])
@@ -70,6 +72,10 @@ export function useMultiplayerView(enabled: boolean, opponents: readonly ClientP
         if (picked) store.viewOpponent(picked.playerId)
       } else if (e.key === '0') {
         if (store.selectedCardId) return
+        // The overview is desktop / landscape-tablet only (the rail hides its button on phones);
+        // toggling it from the keyboard used to leave the store in a mode the layout only half
+        // honoured.
+        if (window.innerWidth < MOBILE_BREAKPOINT) return
         store.toggleOverviewMode()
       } else if (e.key === 'Escape') {
         // Esc means "cancel" inside selection modes; only unpin when idle.
@@ -126,7 +132,7 @@ export function useCombatDefenderFocus(enabled: boolean): readonly EntityId[] {
       const d =
         a.attackingTarget.type === 'Player'
           ? a.attackingTarget.playerId
-          : gameState.cards[a.attackingTarget.permanentId]?.controllerId
+          : defendingPlayerOf(a.attackingTarget.permanentId, gameState.cards)
       if (d) defenders.add(d)
     }
     // You're among the defenders → the attacker slides into view (useMultiplayerView)
@@ -151,7 +157,7 @@ export function useCombatDefenderFocus(enabled: boolean): readonly EntityId[] {
       // Entering (not updating) the split view respects the camera guards.
       if (prev.length === 0) {
         const store = useGameStore.getState()
-        if (!store.followAction || store.viewPinned || hasPendingInputSelection(store)) return prev
+        if (!isFollowingAction(store) || hasPendingInputSelection(store)) return prev
       }
       return prev.length === next.length && prev.every((id, i) => id === next[i]) ? prev : next
     })

@@ -1,0 +1,154 @@
+{
+    "entities": {
+        "player-1": {
+            "com.wingedsheep.engine.state.components.identity.PlayerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.PlayerComponent",
+                "name": "Player1"
+            },
+            "com.wingedsheep.engine.state.components.identity.LifeTotalComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.LifeTotalComponent",
+                "life": 22
+            },
+            "com.wingedsheep.engine.state.components.player.ManaPoolComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.ManaPoolComponent"
+            },
+            "com.wingedsheep.engine.state.components.player.LandDropsComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.LandDropsComponent"
+            },
+            "com.wingedsheep.engine.state.components.player.LifeGainedThisTurnComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.LifeGainedThisTurnComponent"
+            },
+            "com.wingedsheep.engine.state.components.player.LifeGainedAmountThisTurnComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.LifeGainedAmountThisTurnComponent",
+                "amount": 2
+            }
+        },
+        "player-2": {
+            "com.wingedsheep.engine.state.components.identity.PlayerComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.PlayerComponent",
+                "name": "Player2"
+            },
+            "com.wingedsheep.engine.state.components.identity.LifeTotalComponent": {
+                "type": "com.wingedsheep.engine.state.components.identity.LifeTotalComponent",
+                "life": 20
+            },
+            "com.wingedsheep.engine.state.components.player.ManaPoolComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.ManaPoolComponent"
+            },
+            "com.wingedsheep.engine.state.components.player.LandDropsComponent": {
+                "type": "com.wingedsheep.engine.state.components.player.LandDropsComponent"
+            }
+        }
+    },
+    "zones": [
+        {
+            "ownerId": "player-1",
+            "zoneType": "Hand"
+        },
+        [],
+        {
+            "ownerId": "player-1",
+            "zoneType": "Library"
+        },
+        [],
+        {
+            "ownerId": "player-1",
+            "zoneType": "Graveyard"
+        },
+        [],
+        {
+            "ownerId": "player-1",
+            "zoneType": "Battlefield"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Hand"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Library"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Graveyard"
+        },
+        [],
+        {
+            "ownerId": "player-2",
+            "zoneType": "Battlefield"
+        },
+        []
+    ],
+    "turnNumber": 1,
+    "activePlayerId": "player-1",
+    "phase": "PRECOMBAT_MAIN",
+    "step": "PRECOMBAT_MAIN",
+    "priorityPlayerId": "player-1",
+    "turnOrder": [
+        "player-1",
+        "player-2"
+    ],
+    "continuationStack": [
+        {
+            "type": "com.wingedsheep.engine.core.EffectContinuation",
+            "remainingEffects": [
+                {
+                    "type": "GainLife",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 5
+                    }
+                }
+            ],
+            "effectContext": {
+                "sourceId": null,
+                "controllerId": "player-1"
+            }
+        },
+        {
+            "type": "com.wingedsheep.engine.core.Suspension",
+            "question": {
+                "type": "YesNoDecision",
+                "id": "r1",
+                "playerId": "player-1",
+                "prompt": "Gain one life again?",
+                "context": {},
+                "yesText": "Repeat",
+                "noText": "Stop"
+            },
+            "answer": {
+                "type": "com.wingedsheep.engine.core.RepeatWhileDecisionContinuation",
+                "loop": {
+                    "body": {
+                        "type": "GainLife",
+                        "amount": {
+                            "type": "Fixed",
+                            "amount": 1
+                        }
+                    },
+                    "repeatCondition": {
+                        "type": "PlayerChooses",
+                        "decider": {
+                            "type": "Controller"
+                        },
+                        "prompt": "Gain one life again?"
+                    },
+                    "resolvedDeciderId": "player-1",
+                    "sourceName": null,
+                    "effectContext": {
+                        "sourceId": null,
+                        "controllerId": "player-1",
+                        "resolutionDepth": 1
+                    }
+                }
+            }
+        }
+    ],
+    "rng": {
+        "state": 1702
+    },
+    "nextRoutingId": 2
+}

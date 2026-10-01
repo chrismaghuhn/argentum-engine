@@ -7,7 +7,6 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.ModifyStats
-import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.effects.SearchDestination
 
 /**
@@ -33,7 +32,7 @@ val SwordOfTheAnimist = card("Sword of the Animist") {
     }
 
     triggeredAbility {
-        trigger = Triggers.attacks(binding = TriggerBinding.ATTACHED)
+        trigger = Triggers.attached.attacks()
         optional = true
         effect = Patterns.Library.searchLibrary(
             filter = GameObjectFilter.BasicLand,

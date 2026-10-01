@@ -183,14 +183,16 @@ internal class PerspectiveEventProjector(
         }
 
         is CountersAddedEvent -> emit(PerspectiveEventFamily.COUNTERS_ADDED) {
-            put("counterType", event.counterType)
+            // The canonical counter id ("PLUS_ONE_PLUS_ONE", "BOUNTY"), the same spelling the
+            // observation's counter maps use.
+            put("counterType", event.counterType.name)
             put("amount", event.amount)
             put("firstThisTurn", event.firstThisTurn)
             event.placedBy?.let { put("placedByRole", playerRole(it, perspectivePlayerId)) }
         }
 
         is CountersRemovedEvent -> emit(PerspectiveEventFamily.COUNTERS_REMOVED) {
-            put("counterType", event.counterType)
+            put("counterType", event.counterType.name)
             put("amount", event.amount)
             event.remainingCount?.let { put("remainingCount", it) }
         }
@@ -306,6 +308,15 @@ internal class PerspectiveEventProjector(
 
         is LibrarySearchedEvent -> emit(PerspectiveEventFamily.LIBRARY_SEARCHED) {
             put("playerRole", playerRole(event.playerId, perspectivePlayerId))
+        }
+
+        // A card put elsewhere in its own library (scry to the bottom) was reported as a
+        // LIBRARY -> LIBRARY zone change before the Rules engine stopped emitting same-zone moves;
+        // it keeps that hidden-to-hidden classification. A chosen order still waits for B.
+        is LibraryReorderedEvent -> if (event.sameZonePlacement) {
+            hidden("A placement within a library; neither endpoint is visible to this perspective")
+        } else {
+            unsupported(PerspectiveEventUnsupportedReason.REQUIRES_KNOWLEDGE_LEDGER_B)
         }
 
         is ScriedEvent -> emit(PerspectiveEventFamily.SCRY_COMPLETED) {
@@ -450,9 +461,6 @@ internal class PerspectiveEventProjector(
     }
 
     private fun unsupportedReasonFor(event: GameEvent): ProjectionDecision = when (event) {
-        is LibraryReorderedEvent,
-        -> unsupported(PerspectiveEventUnsupportedReason.REQUIRES_KNOWLEDGE_LEDGER_B)
-
         is DamagePreventedEvent,
         is CardPlayedFromPermissionEvent,
         is RingTemptedEvent,

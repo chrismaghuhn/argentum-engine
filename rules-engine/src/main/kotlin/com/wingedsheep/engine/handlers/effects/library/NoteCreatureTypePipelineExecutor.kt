@@ -8,7 +8,6 @@ import com.wingedsheep.engine.state.components.battlefield.NotedCreatureTypesCom
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.scripting.effects.NoteCreatureTypeEffect
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -39,16 +38,20 @@ class NoteCreatureTypePipelineExecutor : EffectExecutor<NoteCreatureTypeEffect> 
 
         val noted = sourceContainer?.get<NotedCreatureTypesComponent>()?.types ?: emptySet()
         val excludedLower = noted.map { it.lowercase() }.toSet()
-        val options = Subtype.ALL_CREATURE_TYPES.filter { it.lowercase() !in excludedLower }
+        // An empty `options` means "any creature type"; a non-empty one narrows the offer to those
+        // types ("secretly choose Human, Merfolk, or Goblin"). Already-noted types drop out of
+        // whichever set that is, so the dedup rule holds for both shapes.
+        val offered = effect.options.ifEmpty { Subtype.ALL_CREATURE_TYPES }
+        val options = offered.filter { it.lowercase() !in excludedLower }
 
         if (options.isEmpty()) {
             return EffectResult.success(state)
         }
 
-        val prompt = effect.prompt ?: "Note a creature type"
+        val prompt = effect.prompt
+            ?: if (effect.secret) "Secretly choose a creature type" else "Note a creature type"
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = ChooseOptionDecision(
+        val decision = { decisionId: String -> ChooseOptionDecision(
             id = decisionId,
             playerId = controllerId,
             prompt = prompt,
@@ -58,31 +61,17 @@ class NoteCreatureTypePipelineExecutor : EffectExecutor<NoteCreatureTypeEffect> 
                 phase = DecisionPhase.RESOLUTION
             ),
             options = options
-        )
+        ) }
 
         val continuation = NoteCreatureTypePipelineContinuation(
-            decisionId = decisionId,
             controllerId = controllerId,
             sourceId = sourceId,
             sourceName = sourceName,
             storeAs = effect.storeAs,
-            options = options
+            options = options,
+            secret = effect.secret
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = controllerId,
-                    decisionType = "CHOOSE_OPTION",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 }

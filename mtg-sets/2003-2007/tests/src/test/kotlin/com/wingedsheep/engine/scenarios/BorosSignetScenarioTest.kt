@@ -10,6 +10,8 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Boros Signet (RAV #255) — {1}, {T}: Add {R}{W}.
@@ -48,7 +50,7 @@ class BorosSignetScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.isTapped(signet) shouldBe true
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.red shouldBe 1
@@ -70,7 +72,7 @@ class BorosSignetScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         driver.isTapped(signet) shouldBe false
     }
 
@@ -90,7 +92,7 @@ class BorosSignetScenarioTest : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe false
+        result.outcome shouldNotBe Outcome.Done
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         pool.red shouldBe 0
         pool.white shouldBe 0

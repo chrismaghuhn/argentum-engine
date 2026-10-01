@@ -19,6 +19,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Equip-timing/cost permissions added for Forge Anew (CR 702.6e equip timing is lifted, plus a
@@ -87,7 +88,7 @@ class EquipPermissionsScenarioTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(courser)),
                 alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP)
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe courser
     }
@@ -109,7 +110,7 @@ class EquipPermissionsScenarioTest : FunSpec({
                 targets = listOf(ChosenTarget.Permanent(a)),
                 alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP)
             )
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe a
 
@@ -123,7 +124,7 @@ class EquipPermissionsScenarioTest : FunSpec({
         driver.giveColorlessMana(you, 1)
         driver.submit(
             ActivateAbility(you, sword, equipId, targets = listOf(ChosenTarget.Permanent(b)))
-        ).isSuccess shouldBe true
+        ).outcome shouldBe Outcome.Done
         driver.bothPass()
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe b
     }

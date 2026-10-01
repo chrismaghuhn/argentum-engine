@@ -1,16 +1,14 @@
 package com.wingedsheep.mtg.sets.definitions.znr.cards
 
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.dsl.DynamicAmounts
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.CardSource
-import com.wingedsheep.sdk.scripting.effects.GatherCardsEffect
 import com.wingedsheep.sdk.scripting.references.Player
-import com.wingedsheep.sdk.scripting.targets.TargetObject
-import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 
 /**
@@ -36,35 +34,30 @@ val SkyclaveApparition = card("Skyclave Apparition") {
         "Illusion creature token, where X is the mana value of the exiled card."
 
     triggeredAbility {
-        trigger = Triggers.EntersBattlefield
+        trigger = Triggers.self.enters()
         val target = target(
-            "up to one target nonland, nontoken permanent you don't control with mana value 4 or less",
-            TargetObject(
-                optional = true,
-                filter = TargetFilter(
-                    baseFilter = GameObjectFilter.NonlandPermanent.nontoken().opponentControls()
-                ).manaValueAtMost(4),
-            ),
+            TargetFilter(baseFilter = GameObjectFilter.NonlandPermanent.nontoken().opponentControls())
+                .manaValueAtMost(4),
+            optional = true,
         )
         effect = Effects.ExileUntilLeaves(target)
     }
 
     triggeredAbility {
-        trigger = Triggers.LeavesBattlefield
+        trigger = Triggers.self.leaves()
         effect = Effects.ForEachPlayer(
-            players = Player.OwnersOfLinkedExile,
-            effects = listOf(
-                GatherCardsEffect(
-                    source = CardSource.FromLinkedExile(),
-                    storeAs = "exiledCard",
-                ),
-                Effects.CreateDynamicToken(
-                    dynamicPower = DynamicAmount.StoredCardManaValue("exiledCard"),
-                    dynamicToughness = DynamicAmount.StoredCardManaValue("exiledCard"),
-                    colors = setOf(Color.BLUE),
-                    creatureTypes = setOf("Illusion"),
-                ),
-            ),
+            Player.OwnersOfLinkedExile,
+            Effects.Pipeline {
+                val exiledCard = gather(CardSource.FromLinkedExile(), name = "exiledCard")
+                run(
+                    Effects.CreateDynamicToken(
+                        dynamicPower = DynamicAmounts.manaValueOf(exiledCard),
+                        dynamicToughness = DynamicAmounts.manaValueOf(exiledCard),
+                        colors = setOf(Color.BLUE),
+                        creatureTypes = setOf("Illusion"),
+                    )
+                )
+            },
         )
     }
 

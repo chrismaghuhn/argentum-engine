@@ -1,9 +1,8 @@
 package com.wingedsheep.engine.mechanics.cost
 
 import com.wingedsheep.engine.core.GameLimits
-import com.wingedsheep.engine.handlers.ConditionEvaluator
-import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.mechanics.mana.ManaColorSetResolver
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
@@ -28,6 +27,12 @@ import com.wingedsheep.sdk.scripting.values.ManaColorSet
 object CostAmountResolver {
 
     /**
+     * Cost amounts are resolved from static helpers that only receive the caller's registry, so the
+     * evaluator graph (predicates, conditions, amounts) is built over that registry per call.
+     */
+    private fun evaluatorFor(cardRegistry: CardRegistry?): PredicateEvaluator = PredicateEvaluator(cardRegistry)
+
+    /**
      * Resolve a cost amount for [controllerId]. A commander-dependent amount is unavailable when
      * the player has no registered commander; an existing colorless commander intentionally
      * resolves to zero.
@@ -48,7 +53,7 @@ object CostAmountResolver {
                 cardRegistry = cardRegistry,
             )
         } else {
-            DynamicAmountEvaluator().evaluate(
+            evaluatorFor(cardRegistry).amounts.evaluate(
                 state = state,
                 amount = amount,
                 context = EffectContext(sourceId = sourceId, controllerId = controllerId),
@@ -144,6 +149,7 @@ object CostAmountResolver {
             sourceId = sourceId,
             controllerId = controllerId,
             cardRegistry = cards,
+            predicateEvaluator = evaluatorFor(cards),
         ).size
     }
 
@@ -242,7 +248,7 @@ object CostAmountResolver {
 
             is DynamicAmount.CountPlayersWith -> {
                 val context = EffectContext(sourceId = sourceId, controllerId = controllerId)
-                val playerIds = DynamicAmountEvaluator().resolveUnifiedPlayerIds(state, amount.scope, context)
+                val playerIds = evaluatorFor(cardRegistry).amounts.resolveUnifiedPlayerIds(state, amount.scope, context)
                 var count = 0
                 for (candidateId in playerIds) {
                     val matches = resolveConditionWithCommanderContext(
@@ -257,7 +263,7 @@ object CostAmountResolver {
                 count
             }
 
-            else -> DynamicAmountEvaluator().evaluate(
+            else -> evaluatorFor(cardRegistry).amounts.evaluate(
                 state = state,
                 amount = amount,
                 context = EffectContext(sourceId = sourceId, controllerId = controllerId),
@@ -332,7 +338,7 @@ object CostAmountResolver {
             is NotCondition ->
                 resolveConditionWithCommanderContext(state, condition.condition, sourceId, controllerId, cardRegistry)?.not()
 
-            else -> ConditionEvaluator().evaluate(
+            else -> evaluatorFor(cardRegistry).conditions.evaluate(
                 state = state,
                 condition = condition,
                 context = EffectContext(sourceId = sourceId, controllerId = controllerId),

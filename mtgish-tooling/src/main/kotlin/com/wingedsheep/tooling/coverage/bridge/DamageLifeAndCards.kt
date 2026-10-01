@@ -54,6 +54,13 @@ internal fun BridgeBuilder.damageLifeAndCards() {
     composed("PreventDamage", "PreventDamageShield (prevent damage to recipient)",
         composes = listOf("PreventDamageShield"))
     composed("GainLifeForEach", "GainLife + DynamicAmount", composes = listOf("GainLife"))
+    // Requires a before/after baseline around the matching damage action. The emitter leaves
+    // this amount unresolved until it can bind that action's scope, rather than using printed X.
+    composed(
+        "TheAmountOfDamageDealtThisWay",
+        "StoreNumber + Subtract(EntityProperty(source, DamageDealtThisTurn), baseline)",
+        composes = listOf("StoreNumber", "EntityProperty", "Subtract")
+    )
     effect("GainLife", "GainLife")
     effect("LoseLife", "LoseLife")
 
@@ -116,6 +123,13 @@ internal fun BridgeBuilder.damageLifeAndCards() {
     // Goblin Piledriver / Shaleskin Bruiser) all realise as a ModifyStatsEffect.
     effects("AdjustPT", "AdjustPTX", "AdjustPTForEach", tag = "ModifyStats")
     effect("AddAbility", "GrantKeyword")
+    // "gains all activated abilities of [that permanent]" — the layer effect that copies another
+    // object's activated abilities wholesale rather than granting an authored one. Quicksilver
+    // Elemental, Grell Philosopher, Havengul Lich. Renders to GainAllActivatedAbilitiesOf, which
+    // snapshots the donor's abilities as the ability resolves. Capability-only: each card wraps it in
+    // its own activated/triggered envelope, so the emitter declines -> SCAFFOLD.
+    effect("AddAbilityFromPermanentHasable", "GainAllActivatedAbilitiesOf",
+        "gain all activated abilities of another object (Quicksilver Elemental)")
 
     // "becomes a copy of [target permanent]" (CR 707) — the _LayerEffect inside a copy continuous
     // effect. Oko, the Ringleader's combat-begin "Oko becomes a copy of up to one target creature you

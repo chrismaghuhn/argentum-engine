@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.mechanics.layers.ActiveFloatingEffect
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.GrantsControllerProtectionComponent
@@ -222,13 +223,14 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
         }
 
         // Floating shields are stored as a separate serializable channel and are not necessarily
-        // present in ReplacementEffectSourceComponent. Reject all current damage/protection
-        // modifications, including combat-only variants, because the V5 certificate has no
-        // target/source matching proof for them and a later state change must not expose one.
-        if (state.floatingEffects.any {
-                it.effect.modification.isDamageOrProtectionInterference()
-            }
-        ) {
+        // present in ReplacementEffectSourceComponent. Reject every damage/protection modification
+        // that could reach this noncombat damage to the controller, because the V5 certificate has
+        // no target/source matching proof for them and a later state change must not expose one.
+        // Two kinds provably cannot: combat-only modifications, and protection granted to
+        // permanents (protection only covers the object it is granted to; the player's own is the
+        // PlayerProtectionComponent checked above). Mother of Runes' floating protection used to
+        // close every pain-land payment while it lasted.
+        if (state.floatingEffects.any { it.canReachNoncombatDamageTo(candidate.controllerId) }) {
             return false
         }
 
@@ -251,26 +253,46 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
     private fun ReplacementEffect.targetsDamageOrLifeLoss(): Boolean =
         appliesTo is EventPattern.DamageEvent || appliesTo is EventPattern.LifeLossEvent
 
+    private fun ActiveFloatingEffect.canReachNoncombatDamageTo(playerId: EntityId): Boolean =
+        when (val modification = effect.modification) {
+            is SerializableModification.PreventAllCombatDamage,
+            is SerializableModification.ReflectCombatDamage,
+            is SerializableModification.PreventCombatDamageFromGroup,
+            is SerializableModification.PreventCombatDamageToAndBy,
+            is SerializableModification.RedirectCombatDamageToController,
+            -> false
+            is SerializableModification.PreventAllDamageTo -> !modification.combatOnly
+            is SerializableModification.PreventAllDamageFromGroup -> !modification.combatOnly
+            is SerializableModification.PreventAllDamageToGroup -> !modification.combatOnly
+            is SerializableModification.PreventNextDamageFromSourceShield -> !modification.combatOnly
+            is SerializableModification.GrantProtectionFromColor,
+            is SerializableModification.GrantProtectionFromCardType,
+            -> playerId in effect.affectedEntities
+            else -> modification.isDamageOrProtectionInterference()
+        }
+
+    // Every branch is a type test: a bare @Serializable data-class name resolves to its generated
+    // serializer companion, which `when` would compare by equality and never match.
     private fun SerializableModification.isDamageOrProtectionInterference(): Boolean = when (this) {
-        SerializableModification.PreventDamageFromAttackingCreatures,
-        SerializableModification.PreventAllCombatDamage,
-        SerializableModification.ReflectCombatDamage,
-        SerializableModification.GrantProtectionFromColor,
-        SerializableModification.GrantProtectionFromCardType,
-        SerializableModification.PreventNextDamage,
-        SerializableModification.PreventAllDamageTo,
-        SerializableModification.PreventAllDamageDealtBy,
-        SerializableModification.RedirectNextDamage,
-        SerializableModification.PreventNextDamageFromCreatureType,
-        SerializableModification.PreventCombatDamageFromGroup,
-        SerializableModification.PreventAllDamageToGroup,
-        SerializableModification.PreventCombatDamageToAndBy,
-        SerializableModification.RedirectCombatDamageToController,
-        SerializableModification.PreventNextDamageFromChosenSourceShield,
-        SerializableModification.PreventAllDamageFromSource,
-        SerializableModification.PreventNextDamageInstanceFromSource,
-        SerializableModification.AmplifyNoncombatDamage,
-        SerializableModification.DoubleDamageToPlayer,
+        is SerializableModification.PreventNextDamageFromMatching,
+        is SerializableModification.PreventAllCombatDamage,
+        is SerializableModification.ReflectCombatDamage,
+        is SerializableModification.GrantProtectionFromColor,
+        is SerializableModification.GrantProtectionFromCardType,
+        is SerializableModification.PreventNextDamage,
+        is SerializableModification.PreventAllDamageTo,
+        is SerializableModification.PreventAllDamageDealtBy,
+        is SerializableModification.RedirectNextDamage,
+        is SerializableModification.PreventCombatDamageFromGroup,
+        is SerializableModification.PreventAllDamageFromGroup,
+        is SerializableModification.PreventAllDamageToGroup,
+        is SerializableModification.PreventCombatDamageToAndBy,
+        is SerializableModification.RedirectCombatDamageToController,
+        is SerializableModification.PreventNextDamageFromSourceShield,
+        is SerializableModification.PreventAllDamageFromSource,
+        is SerializableModification.PreventNextDamageInstanceFromSource,
+        is SerializableModification.AmplifyDamage,
+        is SerializableModification.DoubleDamageToPlayer,
         -> true
         else -> false
     }

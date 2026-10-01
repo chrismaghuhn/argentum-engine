@@ -4,7 +4,7 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
-import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.stack.StackPlacement
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
@@ -24,16 +24,19 @@ import kotlin.reflect.KClass
  * then creates [CopyTargetSpellEffect.copies] copies (one by default). If the original spell has
  * targets, prompts for new target selection once per copy (reusing StormCopyTargetContinuation,
  * whose resumer walks the remaining copies).
+ *
+ * When the effect context carries a [ResolvingSpellCopyPayload] for the targeted spell (the spell
+ * is resolving, or a cost-linked trigger outlived it on the stack), the copies are built from that
+ * captured payload — card characteristics, effective spell effect, cast-time choices and targets —
+ * rather than from components that may already have been removed.
  */
 class CopyTargetSpellExecutor(
-    private val cardRegistry: com.wingedsheep.engine.registry.CardRegistry,
-    private val targetFinder: TargetFinder = TargetFinder()
+    private val dynamicAmountEvaluator: com.wingedsheep.engine.handlers.DynamicAmountEvaluator,
+    private val targetFinder: TargetFinder,
+    private val targetValidator: TargetValidator
 ) : EffectExecutor<CopyTargetSpellEffect> {
 
     override val effectType: KClass<CopyTargetSpellEffect> = CopyTargetSpellEffect::class
-
-    private val dynamicAmountEvaluator = com.wingedsheep.engine.handlers.DynamicAmountEvaluator()
-    private val targetValidator = TargetValidator()
 
     override fun execute(
         state: GameState,
@@ -41,6 +44,7 @@ class CopyTargetSpellExecutor(
         context: EffectContext
     ): EffectResult {
         val spellEntityId = context.resolveTarget(effect.target)
+            ?: frozenSourceSpell(effect, context, state)
             ?: return EffectResult.error(state, "No target spell to copy")
 
         // "Copy it for each …" clauses resolve their count here (Thousand-Year Storm). Zero
@@ -59,14 +63,11 @@ class CopyTargetSpellExecutor(
             ?: return EffectResult.error(state, "Target spell has no CardComponent")
 
         // Permanent spells (creatures, artifacts, ...) have no spellEffect; their
-        // resolution puts a permanent onto the battlefield. Only the
-        // TriggeredAbilityOnStackComponent fallback path needs a spellEffect.
+        // resolution puts a permanent onto the battlefield.
         val spellEffect = resolvingPayload?.effectiveSpellEffect ?: cardComponent.spellEffect
         val spellName = cardComponent.name
         val targetsComponent = resolvingPayload?.targets ?: container?.get<TargetsComponent>()
         val targetRequirements = targetsComponent?.targetRequirements ?: emptyList()
-
-        val stackResolver = StackResolver(cardRegistry = cardRegistry)
 
         // Token-side riders (CR 707.10f): keywords baked onto, and a delayed sacrifice trigger for,
         // the token the copy resolves into when the copied spell is a permanent spell. Stamped on
@@ -97,7 +98,7 @@ class CopyTargetSpellExecutor(
             if (!hasAnyTargetedMode) {
                 return EffectResult.from(
                     putInheritedCopies(
-                        state, stackResolver, spellEntityId, context.controllerId, copyCount,
+                        state, spellEntityId, context.controllerId, copyCount,
                         effect.keywordsForCopy.toSet(), effect.removeLegendary, tokenRiders,
                         resolvingPayload
                     )
@@ -105,8 +106,8 @@ class CopyTargetSpellExecutor(
             }
             return EffectResult.from(StormCopyEffectExecutor.driveStormModalCopies(
                 state = state,
-                stackResolver = stackResolver,
                 targetFinder = targetFinder,
+                targetValidator = targetValidator,
                 sourceId = spellEntityId,
                 controllerId = context.controllerId,
                 spellName = spellName,
@@ -124,7 +125,7 @@ class CopyTargetSpellExecutor(
         }
 
         // If the original spell has no targets, create the copy immediately. Every spell copy
-        // uses StackResolver.putSpellCopy so the copy remains a real spell object and inherits
+        // uses StackPlacement.putSpellCopy so the copy remains a real spell object and inherits
         // the complete immutable stack payload (including cast-time cost snapshots). This is
         // especially important for a cost-linked trigger: its source spell may leave the stack,
         // and each copy must retain the same copyable characteristics and payload under
@@ -132,7 +133,7 @@ class CopyTargetSpellExecutor(
         if (targetRequirements.isEmpty()) {
             return EffectResult.from(
                 putInheritedCopies(
-                    state, stackResolver, spellEntityId, context.controllerId, copyCount,
+                    state, spellEntityId, context.controllerId, copyCount,
                     effect.keywordsForCopy.toSet(), effect.removeLegendary, tokenRiders,
                     resolvingPayload
                 )
@@ -145,20 +146,39 @@ class CopyTargetSpellExecutor(
         // CR 707.10f token tagging happens at resolution in StackResolver.
         return promptForCopyTargets(
             state, context, spellEntityId, spellEffect, targetRequirements, spellName,
-            effect.keywordsForCopy.toSet(), effect.removeLegendary, copyCount, stackResolver,
+            effect.keywordsForCopy.toSet(), effect.removeLegendary, copyCount, tokenRiders,
             resolvingPayload
         )
+    }
+
+    /**
+     * The spell a cost-linked trigger froze when it was put on the stack, when the copy names that
+     * very spell but it has since been countered or has otherwise left the stack. The identity gate
+     * in [EffectContext.resolveTarget] (CR 400.7) then names nothing, yet the trigger still copies
+     * the spell from its frozen payload — the captured card, effect, cast choices and targets — as
+     * last-known information. Null for every other reference, so no other lost object is revived.
+     */
+    private fun frozenSourceSpell(
+        effect: CopyTargetSpellEffect,
+        context: EffectContext,
+        state: GameState
+    ): EntityId? {
+        val payload = context.resolvingSpellCopyPayload ?: return null
+        val reference = effect.target as? com.wingedsheep.sdk.scripting.targets.EffectTarget.SingleEntity
+            ?: return null
+        val named = com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
+            .resolveEntity(reference, context, state)
+        return payload.sourceSpellId.takeIf { it == named }
     }
 
     /**
      * Push [copyCount] copies that inherit the source's targets and modes verbatim — the
      * no-retarget paths (no targets at all, modal with no targeted mode, or no legal replacement
      * target under CR 707.10c). Each copy is a real spell entity via
-     * [StackResolver.putSpellCopy] so [StormCopyEffectExecutor.applyCopyMutations] can patch it.
+     * [StackPlacement.putSpellCopy] so [StormCopyEffectExecutor.applyCopyMutations] can patch it.
      */
     private fun putInheritedCopies(
         state: GameState,
-        stackResolver: StackResolver,
         spellEntityId: EntityId,
         controllerId: EntityId,
         copyCount: Int,
@@ -170,15 +190,16 @@ class CopyTargetSpellExecutor(
         var currentState = state
         val allEvents = mutableListOf<GameEvent>()
         for (i in 1..copyCount) {
-            val copyResult = stackResolver.putSpellCopy(
+            val copyResult = StackPlacement.putSpellCopy(
                 state = currentState,
                 sourceSpellId = spellEntityId,
                 copyIndex = i,
                 copyTotal = copyCount,
                 controllerId = controllerId,
-                resolvingSpellCopyPayload = resolvingSpellCopyPayload
+                resolvingSpellCopyPayload = resolvingSpellCopyPayload,
+                targetValidator = targetValidator
             )
-            if (!copyResult.isSuccess) return copyResult
+            if (copyResult.outcome !is Outcome.Done) return copyResult
             currentState = StormCopyEffectExecutor.applyCopyMutations(
                 copyResult.newState, copyResult.events,
                 keywordsForCopy, removeLegendary, tokenRiders
@@ -198,10 +219,9 @@ class CopyTargetSpellExecutor(
         keywordsForCopy: Set<String> = emptySet(),
         removeLegendary: Boolean = false,
         copyCount: Int = 1,
-        stackResolver: StackResolver = StackResolver(cardRegistry = cardRegistry),
+        tokenRiders: com.wingedsheep.engine.state.components.stack.SpellCopyTokenRidersComponent? = null,
         resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
     ): EffectResult {
-        val decisionId = targetDecisionId()
         val copiedSpellXValue = resolvingSpellCopyPayload?.spell?.xValue
             ?: state.getEntity(spellEntityId)?.get<SpellOnStackComponent>()?.xValue
         val copiedSpellPredicateContext =
@@ -242,8 +262,8 @@ class CopyTargetSpellExecutor(
         if (hasNoLegalTargets) {
             return EffectResult.from(
                 putInheritedCopies(
-                    state, stackResolver, spellEntityId, context.controllerId, copyCount,
-                    keywordsForCopy, removeLegendary, tokenRiders = null,
+                    state, spellEntityId, context.controllerId, copyCount,
+                    keywordsForCopy, removeLegendary, tokenRiders,
                     resolvingSpellCopyPayload = resolvingSpellCopyPayload
                 )
             )
@@ -256,7 +276,6 @@ class CopyTargetSpellExecutor(
         // creatures with no SpellOnStackComponent). It also walks any copies beyond
         // the first, prompting once per copy.
         val continuation = StormCopyTargetContinuation(
-            decisionId = decisionId,
             remainingCopies = copyCount,
             spellEffect = spellEffect,
             spellTargetRequirements = targetRequirements,
@@ -266,11 +285,13 @@ class CopyTargetSpellExecutor(
             totalCopies = copyCount,
             keywordsForCopy = keywordsForCopy,
             removeLegendary = removeLegendary,
+            tokenRiders = tokenRiders,
             resolvingSpellCopyPayload = resolvingSpellCopyPayload
         )
+
         // Matches the Storm path's labelling so a multi-copy prompt says which copy it is for.
         val copyLabel = if (copyCount > 1) "copy 1 of $copyCount of $spellName" else "copy of $spellName"
-        val decision = ChooseTargetsDecision(
+        val decision = { decisionId: String -> ChooseTargetsDecision(
             id = decisionId,
             playerId = context.controllerId,
             prompt = "Choose new targets for $copyLabel",
@@ -281,14 +302,8 @@ class CopyTargetSpellExecutor(
             ),
             targetRequirements = targetReqInfos,
             legalTargets = legalTargetsMap
-        )
+        ) }
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(stateWithContinuation, decision)
+        return EffectResult.from(state.suspendForDecision(decision, continuation, emptyList()))
     }
-
-    private fun targetDecisionId(): String =
-        "copy-spell-target-${java.util.UUID.randomUUID()}"
 }

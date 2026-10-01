@@ -14,7 +14,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.engine.support.TestCards
-import com.wingedsheep.sdk.serialization.CardLoader
+import com.wingedsheep.sdk.tooling.CardLoader
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step

@@ -7,9 +7,9 @@ import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.Subtype
+import com.wingedsheep.sdk.scripting.CardNamePool
 import com.wingedsheep.sdk.scripting.effects.ChooseOptionEffect
 import com.wingedsheep.sdk.scripting.effects.OptionType
-import java.util.UUID
 import kotlin.reflect.KClass
 
 /**
@@ -24,6 +24,8 @@ import kotlin.reflect.KClass
  * [cardRegistry] knows about, sorted alphabetically — the client renders a searchable
  * list, so there is no free-text entry. Names that no card uses can't be matched by
  * anything in a zone anyway, so restricting to the registry loses nothing in practice.
+ * [ChooseOptionEffect.cardNamePool] narrows the list ("choose a nonland card name") through
+ * [CardRegistry.cardNamesIn], the same mapping `EntersWithChoice` naming uses.
  */
 class ChooseOptionPipelineExecutor(
     private val cardRegistry: CardRegistry
@@ -43,7 +45,7 @@ class ChooseOptionPipelineExecutor(
             OptionType.CREATURE_TYPE -> Subtype.ALL_CREATURE_TYPES
             OptionType.COLOR -> listOf("White", "Blue", "Black", "Red", "Green")
             OptionType.BASIC_LAND_TYPE -> Subtype.ALL_BASIC_LAND_TYPES.toList()
-            OptionType.CARD_NAME -> cardRegistry.allCardNames().sorted()
+            OptionType.CARD_NAME -> cardRegistry.cardNamesIn(effect.cardNamePool).sorted()
         }
 
         val excludedLower = effect.excludedOptions.map { it.lowercase() }.toSet()
@@ -53,11 +55,10 @@ class ChooseOptionPipelineExecutor(
             OptionType.CREATURE_TYPE -> "Choose a creature type"
             OptionType.COLOR -> "Choose a color"
             OptionType.BASIC_LAND_TYPE -> "Choose a basic land type"
-            OptionType.CARD_NAME -> "Name a card"
+            OptionType.CARD_NAME -> if (effect.cardNamePool == CardNamePool.ANY) "Name a card" else effect.cardNamePool.prompt
         }
 
-        val decisionId = UUID.randomUUID().toString()
-        val decision = ChooseOptionDecision(
+        val decision = { decisionId: String -> ChooseOptionDecision(
             id = decisionId,
             playerId = controllerId,
             prompt = prompt,
@@ -67,31 +68,17 @@ class ChooseOptionPipelineExecutor(
                 phase = DecisionPhase.RESOLUTION
             ),
             options = options
-        )
+        ) }
 
         val continuation = ChooseOptionPipelineContinuation(
-            decisionId = decisionId,
             controllerId = controllerId,
             sourceId = context.sourceId,
+            objectReferences = context.objectReferences,
             sourceName = sourceName,
             storeAs = effect.storeAs,
             options = options
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
-        val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
-
-        return EffectResult.paused(
-            stateWithContinuation,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = controllerId,
-                    decisionType = "CHOOSE_OPTION",
-                    prompt = decision.prompt
-                )
-            )
-        )
+        return EffectResult.from(state.suspendForDecision(decision, continuation))
     }
 }

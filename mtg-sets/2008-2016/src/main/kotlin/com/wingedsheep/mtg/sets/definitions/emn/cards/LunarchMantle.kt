@@ -3,14 +3,16 @@ package com.wingedsheep.mtg.sets.definitions.emn.cards
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.ModifyStats
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 /**
  * Lunarch Mantle
@@ -23,6 +25,10 @@ import com.wingedsheep.sdk.scripting.targets.EffectTarget
  * The +2/+2 is a static [ModifyStats] on the attached creature. The granted activated ability is a
  * [GrantActivatedAbility] static whose [EffectTarget.Self] resolves to the host creature (CR 113.7),
  * so "{1}, Sacrifice a permanent" grants flying until end of turn to the enchanted creature itself.
+ *
+ * The sacrifice filter is spelled [GameObjectFilter.Permanent] rather than left at `Costs.Sacrifice`'s
+ * `Any` default: the printed noun is "a permanent", and the two agree only because a sacrifice cost
+ * can reach nothing but the battlefield anyway.
  */
 val LunarchMantle = card("Lunarch Mantle") {
     manaCost = "{1}{W}"
@@ -32,7 +38,7 @@ val LunarchMantle = card("Lunarch Mantle") {
         "Enchanted creature gets +2/+2 and has \"{1}, Sacrifice a permanent: This creature gains " +
         "flying until end of turn.\""
 
-    auraTarget = Targets.Creature
+    auraTarget = TargetObject(filter = TargetFilter.Creature)
 
     staticAbility {
         ability = ModifyStats(2, 2)
@@ -41,8 +47,8 @@ val LunarchMantle = card("Lunarch Mantle") {
     staticAbility {
         ability = GrantActivatedAbility(
             ability = ActivatedAbility(
-                id = AbilityId.generate(),
-                cost = Costs.Composite(Costs.Mana("{1}"), Costs.Sacrifice()),
+                id = AbilityId.next(),
+                cost = Costs.Composite(Costs.Mana("{1}"), Costs.Sacrifice(GameObjectFilter.Permanent)),
                 effect = Effects.GrantKeyword(Keyword.FLYING, EffectTarget.Self)
             )
         )

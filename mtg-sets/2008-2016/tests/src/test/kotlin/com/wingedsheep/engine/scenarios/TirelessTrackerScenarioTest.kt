@@ -13,6 +13,7 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Tireless Tracker (SOI #233).
@@ -46,7 +47,7 @@ class TirelessTrackerScenarioTest : io.kotest.core.spec.style.FunSpec({
 
         driver.putCreatureOnBattlefield(you, "Tireless Tracker")
         val land = driver.putCardInHand(you, "Forest")
-        driver.playLand(you, land).isSuccess shouldBe true
+        driver.playLand(you, land).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         driver.findPermanent(you, "Clue") shouldNotBe null
@@ -60,7 +61,7 @@ class TirelessTrackerScenarioTest : io.kotest.core.spec.style.FunSpec({
 
         val tracker = driver.putCreatureOnBattlefield(you, "Tireless Tracker")
         val land = driver.putCardInHand(you, "Forest")
-        driver.playLand(you, land).isSuccess shouldBe true
+        driver.playLand(you, land).outcome shouldBe Outcome.Done
         driver.bothPass()
 
         val clue = driver.findPermanent(you, "Clue")!!

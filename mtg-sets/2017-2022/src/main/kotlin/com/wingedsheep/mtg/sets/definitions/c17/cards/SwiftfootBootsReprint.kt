@@ -3,6 +3,11 @@ package com.wingedsheep.mtg.sets.definitions.c17.cards
 import com.wingedsheep.sdk.model.Printing
 import com.wingedsheep.sdk.model.Rarity
 
+/**
+ * Swiftfoot Boots reprint in Commander 2017. The canonical
+ * [com.wingedsheep.sdk.model.CardDefinition] lives in the `m12` `cards/` package
+ * (the card's earliest real printing); this file contributes only per-printing presentation data.
+ */
 val SwiftfootBootsReprint = Printing(
     oracleId = "c8b143ad-43ec-4e0d-a440-e348daa31391",
     name = "Swiftfoot Boots",

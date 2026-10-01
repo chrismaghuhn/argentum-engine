@@ -1025,6 +1025,12 @@ object C1ModelFacingProjectionV1 {
         "preResolvedSneakAttackDefenderId",
         "preResolvedWebSlingReturnedManaValue",
         "opponentTargetsChosen",
+        // Upstream-sync-05 action fields the C1 feature schema does not model: admitted only at
+        // their neutral value, so an action that actually uses them fails closed.
+        "declaredCostTimes",
+        "additionalCostChoices",
+        "additionalManaForCounters",
+        "asBackFace",
     )
 
     private val foldedResponseTypes = setOf(
@@ -1259,10 +1265,24 @@ object C1ModelFacingProjectionV1 {
                 "Non-inert $key is not a model-facing feature"
             }
 
-            "opponentTargetsChosen" -> require(
+            "opponentTargetsChosen", "asBackFace" -> require(
                 value is JsonPrimitive && !value.isString && value.content == "false",
             ) {
-                "Non-inert opponentTargetsChosen is not a model-facing feature"
+                "Non-inert $key is not a model-facing feature"
+            }
+
+            "declaredCostTimes" -> require(value is JsonPrimitive && !value.isString && value.content == "1") {
+                "Non-inert declaredCostTimes is not a model-facing feature"
+            }
+
+            "additionalManaForCounters" -> require(value is JsonPrimitive && !value.isString && value.content == "0") {
+                "Non-inert additionalManaForCounters is not a model-facing feature"
+            }
+
+            "additionalCostChoices" -> require(
+                (value is JsonObject && value.isEmpty()) || (value is JsonArray && value.isEmpty()),
+            ) {
+                "Non-inert additionalCostChoices is not a model-facing feature"
             }
         }
     }

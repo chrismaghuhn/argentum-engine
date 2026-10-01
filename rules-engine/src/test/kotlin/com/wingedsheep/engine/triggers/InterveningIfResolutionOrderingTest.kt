@@ -8,12 +8,11 @@ import com.wingedsheep.engine.state.components.player.CreaturesDiedThisTurnCompo
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.CounterType
-import com.wingedsheep.sdk.core.Counters
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Conditions
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.Duration
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
@@ -21,7 +20,9 @@ import com.wingedsheep.sdk.scripting.TriggeredAbility
 import com.wingedsheep.sdk.scripting.conditions.Condition
 import com.wingedsheep.sdk.scripting.conditions.CreatureDiedThisTurnCondition
 import com.wingedsheep.sdk.scripting.effects.GainLifeEffect
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.references.Player
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -47,7 +48,7 @@ class InterveningIfResolutionOrderingTest : FunSpec({
         driver: GameTestDriver,
         interveningIf: Condition? = CreatureDiedThisTurnCondition,
         triggerRestriction: Condition? = null,
-        targetRequirement: TargetRequirement = Targets.Creature,
+        targetRequirement: TargetRequirement = TargetObject(filter = TargetFilter.Creature),
         additionalTargetRequirements: List<TargetRequirement> = emptyList()
     ) {
         val ability = TriggeredAbility.create(
@@ -56,7 +57,8 @@ class InterveningIfResolutionOrderingTest : FunSpec({
             targetRequirement = targetRequirement,
             additionalTargetRequirements = additionalTargetRequirements,
             interveningIf = interveningIf,
-            triggerRestriction = triggerRestriction
+            triggerRestriction = triggerRestriction,
+            id = AbilityId("InterveningIfResolutionOrderingTest-ability-1"),
         )
         driver.replaceState(
             driver.state.copy(
@@ -183,7 +185,7 @@ class InterveningIfResolutionOrderingTest : FunSpec({
             driver,
             interveningIf = null,
             triggerRestriction = Conditions.YouControl(GameObjectFilter.Creature),
-            targetRequirement = Targets.Permanent
+            targetRequirement = TargetObject(filter = TargetFilter.Permanent)
         )
 
         putTargetedAbilityOnStack(driver, listOf(target))
@@ -198,7 +200,7 @@ class InterveningIfResolutionOrderingTest : FunSpec({
         val driver = buildDriver()
         installTargetedEndStepAbility(
             driver,
-            additionalTargetRequirements = listOf(Targets.Creature)
+            additionalTargetRequirements = listOf(TargetObject(filter = TargetFilter.Creature))
         )
         val firstTarget = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
         val secondTarget = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
@@ -231,11 +233,12 @@ class InterveningIfResolutionOrderingTest : FunSpec({
         val ability = TriggeredAbility.create(
             trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
             effect = GainLifeEffect(1),
-            targetRequirement = Targets.PermanentOpponentControls,
+            targetRequirement = TargetObject(filter = TargetFilter.PermanentOpponentControls),
             interveningIf = Conditions.OpponentControls(
-                GameObjectFilter.Permanent.withCounter(Counters.BOUNTY),
+                GameObjectFilter.Permanent.withCounter(CounterType.BOUNTY),
                 negate = true
-            )
+            ),
+            id = AbilityId("InterveningIfResolutionOrderingTest-ability-2"),
         )
         driver.replaceState(
             driver.state.copy(

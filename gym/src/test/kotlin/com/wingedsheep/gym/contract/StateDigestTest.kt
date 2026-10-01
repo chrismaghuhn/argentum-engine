@@ -8,11 +8,14 @@ import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
 import com.wingedsheep.engine.core.InitialPoolBucketV1
+import com.wingedsheep.engine.core.MayAbilityContinuation
 import com.wingedsheep.engine.core.PaymentCostKindV1
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.YesNoDecision
+import com.wingedsheep.engine.core.suspendForDecision
+import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
@@ -72,19 +75,30 @@ class StateDigestTest : FunSpec({
 
         val owner = env.playerIds[0]
         val sourceId = env.state.getHand(owner).first()
-        val pendingState = env.state.copy(
-            pendingDecision = YesNoDecision(
-                id = "decision-original",
-                playerId = owner,
-                prompt = "private prompt",
-                context = DecisionContext(
-                    sourceId = sourceId,
-                    sourceName = "Mountain",
-                    triggeringEntityId = sourceId,
-                    effectHint = "private hint"
+        // Installed as a Suspension; its id is the state's next routing id (the transport handle
+        // this test proves digest-irrelevant). The may-ability answer is never consumed.
+        val pendingState = env.state.suspendForDecision(
+            question = { id ->
+                YesNoDecision(
+                    id = id,
+                    playerId = owner,
+                    prompt = "private prompt",
+                    context = DecisionContext(
+                        sourceId = sourceId,
+                        sourceName = "Mountain",
+                        triggeringEntityId = sourceId,
+                        effectHint = "private hint"
+                    )
                 )
-            )
-        )
+            },
+            answer = MayAbilityContinuation(
+                playerId = owner,
+                sourceName = "Mountain",
+                effectIfYes = null,
+                effectIfNo = null,
+                effectContext = EffectContext(sourceId = sourceId, controllerId = owner),
+            ),
+        ).state
         val pending = ObservationBuilder(cardRegistry = registry()).build(pendingState, owner, emptyList())
             .observation as TrainingObservation
         val pendingVariant = pending.copy(

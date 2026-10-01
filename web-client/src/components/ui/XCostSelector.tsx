@@ -7,12 +7,24 @@ import { useGameStore } from '@/store/gameStore.ts'
 export function XCostSelector() {
   const xSelectionState = useGameStore((state) => state.xSelectionState)
   const updateXValue = useGameStore((state) => state.updateXValue)
+  const interactionEpoch = useGameStore((state) => state.interactionEpoch)
   const cancelXSelection = useGameStore((state) => state.cancelXSelection)
   const confirmXSelection = useGameStore((state) => state.confirmXSelection)
 
   if (!xSelectionState) return null
 
-  const { cardName, minX, maxX, selectedX, isRepeatCount } = xSelectionState
+  const { cardName, minX, maxX, selectedX, isRepeatCount, isAdditionalManaForCounters } = xSelectionState
+  const title = isAdditionalManaForCounters
+    ? 'Pay Extra Mana for +1/+1 Counters?'
+    : isRepeatCount
+      ? 'Activate How Many Times?'
+      : 'Choose X Value'
+  const valueLabel = isAdditionalManaForCounters ? 'Extra mana =' : isRepeatCount ? 'Times =' : 'X ='
+  const maxLabel = isAdditionalManaForCounters
+    ? 'Each extra mana adds a +1/+1 counter. Maximum'
+    : isRepeatCount
+      ? 'Maximum activations'
+      : 'Maximum X'
 
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     updateXValue(parseInt(e.target.value, 10))
@@ -33,11 +45,11 @@ export function XCostSelector() {
   return (
     <div style={styles.overlay}>
       <div style={styles.container}>
-        <h2 style={styles.title}>{isRepeatCount ? 'Activate How Many Times?' : 'Choose X Value'}</h2>
+        <h2 style={styles.title}>{title}</h2>
         <p style={styles.cardName}>{cardName}</p>
 
         <div style={styles.valueDisplay}>
-          <span style={styles.xLabel}>{isRepeatCount ? 'Times =' : 'X ='}</span>
+          <span style={styles.xLabel}>{valueLabel}</span>
           <span style={styles.xValue}>{selectedX}</span>
         </div>
 
@@ -77,14 +89,14 @@ export function XCostSelector() {
         </div>
 
         <p style={styles.manaInfo}>
-          Available mana: {maxX + (xSelectionState.actionInfo.action.type === 'CastSpell' ? 0 : 0)}
+          {maxLabel}: {maxX}
         </p>
 
         <div style={styles.buttonRow}>
-          <button onClick={cancelXSelection} style={styles.cancelButton}>
+          <button onClick={() => cancelXSelection(interactionEpoch)} style={styles.cancelButton}>
             Cancel
           </button>
-          <button onClick={confirmXSelection} style={styles.confirmButton}>
+          <button onClick={() => confirmXSelection(interactionEpoch)} style={styles.confirmButton}>
             {xSelectionState.actionInfo.action.type === 'ActivateAbility' ? 'Activate' : 'Cast'}
           </button>
         </div>

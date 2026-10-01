@@ -1,5 +1,6 @@
 package com.wingedsheep.gym.service
 
+import com.wingedsheep.engine.core.ActionParams
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.core.Format
 import kotlinx.serialization.Serializable
@@ -37,7 +38,12 @@ data class EnvConfig(
      */
     val startingPlayerIndex: Int? = null,
 
-    /** Explicit seed for reproducible reset/fork experiments; null preserves live entropy. */
+    /**
+     * Deterministic game RNG seed for reproducible reset/fork experiments. `null` selects fresh
+     * engine entropy on create and reset. Controls game initialization and subsequent game
+     * randomness, not [DeckSpec.RandomSealed] deck generation. Use identical explicit decks to
+     * reproduce a game.
+     */
     val seed: Long? = null,
 
     /** Optional episode horizon. Reaching it truncates the episode without changing Magic state. */
@@ -52,7 +58,6 @@ data class EnvConfig(
 
     /** Optional explicit trusted History-C episode identity; null keeps History-C inactive. */
     val semanticEpisodeId: String? = null,
-
 ) {
     init {
         require(players.size >= 2) { "Need at least 2 players" }
@@ -116,8 +121,19 @@ data class StepRequest(
     val envId: EnvId,
     val actionId: Int,
     /** Optional structured action overlay for candidates with player choices. */
-    val action: JsonObject? = null
-)
+    val action: JsonObject? = null,
+    /**
+     * Choices the action ID can't carry — attackers, blockers, targets, X. See [ActionParams].
+     * Mutually exclusive with [action]: a request carries at most one of the two.
+     */
+    val params: ActionParams = ActionParams.EMPTY
+) {
+    init {
+        require(action == null || params.isEmpty) {
+            "A step request carries either a structured action payload or step params, not both"
+        }
+    }
+}
 
 /** Result of deck validation. Surfaced by [DeckResolver.validate]. */
 @Serializable

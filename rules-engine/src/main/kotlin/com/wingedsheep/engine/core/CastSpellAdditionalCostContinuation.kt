@@ -27,9 +27,16 @@ enum class AdditionalCostSelectionKind { SACRIFICE, DISCARD, EXILE, TAP, RETURN_
  */
 @Serializable
 data class CastSpellAdditionalCostContinuation(
-    override val decisionId: String,
     val cardId: EntityId,
     val casterId: EntityId,
     val baseCastAction: CastSpell,
     val costKind: AdditionalCostSelectionKind,
-) : ContinuationFrame
+) : AnswerContinuation
+
+/** Announcement of a named additional-cost branch, before any payment is made. */
+@Serializable
+data class CastCostChoiceContinuation(
+    val baseCastAction: CastSpell,
+    val slot: com.wingedsheep.sdk.scripting.ChoiceSlot,
+    val offeredIndices: List<Int>,
+) : AnswerContinuation

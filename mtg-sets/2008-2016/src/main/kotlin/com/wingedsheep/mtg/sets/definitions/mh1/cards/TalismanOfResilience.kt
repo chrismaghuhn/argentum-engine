@@ -31,16 +31,16 @@ val TalismanOfResilience = card("Talisman of Resilience") {
 
     activatedAbility {
         cost = Costs.Tap
-        effect = Effects.AddMana(Color.BLACK)
-            .then(Effects.DealDamage(1, EffectTarget.PlayerRef(Player.You)))
+        effect = Effects.AddMana(Color.BLACK) then
+            Effects.DealDamage(1, EffectTarget.PlayerRef(Player.You))
         manaAbility = true
         timing = TimingRule.ManaAbility
     }
 
     activatedAbility {
         cost = Costs.Tap
-        effect = Effects.AddMana(Color.GREEN)
-            .then(Effects.DealDamage(1, EffectTarget.PlayerRef(Player.You)))
+        effect = Effects.AddMana(Color.GREEN) then
+            Effects.DealDamage(1, EffectTarget.PlayerRef(Player.You))
         manaAbility = true
         timing = TimingRule.ManaAbility
     }

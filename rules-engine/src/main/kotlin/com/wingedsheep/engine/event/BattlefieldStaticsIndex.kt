@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.event
 
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.registry.CardRegistry
@@ -8,6 +9,8 @@ import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.engine.state.components.battlefield.SuppressesWardForGroupComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.identity.EmblemStaticAbilityComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.ConditionalStaticAbility
@@ -40,7 +43,8 @@ class BattlefieldStaticsIndex private constructor(
      */
     val triggerGrantProviders: List<TriggerIndex.GrantProviderEntry>,
     /**
-     * Battlefield-scope [GrantWard] statics, with the granter's projected controller (needed to
+     * Battlefield-scope [GrantWard] statics — printed on a permanent or owned by an emblem
+     * ([EmblemStaticAbilityComponent]) — with the granter's projected controller (needed to
      * evaluate "you control" / "an opponent controls" predicates) and its id (needed for
      * `excludeSelf`).
      */
@@ -57,8 +61,8 @@ class BattlefieldStaticsIndex private constructor(
      */
     val attachmentsByTarget: Map<EntityId, List<EntityId>>,
     /**
-     * Battlefield-scope [GrantTriggeredAbility] statics read from each permanent's *printed*
-     * `staticAbilities` (no class-level unlocks), in battlefield order — exactly the grants
+     * Battlefield- and soulbond-pair-scope [GrantTriggeredAbility] statics read from each
+     * permanent's *printed* `staticAbilities` (no class-level unlocks), in battlefield order — exactly the grants
      * `TriggerAbilityResolver.getTriggeredAbilities` used to rediscover by walking the whole
      * battlefield once per entity it resolved. Kept apart from [triggerGrantProviders] because the
      * two paths differ (printed vs. class-level-effective statics, `excludeSelf`), and this index
@@ -90,9 +94,9 @@ class BattlefieldStaticsIndex private constructor(
     companion object {
         val EMPTY = BattlefieldStaticsIndex(emptyList(), emptyList(), emptyList(), emptyMap(), emptyList(), null)
 
-        fun build(state: GameState, cardRegistry: CardRegistry): BattlefieldStaticsIndex {
+        fun build(state: GameState, cardRegistry: CardRegistry, predicateEvaluator: PredicateEvaluator): BattlefieldStaticsIndex {
             // Reused across the whole walk; ConditionEvaluator is stateless.
-            val conditionEvaluator = ConditionEvaluator()
+            val conditionEvaluator = predicateEvaluator.conditions
             var triggerGrants: MutableList<TriggerIndex.GrantProviderEntry>? = null
             var wardGrants: MutableList<WardGrantProvider>? = null
             var suppressors: MutableList<WardSuppressor>? = null
@@ -126,7 +130,11 @@ class BattlefieldStaticsIndex private constructor(
                 val sourceControllerId = projected.getController(permanentId) ?: continue
                 val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: continue
                 for (ability in cardDef.staticAbilities) {
-                    if (ability is GrantTriggeredAbility && ability.filter.scope is Scope.Battlefield) {
+                    // Soulbond-pair grants ride along: the per-entity resolver applies their own
+                    // pair-membership test instead of the battlefield filter (Tandem Lookout).
+                    if (ability is GrantTriggeredAbility &&
+                        (ability.filter.scope is Scope.Battlefield || ability.filter.scope is Scope.SoulbondPair)
+                    ) {
                         (printedTriggerGrants
                             ?: mutableListOf<TriggerIndex.GrantProviderEntry>().also { printedTriggerGrants = it })
                             .add(TriggerIndex.GrantProviderEntry(ability, sourceControllerId, permanentId))
@@ -135,7 +143,14 @@ class BattlefieldStaticsIndex private constructor(
                 val classLevel = container.get<ClassLevelComponent>()?.currentLevel
                 for (ability in cardDef.script.effectiveStaticAbilities(classLevel)) {
                     when {
-                        ability is GrantTriggeredAbility && ability.filter.scope is Scope.Battlefield ->
+                        // Battlefield scope is the lord/sliver grant. SoulbondPair is the same
+                        // shape read through a different membership test — "each of those creatures
+                        // has '<triggered ability>'" (Tandem Lookout) — and it has to be collected
+                        // here too, or the layer system projects the pair while the trigger never
+                        // fires. `getStaticGrantedFromProviders` branches on the scope to decide
+                        // which test to apply.
+                        ability is GrantTriggeredAbility &&
+                            (ability.filter.scope is Scope.Battlefield || ability.filter.scope is Scope.SoulbondPair) ->
                             (triggerGrants
                                 ?: mutableListOf<TriggerIndex.GrantProviderEntry>().also { triggerGrants = it })
                                 .add(TriggerIndex.GrantProviderEntry(ability, sourceControllerId, permanentId))
@@ -169,6 +184,23 @@ class BattlefieldStaticsIndex private constructor(
                 }
             }
 
+            // "Knights you control have ward {1}" on an emblem (Teferi Akosa of Zhalfir). The
+            // emblem entity lives in no zone, so the battlefield walk above never reaches it; its
+            // grant reads exactly like one printed on a permanent its controller controls.
+            for ((emblemId, container) in state.entities) {
+                val statics = container.get<EmblemStaticAbilityComponent>() ?: continue
+                val emblemControllerId = container.get<ControllerComponent>()?.playerId ?: continue
+                for (ability in statics.abilities) {
+                    if (ability is GrantWard && ability.filter.scope is Scope.Battlefield) {
+                        (wardGrants ?: mutableListOf<WardGrantProvider>().also { wardGrants = it })
+                            .add(WardGrantProvider(emblemId, ability, emblemControllerId))
+                    }
+                }
+            }
+
+            // No EMPTY shortcut: the index always records the state it was built from, so a
+            // consumer that swaps a per-entity battlefield walk for [printedTriggerGrants] can tell
+            // by identity that this (possibly empty) answer is the one for its state.
             return BattlefieldStaticsIndex(
                 triggerGrantProviders = triggerGrants ?: emptyList(),
                 wardGrantProviders = wardGrants ?: emptyList(),

@@ -2,6 +2,7 @@ package com.wingedsheep.engine.handlers.continuations
 
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.PredicateContext
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.chain.ChainCopyExecutor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -72,7 +73,7 @@ class ChainSpellContinuationResumer(
         // Present cost payment based on PayCost type
         return when (val atom = (copyCost as? PayCost.Atom)?.atom) {
             is CostAtom.Sacrifice -> {
-                val candidates = ChainCopyExecutor.findMatchingPermanents(state, controllerId, atom.filter)
+                val candidates = ChainCopyExecutor.findMatchingPermanents(state, controllerId, atom.filter, predicateEvaluator = services.predicateEvaluator)
                 if (candidates.size < atom.count) {
                     return checkForMore(state, emptyList())
                 }
@@ -85,7 +86,7 @@ class ChainSpellContinuationResumer(
                 }
                 presentCostSelection(
                     state, controllerId, effect, continuation.sourceId, candidates,
-                    "Choose a ${atom.filter.description} to sacrifice for the copy of ${effect.spellName}",
+                    "Choose a ${atom.filter.description} to sacrifice for the copy of ${spellNameOf(state, continuation.sourceId)}",
                     useTargetingUI = true
                 )
             }
@@ -97,7 +98,7 @@ class ChainSpellContinuationResumer(
                 }
                 presentCostSelection(
                     state, controllerId, effect, continuation.sourceId, hand,
-                    "Choose a card to discard for ${effect.spellName}",
+                    "Choose a card to discard for ${spellNameOf(state, continuation.sourceId)}",
                     useTargetingUI = false
                 )
             }
@@ -185,16 +186,20 @@ class ChainSpellContinuationResumer(
 
         // Build the copy effect with BoundVariable target — update both the outer
         // ChainCopyEffect.target and the inner action's target so the copy resolves
-        // against the new binding.
-        val newTarget = EffectTarget.BoundVariable("chainTarget")
+        // against the new binding. When the card named its target, the copy's target is bound
+        // under that same name, so every read of the handle inside the action — including a
+        // player-typed one (`handle.asPlayer`) that [replaceActionTarget] can't rewrite — sees
+        // the new target.
+        val bindingName = (effect.target as? EffectTarget.BoundVariable)?.name ?: "chainTarget"
+        val newTarget = EffectTarget.BoundVariable(bindingName)
         val updatedAction = replaceActionTarget(effect.action, newTarget)
         val copyEffect = effect.copy(target = newTarget, action = updatedAction)
 
         // Build the target requirement with the binding id
         val copyTargetReq = when (val req = effect.copyTargetRequirement) {
-            is TargetObject -> req.copy(id = "chainTarget")
-            is TargetPlayer -> req.copy(id = "chainTarget")
-            is AnyTarget -> req.copy(id = "chainTarget")
+            is TargetObject -> req.copy(id = bindingName)
+            is TargetPlayer -> req.copy(id = bindingName)
+            is AnyTarget -> req.copy(id = bindingName)
             else -> req
         }
 
@@ -210,10 +215,11 @@ class ChainSpellContinuationResumer(
         }
         val ability = TriggeredAbilityOnStackComponent(
             sourceId = sourceId,
-            sourceName = effect.spellName,
+            objectReferences = com.wingedsheep.engine.handlers.ObjectReferenceEnvironment(captured = true, origin = state.objectRef(sourceId), source = state.objectRef(sourceId)),
+            sourceName = spellNameOf(state, continuation.sourceId),
             controllerId = continuation.copyControllerId,
             effect = copyEffect,
-            description = "Copy of ${effect.spellName}",
+            description = "Copy of ${spellNameOf(state, continuation.sourceId)}",
             sourceEndpointAuthority = AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION,
             chosenModes = sourceSpell?.chosenModes ?: emptyList(),
             modeTargetRequirements = sourceSpell?.modeTargetRequirements ?: emptyMap()
@@ -224,7 +230,7 @@ class ChainSpellContinuationResumer(
 
         val putResult = services.stackResolver.putTriggeredAbility(effectiveState, ability, targets, targetRequirements)
 
-        if (!putResult.isSuccess) {
+        if (putResult.outcome !is Outcome.Done) {
             return putResult
         }
 
@@ -236,6 +242,10 @@ class ChainSpellContinuationResumer(
     // Shared helpers
     // =========================================================================
 
+    /** The chain spell's printed name, read off its card — a copy keeps it, so it survives resolution. */
+    private fun spellNameOf(state: GameState, sourceId: EntityId?): String =
+        sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name } ?: "this spell"
+
     private fun offerChainCopy(
         state: GameState,
         events: MutableList<GameEvent>,
@@ -245,7 +255,7 @@ class ChainSpellContinuationResumer(
         checkForMore: CheckForMore
     ): ExecutionResult {
         // Check cost prerequisites
-        if (!ChainCopyExecutor.canPayCopyCost(state, recipientPlayerId, effect.copyCost)) {
+        if (!ChainCopyExecutor.canPayCopyCost(state, recipientPlayerId, effect.copyCost, predicateEvaluator = services.predicateEvaluator)) {
             return checkForMore(state, events)
         }
 
@@ -271,13 +281,12 @@ class ChainSpellContinuationResumer(
             return checkForMore(state, events)
         }
 
-        val decisionId = java.util.UUID.randomUUID().toString()
 
         val copyCost = effect.copyCost
         val prompt = if (copyCost == null) {
-            "Copy ${effect.spellName} and choose a new target?"
+            "Copy ${spellNameOf(state, sourceId)} and choose a new target?"
         } else {
-            "${copyCost.description.replaceFirstChar { it.uppercase() }} to copy ${effect.spellName}?"
+            "${copyCost.description.replaceFirstChar { it.uppercase() }} to copy ${spellNameOf(state, sourceId)}?"
         }
 
         val (yesText, noText) = if (copyCost == null) {
@@ -286,39 +295,29 @@ class ChainSpellContinuationResumer(
             copyCost.description.replaceFirstChar { it.uppercase() } to "Decline"
         }
 
-        val decision = YesNoDecision(
+        val question = { decisionId: String -> YesNoDecision(
             id = decisionId,
             playerId = recipientPlayerId,
             prompt = prompt,
             context = DecisionContext(
                 sourceId = sourceId,
-                sourceName = effect.spellName,
+                sourceName = spellNameOf(state, sourceId),
                 phase = DecisionPhase.RESOLUTION
             ),
             yesText = yesText,
             noText = noText
-        )
+        ) }
 
         val copyContinuation = ChainCopyDecisionContinuation(
-            decisionId = decisionId,
             effect = effect,
             copyControllerId = recipientPlayerId,
             sourceId = sourceId
         )
 
-        val newState = state.withPendingDecision(decision).pushContinuation(copyContinuation)
-
-        return ExecutionResult.paused(
-            newState,
-            decision,
-            events + listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = recipientPlayerId,
-                    decisionType = "YES_NO",
-                    prompt = decision.prompt
-                )
-            )
+        return state.suspendForDecision(
+            question = question,
+            answer = copyContinuation,
+            events = events,
         )
     }
 
@@ -331,43 +330,32 @@ class ChainSpellContinuationResumer(
         prompt: String,
         useTargetingUI: Boolean
     ): ExecutionResult {
-        val decisionId = java.util.UUID.randomUUID().toString()
-        val decision = SelectCardsDecision(
+        val question = { decisionId: String -> SelectCardsDecision(
             id = decisionId,
             playerId = controllerId,
             prompt = prompt,
             context = DecisionContext(
                 sourceId = sourceId,
-                sourceName = effect.spellName,
+                sourceName = spellNameOf(state, sourceId),
                 phase = DecisionPhase.RESOLUTION
             ),
             options = options,
             minSelections = 1,
             maxSelections = 1,
             useTargetingUI = useTargetingUI
-        )
+        ) }
 
         val costContinuation = ChainCopyCostContinuation(
-            decisionId = decisionId,
             effect = effect,
             copyControllerId = controllerId,
             sourceId = sourceId,
             candidateOptions = options
         )
 
-        val newState = state.withPendingDecision(decision).pushContinuation(costContinuation)
-
-        return ExecutionResult.paused(
-            newState,
-            decision,
-            listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = controllerId,
-                    decisionType = "SELECT_CARDS",
-                    prompt = decision.prompt
-                )
-            )
+        return state.suspendForDecision(
+            question = question,
+            answer = costContinuation,
+            events = emptyList(),
         )
     }
 
@@ -401,43 +389,32 @@ class ChainSpellContinuationResumer(
             return checkForMore(state, priorEvents)
         }
 
-        val decisionId = java.util.UUID.randomUUID().toString()
-        val decision = SelectCardsDecision(
+        val question = { decisionId: String -> SelectCardsDecision(
             id = decisionId,
             playerId = controllerId,
-            prompt = "Choose a target for the copy of ${effect.spellName}",
+            prompt = "Choose a target for the copy of ${spellNameOf(state, sourceId)}",
             context = DecisionContext(
                 sourceId = sourceId,
-                sourceName = effect.spellName,
+                sourceName = spellNameOf(state, sourceId),
                 phase = DecisionPhase.RESOLUTION
             ),
             options = legalTargets,
             minSelections = 1,
             maxSelections = 1,
             useTargetingUI = true
-        )
+        ) }
 
         val targetContinuation = ChainCopyTargetContinuation(
-            decisionId = decisionId,
             effect = effect,
             copyControllerId = controllerId,
             sourceId = sourceId,
             candidateTargets = legalTargets
         )
 
-        val newState = state.withPendingDecision(decision).pushContinuation(targetContinuation)
-
-        return ExecutionResult.paused(
-            newState,
-            decision,
-            priorEvents + listOf(
-                DecisionRequestedEvent(
-                    decisionId = decisionId,
-                    playerId = controllerId,
-                    decisionType = "SELECT_CARDS",
-                    prompt = decision.prompt
-                )
-            )
+        return state.suspendForDecision(
+            question = question,
+            answer = targetContinuation,
+            events = priorEvents,
         )
     }
 
@@ -477,6 +454,7 @@ class ChainSpellContinuationResumer(
                         )
                     newState = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
                         .trackPermanentSacrifice(newState, listOf(cardId), controllerId)
+                    val oldObject = newState.objectRef(cardId)
                     newState = newState.removeFromZone(currentZone, cardId)
                     newState = newState.addToZone(graveyardZone, cardId)
 
@@ -486,15 +464,14 @@ class ChainSpellContinuationResumer(
                         entityName = cardComponent.name,
                         fromZone = Zone.BATTLEFIELD,
                         toZone = Zone.GRAVEYARD,
-                        ownerId = ownerId
+                        ownerId = ownerId, oldObject = oldObject, newObject = newState.objectRef(cardId)
                     ))
                 }
             }
             is CostAtom.Discard -> {
                 // Shared discard path — a card-intrinsic discard replacement (madness,
                 // CR 702.35a) applies to a card discarded to pay a chained spell's cost too.
-                val discardResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                    .discardCards(newState, controllerId, selectedCards)
+                val discardResult = services.zones.discardCards(newState, controllerId, selectedCards)
                 newState = discardResult.state
                 events.addAll(discardResult.events)
             }

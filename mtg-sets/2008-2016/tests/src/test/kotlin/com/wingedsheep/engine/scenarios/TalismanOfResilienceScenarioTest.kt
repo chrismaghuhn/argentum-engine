@@ -9,6 +9,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import com.wingedsheep.engine.core.Outcome
 
 /**
  * Talisman of Resilience (MH1 #234)
@@ -41,7 +42,7 @@ class TalismanOfResilienceScenarioTest : FunSpec({
         val result = driver.submit(
             ActivateAbility(playerId = activePlayer, sourceId = talisman, abilityId = colorlessAbilityId)
         )
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(activePlayer)?.get<ManaPoolComponent>()
         pool?.colorless shouldBe 1
@@ -61,7 +62,7 @@ class TalismanOfResilienceScenarioTest : FunSpec({
         val result = driver.submit(
             ActivateAbility(playerId = activePlayer, sourceId = talisman, abilityId = blackAbilityId)
         )
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(activePlayer)?.get<ManaPoolComponent>()
         pool?.black shouldBe 1
@@ -81,7 +82,7 @@ class TalismanOfResilienceScenarioTest : FunSpec({
         val result = driver.submit(
             ActivateAbility(playerId = activePlayer, sourceId = talisman, abilityId = greenAbilityId)
         )
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
 
         val pool = driver.state.getEntity(activePlayer)?.get<ManaPoolComponent>()
         pool?.green shouldBe 1

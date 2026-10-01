@@ -8,9 +8,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
-import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 
 /**
@@ -25,10 +23,7 @@ val RitualOfRestoration = card("Ritual of Restoration") {
     typeLine = "Sorcery"
     oracleText = "Return target artifact card from your graveyard to your hand."
     spell {
-        val t = target(
-            "target",
-            TargetObject(filter = TargetFilter(GameObjectFilter.Artifact.ownedByYou(), zone = Zone.GRAVEYARD))
-        )
+        val t = target(TargetFilter.ArtifactInYourGraveyard)
         effect = Effects.Move(t, Zone.HAND)
     }
     metadata {

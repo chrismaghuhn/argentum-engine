@@ -248,6 +248,9 @@ data class ClientCard(
     /** Hexproof from monocolored (CR 105.2) — shows an uncolored hexproof shield chip */
     val hexproofFromMonocolored: Boolean = false,
 
+    /** Hexproof from multicolored (CR 105.2b) — shows an uncolored hexproof shield chip */
+    val hexproofFromMulticolored: Boolean = false,
+
     /** Counters on the card */
     val counters: Map<CounterType, Int>,
 
@@ -272,11 +275,11 @@ data class ClientCard(
     val controllerId: EntityId,
 
     /**
-     * For a battle (CR 310): the player designated as its protector (CR 310.8) — the player who
+     * For a battle (CR 310): the player designated as its protector (CR 310.9) — the player who
      * defends it, may never attack it, and is the only one who may block creatures attacking it.
      * Deliberately separate from [controllerId], which for a Siege is usually its protector's
      * opponent. Null on every non-battle permanent, and on a battle whose protector has not been
-     * designated yet (the CR 704.5w state-based action closes that gap).
+     * designated yet (the CR 704.5x state-based action closes that gap).
      *
      * The battle's defense needs no field of its own: it *is* the defense-counter count
      * (CR 310.4c), which the client already receives in [counters].
@@ -337,6 +340,31 @@ data class ClientCard(
     /** Whether this permanent is suspected (CR 701.60 — has menace and can't block). Battlefield only. */
     val isSuspected: Boolean = false,
 
+    /** Whether this Case has the solved designation (CR 719.3b — its "Solved —" abilities are
+     * switched on). Sticky until it leaves the battlefield. Battlefield only. */
+    val isSolved: Boolean = false,
+
+    /** Whether this creature has the renowned designation (CR 702.112b — its renown payoffs are
+     * switched on and renown can't trigger again). Sticky until it leaves the battlefield.
+     * Battlefield only. */
+    val isRenowned: Boolean = false,
+
+    /**
+     * Saddle N (CR 702.171a) printed on this permanent, or null if it has no saddle ability.
+     * Battlefield only. Sent for every player's Mounts, not just the controller's: whether a Mount
+     * is saddled is public information that changes how the table blocks, and the number is the
+     * only way to read how much power the controller has to spend to turn it on.
+     */
+    val saddleRequirement: Int? = null,
+
+    /**
+     * Whether this permanent is currently saddled (CR 702.171b) — the designation a resolved Saddle
+     * ability grants until end of turn. Battlefield only. Mount payoffs are gated on it, and it
+     * silently expires at cleanup, so without a flag a saddled Mount and an unsaddled one are
+     * indistinguishable on the board.
+     */
+    val isSaddled: Boolean = false,
+
     /** Whether this card is plotted in exile (CR 718 — Plot keyword, castable for free on a later turn). Exile only. */
     val isPlotted: Boolean = false,
 
@@ -384,7 +412,8 @@ data class ClientCard(
     /**
      * Clockwise rotation in degrees to apply to the card art when rendering (default 0). Non-zero
      * only for flip-layout tokens whose single Scryfall image shows the other face upright — e.g.
-     * the Wilds of Eldraine "Cursed" / "Sorcerer" Roles need 180. Purely cosmetic.
+     * the Wilds of Eldraine "Cursed" / "Sorcerer" Roles need 180 — and for a flipped flip card
+     * (CR 710), whose flip half is printed upside down. Purely cosmetic.
      */
     val imageRotation: Int = 0,
 
@@ -597,6 +626,19 @@ data class ClientCard(
     val backFaceImageUri: String? = null,
 
     /**
+     * Back face's printed power / toughness, and its printed keywords.
+     *
+     * The siblings of [backFaceName] / [backFaceTypeLine] / [backFaceOracleText], and they exist
+     * for the same reason: a client showing the back face — a hover flip, or the disturb offer a
+     * graveyard card is rendered as (CR 712.8c) — otherwise pairs the back's art and text with the
+     * *front's* stats and keyword chips. Printed values, not projected ones: the back face of a
+     * card outside the battlefield has no projection entry of its own.
+     */
+    val backFacePower: Int? = null,
+    val backFaceToughness: Int? = null,
+    val backFaceKeywords: Set<Keyword> = emptySet(),
+
+    /**
      * For planeswalkers on the battlefield: every loyalty ability on the card, in declaration
      * order. Lets the client show the full menu with unavailable abilities grayed out instead of
      * hiding them. Null for non-planeswalkers and for planeswalkers outside the battlefield.
@@ -657,7 +699,21 @@ data class ClientCard(
      * player can't currently pay for — and annotate it with a time-counter glyph. Null for cards
      * without impending.
      */
-    val impending: ClientImpending? = null
+    val impending: ClientImpending? = null,
+
+    /**
+     * Evoke alternative cost (CR 702.74), derived from the card's `KeywordAbility.Evoke`. Present
+     * on any card whose definition has evoke, regardless of zone, so the client can always offer
+     * the evoke cast option alongside the normal cast — graying out whichever the player can't
+     * currently pay for. Null for cards without evoke.
+     *
+     * A bare cost string rather than a DTO of its own: evoke carries no second value the way
+     * [ClientImpending] carries its time-counter count.
+     */
+    val evoke: String? = null,
+
+    /** Bestow price, including any nonmana payment, shown alongside the ordinary creature cast. */
+    val bestow: ClientBestow? = null
 )
 
 /**
@@ -703,6 +759,8 @@ data class ClientPlaneswalkerAbility(
     val abilityId: String,
     /** Signed loyalty change (e.g., +1, -2, -8). */
     val loyaltyChange: Int,
+    /** True for a −X cost; the chosen X is supplied through the ordinary X picker. */
+    val loyaltyX: Boolean = false,
     /** Ability text (e.g., "Create a 1/1 green and white Kithkin creature token"). */
     val description: String
 )
@@ -739,14 +797,24 @@ data class ClientDeliriumInfo(
 data class ClientZone(
     val zoneId: ZoneKey,
 
-    /** Card IDs in this zone, in order */
+    /**
+     * Card IDs in this zone, in order. A hidden zone lists only the cards whose identity the viewer
+     * knows; the rest are counted by [size] and never named, since an ID is enough to follow a card
+     * (and, with a known decklist, to read it).
+     */
     val cardIds: List<EntityId>,
 
     /** Number of cards in the zone (always available, even for hidden zones) */
     val size: Int,
 
     /** Whether the contents are visible to the viewing player */
-    val isVisible: Boolean
+    val isVisible: Boolean,
+
+    /**
+     * Libraries only: the index from the top (0 = top card) of each entry of [cardIds], in the same
+     * order. `null` for every other zone, whose [cardIds] carry their own order.
+     */
+    val positions: List<Int>? = null
 )
 
 /**
@@ -777,6 +845,9 @@ data class ClientPlayer(
     /** Mana in mana pool (only visible for own player) */
     val manaPool: ClientManaPool?,
 
+    /** Server-authoritative accepted actual mana colors, keyed by required pip symbol. */
+    val manaPaymentColors: Map<String, List<String>> = emptyMap(),
+
     /** Active effects on this player (e.g., "Skip Combat" from False Peace) */
     val activeEffects: List<ClientPlayerEffect> = emptyList(),
 
@@ -801,7 +872,40 @@ data class ClientPlayer(
      * information like poison counters, so it is not masked. Defaulted so every non-energy game
      * serializes it away and the field costs nothing.
      */
-    val energyCounters: Int = 0
+    val energyCounters: Int = 0,
+
+    /**
+     * Team membership in a team variant (Two-Headed Giant — CR 810; Team vs. Team — CR 808):
+     * players sharing a [teamIndex] are teammates. `null` in every non-team game, where each
+     * player is their own team.
+     *
+     * Carried on the *state* rather than only on the seat roster because the roster is a
+     * one-shot game-start message: a client that joins by reconnecting (hotseat, scenario, a
+     * dropped connection resuming) never sees it, and without this would render a team game as
+     * a free-for-all — four separate life totals, no ally board, no team colors.
+     */
+    val teamIndex: Int? = null,
+
+    /**
+     * True when this game's format pools life per team (Two-Headed Giant, CR 810.4). A game-level
+     * fact, repeated per player so the client can read it off any seat. Team vs. Team is a team
+     * game with per-player life, so it sets [teamIndex] but leaves this false.
+     */
+    val teamSharedLife: Boolean = false,
+
+    /**
+     * True when this game's format gives the team one shared turn and one shared priority
+     * (CR 805 / 810.2). A game-level fact, repeated per player exactly like [teamSharedLife] so the
+     * client can read it off any seat — and, like it, carried on the *state* so a reconnecting
+     * client is never without it.
+     *
+     * The client needs it to answer "may I act?": under shared team turns a player holds priority
+     * whenever any member of their team does (CR 805.5), so the UI can't derive that from
+     * `priorityPlayerId == me` alone. Team vs. Team sets [teamIndex] but takes individual turns
+     * (CR 808.4), so it leaves this false — which is exactly why it can't be folded into
+     * [teamSharedLife] or into "has a team".
+     */
+    val teamSharedTurns: Boolean = false
 )
 
 /**
@@ -847,7 +951,9 @@ data class ClientPlayerEffect(
      * The Ring's four-step temptation (CR 701.54c). The UI can render this as
      * filled/empty pips so the player sees how far the effect has advanced.
      */
-    val progress: ClientEffectProgress? = null
+    val progress: ClientEffectProgress? = null,
+    /** When the effect ends, e.g. "until end of turn"; `null` when no end is stated. */
+    val duration: String? = null
 )
 
 /**
@@ -874,7 +980,9 @@ data class ClientCardEffect(
     /** Optional description/tooltip text */
     val description: String? = null,
     /** Optional icon identifier for UI rendering */
-    val icon: String? = null
+    val icon: String? = null,
+    /** When the effect ends, e.g. "until end of turn"; `null` when no end is stated. */
+    val duration: String? = null
 )
 
 /**
@@ -971,6 +1079,11 @@ sealed interface ClientCombatTarget {
     @Serializable
     @kotlinx.serialization.SerialName("Planeswalker")
     data class Planeswalker(val permanentId: EntityId) : ClientCombatTarget
+
+    /** A battle being attacked (CR 310.5); its defending player is its protector, not its controller. */
+    @Serializable
+    @kotlinx.serialization.SerialName("Battle")
+    data class Battle(val permanentId: EntityId) : ClientCombatTarget
 }
 
 /**
@@ -1026,3 +1139,10 @@ sealed interface ClientChosenTarget {
     @kotlinx.serialization.SerialName("Card")
     data class Card(val cardId: EntityId) : ClientChosenTarget
 }
+
+/** Printed bestow price; legal actions determine whether it can currently be paid. */
+@Serializable
+data class ClientBestow(
+    val cost: String,
+    val additionalCostDescription: String? = null
+)

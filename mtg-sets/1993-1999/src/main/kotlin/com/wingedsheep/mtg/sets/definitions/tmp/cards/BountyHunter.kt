@@ -1,15 +1,13 @@
 package com.wingedsheep.mtg.sets.definitions.tmp.cards
 
 import com.wingedsheep.sdk.core.Color
-import com.wingedsheep.sdk.core.Counters
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Rarity
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
 
 /**
  * Bounty Hunter
@@ -31,19 +29,13 @@ val BountyHunter = card("Bounty Hunter") {
 
     activatedAbility {
         cost = Costs.Tap
-        val target = target(
-            "target nonblack creature",
-            TargetCreature(filter = TargetFilter.Creature.notColor(Color.BLACK)),
-        )
-        effect = Effects.AddCounters(Counters.BOUNTY, 1, target)
+        val target = target(TargetFilter.Creature.notColor(Color.BLACK))
+        effect = Effects.AddCounters(CounterType.BOUNTY, 1, target)
     }
 
     activatedAbility {
         cost = Costs.Tap
-        val target = target(
-            "target creature with a bounty counter on it",
-            TargetCreature(filter = TargetFilter(GameObjectFilter.Creature.withCounter(Counters.BOUNTY))),
-        )
+        val target = target(TargetFilter(GameObjectFilter.Creature.withCounter(CounterType.BOUNTY)))
         effect = Effects.Destroy(target)
     }
 

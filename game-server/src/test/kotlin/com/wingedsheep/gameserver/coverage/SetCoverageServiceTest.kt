@@ -7,7 +7,6 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotBeEmpty
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.comparables.shouldBeGreaterThanOrEqualTo
-import io.kotest.matchers.comparables.shouldBeLessThan
 import io.kotest.matchers.comparables.shouldBeLessThanOrEqualTo
 import io.kotest.matchers.doubles.shouldBeGreaterThanOrEqual
 import io.kotest.matchers.doubles.shouldBeLessThanOrEqual
@@ -25,6 +24,17 @@ class SetCoverageServiceTest : FunSpec({
 
     val service = SetCoverageService()
     val coverage = service.coverage()
+
+    test("Reality Fracture has a complete denominator and live implementation progress") {
+        val fra = coverage.find { it.code == "FRA" }.shouldNotBeNull()
+        fra.name shouldBe "Reality Fracture"
+        fra.total shouldBe 285
+        fra.implemented shouldBeGreaterThanOrEqualTo 30
+        val cards = service.detail("FRA").shouldNotBeNull().draft
+        cards.size shouldBe 285
+        cards.first { it.name == "Rank Rat" }.implemented shouldBe true
+        service.limitedCardNames("FRA").shouldNotBeNull() shouldContain "Cast Away Doubt"
+    }
 
     test("reports coverage for the catalogued sets") {
         coverage.shouldNotBeEmpty()
@@ -152,14 +162,15 @@ class SetCoverageServiceTest : FunSpec({
             detail.total shouldBe detail.draft.count { it.notPlanned == null }
         }
 
-        test("only excuse cards that are actually still missing — Arabian Nights keeps its real gaps") {
-            // ARN's holes are two policy exclusions (Jeweled Bird = ante, Shahrazad = subgame) and
-            // cards we could still build (City in a Bottle, Ring of Ma'rûf). Excluding the first
-            // pair must not paper over the second, so the set stays short of 100%.
+        test("an excused set still names what it isn't counting — Arabian Nights and its two exclusions") {
+            // ARN's only remaining holes are two policy exclusions (Jeweled Bird = ante, Shahrazad
+            // = subgame); every card we intend to build is built, City in a Bottle included. The
+            // exclusions drop out of the denominator but stay named in the detail view, so a set
+            // that reads 100% can always say which cards it excused to get there.
             val arn = coverage.find { it.code == "ARN" }.shouldNotBeNull()
             arn.notPlanned shouldBe 2
-            arn.total - arn.implemented shouldBeGreaterThanOrEqualTo 2
-            arn.percent shouldBeLessThan 100.0
+            arn.implemented shouldBe arn.total
+            arn.percent shouldBe 100.0
             val detail = service.detail("ARN").shouldNotBeNull()
             detail.draft.filter { it.notPlanned != null }.map { it.name } shouldBe
                 listOf("Jeweled Bird", "Shahrazad")
@@ -185,6 +196,33 @@ class SetCoverageServiceTest : FunSpec({
             // it shows up in Alpha, Beta or Unlimited.
             summary.distinctNotPlanned shouldBeGreaterThanOrEqualTo 1
             summary.setsComplete shouldBe coverage.count { it.percent >= 100.0 }
+        }
+    }
+
+    test("tokens are not cards and never enter a denominator") {
+        // Most sets file their tokens under a separate `t<code>` set, which `scripts/card-status`
+        // never fetches. A few number them inside the main set — Duel Decks: Blessed vs. Cursed
+        // (#77–80) and Global Series (double-faced Mowu) — and those rows sat in the denominator
+        // forever, so DDQ read 67/71 with every card it prints authored. A token has no
+        // `CardDefinition` and no `Printing` row *by design* (its art is a `TokenPrinting` in its
+        // set's `tokenArt`), so it can never be "implemented" in the sense the count means.
+        //
+        // The invariant is deliberately narrow, because a real card may legitimately share a name
+        // with a token: a name only fails if the catalog knows it *solely* as token art. That is
+        // exactly the shape of the five rows this caught, and it stays quiet for the rest.
+        val tokenNames = MtgSetCatalog.all.flatMap { set -> set.tokenArt.map { it.name } }.toSet()
+        val realCardNames = MtgSetCatalog.all
+            .flatMap { set -> set.cards.map { it.name } + set.printings.map { it.name } }
+            .toSet()
+        val tokensOnly = tokenNames - realCardNames
+
+        val offenders = coverage.flatMap { row ->
+            val detail = service.detail(row.code) ?: return@flatMap emptyList<String>()
+            val names = detail.draft.map { it.name } + detail.extraGroups.flatMap { g -> g.cards.map { it.name } }
+            names.filter { it in tokensOnly }.map { "${row.code}/$it" }
+        }
+        withClue("token rows in the canonical totals — re-run `scripts/gen-set-totals`: $offenders") {
+            offenders shouldBe emptyList()
         }
     }
 

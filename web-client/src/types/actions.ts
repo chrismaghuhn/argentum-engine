@@ -10,6 +10,7 @@ import { EntityId } from './entities'
 export type GameAction =
   | PassPriorityAction
   | CastSpellAction
+  | TakePlayerAction
   | ActivateAbilityAction
   | CycleCardAction
   | TypecycleCardAction
@@ -59,6 +60,12 @@ export interface AdditionalCostPayment {
   readonly lifePaid?: number
   readonly exiledCards?: readonly EntityId[]
   readonly beheldCards?: readonly EntityId[]
+  /**
+   * Cards revealed from hand for a reveal-from-hand additional cost. They stay in hand
+   * (CR 701.20b); its own field rather than `beheldCards` because behold also accepts a
+   * battlefield permanent (CR 701.4a) and a reveal never does.
+   */
+  readonly revealedCards?: readonly EntityId[]
   readonly tappedPermanents?: readonly EntityId[]
   readonly bouncedPermanents?: readonly EntityId[]
   readonly counterRemovals?: Readonly<Record<EntityId, number>>
@@ -129,11 +136,19 @@ export interface CastSpellAction {
    */
   readonly declaredCostSlot?: string
   /**
+   * How many times the declared optional cost is paid — above 1 only for a repeatable cost
+   * (replicate). Server-stamped on each "Replicate ×N" variant; the client only echoes it back.
+   */
+  readonly declaredCostTimes?: number
+  readonly additionalCostChoices?: Readonly<Record<string, number>>
+  /**
    * Whether the spell's optional waterbend additional cost was elected (Avatar: The Last
    * Airbender). Set by the server on the paid cast variant; preserved through the pipeline so the
    * resolving effect can branch on `WaterbendWasPaid`.
    */
   readonly wasWaterbendPaid?: boolean
+  /** Extra generic mana paid for entry +1/+1 counters (Chorus of the Conclave); 0/absent declines. */
+  readonly additionalManaForCounters?: number
   /**
    * The opponent promised this spell's gift additional cost (Bloomburrow gift — CR 702.174a), or
    * absent when the gift wasn't promised. The server emits a `CastWithGift` variant of the normal
@@ -175,7 +190,12 @@ export interface CastSpellAction {
 export type PaymentStrategy =
   | { readonly type: 'AutoPay' }
   | { readonly type: 'FromPool' }
-  | { readonly type: 'Explicit'; readonly manaAbilitiesToActivate: readonly EntityId[] }
+  | {
+      readonly type: 'Explicit'
+      readonly manaAbilitiesToActivate: readonly EntityId[]
+      /** Multiset of Phyrexian pip colors paid with 2 life each. */
+      readonly phyrexianLifePayments?: readonly string[]
+    }
 
 // =============================================================================
 // Ability Actions
@@ -299,6 +319,12 @@ export interface PlayLandAction {
   readonly type: 'PlayLand'
   readonly playerId: EntityId
   readonly cardId: EntityId
+  /**
+   * Play a modal double-faced card as its back face (CR 712.12 — the Zendikar Rising Pathway
+   * cycle). The server sends one PlayLand action per land face; this is the flag that tells them
+   * apart. Absent for every ordinary land.
+   */
+  readonly asBackFace?: boolean
 }
 
 // =============================================================================
@@ -447,4 +473,11 @@ export function getActionSubject(action: GameAction): EntityId | null {
     default:
       return null
   }
+}
+
+/** A special action supplied by a resolving effect, addressed by its server permission id. */
+export interface TakePlayerAction {
+  readonly type: 'TakePlayerAction'
+  readonly playerId: EntityId
+  readonly permissionId: string
 }

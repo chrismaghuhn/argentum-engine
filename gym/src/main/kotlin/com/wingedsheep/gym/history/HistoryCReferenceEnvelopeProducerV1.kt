@@ -175,16 +175,38 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                     ),
                 )
 
-                is AbilityResolvedEvent -> required(
-                    opaqueCandidate(
-                        transition = transition,
-                        eventOrdinal = eventOrdinal,
-                        role = HistoryCReferenceSlotRole.SOURCE,
-                        roleOrdinal = 0,
-                        rank = 0,
-                        entityId = rawEvent.sourceId,
-                    ),
-                )
+                is AbilityResolvedEvent -> if (HistoryCReferenceAuthority.resolvedSourceDeparted(transition, rawEvent)) {
+                    // The source no longer exists after the transition (a token that died for its own
+                    // dies trigger): bind the event-owned incarnation, as an AbilityFizzledEvent does.
+                    val endpointAuthority = rawEvent.sourceEndpointAuthority
+                        ?.toHistoryCReferenceEndpointAuthority()
+                        ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+                    val sourceStamp = rawEvent.sourceObjectIncarnationStamp
+                        ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+                    required(
+                        opaqueCandidate(
+                            transition = transition,
+                            eventOrdinal = eventOrdinal,
+                            role = HistoryCReferenceSlotRole.SOURCE,
+                            roleOrdinal = 0,
+                            rank = 0,
+                            entityId = rawEvent.sourceId,
+                            endpointAuthority = endpointAuthority,
+                            eventOwnedWitness = HistoryCObjectWitness(rawEvent.sourceId, sourceStamp),
+                        ),
+                    )
+                } else {
+                    required(
+                        opaqueCandidate(
+                            transition = transition,
+                            eventOrdinal = eventOrdinal,
+                            role = HistoryCReferenceSlotRole.SOURCE,
+                            roleOrdinal = 0,
+                            rank = 0,
+                            entityId = rawEvent.sourceId,
+                        ),
+                    )
+                }
 
                 is AbilityFizzledEvent -> {
                     val endpointAuthority = rawEvent.sourceEndpointAuthority

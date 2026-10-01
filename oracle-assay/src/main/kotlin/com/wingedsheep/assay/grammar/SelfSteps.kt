@@ -4,22 +4,31 @@ import com.wingedsheep.assay.syntax.Phrase
 import com.wingedsheep.assay.syntax.alternate
 import com.wingedsheep.assay.syntax.bind
 import com.wingedsheep.assay.syntax.phrase
+import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Keyword
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.CardScript
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.Duration
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
 import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.sdk.scripting.effects.BecomeCreatureEffect
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
+import com.wingedsheep.sdk.scripting.effects.Gate
+import com.wingedsheep.sdk.scripting.effects.GatedEffect
 import com.wingedsheep.sdk.scripting.effects.PayOrSufferEffect
 import com.wingedsheep.sdk.scripting.effects.RegenerateEffect
 import com.wingedsheep.sdk.scripting.effects.RemoveKeywordEffect
 import com.wingedsheep.sdk.scripting.effects.SacrificeSelfEffect
+import com.wingedsheep.sdk.scripting.effects.TransformEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
 /**
@@ -59,18 +68,20 @@ object SelfSteps {
      * [target] is what the whole clause acts on; the two move together, which is the entire content
      * of the third-anaphor split described on this object.
      *
-     * @param pronominal whether the members that spell the pronoun as a *literal* ("put **it** on
-     *   top of its owner's library") are included. They have no subject slot, so [subject] cannot
-     *   keep them apart: a position that reads the pronoun as something other than the source has to
-     *   take them, and one that reads only the name has to leave them out, or one text would have
-     *   two readings.
+     * **Every member states its subject in a slot, and that is load-bearing.** Four of them used to
+     * spell the pronoun as literal template text — "exile **it**", "put **it** on top of its
+     * owner's library" — which needed a `pronominal` flag to keep them out of the positions that
+     * read the name, and cost the grammar every line that prints the noun instead: "Exile ~." was
+     * unreadable on twenty-nine cards for no reason but a frozen word. A subject that is a slot is
+     * what makes one position's spelling another position's, so the flag is gone and the four rows
+     * are ordinary members.
+     *
      * @param tag distinguishes the rule names across instantiations so an ambiguity diagnostic can
      *   still say which side it found.
      */
     fun retargetable(
         target: EffectTarget,
         subject: Phrase<Unit>,
-        pronominal: Boolean,
         tag: String,
     ): List<Phrase<CardScript>> {
         val named = listOf(
@@ -79,36 +90,62 @@ object SelfSteps {
             selfGainsKeywords(target, subject, tag),
             selfLosesKeyword(target, subject, tag),
             move("untap {self}", "untap$tag", Effects.Untap(target), subject),
+            // Untap's twin, and a row for exactly the reason untap is one: "Target creature gets
+            // -1/-1 until end of turn. Tap that creature." (Stabbing Pain) is the same shape said of
+            // the other verb, and a family that reads one and not the other is the count sitting in
+            // the rule instead of in the slot.
+            move("tap {self}", "tap$tag", Effects.Tap(target), subject),
             move("regenerate {self}", "regenerate$tag", RegenerateEffect(target), subject),
-        ) + putCounters(target, subject, tag)
-        if (!pronominal) return named
-        return named + listOf(
-            putOnTop(target, tag),
+            // "Transform ~." — CR 701.28, the verb a double-faced permanent's own ability uses on
+            // itself: the daybound/nightbound upkeep triggers (62 lines), the "{5}{G}{G}: Transform
+            // ~." activated flips, and every Innistrad front face that turns over on a condition.
+            // A row rather than a rule of its own because its object is an ordinary [EffectTarget]
+            // that moves with the position exactly as untap's and regenerate's do — unlike
+            // `SacrificeSelfEffect`, which the SDK models as a verb with no object at all.
+            move("transform {self}", "transform$tag", TransformEffect(target), subject),
+            // The four zone verbs the pronoun used to be frozen into. "Exile ~." is the standalone
+            // sentence twenty-nine spells print about themselves and "exile it" is what the same
+            // verb looks like after a clause has already named the source; one rule, one model, and
+            // the subject slot is the only difference between them.
+            move("exile {self}", "exile$tag", Effects.Move(target, Zone.EXILE), subject),
             move(
-                "shuffle it into its owner's library",
+                "put {self} on top of its owner's library",
+                "put$tag on top of its library",
+                Effects.PutOnTopOfLibrary(target),
+                subject,
+            ),
+            move(
+                "shuffle {self} into its owner's library",
                 "shuffle$tag into its library",
                 Effects.Move(target, Zone.LIBRARY, ZonePlacement.Shuffled),
-                subject = null,
+                subject,
             ),
-            move("exile it", "exile$tag", Effects.Move(target, Zone.EXILE), subject = null),
             move(
-                "return it to its owner's hand",
+                "return {self} to its owner's hand",
                 "return$tag to its owner's hand",
                 Effects.Move(target, Zone.HAND),
-                subject = null,
+                subject,
             ),
             // "…return it to your hand." — Ghastly Remains. The same move: a card returning itself
             // goes to its owner's hand, and the owner of a card you are returning from your own
             // graveyard is you. Two printed forms, one model, so this one parses and never prints.
             alternate(
                 move(
-                    "return it to your hand",
+                    "return {self} to your hand",
                     "return$tag to your hand",
                     Effects.Move(target, Zone.HAND),
-                    subject = null,
+                    subject,
                 )
             ),
-        )
+        ) + putCounters(target, subject, tag) + selfAnimates(target, subject, tag) +
+            // "{2}{U}: ~ can't be blocked this turn." — the durational evasion, whose whole family
+            // lives in [Combat] beside the combat statics it is the spell-side sibling of. It is a
+            // member here rather than a clause of its own because its object moves with every other
+            // member's: 24 printed lines say it about the source, and being a clause is also what
+            // lets "~ gets +1/+0 until end of turn and can't be blocked this turn." read as the two
+            // clauses it is.
+            Combat.restrictionClauses(target, subject, surface = "{self}", tag = tag)
+        return named
     }
 
     /**
@@ -131,7 +168,7 @@ object SelfSteps {
         subject: Phrase<Unit>,
         tag: String,
     ): List<Phrase<CardScript>> {
-        fun scriptFor(kind: String, count: Int) =
+        fun scriptFor(kind: CounterType, count: Int) =
             CardScript(spellEffect = Effects.AddCounters(kind, count, target))
         fun rule(template: String, name: String, quantity: Phrase<*>?) =
             phrase(template, name = name) {
@@ -148,9 +185,36 @@ object SelfSteps {
                     bind("kind" to kind, "n" to count, "self" to Unit)
                 }
             }
+        // The count named by a trailing clause instead of by a number word. One rule, both of
+        // Oracle's spellings, over the SDK's dynamic counter effect — and no bare-"X" row, for the
+        // reason [Amounts.namesX] gives: this clause is one [Triggers] lifts, and the announced X is
+        // silently zero anywhere it lands but a spell.
+        fun dynamicScriptFor(kind: CounterType, amount: DynamicAmount) =
+            CardScript(spellEffect = Effects.AddDynamicCounters(kind, amount, target))
+        val defined = phrase<CardScript>(
+            "put X {kind} counters on {self}${Amounts.WHERE_X}",
+            name = "put a counted number of counters on$tag",
+        ) {
+            definedByCount()
+            slot("kind", Primitives.counterKind)
+            slot("self", subject)
+            slot("amount", Amounts.count)
+            build {
+                val amount = it.value<DynamicAmount>("amount")
+                if (Amounts.namesX(amount)) dynamicScriptFor(it.value("kind"), amount) else null
+            }
+            match { script ->
+                val (kind, amount) =
+                    Steps.dynamicCountersAdded(script.spellEffect, target) ?: return@match null
+                if (!Amounts.namesX(amount)) return@match null
+                if (script != dynamicScriptFor(kind, amount)) return@match null
+                bind("kind" to kind, "amount" to amount, "self" to Unit)
+            }
+        }
         return listOf(
             rule("put {kind} counter on {self}", "put a counter on$tag", null),
             rule("put {n} {kind} counters on {self}", "put counters on$tag", Cardinals.word),
+            defined,
         )
     }
 
@@ -170,6 +234,7 @@ object SelfSteps {
             spellEffect = Effects.ModifyStats(modifiers.first, modifiers.second, target)
         )
         return phrase("{self} gets {mod} until end of turn", name = "$tag gets".trim()) {
+            frontedDuration()
             slot("self", subject)
             slot("mod", Primitives.statModifiers)
             build { scriptFor(it.value("mod")) }
@@ -204,6 +269,7 @@ object SelfSteps {
             "{self} gets {mod} and gains {kws} until end of turn",
             name = "$tag gets and gains".trim(),
         ) {
+            frontedDuration()
             slot("self", subject)
             slot("mod", Primitives.statModifiers)
             slot("kws", Keywords.keywordRun)
@@ -236,6 +302,7 @@ object SelfSteps {
             "{self} gains {kws} until end of turn",
             name = "$tag gains keywords".trim(),
         ) {
+            frontedDuration()
             slot("self", subject)
             slot("kws", Keywords.keywordRun)
             build { scriptFor(it.value("kws")) }
@@ -247,6 +314,154 @@ object SelfSteps {
         }
     }
 
+    /**
+     * "**This artifact becomes a 3/3 Vampire artifact creature with haste until end of turn.**" —
+     * Sanguine Statuette, Sanguine Brushstroke, and the self side of the animate.
+     *
+     * [Steps.animateTargetPermanent]'s payload with the **token noun phrase** instead of the
+     * "with base power and toughness 5/5" clause, and the two are two rules because the P/T changes
+     * *position*: Oracle puts it in front of the type when the sentence names the resulting creature
+     * as a whole ("a 3/3 Vampire artifact creature") and behind it when the sentence modifies an
+     * existing permanent ("target creature becomes a blue Serpent with base power and toughness
+     * 5/5"). Neither template can be derived from the other, which is exactly [Steps.countedStepPair]'s
+     * criterion for two strings.
+     *
+     * ### "artifact" is a model field, and the corpus already writes it that way
+     *
+     * "a 3/3 Vampire **artifact** creature" names the types the permanent ends up with, and the line
+     * grammar has no type line to derive the word from — a rule that treated it as ornament would
+     * decline every card that prints it, which is the same wall the gift line hit. So it is a row of
+     * an omissible layer over `addTypes`, the field Relic's Roar and Phantom Train already use for
+     * this word. On a permanent that is already an artifact the value is a no-op union, which is
+     * what makes the reading safe as well as literal.
+     *
+     * ### One keyword, one creature type, one colour
+     *
+     * All three are `Set`s on `BecomeCreatureEffect` and a set has no order for a printer to
+     * recover, so this rule reads exactly one of each and a two-keyword animate declines —
+     * [Steps.animateTargetPermanent]'s finding, unchanged, and the honest verdict rather than a
+     * guess at which word leads.
+     *
+     * ### The "may" form is a variant of this shape rather than a wrapper
+     *
+     * [Steps]' `you may {inner}` spells a clause that states no subject; this one states one, and
+     * English contracts the two into the causative "you may **have** ~ **become** …" rather than
+     * repeating them. That is [Steps.mayCountedStep]'s contraction, one family over: both spellings
+     * are generated from one call site so the pair cannot drift, and the model is the same
+     * `Effects.May` either way.
+     */
+    private fun selfAnimate(
+        target: EffectTarget,
+        subject: Phrase<Unit>,
+        tag: String,
+        coloured: Boolean,
+        artifact: Boolean,
+        keyworded: Boolean,
+        may: Boolean,
+    ): Phrase<CardScript> {
+        fun scriptFor(
+            stats: Pair<Int, Int>,
+            colour: Color?,
+            type: Subtype,
+            keyword: Keyword?,
+        ): CardScript {
+            val animate = Effects.BecomeCreature(
+                target = target,
+                power = stats.first,
+                toughness = stats.second,
+                keywords = setOfNotNull(keyword),
+                creatureTypes = setOf(type.value),
+                addTypes = if (artifact) setOf("ARTIFACT") else emptySet(),
+                colors = colour?.let { setOf(it.name) },
+                duration = Duration.EndOfTurn,
+            )
+            return CardScript(spellEffect = if (may) Effects.May(animate) else animate)
+        }
+
+        val noun = "a {p}/{t} " +
+            (if (coloured) "{colour} " else "") +
+            "{type} " +
+            (if (artifact) "artifact " else "") +
+            "creature" +
+            (if (keyworded) " with {kw}" else "")
+        val template = if (may) {
+            "you may have {self} become $noun until end of turn"
+        } else {
+            "{self} becomes $noun until end of turn"
+        }
+        val name = buildString {
+            append(tag.trim().ifEmpty { "the source" })
+            append(" becomes a creature")
+            if (may) append(" (optional)")
+            if (coloured) append(" (coloured)")
+            if (artifact) append(" (artifact)")
+            if (keyworded) append(" (with a keyword)")
+        }
+        return phrase(template, name = name) {
+            if (!may) frontedDuration()
+            slot("self", subject)
+            slot("p", Primitives.cardinal)
+            slot("t", Primitives.cardinal)
+            if (coloured) slot("colour", Primitives.color)
+            slot("type", Primitives.creatureSubtype)
+            if (keyworded) slot("kw", Keywords.keyword)
+            build {
+                scriptFor(
+                    it.int("p") to it.int("t"),
+                    if (coloured) it.value<Color>("colour") else null,
+                    it.value("type"),
+                    if (keyworded) it.value<Keyword>("kw") else null,
+                )
+            }
+            match { script ->
+                val inner = if (may) {
+                    val gated = script.spellEffect as? GatedEffect ?: return@match null
+                    if (gated.gate !is Gate.MayDecide) return@match null
+                    gated.then
+                } else {
+                    script.spellEffect
+                }
+                val animate = inner as? BecomeCreatureEffect ?: return@match null
+                val colour = animate.colors?.singleOrNull()
+                    ?.let { name -> Color.entries.firstOrNull { it.name == name } }
+                if (coloured != (colour != null)) return@match null
+                if (artifact != animate.addTypes.isNotEmpty()) return@match null
+                val keyword = animate.keywords.singleOrNull()
+                if (keyworded != (keyword != null)) return@match null
+                val type = animate.creatureTypes.singleOrNull() ?: return@match null
+                val power = (animate.power as? DynamicAmount.Fixed)?.amount ?: return@match null
+                val toughness = (animate.toughness as? DynamicAmount.Fixed)?.amount ?: return@match null
+                if (script != scriptFor(power to toughness, colour, Subtype(type), keyword)) {
+                    return@match null
+                }
+                bind(
+                    "self" to Unit,
+                    "p" to power,
+                    "t" to toughness,
+                    "colour" to colour,
+                    "type" to Subtype(type),
+                    "kw" to keyword,
+                )
+            }
+        }
+    }
+
+    /** The [selfAnimate] product — the three omissible layers crossed with both "may" spellings. */
+    private fun selfAnimates(
+        target: EffectTarget,
+        subject: Phrase<Unit>,
+        tag: String,
+    ): List<Phrase<CardScript>> =
+        listOf(false, true).flatMap { may ->
+            listOf(false, true).flatMap { coloured ->
+                listOf(false, true).flatMap { artifact ->
+                    listOf(false, true).map { keyworded ->
+                        selfAnimate(target, subject, tag, coloured, artifact, keyworded, may)
+                    }
+                }
+            }
+        }
+
     /** "~ loses flying until end of turn." — Swooping Talon, the grant rules' negation. */
     private fun selfLosesKeyword(
         target: EffectTarget,
@@ -256,6 +471,7 @@ object SelfSteps {
         fun scriptFor(keyword: Keyword) =
             CardScript(spellEffect = Effects.RemoveKeyword(keyword, target))
         return phrase("{self} loses {kw} until end of turn", name = "$tag loses a keyword".trim()) {
+            frontedDuration()
             slot("self", subject)
             slot("kw", Keywords.keyword)
             build { scriptFor(it.value("kw")) }
@@ -268,36 +484,48 @@ object SelfSteps {
         }
     }
 
-    /** "Put it on top of its owner's library." — Undying Beast's death trigger. */
-    private fun putOnTop(target: EffectTarget, tag: String): Phrase<CardScript> {
-        val script = CardScript(spellEffect = Effects.PutOnTopOfLibrary(target))
-        return phrase(
-            "put it on top of its owner's library",
-            name = "put$tag on top of its library",
-        ) {
-            build { script }
-            match { if (it == script) bind() else null }
-        }
-    }
-
     /**
      * The verbs whose object is one permanent and which carry nothing else — a move to a named zone,
      * an untap, a regeneration.
      *
-     * The subject slot is optional because the older members spell the pronoun as a literal ("return
-     * **it** to its owner's hand"), while the ones a card names itself in take a subject phrase.
-     * Both are the same rule shape; only the printed subject differs. A `null` [subject] is what
-     * [retargetable]'s `pronominal` flag gates on.
+     * The subject is always a slot, which is what lets one row serve every anaphor position: the
+     * source spells it `~`, a filtered trigger's pronoun spells it "it", and a later clause's
+     * pronoun points at the target instead. See [retargetable] for why none of these is template
+     * text any more.
      */
     private fun move(
         template: String,
         name: String,
         effect: Effect,
-        subject: Phrase<Unit>?,
+        subject: Phrase<Unit>,
     ): Phrase<CardScript> {
         val script = CardScript(spellEffect = effect)
         return phrase(template, name = name) {
-            if (subject != null) slot("self", subject)
+            slot("self", subject)
+            build { script }
+            match { if (it == script) bind("self" to Unit) else null }
+        }
+    }
+
+    /**
+     * "Sacrifice ~." — Ball Lightning's end step, and every other creature that pays for its
+     * statistics by leaving.
+     *
+     * The bare sentence, and it declined until now because the four [sacrificeUnless] rules had the
+     * *rider* written into their templates: "sacrifice ~" was only ever readable as the front of
+     * "sacrifice ~ unless you pay {2}", so a card that printed the clause and stopped died on its
+     * own full stop. An "unless" clause is something English adds to this sentence, not something
+     * the sentence is made of, and a rule that cannot be read without its modifier is the shape
+     * that puts a line in the `.` decline family.
+     *
+     * The model is the sacrifice with no cost in front of it — [SacrificeSelfEffect] alone rather
+     * than the `PayOrSufferEffect` the riders build — so the two spellings denote different values
+     * and neither can print the other's sentence.
+     */
+    private val sacrificeSelf: Phrase<CardScript> = run {
+        val script = CardScript(spellEffect = SacrificeSelfEffect)
+        phrase("sacrifice {self}", name = "sacrifice the source") {
+            slot("self", Primitives.self)
             build { script }
             match { if (it == script) bind("self" to Unit) else null }
         }
@@ -340,13 +568,16 @@ object SelfSteps {
     private fun sacrificeUnless(
         template: String,
         name: String,
+        // A discard names a *card* and a sacrifice names a permanent, which are two noun phrases
+        // rather than one with a word appended; see [Filters.cardNoun].
+        noun: Phrase<GameObjectFilter> = Filters.indefinite,
         cost: (GameObjectFilter) -> PayCost,
     ): Phrase<CardScript> {
         fun scriptFor(filter: GameObjectFilter) = CardScript(
             spellEffect = PayOrSufferEffect(cost = cost(filter), suffer = SacrificeSelfEffect)
         )
         return phrase(template, name = name) {
-            slot("filter", Filters.indefinite)
+            slot("filter", noun)
             build { scriptFor(it.value("filter")) }
             match { script ->
                 val effect = script.spellEffect as? PayOrSufferEffect ?: return@match null
@@ -398,6 +629,33 @@ object SelfSteps {
         }
     }
 
+    /**
+     * "Sacrifice it unless you sacrifice any number of creatures with total power 12 or greater." —
+     * Phyrexian Dreadnought, and the third context `CostAtom` names.
+     *
+     * The whole of [VariableCosts] rather than a row of its own: a payable cost is the same payable
+     * thing as an activation cost and an additional cost, so this slots the family the other two
+     * slot. That is [Costs]' own argument one context further along, and it is why a verb this
+     * sentence has never printed ("unless you tap any number of …") costs nothing to have — the
+     * family is the type's product, and a context that can pay it can pay all of it.
+     */
+    private val sacrificeUnlessVariable: Phrase<CardScript> = run {
+        fun scriptFor(atom: CostAtom) = CardScript(
+            spellEffect = PayOrSufferEffect(cost = Costs.pay.Atom(atom), suffer = SacrificeSelfEffect)
+        )
+        phrase("sacrifice it unless you {atom}", name = "sacrifice the source unless you pay a chosen count") {
+            slot("atom", VariableCosts.payAtoms)
+            build { scriptFor(it.value("atom")) }
+            match { script ->
+                val effect = script.spellEffect as? PayOrSufferEffect ?: return@match null
+                val atom = (effect.cost as? PayCost.Atom)?.atom as? CostAtom.VariablePermanents
+                    ?: return@match null
+                if (script != scriptFor(atom)) return@match null
+                bind("atom" to atom)
+            }
+        }
+    }
+
     /** "Sacrifice it unless you discard a card at random." — Pillaging Horde. */
     private val sacrificeUnlessRandomDiscard: Phrase<CardScript> = run {
         val script = CardScript(
@@ -425,18 +683,49 @@ object SelfSteps {
      * this" needs an effect the SDK does not have, so it declines and is counted.
      */
     private val sacrificesSource: List<Phrase<CardScript>> = listOf(
+        sacrificeSelf,
         sacrificeUnlessPay,
         sacrificeUnlessCounted,
+        sacrificeUnlessVariable,
         sacrificeUnlessRandomDiscard,
         sacrificeUnless(
-            "sacrifice it unless you discard {filter} card",
+            "sacrifice it unless you discard {filter}",
             "sacrifice the source unless you discard",
+            noun = Filters.indefiniteCard,
         ) { Costs.pay.Discard(filter = it) },
         sacrificeUnless(
             "sacrifice it unless you sacrifice {filter}",
             "sacrifice the source unless you sacrifice",
         ) { Costs.pay.Sacrifice(it) },
     )
+
+    /**
+     * The **name** alone — the half of [anaphoric] that means the source in every position there is.
+     *
+     * `~` is not an anaphor: it denotes the card whatever sentence it stands in, so unlike "it" it
+     * needs no earlier mention and cannot be captured by one. That is why this list is offered in a
+     * *later* clause of a run as well as a first one ([Steps]' `laterClause`), where the pronoun is
+     * [Continuations]' to read: "Draw a card. Put a +1/+1 counter on ~." and "{T}: Add {C}. Put a
+     * point counter on ~." were declining on their own full stop, and ninety-four lines of the `.`
+     * decline family were this one omission.
+     *
+     * It is the same list [triggering] takes for its named half, and one `val` rather than two
+     * calls on purpose: two instantiations of one shape over one subject spelling would be two rule
+     * instances reading one text, which is redundancy the gate counts.
+     */
+    val named: List<Phrase<CardScript>> =
+        retargetable(EffectTarget.Self, Primitives.selfNamed, tag = " the named source")
+
+    /**
+     * The same vocabulary aimed at the **target an earlier clause chose** — what [Continuations]
+     * slots, and the third position the shape was written for.
+     *
+     * Reachable only from a later clause of a run, which is what keeps "it" denoting one thing per
+     * position. [Steps.merge] refuses a run that reads this slot without declaring it, so the
+     * pronoun cannot dangle.
+     */
+    val continuing: List<Phrase<CardScript>> =
+        retargetable(Targets.bound(), Primitives.targetPronoun, tag = " the target")
 
     /**
      * The clauses whose "it" is the **source** — what every position but a filtered trigger reads.
@@ -449,8 +738,7 @@ object SelfSteps {
      * would be two readings of one text, which is ambiguity rather than a choice.
      */
     val anaphoric: List<Phrase<CardScript>> =
-        retargetable(EffectTarget.Self, Primitives.self, pronominal = true, tag = " the source") +
-            sacrificesSource
+        retargetable(EffectTarget.Self, Primitives.self, tag = " the source") + sacrificesSource
 
     /**
      * The same vocabulary inside a **filtered** trigger, where the two spellings come apart.
@@ -461,11 +749,10 @@ object SelfSteps {
      * object, and [Steps.triggeredStep] for the only cascade that takes this list.
      */
     val triggering: List<Phrase<CardScript>> =
-        retargetable(EffectTarget.Self, Primitives.selfNamed, pronominal = false, tag = " the named source") +
+        named +
             retargetable(
                 EffectTarget.TriggeringEntity,
                 Primitives.itPronoun,
-                pronominal = true,
                 tag = " the triggering permanent",
             ) +
             sacrificesSource

@@ -14,7 +14,6 @@ import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.SourceActivation
 import com.wingedsheep.engine.core.SpendAllocation
-import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
@@ -45,6 +44,7 @@ import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import com.wingedsheep.engine.core.Outcome
 
 /** Focused contract tests for exact action-level mana payment. */
 class PaymentPlanV1Test : FunSpec({
@@ -219,7 +219,7 @@ class PaymentPlanV1Test : FunSpec({
 
     fun key(driver: GameTestDriver, player: EntityId, sourceId: EntityId, color: PaymentManaColor): String {
         val engineColor = color.asEngineColor()
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
         return source.manaAbilityOptionsFor(engineColor)
@@ -241,7 +241,7 @@ class PaymentPlanV1Test : FunSpec({
         val (driver, player) = game()
         val first = driver.putPermanentOnBattlefield(player, anyColorSource.name)
         val second = driver.putPermanentOnBattlefield(player, anyColorSource.name)
-        val solver = ManaSolver(driver.cardRegistry)
+        val solver = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
         val validator = PaymentPlanValidator(solver)
         val firstBlackKey = key(driver, player, first, PaymentManaColor.BLACK)
         val secondGreenKey = key(driver, player, second, PaymentManaColor.GREEN)
@@ -268,7 +268,7 @@ class PaymentPlanV1Test : FunSpec({
     test("fixed deterministic multi-mana source is supported by PaymentPlanV1") {
         val (driver, player) = game()
         val sourceId = driver.putPermanentOnBattlefield(player, fixedBundleSource.name)
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
 
@@ -278,7 +278,7 @@ class PaymentPlanV1Test : FunSpec({
     test("a colorless-primary bundle cannot manufacture a green output omitted by ManaSource") {
         val (driver, player) = game()
         val sourceId = driver.putPermanentOnBattlefield(player, colorlessPrimaryBundleSource.name)
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
         val rawProfile = PaymentManaProductionProfileResolver.resolve(
@@ -296,7 +296,7 @@ class PaymentPlanV1Test : FunSpec({
             PaymentManaProductionProfile.Unsupported("Current ManaSource semantics do not represent the fixed output bundle")
 
         val manaAbilityKey = source.manaAbilityOptionsFor(null).single().let(ManaAbilityIdentity::key)
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -330,7 +330,7 @@ class PaymentPlanV1Test : FunSpec({
         val (driver, player) = game()
         driver.putPermanentOnBattlefield(player, paymentDampingSphere.name)
         val sourceId = driver.putPermanentOnBattlefield(player, dampableMixedBundleLand.name)
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
         val profile = source.paymentManaProductionProfiles.values.single()
@@ -347,7 +347,7 @@ class PaymentPlanV1Test : FunSpec({
     test("fixed output bundle plans account for every output and preserve unavoidable leftovers") {
         val (driver, player) = game()
         val sourceId = driver.putPermanentOnBattlefield(player, fixedBundleSource.name)
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
         val abilityKey = source.manaAbilityOptionsFor(Color.BLACK)
@@ -359,7 +359,7 @@ class PaymentPlanV1Test : FunSpec({
         )
 
         fun validate(cost: String, allocations: List<CostUnitAllocation>): PaymentPlanValidation.Accepted =
-            PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
                 state = driver.state,
                 playerId = player,
                 cost = ManaCost.parse(cost),
@@ -432,13 +432,13 @@ class PaymentPlanV1Test : FunSpec({
     test("bundle sources reject legacy production and unindexed output spends") {
         val (driver, player) = game()
         val sourceId = driver.putPermanentOnBattlefield(player, fixedBundleSource.name)
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
         val abilityKey = source.manaAbilityOptionsFor(Color.BLACK).single().let(ManaAbilityIdentity::key)
 
         fun result(choice: ProductionChoice, reference: ManaSpendReference) =
-            PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
                 state = driver.state,
                 playerId = player,
                 cost = ManaCost.parse("{B}"),
@@ -479,7 +479,7 @@ class PaymentPlanV1Test : FunSpec({
     test("intrinsic single-output sources remain supported") {
         val (driver, player) = game()
         val sourceId = driver.putPermanentOnBattlefield(player, "Forest")
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -504,7 +504,7 @@ class PaymentPlanV1Test : FunSpec({
         val (driver, player) = game()
         val spellId = driver.putCardInHand(player, fixedBundleSpell.name)
         val sourceId = driver.putPermanentOnBattlefield(player, fixedBundleSource.name)
-        val source = ManaSolver(driver.cardRegistry)
+        val source = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == sourceId }
         val abilityKey = source.manaAbilityOptionsFor(Color.BLACK).single().let(ManaAbilityIdentity::key)
@@ -539,7 +539,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         result.events.filterIsInstance<ManaSpentEvent>().single().let {
             it.black shouldBe 1
             it.green shouldBe 0
@@ -555,7 +555,7 @@ class PaymentPlanV1Test : FunSpec({
         val (driver, player) = game()
         val abilitySourceId = driver.putPermanentOnBattlefield(player, fixedBundleAbilitySource.name)
         val manaSourceId = driver.putPermanentOnBattlefield(player, fixedBundleSource.name)
-        val manaSource = ManaSolver(driver.cardRegistry)
+        val manaSource = ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)
             .findAvailableManaSources(driver.state, player)
             .single { it.entityId == manaSourceId }
         val manaAbilityKey = manaSource.manaAbilityOptionsFor(Color.BLACK).single().let(ManaAbilityIdentity::key)
@@ -593,7 +593,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing mana pool")
         pool.green shouldBe 1
         pool.manaBySource shouldBe mapOf(manaSourceId to 1)
@@ -637,7 +637,7 @@ class PaymentPlanV1Test : FunSpec({
             )
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         driver.isTapped(blackSource) shouldBe true
         driver.isTapped(genericSource) shouldBe true
     }
@@ -675,7 +675,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         result.events.filterIsInstance<ManaSpentEvent>().single().black shouldBe 1
         driver.isTapped(blackSource) shouldBe true
         driver.isTapped(genericSource) shouldBe true
@@ -719,7 +719,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         val cast = result.events.filterIsInstance<SpellCastEvent>().single()
         cast.spentManaSubtypes shouldBe setOf(Subtype.FOREST)
         cast.spentManaSourceIds shouldBe setOf(forestId, blackSource)
@@ -777,7 +777,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         result.events.filterIsInstance<SpellCastEvent>().single().spentManaSourceIds shouldBe
             setOf(firstForest, blackSource)
         val remainingPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()
@@ -827,7 +827,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         val remainingPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()
             ?: error("missing player mana pool")
         remainingPool.green shouldBe 0
@@ -884,7 +884,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         val remainingPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()
             ?: error("missing player mana pool")
         remainingPool.green shouldBe 1
@@ -926,7 +926,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         val spent = result.events.filterIsInstance<ManaSpentEvent>().single()
         spent.red shouldBe 1
         spent.white shouldBe 1
@@ -949,7 +949,7 @@ class PaymentPlanV1Test : FunSpec({
                 state = driver.state,
                 cardDef = card,
                 action = CastSpell(playerId = player, cardId = cardId, chosenModes = listOf(0)),
-                conditionEvaluator = ConditionEvaluator(),
+                conditionEvaluator = driver.services.conditionEvaluator,
             )
         }
 
@@ -988,7 +988,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        result.isSuccess shouldBe true
+        result.outcome shouldBe Outcome.Done
         val remainingPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()
             ?: error("missing player mana pool")
         remainingPool.black shouldBe 0
@@ -999,7 +999,7 @@ class PaymentPlanV1Test : FunSpec({
     test("colorless pool spend is distinct from generic spend") {
         val (driver, player) = game()
         driver.giveColorlessMana(player, 1)
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{C}"),
@@ -1018,7 +1018,7 @@ class PaymentPlanV1Test : FunSpec({
     test("colored requirements reject an out-of-domain production choice") {
         val (driver, player) = game()
         val source = driver.putPermanentOnBattlefield(player, "Forest")
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -1042,7 +1042,7 @@ class PaymentPlanV1Test : FunSpec({
     test("runtime ability handles are rejected even when the source is legal") {
         val (driver, player) = game()
         val source = driver.putPermanentOnBattlefield(player, anyColorSource.name)
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -1074,7 +1074,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{R}"),
@@ -1100,7 +1100,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{R}"),
@@ -1129,7 +1129,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -1162,7 +1162,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{B}"),
@@ -1216,7 +1216,7 @@ class PaymentPlanV1Test : FunSpec({
             """.trimIndent(),
         )
 
-        val accepted = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val accepted = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{1}"),
@@ -1244,7 +1244,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        val accepted = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val accepted = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{1}"),
@@ -1287,7 +1287,7 @@ class PaymentPlanV1Test : FunSpec({
         }
 
         val (oneDriver, onePlayer) = driverWithTwoUnits()
-        val oneUnit = PaymentPlanValidator(ManaSolver(oneDriver.cardRegistry)).validate(
+        val oneUnit = PaymentPlanValidator(ManaSolver(oneDriver.cardRegistry, oneDriver.services.predicateEvaluator)).validate(
             state = oneDriver.state,
             playerId = onePlayer,
             cost = ManaCost.parse("{G}"),
@@ -1311,7 +1311,7 @@ class PaymentPlanV1Test : FunSpec({
         oneUnit.materialization.spentManaProvenance.sourceIds shouldBe setOf(e108)
 
         val (allDriver, allPlayer) = driverWithTwoUnits()
-        val allUnits = PaymentPlanValidator(ManaSolver(allDriver.cardRegistry)).validate(
+        val allUnits = PaymentPlanValidator(ManaSolver(allDriver.cardRegistry, allDriver.services.predicateEvaluator)).validate(
             state = allDriver.state,
             playerId = allPlayer,
             cost = ManaCost.parse("{G}{G}"),
@@ -1366,7 +1366,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        val accepted = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val accepted = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{B}{G}"),
@@ -1424,7 +1424,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        fun validate(plan: PaymentPlanV1) = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        fun validate(plan: PaymentPlanV1) = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{B}{G}"),
@@ -1499,7 +1499,7 @@ class PaymentPlanV1Test : FunSpec({
         )
 
         fun rejected(reference: ManaSpendReference, poolSpend: PoolSpend = PoolSpend(green = 1)) =
-            PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
                 state = driver.state,
                 playerId = player,
                 cost = ManaCost.parse("{G}"),
@@ -1564,7 +1564,7 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        val rejected = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val rejected = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -1616,7 +1616,7 @@ class PaymentPlanV1Test : FunSpec({
             """.trimIndent(),
         )
 
-        val rejected = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val rejected = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}{G}"),
@@ -1654,7 +1654,7 @@ class PaymentPlanV1Test : FunSpec({
                 ),
             ),
         )
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -1677,7 +1677,7 @@ class PaymentPlanV1Test : FunSpec({
             .addTracked(PaymentManaColor.GREEN, e1, forestKey.sourceSubtypes, amount = 2)
         driver.addComponent(player, pool)
 
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),
@@ -1705,7 +1705,7 @@ class PaymentPlanV1Test : FunSpec({
     test("mana abilities with activation tracking are fail-closed for PaymentPlanV1") {
         val (driver, player) = game()
         val source = driver.putPermanentOnBattlefield(player, trackingRestrictedSource.name)
-        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry, driver.services.predicateEvaluator)).validate(
             state = driver.state,
             playerId = player,
             cost = ManaCost.parse("{G}"),

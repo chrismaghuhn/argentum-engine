@@ -21,16 +21,13 @@ import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.engineSerializersModule
-import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.event.PendingTrigger
 import com.wingedsheep.engine.event.TriggerContext
 import com.wingedsheep.engine.handlers.actions.ability.ActivateAbilityHandler
 import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.handlers.continuations.ModalAndCloneContinuationResumer
 import com.wingedsheep.engine.handlers.PredicateContext
-import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.actions.decision.DecisionValidators
-import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -56,7 +53,6 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.dsl.splice
 import com.wingedsheep.sdk.model.Deck
@@ -72,10 +68,8 @@ import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.AnyTarget
-import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import com.wingedsheep.sdk.scripting.targets.TargetChooser
 import com.wingedsheep.sdk.scripting.targets.TargetObject
-import com.wingedsheep.sdk.scripting.targets.TargetPermanent
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.TriggeredAbility
@@ -169,7 +163,8 @@ class PartialIllegalTargets608Test : FunSpec({
         it.initMirrorMatch(deck = Deck.of("Forest" to 40))
     }
 
-    val dynamicTargetRequirement = TargetCreature(
+    val dynamicTargetRequirement = TargetObject(
+        filter = TargetFilter.Creature,
         count = 2,
         optional = true,
         dynamicMaxCount = DynamicAmount.Count(Player.You, Zone.BATTLEFIELD, GameObjectFilter.Creature)
@@ -180,8 +175,8 @@ class PartialIllegalTargets608Test : FunSpec({
         spell {
             modal {
                 mode("Count creature slots") {
-                    target("creatures", dynamicTargetRequirement)
-                    target("artifact", TargetPermanent(filter = TargetFilter.Artifact))
+                    target(dynamicTargetRequirement)
+                    target(TargetObject(filter = TargetFilter.Artifact))
                     effect = Effects.GainLife(targetCount)
                 }
             }
@@ -192,8 +187,8 @@ class PartialIllegalTargets608Test : FunSpec({
         typeLine = "Instant — Arcane"
         splice("{0}")
         spell {
-            val creatures = target("creatures", dynamicTargetRequirement)
-            target("artifact", TargetPermanent(filter = TargetFilter.Artifact))
+            val creatures = target(dynamicTargetRequirement)
+            target(TargetObject(filter = TargetFilter.Artifact))
             effect = Effects.GainLife(targetCount)
         }
     }
@@ -208,7 +203,7 @@ class PartialIllegalTargets608Test : FunSpec({
         typeLine = "Instant — Arcane"
         splice("{0}")
         spell {
-            target("creature", TargetCreature())
+            target(TargetObject(filter = TargetFilter.Creature))
             effect = Effects.Tap(EffectTarget.ContextTarget(0))
         }
     }
@@ -218,7 +213,7 @@ class PartialIllegalTargets608Test : FunSpec({
         typeLine = "Artifact"
         activatedAbility {
             cost = Costs.SacrificeAnother(GameObjectFilter.Creature)
-            target = TargetCreature(count = 2, sameController = true)
+            target = TargetObject(count = 2, sameController = true, filter = TargetFilter.Creature)
             effect = Effects.GainLife(targetCount)
         }
     }
@@ -246,7 +241,7 @@ class PartialIllegalTargets608Test : FunSpec({
         typeLine = "Artifact"
         activatedAbility {
             cost = Costs.Tap
-            target = TargetCreature()
+            target = TargetObject(filter = TargetFilter.Creature)
             effect = Effects.GainLife(1)
         }
     }
@@ -255,7 +250,7 @@ class PartialIllegalTargets608Test : FunSpec({
         manaCost = "{0}"
         typeLine = "Sorcery"
         spell {
-            target("creature", TargetCreature())
+            target(TargetObject(filter = TargetFilter.Creature))
             effect = Effects.GainLife(1)
         }
     }
@@ -275,7 +270,7 @@ class PartialIllegalTargets608Test : FunSpec({
         damageDistribution: Map<com.wingedsheep.sdk.model.EntityId, Int>? = null,
         interveningIf: Condition? = null
     ) {
-        val result = StackResolver(driver.cardRegistry).putTriggeredAbility(
+        val result = driver.services.stackResolver.putTriggeredAbility(
             state = driver.state,
             ability = TriggeredAbilityOnStackComponent(
                 sourceId = driver.player1,
@@ -305,7 +300,7 @@ class PartialIllegalTargets608Test : FunSpec({
             driver,
             effect = Effects.GainLife(1),
             targets = listOf(ChosenTarget.Permanent(target)),
-            targetRequirements = listOf(Targets.Creature)
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature))
         )
         driver.moveToGraveyard(target)
         driver.bothPass()
@@ -324,7 +319,7 @@ class PartialIllegalTargets608Test : FunSpec({
             driver,
             effect = Effects.GainLife(targetCount),
             targets = listOf(ChosenTarget.Permanent(first), ChosenTarget.Permanent(second)),
-            targetRequirements = listOf(TargetCreature(count = 2))
+            targetRequirements = listOf(TargetObject(count = 2, filter = TargetFilter.Creature))
         )
         driver.moveToGraveyard(first)
         driver.bothPass()
@@ -342,7 +337,7 @@ class PartialIllegalTargets608Test : FunSpec({
             driver,
             effect = Effects.GainLife(targetCount),
             targets = listOf(ChosenTarget.Permanent(first), ChosenTarget.Permanent(second)),
-            targetRequirements = listOf(TargetCreature(count = 2, optional = true))
+            targetRequirements = listOf(TargetObject(count = 2, optional = true, filter = TargetFilter.Creature))
         )
         driver.moveToGraveyard(first)
         driver.bothPass()
@@ -361,8 +356,8 @@ class PartialIllegalTargets608Test : FunSpec({
             effect = Effects.GainLife(targetCount),
             targets = listOf(ChosenTarget.Permanent(first), ChosenTarget.Permanent(second)),
             targetRequirements = listOf(
-                TargetCreature(id = "first"),
-                TargetCreature(id = "second")
+                TargetObject(id = "first", filter = TargetFilter.Creature),
+                TargetObject(id = "second", filter = TargetFilter.Creature)
             )
         )
         driver.moveToGraveyard(first)
@@ -375,7 +370,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val driver = driver()
         val first = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
         val second = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
-        val modeRequirement = TargetCreature(count = 2)
+        val modeRequirement = TargetObject(count = 2, filter = TargetFilter.Creature)
         val modal = ModalEffect(
             modes = listOf(
                 Mode(
@@ -409,14 +404,12 @@ class PartialIllegalTargets608Test : FunSpec({
         val driver = driver()
         val first = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
         val second = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
-        val requirement = TargetCreature()
+        val requirement = TargetObject(filter = TargetFilter.Creature)
         val modal = ModalEffect(
             modes = listOf(
                 Mode(
-                    effect = Effects.Composite(
-                        Effects.Destroy(EffectTarget.ContextTarget(0)),
-                        Effects.GainLife(1)
-                    ),
+                    effect = Effects.Destroy(EffectTarget.ContextTarget(0)) then
+                        Effects.GainLife(1),
                     targetRequirements = listOf(requirement),
                     description = "Destroy a target creature and gain 1 life"
                 ),
@@ -457,12 +450,10 @@ class PartialIllegalTargets608Test : FunSpec({
 
         putTriggeredAbility(
             driver,
-            effect = Effects.Composite(
-                Effects.Destroy(EffectTarget.ContextTarget(1)),
-                Effects.GainLife(1)
-            ),
+            effect = Effects.Destroy(EffectTarget.ContextTarget(1)) then
+                Effects.GainLife(1),
             targets = listOf(ChosenTarget.Permanent(first), ChosenTarget.Permanent(second)),
-            targetRequirements = listOf(TargetCreature(count = 2))
+            targetRequirements = listOf(TargetObject(count = 2, filter = TargetFilter.Creature))
         )
         driver.moveToGraveyard(first)
         driver.bothPass()
@@ -480,7 +471,7 @@ class PartialIllegalTargets608Test : FunSpec({
             driver,
             effect = Effects.DividedDamage(total = 2, minTargets = 1, maxTargets = 2),
             targets = listOf(ChosenTarget.Permanent(first), ChosenTarget.Permanent(second)),
-            targetRequirements = listOf(TargetCreature(count = 2)),
+            targetRequirements = listOf(TargetObject(count = 2, filter = TargetFilter.Creature)),
             damageDistribution = mapOf(first to 1, second to 1)
         )
         driver.moveToGraveyard(first)
@@ -504,9 +495,9 @@ class PartialIllegalTargets608Test : FunSpec({
                 ChosenTarget.Permanent(second)
             ),
             targetRequirements = listOf(
-                TargetCreature(),
-                TargetCreature(),
-                TargetCreature()
+                TargetObject(filter = TargetFilter.Creature),
+                TargetObject(filter = TargetFilter.Creature),
+                TargetObject(filter = TargetFilter.Creature)
             )
         )
         driver.moveToGraveyard(first)
@@ -522,7 +513,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val propertyChanged = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
         val survivor = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
         val lifeBefore = driver.getLifeTotal(driver.player1)
-        val requirement = TargetCreature(
+        val requirement = TargetObject(
             count = 4,
             filter = TargetFilter.CreatureYouControl.powerAtLeast(2)
         )
@@ -571,7 +562,7 @@ class PartialIllegalTargets608Test : FunSpec({
             driver,
             effect = Effects.GainLife(1),
             targets = listOf(ChosenTarget.Permanent(target)),
-            targetRequirements = listOf(Targets.Creature),
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
             interveningIf = CreatureDiedThisTurnCondition
         )
         driver.replaceState(
@@ -596,7 +587,7 @@ class PartialIllegalTargets608Test : FunSpec({
             driver,
             effect = Effects.TapEachTarget(),
             targets = listOf(ChosenTarget.Permanent(first), ChosenTarget.Permanent(second)),
-            targetRequirements = listOf(TargetCreature(count = 2))
+            targetRequirements = listOf(TargetObject(count = 2, filter = TargetFilter.Creature))
         )
         driver.moveToGraveyard(first)
         driver.bothPass()
@@ -611,13 +602,13 @@ class PartialIllegalTargets608Test : FunSpec({
         val newTarget = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
         val hostId = driver.putCardInHand(driver.player1, dynamicSlotHost.name)
         val announcementState = driver.state
-        val cast = StackResolver(driver.cardRegistry).castSpell(
+        val cast = driver.services.stackResolver.castSpell(
             state = announcementState,
             cardId = hostId,
             casterId = driver.player1,
             targetLockState = announcementState,
             targets = listOf(ChosenTarget.Permanent(oldTarget)),
-            targetRequirements = listOf(TargetCreature()),
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
             splicedCardNames = listOf(retargetableSplice.name)
         )
 
@@ -631,7 +622,7 @@ class PartialIllegalTargets608Test : FunSpec({
                 TargetsComponent.capture(
                     cast.newState,
                     listOf(ChosenTarget.Permanent(newTarget)),
-                    listOf(TargetCreature())
+                    listOf(TargetObject(filter = TargetFilter.Creature))
                 )
             )
         }
@@ -652,7 +643,7 @@ class PartialIllegalTargets608Test : FunSpec({
             driver,
             effect = Effects.GainLife(targetCount),
             targets = listOf(ChosenTarget.Permanent(departed), ChosenTarget.Permanent(survivor)),
-            targetRequirements = listOf(TargetCreature(count = 2, sameCreatureType = true))
+            targetRequirements = listOf(TargetObject(count = 2, sameCreatureType = true, filter = TargetFilter.Creature))
         )
         driver.moveToGraveyard(departed)
         driver.bothPass()
@@ -667,14 +658,12 @@ class PartialIllegalTargets608Test : FunSpec({
         val departed = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
         val survivor = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
         val lifeBefore = driver.getLifeTotal(driver.player1)
-        val requirement = TargetCreature(count = 2)
+        val requirement = TargetObject(count = 2, filter = TargetFilter.Creature)
         val modal = ModalEffect(
             modes = listOf(
                 Mode(
-                    effect = Effects.Composite(
-                        Effects.Tap(EffectTarget.ContextTarget(0)),
-                        Effects.GainLife(1)
-                    ),
+                    effect = Effects.Tap(EffectTarget.ContextTarget(0)) then
+                        Effects.GainLife(1),
                     description = "Use the first outer target"
                 )
             ),
@@ -708,14 +697,14 @@ class PartialIllegalTargets608Test : FunSpec({
             modes = listOf(
                 Mode(
                     effect = Effects.Tap(EffectTarget.ContextTarget(0)),
-                    targetRequirements = listOf(TargetCreature()),
+                    targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
                     description = "Tap the mode target"
                 )
             ),
             chooseCount = 1
         )
 
-        val processor = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val processor = driver.services.triggerProcessor
         val result = processor.presentTriggerModalTargetDecision(
             state = driver.state,
             ability = TriggeredAbilityOnStackComponent(
@@ -726,12 +715,12 @@ class PartialIllegalTargets608Test : FunSpec({
                 description = "Synthetic pre-chosen modal trigger"
             ),
             outerTargets = listOf(ChosenTarget.Permanent(outerTarget)),
-            outerTargetRequirements = listOf(TargetCreature()),
+            outerTargetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
             modes = modal.modes,
             chosenModeIndices = listOf(0),
             resolvedModeTargets = listOf(listOf(ChosenTarget.Permanent(modeTarget))),
             currentOrdinal = 1,
-            resolvedModeTargetRequirements = listOf(listOf(TargetCreature())),
+            resolvedModeTargetRequirements = listOf(listOf(TargetObject(filter = TargetFilter.Creature))),
             causedByAttack = false,
             recordChosenModesOnSource = false,
             recordChosenModesThisTurn = false
@@ -759,7 +748,7 @@ class PartialIllegalTargets608Test : FunSpec({
             chooseCount = 1
         )
 
-        val processor = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val processor = driver.services.triggerProcessor
         val result = processor.presentTriggerModalTargetDecision(
             state = driver.state,
             ability = TriggeredAbilityOnStackComponent(
@@ -770,7 +759,7 @@ class PartialIllegalTargets608Test : FunSpec({
                 description = "Synthetic targetless modal trigger"
             ),
             outerTargets = listOf(ChosenTarget.Permanent(outerTarget)),
-            outerTargetRequirements = listOf(TargetCreature()),
+            outerTargetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
             modes = modal.modes,
             chosenModeIndices = listOf(0),
             resolvedModeTargets = listOf(emptyList()),
@@ -793,7 +782,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val driver = driver()
         val first = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
         val second = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
-        val requirement = TargetCreature(count = 2)
+        val requirement = TargetObject(count = 2, filter = TargetFilter.Creature)
         val lifeBefore = driver.getLifeTotal(driver.player1)
         val modal = ModalEffect(
             modes = listOf(
@@ -885,8 +874,8 @@ class PartialIllegalTargets608Test : FunSpec({
                 } ?: it
             }
         )
-        val optionalCreature = TargetCreature(count = 2, optional = true)
-        val targetArtifact = com.wingedsheep.sdk.scripting.targets.TargetPermanent(
+        val optionalCreature = TargetObject(count = 2, optional = true, filter = TargetFilter.Creature)
+        val targetArtifact = TargetObject(
             filter = TargetFilter.Artifact
         )
         val modal = ModalEffect(
@@ -922,7 +911,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val first = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
         val second = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
         val lifeBefore = driver.getLifeTotal(driver.player1)
-        val sameController = TargetCreature(count = 2, sameController = true)
+        val sameController = TargetObject(count = 2, sameController = true, filter = TargetFilter.Creature)
 
         putTriggeredAbility(
             driver,
@@ -941,7 +930,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val typedFirst = driver2.putCreatureOnBattlefield(driver2.player1, "Grizzly Bears")
         val typedSecond = driver2.putCreatureOnBattlefield(driver2.player1, "Grizzly Bears")
         val typeBefore = driver2.getLifeTotal(driver2.player1)
-        val sameType = TargetCreature(count = 2, sameCreatureType = true)
+        val sameType = TargetObject(count = 2, sameCreatureType = true, filter = TargetFilter.Creature)
         putTriggeredAbility(
             driver2,
             effect = Effects.GainLife(targetCount),
@@ -1050,7 +1039,7 @@ class PartialIllegalTargets608Test : FunSpec({
                 )
             ),
         )
-        val finder = TargetFinder()
+        val finder = driver.services.targetFinder
 
         shouldThrow<UnsupportedPathFailure> {
             finder.findLegalTargets(
@@ -1089,7 +1078,7 @@ class PartialIllegalTargets608Test : FunSpec({
                 ),
             ),
         )
-        val finder = TargetFinder()
+        val finder = driver.services.targetFinder
 
         shouldThrow<UnsupportedPathFailure> {
             finder.findLegalTargets(
@@ -1117,7 +1106,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val driver = driver()
         val source = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
         driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
-        val finder = TargetFinder()
+        val finder = driver.services.targetFinder
         val predicates = listOf(
             CardPredicate.Not(CardPredicate.NameEqualsChosenComponent()),
             CardPredicate.Not(CardPredicate.CardTypeEqualsChosenComponent()),
@@ -1163,7 +1152,7 @@ class PartialIllegalTargets608Test : FunSpec({
                 )
             },
         )
-        val finder = TargetFinder()
+        val finder = driver.services.targetFinder
         val predicates = listOf(
             CardPredicate.NameEqualsChosenComponent(),
             CardPredicate.CardTypeEqualsChosenComponent(),
@@ -1208,7 +1197,7 @@ class PartialIllegalTargets608Test : FunSpec({
                 ),
             ),
         )
-        val finder = TargetFinder()
+        val finder = driver.services.targetFinder
 
         shouldThrow<UnsupportedPathFailure> {
             finder.findLegalTargets(
@@ -1268,7 +1257,7 @@ class PartialIllegalTargets608Test : FunSpec({
         )
 
         val failure = shouldThrow<UnsupportedPathFailure> {
-            TargetFinder().findLegalTargets(
+            driver.services.targetFinder.findLegalTargets(
                 state = driver.state,
                 requirement = requirement,
                 controllerId = driver.player1,
@@ -1299,7 +1288,7 @@ class PartialIllegalTargets608Test : FunSpec({
         )
 
         val failure = shouldThrow<UnsupportedPathFailure> {
-            TargetFinder().findLegalTargets(
+            driver.services.targetFinder.findLegalTargets(
                 state = driver.state,
                 requirement = requirement,
                 controllerId = driver.player1,
@@ -1324,7 +1313,7 @@ class PartialIllegalTargets608Test : FunSpec({
             ),
         )
 
-        TargetFinder().findLegalTargets(
+        driver.services.targetFinder.findLegalTargets(
             state = driver.state,
             requirement = requirement,
             controllerId = driver.player1,
@@ -1338,6 +1327,7 @@ class PartialIllegalTargets608Test : FunSpec({
 
     test("referenced triggering-player targets do not accept an entity-only fallback") {
         val driver = driver()
+        val triggeringPermanent = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
         val requirement = TargetObject(
             filter = TargetFilter(
                 baseFilter = GameObjectFilter(
@@ -1348,19 +1338,36 @@ class PartialIllegalTargets608Test : FunSpec({
             ),
         )
 
+        // A triggering object that is not a player does not name "that player": with no explicit
+        // triggering player the reference is unknown, so the pending domain fails closed.
         shouldThrow<UnsupportedPathFailure> {
-            TargetFinder().findLegalTargets(
+            driver.services.targetFinder.findLegalTargets(
                 state = driver.state,
                 requirement = requirement,
                 controllerId = driver.player1,
-                triggeringEntityId = driver.player2,
+                triggeringEntityId = triggeringPermanent,
                 pipelineContext = PredicateContext(
                     controllerId = driver.player1,
-                    triggeringEntityId = driver.player2,
+                    triggeringEntityId = triggeringPermanent,
                 ),
                 requireAuthoritativeContext = true,
             )
         }
+
+        // A triggering entity that is itself a player IS that player (the damaged player a
+        // self-bound damage trigger carries, Balefire Dragon): the evaluator resolves "that player"
+        // from it, so the domain is known rather than unsupported.
+        driver.services.targetFinder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            triggeringEntityId = driver.player2,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                triggeringEntityId = driver.player2,
+            ),
+            requireAuthoritativeContext = true,
+        ).toSet() shouldBe setOf(triggeringPermanent)
     }
 
     test("pending target finder resolves TargetController from permanent and card context") {
@@ -1374,7 +1381,7 @@ class PartialIllegalTargets608Test : FunSpec({
                 baseFilter = GameObjectFilter.Creature.targetPlayerControls(EffectTarget.TargetController),
             ),
         )
-        val finder = TargetFinder()
+        val finder = driver.services.targetFinder
 
         finder.findLegalTargets(
             state = driver.state,
@@ -1426,7 +1433,7 @@ class PartialIllegalTargets608Test : FunSpec({
                 ),
             ),
         )
-        val finder = TargetFinder()
+        val finder = driver.services.targetFinder
 
         shouldThrow<UnsupportedPathFailure> {
             finder.findLegalTargets(
@@ -1452,7 +1459,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val driver = driver()
         val handCandidate = driver.putCardInHand(driver.player1, "Grizzly Bears")
         val permanentCandidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
-        val finder = TargetFinder()
+        val finder = driver.services.targetFinder
         val context = PredicateContext(controllerId = driver.player1, xValue = 2)
 
         val handRequirement = TargetObject(
@@ -1523,7 +1530,7 @@ class PartialIllegalTargets608Test : FunSpec({
             driver,
             effect = Effects.GainLife(1),
             targets = listOf(ChosenTarget.Permanent(target)),
-            targetRequirements = listOf(Targets.Creature)
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature))
         )
 
         val json = Json {
@@ -1547,7 +1554,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val entry = PreTargetedEffectEntry(
             effect = Effects.Tap(EffectTarget.ContextTarget(0)),
             targets = listOf(ChosenTarget.Permanent(target)),
-            targetRequirements = listOf(TargetCreature()),
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
             flatSlotStart = 3,
             flatSlotCount = 1,
             alignedTargets = listOf(ChosenTarget.Permanent(target)),
@@ -1555,7 +1562,6 @@ class PartialIllegalTargets608Test : FunSpec({
             slotMetadataLocked = true
         )
         val continuation = SpliceTailContinuation(
-            decisionId = "608-16b",
             controllerId = driver.player1,
             sourceId = null,
             sourceName = null,
@@ -1571,12 +1577,11 @@ class PartialIllegalTargets608Test : FunSpec({
         json.decodeFromString(SpliceTailContinuation.serializer(), encoded) shouldBe continuation
 
         val modalContinuation = ModalTargetContinuation(
-            decisionId = "608-16b-modal",
             controllerId = driver.player1,
             sourceId = null,
             sourceName = null,
             effect = Effects.Tap(EffectTarget.ContextTarget(0)),
-            targetRequirements = listOf(TargetCreature()),
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
             outerTargets = listOf(ChosenTarget.Permanent(target)),
             outerAlignedTargets = listOf(null, ChosenTarget.Permanent(target))
         )
@@ -1584,7 +1589,6 @@ class PartialIllegalTargets608Test : FunSpec({
         json.decodeFromString(ModalTargetContinuation.serializer(), modalEncoded) shouldBe modalContinuation
 
         val preChosenContinuation = ModalPreChosenContinuation(
-            decisionId = "608-16b-pre-chosen",
             controllerId = driver.player1,
             sourceId = null,
             sourceName = null,
@@ -1706,7 +1710,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val spellId = driver.putCardInHand(driver.player1, malformedPayloadSpell.name)
         val lifeBefore = driver.getLifeTotal(driver.player1)
 
-        val result = StackResolver(driver.cardRegistry).castSpell(
+        val result = driver.services.stackResolver.castSpell(
             state = driver.state,
             cardId = spellId,
             casterId = driver.player1,
@@ -1731,13 +1735,13 @@ class PartialIllegalTargets608Test : FunSpec({
             driver,
             effect = Effects.GainLife(1),
             targets = listOf(ChosenTarget.Permanent(target)),
-            targetRequirements = listOf(TargetCreature(count = 2))
+            targetRequirements = listOf(TargetObject(count = 2, filter = TargetFilter.Creature))
         )
         val stackId = driver.state.stack.single()
         val targetsComponent = driver.state.getEntity(stackId)?.get<TargetsComponent>()!!
         driver.replaceState(
             driver.state.updateEntity(stackId) {
-                it.with(targetsComponent.copy(targetRequirements = listOf(TargetCreature(count = 2))))
+                it.with(targetsComponent.copy(targetRequirements = listOf(TargetObject(count = 2, filter = TargetFilter.Creature))))
             }
         )
         driver.bothPass()
@@ -1770,7 +1774,7 @@ class PartialIllegalTargets608Test : FunSpec({
                 it.with(
                     targetsComponent.copy(
                         targets = emptyList(),
-                        targetRequirements = listOf(TargetCreature())
+                        targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature))
                     )
                 )
             }
@@ -1787,12 +1791,12 @@ class PartialIllegalTargets608Test : FunSpec({
         val spellId = driver.putCardInHand(driver.player1, malformedPayloadSpell.name)
         val lifeBefore = driver.getLifeTotal(driver.player1)
 
-        val result = StackResolver(driver.cardRegistry).castSpell(
+        val result = driver.services.stackResolver.castSpell(
             state = driver.state,
             cardId = spellId,
             casterId = driver.player1,
             targets = emptyList(),
-            targetRequirements = listOf(TargetCreature()),
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature)),
             targetLockState = driver.state
         )
         result.error shouldBe null
@@ -1800,7 +1804,7 @@ class PartialIllegalTargets608Test : FunSpec({
 
         val stackId = driver.state.stack.single()
         driver.state.getEntity(stackId)?.get<TargetsComponent>()?.targetRequirements shouldBe
-            listOf(TargetCreature())
+            listOf(TargetObject(filter = TargetFilter.Creature))
 
         driver.bothPass()
 
@@ -1817,18 +1821,18 @@ class PartialIllegalTargets608Test : FunSpec({
             triggeredDriver,
             effect = Effects.GainLife(1),
             targets = emptyList(),
-            targetRequirements = listOf(TargetCreature())
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature))
         )
         val triggeredStackId = triggeredDriver.state.stack.single()
         triggeredDriver.state.getEntity(triggeredStackId)?.get<TargetsComponent>()
-            ?.targetRequirements shouldBe listOf(TargetCreature())
+            ?.targetRequirements shouldBe listOf(TargetObject(filter = TargetFilter.Creature))
         triggeredDriver.bothPass()
         triggeredDriver.getLifeTotal(triggeredDriver.player1) shouldBe triggeredLifeBefore
 
         val activatedDriver = driver()
         val sourceId = activatedDriver.putCreatureOnBattlefield(activatedDriver.player1, "Grizzly Bears")
         val activatedLifeBefore = activatedDriver.getLifeTotal(activatedDriver.player1)
-        val result = StackResolver(activatedDriver.cardRegistry).putActivatedAbility(
+        val result = activatedDriver.services.stackResolver.putActivatedAbility(
             state = activatedDriver.state,
             ability = ActivatedAbilityOnStackComponent(
                 sourceId = sourceId,
@@ -1837,13 +1841,13 @@ class PartialIllegalTargets608Test : FunSpec({
                 effect = Effects.GainLife(1)
             ),
             targets = emptyList(),
-            targetRequirements = listOf(TargetCreature())
+            targetRequirements = listOf(TargetObject(filter = TargetFilter.Creature))
         )
         result.error shouldBe null
         activatedDriver.replaceState(result.newState)
         val activatedStackId = activatedDriver.state.stack.single()
         activatedDriver.state.getEntity(activatedStackId)?.get<TargetsComponent>()
-            ?.targetRequirements shouldBe listOf(TargetCreature())
+            ?.targetRequirements shouldBe listOf(TargetObject(filter = TargetFilter.Creature))
         activatedDriver.bothPass()
         activatedDriver.getLifeTotal(activatedDriver.player1) shouldBe activatedLifeBefore
     }
@@ -1852,7 +1856,8 @@ class PartialIllegalTargets608Test : FunSpec({
         val driver = driver()
         val first = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
         val second = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
-        val requirement = TargetCreature(
+        val requirement = TargetObject(
+            filter = TargetFilter.Creature,
             count = 1,
             optional = true,
             dynamicMaxCount = DynamicAmount.Count(Player.You, Zone.BATTLEFIELD, GameObjectFilter.Creature)
@@ -1888,7 +1893,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val afterCostState = announcementState
             .removeFromZone(ZoneKey(driver.player1, Zone.BATTLEFIELD), second)
             .addToZone(ZoneKey(driver.player1, Zone.GRAVEYARD), second)
-        val result = StackResolver(driver.cardRegistry).castSpell(
+        val result = driver.services.stackResolver.castSpell(
             state = afterCostState,
             cardId = cardId,
             casterId = driver.player1,
@@ -1896,14 +1901,14 @@ class PartialIllegalTargets608Test : FunSpec({
             targets = listOf(ChosenTarget.Permanent(first), ChosenTarget.Permanent(second), ChosenTarget.Permanent(artifact)),
             targetRequirements = listOf(
                 dynamicTargetRequirement,
-                TargetPermanent(filter = TargetFilter.Artifact)
+                TargetObject(filter = TargetFilter.Artifact)
             ),
             chosenModes = listOf(0),
             modeTargetsOrdered = listOf(
                 listOf(ChosenTarget.Permanent(first), ChosenTarget.Permanent(second), ChosenTarget.Permanent(artifact))
             ),
             modeTargetRequirements = mapOf(
-                0 to listOf(dynamicTargetRequirement, TargetPermanent(filter = TargetFilter.Artifact))
+                0 to listOf(dynamicTargetRequirement, TargetObject(filter = TargetFilter.Artifact))
             )
         )
 
@@ -1918,7 +1923,8 @@ class PartialIllegalTargets608Test : FunSpec({
         val driver = dynamicDriver()
         driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
         driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
-        val requirement = TargetCreature(
+        val requirement = TargetObject(
+            filter = TargetFilter.Creature,
             count = 1,
             optional = true,
             dynamicMaxCount = DynamicAmount.XValue,
@@ -1990,7 +1996,8 @@ class PartialIllegalTargets608Test : FunSpec({
         val driver = dynamicDriver()
         driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
         driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
-        val requirement = TargetCreature(
+        val requirement = TargetObject(
+            filter = TargetFilter.Creature,
             count = 1,
             optional = true,
             dynamicMaxCount = DynamicAmount.XValue,
@@ -2005,7 +2012,7 @@ class PartialIllegalTargets608Test : FunSpec({
             ),
             chooseCount = 1,
         )
-        val processor = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val processor = driver.services.triggerProcessor
 
         val result = processor.presentTriggerModalTargetDecision(
             state = driver.state,
@@ -2052,7 +2059,7 @@ class PartialIllegalTargets608Test : FunSpec({
             chooseCount = 1,
         )
 
-        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val result = driver.services.triggerProcessor
             .presentTriggerModalTargetDecision(
                 state = driver.state,
                 ability = TriggeredAbilityOnStackComponent(
@@ -2094,7 +2101,7 @@ class PartialIllegalTargets608Test : FunSpec({
             ),
             chooseCount = 1,
         )
-        val processor = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val processor = driver.services.triggerProcessor
 
         val result = processor.presentTriggerModalTargetDecision(
             state = driver.state,
@@ -2140,7 +2147,7 @@ class PartialIllegalTargets608Test : FunSpec({
             chooseCount = 1,
         )
 
-        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val result = driver.services.triggerProcessor
             .presentTriggerModalTargetDecision(
                 state = driver.state,
                 ability = TriggeredAbilityOnStackComponent(
@@ -2182,8 +2189,10 @@ class PartialIllegalTargets608Test : FunSpec({
             targetRequirements = listOf(requirement),
             description = "Choose up to X creatures within X mana value",
         )
+        // The answer payload carries no routing id; the resumer is driven directly, so the response
+        // just names the question it answers.
+        val decisionId = "synthetic-resolution-modal-witness"
         val continuation = ModalContinuation(
-            decisionId = "synthetic-resolution-modal-witness",
             controllerId = driver.player1,
             sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-resolution-modal-source"),
             sourceName = "Synthetic resolution modal",
@@ -2195,7 +2204,7 @@ class PartialIllegalTargets608Test : FunSpec({
             .resumeModal(
                 state = driver.state,
                 continuation = continuation,
-                response = OptionChosenResponse(continuation.decisionId, optionIndex = 0),
+                response = OptionChosenResponse(decisionId, optionIndex = 0),
                 checkForMore = { state, events -> ExecutionResult.success(state, events) },
             )
 
@@ -2283,7 +2292,8 @@ class PartialIllegalTargets608Test : FunSpec({
     test("pending cast-modal metadata is withheld when dynamic count is unresolved") {
         val driver = dynamicDriver()
         driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
-        val requirement = TargetCreature(
+        val requirement = TargetObject(
+            filter = TargetFilter.Creature,
             count = 1,
             optional = true,
             dynamicMaxCount = DynamicAmount.XValue,
@@ -2321,13 +2331,14 @@ class PartialIllegalTargets608Test : FunSpec({
         val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
         driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
         driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
-        val requirement = TargetCreature(count = 2, minCount = 1)
+        val requirement = TargetObject(count = 2, minCount = 1, filter = TargetFilter.Creature)
         val ability = TriggeredAbility.create(
             trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
             effect = Effects.GainLife(1),
             targetRequirement = requirement,
             descriptionOverride = "Synthetic fixed non-modal trigger",
-        ).copy(id = AbilityId("synthetic-fixed-non-modal-trigger"))
+            id = AbilityId("synthetic-fixed-non-modal-trigger"),
+        )
         val trigger = PendingTrigger(
             ability = ability,
             sourceId = source,
@@ -2336,7 +2347,7 @@ class PartialIllegalTargets608Test : FunSpec({
             triggerContext = TriggerContext(),
         )
 
-        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val result = driver.services.triggerProcessor
             .processTargetedTrigger(driver.state, trigger, requirement)
 
         val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
@@ -2348,13 +2359,14 @@ class PartialIllegalTargets608Test : FunSpec({
         val driver = driver()
         val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
         driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
-        val requirement = TargetCreature(count = 2)
+        val requirement = TargetObject(count = 2, filter = TargetFilter.Creature)
         val ability = TriggeredAbility.create(
             trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
             effect = Effects.GainLife(1),
             targetRequirement = requirement,
             descriptionOverride = "Synthetic unfillable mandatory trigger",
-        ).copy(id = AbilityId("synthetic-unfillable-mandatory-trigger"))
+            id = AbilityId("synthetic-unfillable-mandatory-trigger"),
+        )
         val trigger = PendingTrigger(
             ability = ability,
             sourceId = source,
@@ -2363,7 +2375,7 @@ class PartialIllegalTargets608Test : FunSpec({
             triggerContext = TriggerContext(),
         )
 
-        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val result = driver.services.triggerProcessor
             .processTargetedTrigger(driver.state, trigger, requirement)
 
         result.pendingDecision shouldBe null
@@ -2375,7 +2387,8 @@ class PartialIllegalTargets608Test : FunSpec({
         val driver = dynamicDriver()
         val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
         driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
-        val requirement = TargetCreature(
+        val requirement = TargetObject(
+            filter = TargetFilter.Creature,
             count = 1,
             dynamicMaxCount = DynamicAmount.XValue,
         )
@@ -2384,7 +2397,8 @@ class PartialIllegalTargets608Test : FunSpec({
             effect = Effects.GainLife(1),
             targetRequirement = requirement,
             descriptionOverride = "Synthetic unresolved non-modal trigger",
-        ).copy(id = AbilityId("synthetic-unresolved-non-modal-trigger"))
+            id = AbilityId("synthetic-unresolved-non-modal-trigger"),
+        )
         val trigger = PendingTrigger(
             ability = ability,
             sourceId = source,
@@ -2393,7 +2407,7 @@ class PartialIllegalTargets608Test : FunSpec({
             triggerContext = TriggerContext(),
         )
 
-        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val result = driver.services.triggerProcessor
             .processTargetedTrigger(driver.state, trigger, requirement)
 
         result.pendingDecision shouldBe null
@@ -2416,7 +2430,8 @@ class PartialIllegalTargets608Test : FunSpec({
             effect = Effects.GainLife(1),
             targetRequirement = requirement,
             descriptionOverride = "Synthetic unresolved aggregate trigger",
-        ).copy(id = AbilityId("synthetic-unresolved-aggregate-trigger"))
+            id = AbilityId("synthetic-unresolved-aggregate-trigger"),
+        )
         val trigger = PendingTrigger(
             ability = ability,
             sourceId = source,
@@ -2425,7 +2440,7 @@ class PartialIllegalTargets608Test : FunSpec({
             triggerContext = TriggerContext(),
         )
 
-        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val result = driver.services.triggerProcessor
             .processTargetedTrigger(driver.state, trigger, requirement)
 
         result.pendingDecision shouldBe null
@@ -2451,7 +2466,7 @@ class PartialIllegalTargets608Test : FunSpec({
         val afterCostState = announcementState
             .removeFromZone(ZoneKey(driver.player1, Zone.BATTLEFIELD), second)
             .addToZone(ZoneKey(driver.player1, Zone.GRAVEYARD), second)
-        val result = StackResolver(driver.cardRegistry).castSpell(
+        val result = driver.services.stackResolver.castSpell(
             state = afterCostState,
             cardId = hostId,
             casterId = driver.player1,
@@ -2459,7 +2474,7 @@ class PartialIllegalTargets608Test : FunSpec({
             targets = listOf(ChosenTarget.Permanent(first), ChosenTarget.Permanent(second), ChosenTarget.Permanent(artifact)),
             targetRequirements = listOf(
                 dynamicTargetRequirement,
-                TargetPermanent(filter = TargetFilter.Artifact)
+                TargetObject(filter = TargetFilter.Artifact)
             ),
             splicedCardNames = listOf(dynamicSlotSplice.name)
         )
@@ -2474,7 +2489,7 @@ class PartialIllegalTargets608Test : FunSpec({
     test("608-20: an inherited spell copy retains the source target object identity") {
         val driver = driver()
         val target = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
-        val requirement = Targets.Creature
+        val requirement = TargetObject(filter = TargetFilter.Creature)
         val (sourceId, stateWithSourceId) = driver.state.newEntity()
         val sourceTargets = TargetsComponent.capture(
             driver.state,
@@ -2505,7 +2520,7 @@ class PartialIllegalTargets608Test : FunSpec({
             .addToZone(graveyard, target)
             .removeFromZone(graveyard, target)
             .addToZone(battlefield, target)
-        val copyResult = StackResolver(driver.cardRegistry).putSpellCopy(
+        val copyResult = driver.services.stackResolver.putSpellCopy(
             state = returnedTargetState,
             sourceSpellId = sourceId
         )
@@ -2515,7 +2530,7 @@ class PartialIllegalTargets608Test : FunSpec({
         copyResult.newState.getEntity(copyId)?.get<TargetsComponent>()?.targetEntryStamps shouldBe
             sourceTargets.targetEntryStamps
 
-        val resolution = StackResolver(driver.cardRegistry).resolveTop(copyResult.newState)
+        val resolution = driver.services.stackResolver.resolveTop(copyResult.newState)
         resolution.events.filterIsInstance<SpellFizzledEvent>().size shouldBe 1
     }
 })
