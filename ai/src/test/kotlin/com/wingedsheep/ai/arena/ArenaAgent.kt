@@ -135,9 +135,6 @@ object ArenaAgents {
         // gate, against what players face today.
         ArenaAgent("production-expiring", AiProfile.PRODUCTION_EXPIRING),
         ArenaAgent("production-candidate-expiring", AiProfile.PRODUCTION_CANDIDATE_EXPIRING),
-        // The Strategist's attachment-move cap per turn instead of per step. Its real measurement is
-        // the Akiri vs Chevill engine matchup (free instant-speed equip); BLB only checks for harm.
-        ArenaAgent("production-candidate-equipturn", AiProfile.PRODUCTION_CANDIDATE_EQUIPTURN),
         ArenaAgent("production-targeted", AiProfile.PRODUCTION_TARGETED),
         // Explicit ECL candidates. Their resource-backed weights fail closed to production's
         // evaluator until a validated artifact is installed; automatic selection is set-gated.
