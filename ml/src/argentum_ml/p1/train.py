@@ -5,6 +5,11 @@
 Every checkpoint directory holds `model.safetensors`, `vocab.json`, `config.json` and
 `metrics.json` (training history plus the final validation metrics), which is what the tournament
 runner and the devlog read.
+
+v2 card features (docs/ml/p1-card-text-features.md): `--card-table` plus any of `--text`,
+`--subtypes`, `--mana-cost` and `--name-dropout P`; the checkpoint then also stores
+`card_features.json`. `--warm-start DIR` starts from a v1 checkpoint (its vocabulary and weights) with
+the new card-feature layers zero-initialized, so training starts from exactly that checkpoint's play.
 """
 
 from __future__ import annotations
@@ -17,10 +22,10 @@ import time
 from pathlib import Path
 
 import torch
-from safetensors.torch import save_file
 from torch.nn import functional as F
 
-from . import features
+from . import cardtext, features
+from . import model as p1_model
 from .model import P1Model, P1ModelConfig, collate_tensors, pretensorize
 
 CHECKPOINT_SCHEMA = "argentum-p1-checkpoint@v1"
@@ -80,11 +85,21 @@ def evaluate(model, samples, device, batch_size=256, value_weight=0.5, pass_kind
     }
 
 
-def next_checkpoint_dir(runs: Path) -> Path:
+def next_checkpoint_dir(runs: Path, prefix: str = "p1-ckpt") -> Path:
     runs.mkdir(parents=True, exist_ok=True)
-    existing = sorted(p for p in runs.glob("p1-ckpt-*") if p.is_dir())
-    number = int(existing[-1].name.removeprefix("p1-ckpt-")) + 1 if existing else 1
-    return runs / f"p1-ckpt-{number:04d}"
+    existing = sorted(p for p in runs.glob(f"{prefix}-*") if p.is_dir() and p.name.removeprefix(f"{prefix}-").isdigit())
+    number = int(existing[-1].name.removeprefix(f"{prefix}-")) + 1 if existing else 1
+    return runs / f"{prefix}-{number:04d}"
+
+
+def _zero_card_feature_layers(model: P1Model) -> None:
+    """New v2 layers start silent, so a warm-started model plays exactly like its v1 source."""
+    with torch.no_grad():
+        for name in ("text", "subtype", "card_cost", "candidate_cost"):
+            module = getattr(model, name, None)
+            if module is not None:
+                for parameter in module.parameters():
+                    parameter.zero_()
 
 
 def main(argv=None):
@@ -102,6 +117,13 @@ def main(argv=None):
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--note", default="")
+    parser.add_argument("--prefix", default="p1-ckpt", help="checkpoint directory prefix, e.g. p1-v2a")
+    parser.add_argument("--card-table", type=Path, help="argentum-p1-card-table@v1 JSON (needed for v2 features)")
+    parser.add_argument("--text", action="store_true", help="v2: rules-text features")
+    parser.add_argument("--subtypes", action="store_true", help="v2: subtype features")
+    parser.add_argument("--mana-cost", action="store_true", help="v2: parsed printed-cost features (cards and candidates)")
+    parser.add_argument("--name-dropout", type=float, default=0.0, help="v2: hide card names with this probability in training")
+    parser.add_argument("--warm-start", type=Path, help="start from this v1 checkpoint (vocabulary + weights)")
     args = parser.parse_args(argv)
 
     torch.manual_seed(args.seed)
@@ -109,7 +131,10 @@ def main(argv=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     started = time.time()
-    vocab, train, val = features.load_split(args.data)
+    warm_vocab = None
+    if args.warm_start:
+        warm_vocab = features.Vocab.from_json(json.loads((args.warm_start / "vocab.json").read_text(encoding="utf-8")))
+    vocab, train, val = features.load_split(args.data, warm_vocab)
     train = [pretensorize(s) for s in train]
     val = [pretensorize(s) for s in val]
     games = sum(len(features.iter_game_files(d)) for d in args.data)
@@ -117,8 +142,26 @@ def main(argv=None):
           f"{vocab.size('name')} card names, device={device}")
     pass_kind = vocab.id("kind", "PassPriority")
 
-    config = P1ModelConfig()
-    model = P1Model(vocab, config).to(device)
+    config = P1ModelConfig(text=args.text, subtypes=args.subtypes, mana_cost=args.mana_cost, name_dropout=args.name_dropout)
+    card_features = None
+    if config.uses_card_features:
+        if not args.card_table:
+            raise SystemExit("--text/--subtypes/--mana-cost need --card-table")
+        table_payload = json.loads(args.card_table.read_text(encoding="utf-8"))
+        card_features = cardtext.CardFeatures.build(
+            cardtext.read_card_table(args.card_table), sorted(vocab.maps["name"]), table_payload.get("sourceCommit", ""),
+        )
+        print(f"card features: {len(card_features.cards)}/{len(vocab.maps['name'])} names with text, "
+              f"{card_features.text_size()} text terms, {card_features.subtype_size()} subtypes")
+    model = P1Model(vocab, config, card_features)
+    if args.warm_start:
+        source, _ = p1_model.load_checkpoint(args.warm_start)
+        missing, unexpected = model.load_state_dict(source.state_dict(), strict=False)
+        if unexpected:
+            raise SystemExit(f"warm start: unexpected tensors {unexpected}")
+        _zero_card_feature_layers(model)
+        print(f"warm start from {args.warm_start.name}: {len(missing)} new tensors")
+    model = model.to(device)
     parameters = sum(p.numel() for p in model.parameters())
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     steps_per_epoch = math.ceil(len(train) / args.batch_size)
@@ -158,11 +201,9 @@ def main(argv=None):
         model.load_state_dict(best_state)
         print(f"keeping epoch {best_epoch} (lowest validation {args.select_by} {best_loss:.4f})")
     final = history[best_epoch - 1] if best_epoch else (history[-1] if history else None)
-    out = next_checkpoint_dir(args.runs)
+    out = next_checkpoint_dir(args.runs, args.prefix)
     out.mkdir(parents=True)
-    save_file({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()}, str(out / "model.safetensors"))
-    (out / "vocab.json").write_text(json.dumps(vocab.to_json(), sort_keys=True), encoding="utf-8")
-    (out / "config.json").write_text(json.dumps(config.to_json(), sort_keys=True, indent=2), encoding="utf-8")
+    p1_model.save_checkpoint(model, vocab, out)
     manifests = sorted(m for d in args.data for m in d.glob("manifest-*.json"))
     (out / "metrics.json").write_text(json.dumps({
         "schema": CHECKPOINT_SCHEMA,
@@ -179,6 +220,12 @@ def main(argv=None):
             "epochs": args.epochs, "batchSize": args.batch_size, "lr": args.lr,
             "valueWeight": args.value_weight, "selectBy": args.select_by, "seed": args.seed, "parameters": parameters,
             "device": str(device), "seconds": round(time.time() - started, 1),
+            "architecture": config.to_json()["architecture"],
+            "cardFeatures": {"text": args.text, "subtypes": args.subtypes, "manaCost": args.mana_cost,
+                             "nameDropout": args.name_dropout,
+                             "cardTable": str(args.card_table) if args.card_table else None,
+                             "cardTableCommit": card_features.source_commit if card_features else None},
+            "warmStart": str(args.warm_start) if args.warm_start else None,
         },
         "history": history,
         "selectedEpoch": best_epoch or len(history),

@@ -23,18 +23,16 @@ import sys
 from pathlib import Path
 
 import torch
-from safetensors.torch import load_file
 
+from . import model as p1_model
 from .features import Vocab, encode
-from .model import P1Model, P1ModelConfig, collate
+from .model import P1Model, collate
 
 
 def load_checkpoint(directory: Path, device: str = "cpu") -> tuple[P1Model, Vocab]:
-    vocab = Vocab.from_json(json.loads((directory / "vocab.json").read_text(encoding="utf-8")))
-    config = P1ModelConfig.from_json(json.loads((directory / "config.json").read_text(encoding="utf-8")))
-    model = P1Model(vocab, config)
-    model.load_state_dict(load_file(str(directory / "model.safetensors")))
-    model.to(device).eval()
+    """A v1 or v2 checkpoint in eval mode (v2 brings its own card table)."""
+    model, vocab = p1_model.load_checkpoint(directory, device)
+    model.eval()
     return model, vocab
 
 

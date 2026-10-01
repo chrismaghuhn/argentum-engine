@@ -125,6 +125,17 @@ tasks.register<Test>("phase1DaggerCollectTest") {
     testLogging { showStandardStreams = true }
 }
 
+tasks.register<Test>("phase1CardTableExportTest") {
+    description = "Opt-in: export the P1 card table (rules text, mana cost, subtypes) (-Dphase1.cardTable=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1CardTableExportTest*")
+    maxHeapSize = "4g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
 tasks.register<Test>("phase1PpoCollectTest") {
     description = "Opt-in P1 PPO rollouts: a sampling checkpoint plays a league (-Dphase1.ppo=true)."
     group = "verification"
@@ -239,6 +250,8 @@ tasks.withType<Test>().configureEach {
         "phase1.league",
         "phase1.policyProcesses",
         "phase1.gameTimeoutSeconds",
+        "phase1.cardTable",
+        "phase1.cardTableOut",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }

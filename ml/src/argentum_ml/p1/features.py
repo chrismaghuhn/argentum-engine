@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from .cardtext import parse_mana_cost
+
 SAMPLE_SCHEMA = "argentum-p1-selfplay-sample@v1"
 PAD = 0
 UNK = 1
@@ -154,6 +156,8 @@ class EncodedSample:
     chosen: int
     outcome: float
     game: int
+    # Parsed printed cost per candidate (cardtext.COST_FEATURES); read only by v2 models.
+    candidate_cost: list[list[float]] = field(default_factory=list)
 
 
 def _padded(ids: list[int], width: int) -> list[int]:
@@ -241,7 +245,7 @@ def encode(sample: dict, vocab: Vocab) -> EncodedSample:
         ]
     )
 
-    candidate_kind, candidate_source, candidate_targets, candidate_numeric = [], [], [], []
+    candidate_kind, candidate_source, candidate_targets, candidate_numeric, candidate_cost = [], [], [], [], []
     for candidate in sample["candidates"]:
         candidate_kind.append(vocab.id("kind", candidate["kind"]))
         source = candidate["source"]
@@ -254,6 +258,7 @@ def encode(sample: dict, vocab: Vocab) -> EncodedSample:
             1.0 if 0 <= source < len(cards) else 0.0,
             len(candidate["targets"]) / 4.0,
         ])
+        candidate_cost.append(parse_mana_cost(candidate["manaCost"]))
 
     return EncodedSample(
         token_name=token_name,
@@ -274,6 +279,7 @@ def encode(sample: dict, vocab: Vocab) -> EncodedSample:
         chosen=int(sample["chosen"]),
         outcome=float(sample["outcome"]),
         game=int(sample["game"]),
+        candidate_cost=candidate_cost,
     )
 
 

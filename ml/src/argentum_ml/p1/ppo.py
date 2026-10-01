@@ -33,10 +33,10 @@ from collections import defaultdict
 from pathlib import Path
 
 import torch
-from safetensors.torch import load_file, save_file
 
 from . import features
-from .model import P1Model, P1ModelConfig, collate_tensors, pretensorize
+from . import model as p1_model
+from .model import P1Model, collate_tensors, pretensorize
 from .train import CHECKPOINT_SCHEMA
 
 PPO_SOURCE = "ppo"
@@ -177,15 +177,13 @@ def ppo_loss(model: P1Model, batch: dict, clip: float, value_coef: float, entrop
 # Checkpoints
 
 
-def load_model(directory: Path, device) -> tuple[P1Model, features.Vocab, P1ModelConfig]:
-    vocab = features.Vocab.from_json(json.loads((directory / "vocab.json").read_text(encoding="utf-8")))
-    config = P1ModelConfig.from_json(json.loads((directory / "config.json").read_text(encoding="utf-8")))
+def load_model(directory: Path, device) -> tuple[P1Model, features.Vocab]:
     # No dropout: PPO compares the probability of the same move before and after an update, and
-    # dropout noise in that ratio would read as policy change.
-    config = dataclasses.replace(config, dropout=0.0)
-    model = P1Model(vocab, config)
-    model.load_state_dict(load_file(str(directory / "model.safetensors")))
-    return model.to(device), vocab, config
+    # dropout noise in that ratio would read as policy change. Name dropout is switched off for the
+    # same reason; the v2 card text keeps working because it is looked up by the true name.
+    model, vocab = p1_model.load_checkpoint(directory, device, dropout=0.0)
+    model.config = dataclasses.replace(model.config, name_dropout=0.0)
+    return model, vocab
 
 
 @torch.no_grad()
@@ -259,7 +257,7 @@ def main(argv=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     started = time.time()
 
-    model, vocab, config = load_model(args.checkpoint, device)
+    model, vocab = load_model(args.checkpoint, device)
     rows = read_rollout_rows(args.data)
     if not rows:
         raise SystemExit(f"no rollout decisions in {args.data}")
@@ -269,7 +267,7 @@ def main(argv=None):
     for s in steps:
         s["advantage"] = (s["advantage"] - mean) / std
     if args.kl_coef > 0:
-        reference, _, _ = load_model(args.reference, device)
+        reference, _ = load_model(args.reference, device)
         attach_reference_logprobs(reference, steps, device)
         del reference
     summary = rollout_summary(args.data, rows)
@@ -315,9 +313,7 @@ def main(argv=None):
 
     out = next_ppo_dir(args.runs)
     out.mkdir(parents=True)
-    save_file({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()}, str(out / "model.safetensors"))
-    (out / "vocab.json").write_text(json.dumps(vocab.to_json(), sort_keys=True), encoding="utf-8")
-    (out / "config.json").write_text(json.dumps(config.to_json(), sort_keys=True, indent=2), encoding="utf-8")
+    p1_model.save_checkpoint(model, vocab, out)
     manifests = sorted(m for d in args.data for m in d.glob("manifest-*.json"))
     final = history[-1] if history else {}
     (out / "metrics.json").write_text(json.dumps({

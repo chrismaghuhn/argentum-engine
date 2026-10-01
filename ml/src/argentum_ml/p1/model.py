@@ -5,19 +5,30 @@ counter bags, numeric state). A global token carries player stats and timing. A 
 encodes the set; each legal candidate is scored from its kind, its source token and its target
 tokens against the encoded global context. The value head predicts the game outcome (-1..1) from
 the acting player's perspective.
+
+v2 (docs/ml/p1-card-text-features.md) adds what a card *does*: per card name the model holds fixed
+rows of rules-text term ids, subtype ids and parsed printed cost (built from a card table, stored as
+buffers, so a checkpoint is self-contained), looked up by the token's name id. Name dropout replaces
+the learned name embedding by "unknown" during training only, so the model has to play from text,
+cost and type instead of memorized names; the text lookup always uses the true name.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+import json
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 
 import torch
 from torch import nn
 
-from . import features
-from .features import MAX_TARGETS, EncodedSample, Vocab
+from . import cardtext, features
+from .cardtext import CardFeatures
+from .features import MAX_TARGETS, UNK, EncodedSample, Vocab
 
 MODEL_ARCHITECTURE = "argentum-p1-set-transformer-candidate-scorer@v1"
+MODEL_ARCHITECTURE_V2 = "argentum-p1-set-transformer-candidate-scorer@v2"
+CARD_FEATURES_FILE = "card_features.json"
 
 
 @dataclass(frozen=True)
@@ -27,22 +38,52 @@ class P1ModelConfig:
     layers: int = 3
     ff: int = 256
     dropout: float = 0.1
+    # v2 card features (all off = the v1 architecture)
+    text: bool = False
+    subtypes: bool = False
+    mana_cost: bool = False
+    name_dropout: float = 0.0
+
+    @property
+    def uses_card_features(self) -> bool:
+        return self.text or self.subtypes or self.mana_cost
 
     def to_json(self) -> dict:
-        return {"architecture": MODEL_ARCHITECTURE, **asdict(self)}
+        if not self.uses_card_features and self.name_dropout == 0.0:
+            base = {k: v for k, v in asdict(self).items() if k in ("d_model", "heads", "layers", "ff", "dropout")}
+            return {"architecture": MODEL_ARCHITECTURE, **base}
+        return {"architecture": MODEL_ARCHITECTURE_V2, **asdict(self)}
 
     @classmethod
     def from_json(cls, payload: dict) -> "P1ModelConfig":
-        if payload.get("architecture") != MODEL_ARCHITECTURE:
-            raise ValueError("unexpected P1 model architecture")
-        return cls(**{k: payload[k] for k in ("d_model", "heads", "layers", "ff", "dropout")})
+        architecture = payload.get("architecture")
+        if architecture == MODEL_ARCHITECTURE:
+            return cls(**{k: payload[k] for k in ("d_model", "heads", "layers", "ff", "dropout")})
+        if architecture == MODEL_ARCHITECTURE_V2:
+            return cls(**{k: payload[k] for k in asdict(cls()) if k in payload})
+        raise ValueError(f"unexpected P1 model architecture {architecture!r}")
 
 
 class P1Model(nn.Module):
-    def __init__(self, vocab: Vocab, config: P1ModelConfig = P1ModelConfig()):
+    def __init__(self, vocab: Vocab, config: P1ModelConfig = P1ModelConfig(), card_features: CardFeatures | None = None):
         super().__init__()
         d = config.d_model
         self.config = config
+        self.card_features = card_features
+        if config.uses_card_features:
+            if card_features is None:
+                raise ValueError("a v2 model with card features needs a CardFeatures table")
+            text, subtypes, cost = card_features.rows(vocab.maps["name"], vocab.size("name"))
+            self.register_buffer("name_text", torch.tensor(text, dtype=torch.long))
+            self.register_buffer("name_subtypes", torch.tensor(subtypes, dtype=torch.long))
+            self.register_buffer("name_cost", torch.tensor(cost, dtype=torch.float32))
+        if config.text:
+            self.text = nn.EmbeddingBag(card_features.text_size(), d, mode="mean", padding_idx=0)
+        if config.subtypes:
+            self.subtype = nn.EmbeddingBag(card_features.subtype_size(), d, mode="sum", padding_idx=0)
+        if config.mana_cost:
+            self.card_cost = nn.Linear(len(cardtext.COST_FEATURES), d)
+            self.candidate_cost = nn.Linear(len(cardtext.COST_FEATURES), d)
         self.name = nn.Embedding(vocab.size("name"), d, padding_idx=0)
         self.zone = nn.Embedding(vocab.size("zone"), d, padding_idx=0)
         self.side = nn.Embedding(3, d)
@@ -68,8 +109,13 @@ class P1Model(nn.Module):
     def forward(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         b, t = batch["token_name"].shape
         bag = lambda module, ids: module(ids.reshape(b * t, -1)).reshape(b, t, -1)  # noqa: E731
+        names = batch["token_name"]
+        shown = names
+        if self.training and self.config.name_dropout > 0:
+            hide = (torch.rand(names.shape, device=names.device) < self.config.name_dropout) & (names > UNK)
+            shown = names.masked_fill(hide, UNK)
         tokens = (
-            self.name(batch["token_name"])
+            self.name(shown)
             + self.zone(batch["token_zone"])
             + self.side(batch["token_side"])
             + bag(self.types, batch["token_types"])
@@ -78,6 +124,12 @@ class P1Model(nn.Module):
             + bag(self.counters, batch["token_counters"])
             + self.token_numeric(batch["token_numeric"])
         )
+        if self.config.text:
+            tokens = tokens + bag(self.text, self.name_text[names])
+        if self.config.subtypes:
+            tokens = tokens + bag(self.subtype, self.name_subtypes[names])
+        if self.config.mana_cost:
+            tokens = tokens + self.card_cost(self.name_cost[names])
         global_token = (
             self.global_numeric(batch["global_numeric"]) + self.phase(batch["phase"]) + self.step(batch["step"])
         ).unsqueeze(1)
@@ -103,6 +155,8 @@ class P1Model(nn.Module):
             self.kind(batch["candidate_kind"]) + source + targets
             + self.candidate_numeric(batch["candidate_numeric"])
         )
+        if self.config.mana_cost:
+            candidate = candidate + self.candidate_cost(batch["candidate_cost"])
         ctx = context.unsqueeze(1).expand_as(candidate)
         scores = self.score(torch.cat([candidate, ctx, candidate * ctx], dim=-1)).squeeze(-1)
         scores = scores.masked_fill(batch["candidate_pad"], float("-inf"))
@@ -112,7 +166,7 @@ class P1Model(nn.Module):
 
 _TOKEN_FIELDS = ("token_name", "token_zone", "token_side", "token_types", "token_colors", "token_keywords",
                  "token_counters", "token_numeric")
-_CANDIDATE_FIELDS = ("candidate_kind", "candidate_source", "candidate_targets", "candidate_numeric")
+_CANDIDATE_FIELDS = ("candidate_kind", "candidate_source", "candidate_targets", "candidate_numeric", "candidate_cost")
 _PAD_VALUES = {"token_side": 2, "candidate_source": -1, "candidate_targets": -1}
 
 
@@ -121,7 +175,9 @@ def pretensorize(sample: EncodedSample) -> dict[str, torch.Tensor]:
     out: dict[str, torch.Tensor] = {}
     for name in _TOKEN_FIELDS + _CANDIDATE_FIELDS:
         values = getattr(sample, name)
-        dtype = torch.float32 if name.endswith("numeric") else torch.long
+        dtype = torch.float32 if name.endswith(("numeric", "cost")) else torch.long
+        if name == "candidate_cost" and not values:
+            values = [[0.0] * len(cardtext.COST_FEATURES) for _ in sample.candidate_kind]
         out[name] = torch.tensor(values, dtype=dtype)
     if out["token_name"].numel() == 0:  # keep at least one attendable token
         for name in _TOKEN_FIELDS:
@@ -181,6 +237,7 @@ def collate(samples: list[EncodedSample], device: torch.device | str = "cpu") ->
         "candidate_source": torch.full((b, c), -1, **long),
         "candidate_targets": torch.full((b, c, MAX_TARGETS), -1, **long),
         "candidate_numeric": torch.zeros(b, c, len(features.CANDIDATE_NUMERIC)),
+        "candidate_cost": torch.zeros(b, c, len(cardtext.COST_FEATURES)),
         "candidate_pad": torch.ones(b, c, dtype=torch.bool),
         "chosen": torch.tensor([s.chosen for s in samples], **long),
         "outcome": torch.tensor([s.outcome for s in samples], dtype=torch.float32),
@@ -204,5 +261,38 @@ def collate(samples: list[EncodedSample], device: torch.device | str = "cpu") ->
         out["candidate_source"][i, :m] = torch.tensor(s.candidate_source)
         out["candidate_targets"][i, :m] = torch.tensor(s.candidate_targets)
         out["candidate_numeric"][i, :m] = torch.tensor(s.candidate_numeric)
+        if s.candidate_cost:
+            out["candidate_cost"][i, :m] = torch.tensor(s.candidate_cost)
         out["candidate_pad"][i, :m] = False
     return {k: v.to(device, non_blocking=True) for k, v in out.items()}
+
+
+def load_checkpoint(directory: Path, device="cpu", dropout: float | None = None) -> tuple[P1Model, Vocab]:
+    """Load a v1 or v2 checkpoint directory (v2 carries its card table in card_features.json).
+    `dropout` overrides the stored training dropout (PPO uses 0); name dropout only acts in train()."""
+    directory = Path(directory)
+    vocab = Vocab.from_json(json.loads((directory / "vocab.json").read_text(encoding="utf-8")))
+    config = P1ModelConfig.from_json(json.loads((directory / "config.json").read_text(encoding="utf-8")))
+    if dropout is not None:
+        config = replace(config, dropout=dropout)
+    card_file = directory / CARD_FEATURES_FILE
+    card_features = (CardFeatures.from_json(json.loads(card_file.read_text(encoding="utf-8")))
+                     if card_file.exists() else None)
+    from safetensors.torch import load_file
+
+    model = P1Model(vocab, config, card_features)
+    model.load_state_dict(load_file(str(directory / "model.safetensors")))
+    return model.to(device), vocab
+
+
+def save_checkpoint(model: P1Model, vocab: Vocab, directory: Path) -> None:
+    """Write model.safetensors, vocab.json, config.json and (v2) card_features.json."""
+    from safetensors.torch import save_file
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    save_file({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()}, str(directory / "model.safetensors"))
+    (directory / "vocab.json").write_text(json.dumps(vocab.to_json(), sort_keys=True), encoding="utf-8")
+    (directory / "config.json").write_text(json.dumps(model.config.to_json(), sort_keys=True, indent=2), encoding="utf-8")
+    if model.card_features is not None:
+        (directory / CARD_FEATURES_FILE).write_text(json.dumps(model.card_features.to_json(), sort_keys=True), encoding="utf-8")
