@@ -39,9 +39,10 @@ class AttachTargetEquipmentToCreatureExecutor : EffectExecutor<AttachTargetEquip
 
         var newState = state
 
-        // Detach from current creature if already attached
+        // Detach from current creature if attached to a different one. Onto its current host the
+        // attach does nothing (CR 701.3b), so that host's attachment list is left as it is.
         val currentAttachment = newState.getEntity(equipmentId)?.get<AttachedToComponent>()
-        if (currentAttachment != null) {
+        if (currentAttachment != null && currentAttachment.targetId != creatureId) {
             val oldTargetId = currentAttachment.targetId
             newState = newState.updateEntity(oldTargetId) { container ->
                 val attachments = container.get<AttachmentsComponent>()
@@ -64,9 +65,8 @@ class AttachTargetEquipmentToCreatureExecutor : EffectExecutor<AttachTargetEquip
         }
 
         newState = newState.updateEntity(creatureId) { container ->
-            val existing = container.get<AttachmentsComponent>()
-            val updatedIds = (existing?.attachedIds ?: emptyList()) + equipmentId
-            container.with(AttachmentsComponent(updatedIds))
+            val existing = container.get<AttachmentsComponent>()?.attachedIds.orEmpty()
+            if (equipmentId in existing) container else container.with(AttachmentsComponent(existing + equipmentId))
         }
 
         return EffectResult.success(newState)

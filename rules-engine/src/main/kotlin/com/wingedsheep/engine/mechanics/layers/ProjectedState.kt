@@ -217,10 +217,22 @@ class ProjectedState(
 
     fun getAllProjectedValues(): Map<EntityId, ProjectedValues> = projectedValues
 
-    fun getBattlefieldControlledBy(playerId: EntityId): List<EntityId> {
-        return baseState.getBattlefield().filter { entityId ->
-            getController(entityId) == playerId
+    fun getBattlefieldControlledBy(playerId: EntityId): List<EntityId> =
+        battlefieldByController[playerId] ?: emptyList()
+
+    /**
+     * The battlefield split by projected controller, in battlefield order — built once per
+     * projection instead of filtering the whole battlefield on every call (legal-action
+     * enumeration and the mana solver ask this per candidate). Safe to memoize: both
+     * [baseState] and [projectedValues] are fixed for the lifetime of this instance.
+     */
+    private val battlefieldByController: Map<EntityId, List<EntityId>> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        val result = HashMap<EntityId, MutableList<EntityId>>()
+        for (entityId in baseState.getBattlefield()) {
+            val controller = getController(entityId) ?: continue
+            result.getOrPut(controller) { ArrayList() }.add(entityId)
         }
+        result
     }
 }
 

@@ -56,6 +56,21 @@ class BattlefieldStaticsIndex private constructor(
      * did while scanning the battlefield themselves.
      */
     val attachmentsByTarget: Map<EntityId, List<EntityId>>,
+    /**
+     * Battlefield-scope [GrantTriggeredAbility] statics read from each permanent's *printed*
+     * `staticAbilities` (no class-level unlocks), in battlefield order — exactly the grants
+     * `TriggerAbilityResolver.getTriggeredAbilities` used to rediscover by walking the whole
+     * battlefield once per entity it resolved. Kept apart from [triggerGrantProviders] because the
+     * two paths differ (printed vs. class-level-effective statics, `excludeSelf`), and this index
+     * only collapses the walk; it must not change which grants either path sees.
+     */
+    val printedTriggerGrants: List<TriggerIndex.GrantProviderEntry>,
+    /**
+     * The state this index was built from. Consumers that swap a per-entity battlefield walk for
+     * one of these lists check it by identity, so an index handed over from another state can
+     * never stand in for that walk.
+     */
+    val sourceState: GameState?,
 ) {
     data class WardGrantProvider(
         val sourceId: EntityId,
@@ -73,7 +88,7 @@ class BattlefieldStaticsIndex private constructor(
         attachmentsByTarget[entityId] ?: emptyList()
 
     companion object {
-        val EMPTY = BattlefieldStaticsIndex(emptyList(), emptyList(), emptyList(), emptyMap())
+        val EMPTY = BattlefieldStaticsIndex(emptyList(), emptyList(), emptyList(), emptyMap(), emptyList(), null)
 
         fun build(state: GameState, cardRegistry: CardRegistry): BattlefieldStaticsIndex {
             // Reused across the whole walk; ConditionEvaluator is stateless.
@@ -82,6 +97,7 @@ class BattlefieldStaticsIndex private constructor(
             var wardGrants: MutableList<WardGrantProvider>? = null
             var suppressors: MutableList<WardSuppressor>? = null
             var attachments: MutableMap<EntityId, MutableList<EntityId>>? = null
+            var printedTriggerGrants: MutableList<TriggerIndex.GrantProviderEntry>? = null
 
             val projected = state.projectedState
 
@@ -109,6 +125,13 @@ class BattlefieldStaticsIndex private constructor(
                 val card = container.get<CardComponent>() ?: continue
                 val sourceControllerId = projected.getController(permanentId) ?: continue
                 val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: continue
+                for (ability in cardDef.staticAbilities) {
+                    if (ability is GrantTriggeredAbility && ability.filter.scope is Scope.Battlefield) {
+                        (printedTriggerGrants
+                            ?: mutableListOf<TriggerIndex.GrantProviderEntry>().also { printedTriggerGrants = it })
+                            .add(TriggerIndex.GrantProviderEntry(ability, sourceControllerId, permanentId))
+                    }
+                }
                 val classLevel = container.get<ClassLevelComponent>()?.currentLevel
                 for (ability in cardDef.script.effectiveStaticAbilities(classLevel)) {
                     when {
@@ -146,15 +169,13 @@ class BattlefieldStaticsIndex private constructor(
                 }
             }
 
-            if (triggerGrants == null && wardGrants == null && suppressors == null && attachments == null) {
-                return EMPTY
-            }
-
             return BattlefieldStaticsIndex(
                 triggerGrantProviders = triggerGrants ?: emptyList(),
                 wardGrantProviders = wardGrants ?: emptyList(),
                 wardSuppressors = suppressors ?: emptyList(),
                 attachmentsByTarget = attachments ?: emptyMap(),
+                printedTriggerGrants = printedTriggerGrants ?: emptyList(),
+                sourceState = state,
             )
         }
     }
