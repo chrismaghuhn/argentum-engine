@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.support.GameTestDriver
@@ -110,6 +111,18 @@ class BushidoKeywordScenarioTest : FunSpec({
         bothPass()
     }
 
+    /**
+     * The engine lets a controller order every group of its simultaneous triggers (CR 603.3b), so
+     * two bushido triggers on one creature wait on an [OrderObjectsDecision] before they reach the
+     * stack. Keep the offered order; nothing here depends on it.
+     */
+    fun GameTestDriver.answerTriggerOrdering() {
+        while (true) {
+            val order = state.pendingDecision as? OrderObjectsDecision ?: return
+            submitObjectOrdering(order.playerId, order.objects).error shouldBe null
+        }
+    }
+
     /** The active player attacks with [attacker]; the opponent blocks with [blockers]. */
     fun GameTestDriver.attackInto(attacker: EntityId, blockers: List<EntityId>): Int {
         val me = activePlayer!!
@@ -118,6 +131,7 @@ class BushidoKeywordScenarioTest : FunSpec({
         declareAttackers(me, listOf(attacker), opponent).error shouldBe null
         bothPass()
         declareBlockers(opponent, blockers.associateWith { listOf(attacker) }).error shouldBe null
+        answerTriggerOrdering()
         return state.stack.size
     }
 

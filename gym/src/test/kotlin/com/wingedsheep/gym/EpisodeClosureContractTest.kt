@@ -174,8 +174,10 @@ class EpisodeClosureContractTest : FunSpec({
             playerIds = environment.playerIds,
             stepCount = environment.stepCount,
         )
-        val pass = environment.legalActions().first { it.action is PassPriority }.action
-        environment.step(pass)
+        // The loser is out of the game, so the winner's pass is a pass by every remaining player:
+        // the step advances and the Settler performs state-based actions before anyone receives
+        // priority again (CR 704.3), which ends the game on this first pass. (Fork main needed a
+        // second pass here because it checked them later.)
         val result = environment.step(
             environment.legalActions().first { it.action is PassPriority }.action,
         )
@@ -200,8 +202,8 @@ class EpisodeClosureContractTest : FunSpec({
             playerIds = environment.playerIds,
             stepCount = environment.stepCount,
         )
-        val pass = environment.legalActions().first { it.action is PassPriority }.action
-        environment.step(pass)
+        // No player remains in the game, so the first pass advances the step and the state-based
+        // actions performed before priority (CR 704.3) end the game as a draw.
         val result = environment.step(
             environment.legalActions().first { it.action is PassPriority }.action,
         )

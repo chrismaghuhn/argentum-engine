@@ -1,14 +1,17 @@
 package com.wingedsheep.engine.triggers
 
 import com.wingedsheep.engine.core.DamageDealtEvent
+import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.event.TriggerDetector
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.effects.DamageUtils
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.events.Recipient
 import io.kotest.core.spec.style.FunSpec
@@ -54,6 +57,29 @@ class DamageObserverBucketRoutingTest : FunSpec({
     fun TriggerDetector.observerTriggers(driver: GameTestDriver, events: List<DamageDealtEvent>) =
         detectTriggers(driver.state, events).filter { it.ability.trigger is com.wingedsheep.sdk.scripting.EventPattern.DealsDamageEvent }
 
+    /**
+     * [source] deals 2 noncombat damage to [target], as an event built the way [DamageUtils] emits
+     * real damage: with the recipient's damage-time role(s) and the stamped damage-time snapshots of
+     * both ends. Damage triggers fail closed without that identity — the "a source an opponent
+     * controls" filter reads the source's snapshot, a permanent recipient needs its own — so a bare
+     * hand-built event would match nothing.
+     */
+    fun damageEvent(driver: GameTestDriver, source: EntityId, target: EntityId, targetIsPlayer: Boolean): DamageDealtEvent {
+        val state = driver.state
+        val recipientKinds = DamageUtils.damageRecipientKinds(state, target, targetIsPlayer)
+        return DamageDealtEvent(
+            sourceId = source,
+            targetId = target,
+            amount = 2,
+            isCombatDamage = false,
+            targetIsPlayer = targetIsPlayer,
+            recipientKind = recipientKinds.asList().singleOrNull() ?: DamageRecipientKind.UNKNOWN,
+            recipientKinds = recipientKinds,
+            damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, source),
+            damageRecipientLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, target),
+        )
+    }
+
     test("damage to you fires the You observer exactly once and not the general one") {
         val driver = setup()
         driver.putCreatureOnBattlefield(driver.player1, "Bucket Routing Observer")
@@ -61,7 +87,7 @@ class DamageObserverBucketRoutingTest : FunSpec({
 
         val triggers = detectorFor(driver).observerTriggers(
             driver,
-            listOf(DamageDealtEvent(sourceId = source, targetId = driver.player1, amount = 2, isCombatDamage = false, targetIsPlayer = true))
+            listOf(damageEvent(driver, source = source, target = driver.player1, targetIsPlayer = true))
         )
 
         triggers shouldHaveSize 1
@@ -76,7 +102,7 @@ class DamageObserverBucketRoutingTest : FunSpec({
 
         val triggers = detectorFor(driver).observerTriggers(
             driver,
-            listOf(DamageDealtEvent(sourceId = source, targetId = mine, amount = 2, isCombatDamage = false, targetIsPlayer = false))
+            listOf(damageEvent(driver, source = source, target = mine, targetIsPlayer = false))
         )
 
         triggers shouldHaveSize 1
@@ -92,8 +118,8 @@ class DamageObserverBucketRoutingTest : FunSpec({
         val triggers = detectorFor(driver).observerTriggers(
             driver,
             listOf(
-                DamageDealtEvent(sourceId = source, targetId = driver.player1, amount = 2, isCombatDamage = false, targetIsPlayer = true),
-                DamageDealtEvent(sourceId = source, targetId = mine, amount = 2, isCombatDamage = false, targetIsPlayer = false),
+                damageEvent(driver, source = source, target = driver.player1, targetIsPlayer = true),
+                damageEvent(driver, source = source, target = mine, targetIsPlayer = false),
             )
         )
 

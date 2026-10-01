@@ -119,8 +119,10 @@ class HeadOfTheHuntScenarioTest : ScenarioTestBase() {
                 bears.size shouldBe 2
                 val opponentId = game.player2Id
 
-                // 4 power split as lethal-in-order kills both 2/2s; 4 damage back kills the 4/3.
-                // All three die to the same state-based-action check.
+                // 4 power split 2/2 kills both 2/2s; 4 damage back kills the 4/3. All three die to
+                // the same state-based-action check. How a creature's damage is divided among its
+                // blockers is its controller's choice (CR 510.1c) and the engine seeds no
+                // lethal-in-order split, so the attacking player makes the 2/2 split explicitly.
                 game.declareAttackers(mapOf("Head of the Hunt" to 2)).error shouldBe null
                 game.advanceToPhase(Phase.COMBAT, Step.DECLARE_BLOCKERS)
                 game.execute(
@@ -128,10 +130,9 @@ class HeadOfTheHuntScenarioTest : ScenarioTestBase() {
                 ).error shouldBe null
                 game.passUntilPhase(Phase.COMBAT, Step.COMBAT_DAMAGE)
                 game.resolveStack()
-                if (game.state.pendingDecision != null) {
-                    game.submitDefaultCombatDamage()
-                    game.resolveStack()
-                }
+                game.submitCombatDamage(mapOf((hunt to bears[0]) to 2, (hunt to bears[1]) to 2))
+                    .error shouldBe null
+                game.resolveStack()
 
                 withClue("Head of the Hunt traded with both blockers") {
                     game.state.getGraveyard(game.player1Id) shouldContain hunt

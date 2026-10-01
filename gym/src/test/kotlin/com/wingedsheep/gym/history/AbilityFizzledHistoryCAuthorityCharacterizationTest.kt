@@ -92,6 +92,8 @@ class AbilityFizzledHistoryCAuthorityCharacterizationTest : FunSpec({
             startingPlayerIndex = 0,
             format = Format.Commander(),
             seed = 0L,
+            // The pinned trajectory predates upstream-sync-05's shuffled deck ids.
+            shuffledDeckIds = false,
         )
         val environment = GameEnvironment.create(
             cardRegistry = registry,
@@ -150,9 +152,11 @@ class AbilityFizzledHistoryCAuthorityCharacterizationTest : FunSpec({
         val transition = checkNotNull(capturedTransition)
         successfulChoices shouldBe 2_767
         transition.sourceStepCount shouldBe 2_767
+        // Since upstream-sync-05 a resolving spell is finalized — moved off the stack — before its
+        // ResolvedEvent is reported.
         transition.events.map { it::class.simpleName ?: "UnknownGameEvent" } shouldBe listOf(
-            "ResolvedEvent",
             "ZoneChangeEvent",
+            "ResolvedEvent",
             "AbilityFizzledEvent",
         )
 
@@ -177,7 +181,8 @@ class AbilityFizzledHistoryCAuthorityCharacterizationTest : FunSpec({
         witnessMatrix.afterStampPresent shouldBe true
         witnessMatrix.sameIncarnation shouldBe false
         (zoneChange.entityId == fizzled.sourceId) shouldBe true
-        zoneChange.fromZone shouldBe null
+        // The finalized spell now names its origin instead of the former unknown (null) zone.
+        zoneChange.fromZone shouldBe Zone.STACK
         zoneChange.toZone shouldBe Zone.BATTLEFIELD
         fizzled.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.AFTER_OBJECT
         fizzled.sourceObjectIncarnationStamp shouldBe afterStamp

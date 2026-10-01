@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.ProliferatedEvent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.core.CastSpell
@@ -95,12 +96,20 @@ class ProliferateTriggerTest : ScenarioTestBase() {
     private fun counters(game: TestGame, id: EntityId, type: CounterType): Int =
         game.state.getEntity(id)?.get<CountersComponent>()?.getCount(type) ?: 0
 
-    /** Resolve the stack, answering each proliferate prompt with [pick] (empty = choose nothing). */
+    /**
+     * Resolve the stack, answering each proliferate prompt with [pick] (empty = choose nothing).
+     *
+     * The engine also asks a controller to order its simultaneous triggers (CR 603.3b) — the two
+     * "whenever you proliferate" triggers of "proliferate twice" — through an
+     * [OrderObjectsDecision]; that is not a proliferate prompt, so keep the offered order.
+     */
     private fun resolveAll(game: TestGame, pick: List<EntityId>): List<ExecutionResult> {
         val results = mutableListOf<ExecutionResult>()
         var guard = 0
         while ((game.state.stack.isNotEmpty() || game.hasPendingDecision()) && guard++ < 20) {
-            if (game.hasPendingDecision()) results += game.selectCards(pick)
+            val order = game.getPendingDecision() as? OrderObjectsDecision
+            if (order != null) results += game.submitObjectOrdering(order.objects)
+            else if (game.hasPendingDecision()) results += game.selectCards(pick)
             else results += game.resolveStack()
         }
         return results

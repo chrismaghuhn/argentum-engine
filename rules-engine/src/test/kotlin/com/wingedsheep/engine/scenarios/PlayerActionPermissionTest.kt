@@ -151,7 +151,11 @@ class PlayerActionPermissionTest : ScenarioTestBase() {
             val window = game.state.pendingDecision as com.wingedsheep.engine.core.SelectManaSourcesDecision
             window.availableSources.none { it.entityId == source } shouldBe true
             game.execute(TakePlayerAction(game.player1Id, id)).error shouldBe null
-            game.submitDecision(com.wingedsheep.engine.core.ManaSourcesSelectedResponse(window.id, listOf(source), autoPay = false)).error!! shouldContain "Selected sources"
+            // The reserved source is not in the window's published domain, so the merged decision
+            // validator rejects the selection up front instead of the payment resumer.
+            val reservedSourceError = game.submitDecision(com.wingedsheep.engine.core.ManaSourcesSelectedResponse(window.id, listOf(source), autoPay = false)).error!!
+            reservedSourceError shouldContain "Invalid mana source(s)"
+            reservedSourceError shouldContain source.value
             game.execute(TakePlayerAction(game.player1Id, id)).error shouldBe null
             game.submitDecision(com.wingedsheep.engine.core.ManaSourcesSelectedResponse(window.id, autoPay = true)).error shouldBe null
             game.resolveStack()

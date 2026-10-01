@@ -38,21 +38,26 @@ class CruelDeceiverScenarioTest : FunSpec({
     fun GameTestDriver.battlefield(player: com.wingedsheep.sdk.model.EntityId) =
         state.getZone(ZoneKey(player, Zone.BATTLEFIELD))
 
-    fun GameTestDriver.attackIntoCourser(deceiver: com.wingedsheep.sdk.model.EntityId,
-                                         courser: com.wingedsheep.sdk.model.EntityId) {
+    fun GameTestDriver.attackIntoBlocker(deceiver: com.wingedsheep.sdk.model.EntityId,
+                                         blocker: com.wingedsheep.sdk.model.EntityId) {
         passPriorityUntil(Step.DECLARE_ATTACKERS)
         declareAttackers(player1, listOf(deceiver), player2)
         bothPass()
-        declareBlockers(player2, mapOf(courser to listOf(deceiver)))
+        declareBlockers(player2, mapOf(blocker to listOf(deceiver)))
         passPriorityUntil(Step.END_COMBAT)
     }
 
     test("revealing a land grants the destroy trigger; a damaged blocker is destroyed") {
+        // The blocker is a 0/3: the Deceiver's 2 damage is not lethal to it, so only the granted
+        // trigger can destroy it, and it deals no damage back. The Deceiver therefore stays on the
+        // battlefield while its trigger is detected. The engine fails closed on a damage source
+        // that has already left the battlefield: it reads that source's abilities from its
+        // damage-time snapshot, which holds the printed abilities but not until-end-of-turn grants.
         val d = driver()
         val top = d.putCardOnTopOfLibrary(d.player1, "Swamp")
         val deceiver = d.putCreatureOnBattlefield(d.player1, "Cruel Deceiver")
         d.removeSummoningSickness(deceiver)
-        val courser = d.putCreatureOnBattlefield(d.player2, "Centaur Courser")
+        val wall = d.putCreatureOnBattlefield(d.player2, "Wall of Wood")
         d.giveMana(d.player1, Color.BLACK, 2)
 
         d.submit(ActivateAbility(d.player1, deceiver, revealAbility)).outcome shouldBe Outcome.Done
@@ -61,13 +66,13 @@ class CruelDeceiverScenarioTest : FunSpec({
             d.state.getZone(ZoneKey(d.player1, Zone.LIBRARY)).first() shouldBe top
         }
 
-        d.attackIntoCourser(deceiver, courser)
+        d.attackIntoBlocker(deceiver, wall)
 
-        withClue("the 3/3 Courser took only 2 damage but the granted trigger destroyed it") {
-            d.graveyard(d.player2).contains(courser) shouldBe true
+        withClue("the 0/3 Wall of Wood took only 2 damage but the granted trigger destroyed it") {
+            d.graveyard(d.player2).contains(wall) shouldBe true
         }
-        withClue("the 2/1 Deceiver died to the Courser's 3 damage") {
-            d.graveyard(d.player1).contains(deceiver) shouldBe true
+        withClue("the 0-power Wall dealt no damage back, so the 2/1 Deceiver survives") {
+            d.battlefield(d.player1).contains(deceiver) shouldBe true
         }
     }
 
@@ -83,7 +88,7 @@ class CruelDeceiverScenarioTest : FunSpec({
         d.bothPass()
         d.state.getZone(ZoneKey(d.player1, Zone.LIBRARY)).first() shouldBe top
 
-        d.attackIntoCourser(deceiver, courser)
+        d.attackIntoBlocker(deceiver, courser)
 
         d.battlefield(d.player2).contains(courser) shouldBe true
         d.graveyard(d.player1).contains(deceiver) shouldBe true

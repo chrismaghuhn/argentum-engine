@@ -12,7 +12,6 @@ import com.wingedsheep.sdk.dsl.times
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.GameObjectFilter
-import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -111,10 +110,16 @@ class SacrificePermanentsSpellCostScenarioTest : ScenarioTestBase() {
             game.cast("Test Snack", listOf(theirs)).error shouldNotBe null
         }
 
-        test("a zero-floor cost with no candidates offers no picker") {
+        test("a zero-floor cost with no candidates offers an empty picker") {
             val game = board("Test Snack", 0)
-            game.getLegalActions(1).single { it.description == "Cast Test Snack" }
-                .additionalCostInfo.shouldBeNull()
+            // The fork publishes a spell's variable sacrifice cost even with no candidates, so the
+            // empty domain and its 0..0 bounds are explicit rather than an absent picker.
+            val info = game.getLegalActions(1).single { it.description == "Cast Test Snack" }
+                .additionalCostInfo.shouldNotBeNull()
+            info.costType shouldBe "SacrificeVariable"
+            info.validSacrificeTargets shouldBe emptyList()
+            info.sacrificeMinCount shouldBe 0
+            info.sacrificeMaxCount shouldBe 0
             game.cast("Test Snack", null).error shouldBe null
             game.resolveStack()
             game.getLifeTotal(1) shouldBe 20

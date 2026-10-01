@@ -2,6 +2,7 @@ package com.wingedsheep.engine.triggers
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -156,8 +157,13 @@ class LandTappedForManaTriggerTest : FunSpec({
         d.submit(ActivateAbility(you, artifact, rock.activatedAbilities.single().id)).error shouldBe null
         d.stackSize shouldBe 0
 
-        // Your land: the watcher and the Grove's own rider both trigger.
+        // Your land: the watcher and the Grove's own rider both trigger. Both are yours, so the
+        // engine first asks you to order them (CR 603.3b); keep the offered order.
         d.submit(ActivateAbility(you, yourLand, grove.activatedAbilities.single().id)).error shouldBe null
+        while (true) {
+            val order = d.state.pendingDecision as? OrderObjectsDecision ?: break
+            d.submitObjectOrdering(order.playerId, order.objects).error shouldBe null
+        }
         d.stackSize shouldBe 2
         d.bothPass()
         d.bothPass()

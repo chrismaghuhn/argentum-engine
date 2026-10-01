@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.state.GameState
@@ -59,6 +60,13 @@ class PausedSpellTriggerFinalizationTest : FunSpec({
                     d.replaceState(json.decodeFromString(GameState.serializer(),
                         json.encodeToString(GameState.serializer(), d.state)))
                     d.submitYesNo(d.player1, true).error shouldBe null
+                }
+                // With two draws each witness controller has two simultaneous triggers, and the
+                // engine asks that controller to order them (CR 603.3b) once the spell has
+                // finished; keep the offered order.
+                while (true) {
+                    val order = d.pendingDecision as? OrderObjectsDecision ?: break
+                    d.submitObjectOrdering(order.playerId, order.objects).error shouldBe null
                 }
                 d.pendingDecision shouldBe null
                 d.state.continuationStack shouldBe emptyList()

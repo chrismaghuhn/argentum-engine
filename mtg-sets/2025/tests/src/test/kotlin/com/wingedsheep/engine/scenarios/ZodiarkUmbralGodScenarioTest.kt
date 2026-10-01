@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.support.ScenarioTestBase
@@ -49,11 +50,14 @@ class ZodiarkUmbralGodScenarioTest : ScenarioTestBase() {
         state.getEntity(id)?.get<CountersComponent>()?.getCount(CounterType.PLUS_ONE_PLUS_ONE) ?: 0
 
     // Resolve the stack while auto-answering the decisions these scenarios raise: sacrifice-choice
-    // (SelectCardsDecision → take the minimum required) and any mana-sources auto-pay.
+    // (SelectCardsDecision → take the minimum required) and any mana-sources auto-pay. Several
+    // sacrifices in one resolution fire Zodiark's counter trigger several times at once, and you
+    // order your simultaneous triggers (CR 603.3b, an OrderObjectsDecision) — keep the offered order.
     private fun TestGame.resolveAll() {
         var guard = 0
         while ((state.stack.isNotEmpty() || hasPendingDecision()) && guard++ < 60) {
             when (val d = getPendingDecision()) {
+                is OrderObjectsDecision -> submitObjectOrdering(d.objects)
                 is SelectCardsDecision -> selectCards(d.options.take(d.minSelections))
                 null -> resolveStack()
                 else ->

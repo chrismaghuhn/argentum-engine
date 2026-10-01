@@ -2,6 +2,7 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.ProliferatedEvent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -88,13 +89,21 @@ class RepeatKeywordActionTest : ScenarioTestBase() {
     /**
      * Resolve the stack, answering the n-th proliferate prompt with `picks[n]` (the last entry
      * repeats). Returns every result and the number of proliferate prompts answered.
+     *
+     * The engine also asks a controller to order its simultaneous triggers (CR 603.3b) — the two
+     * "whenever you proliferate" triggers once the spell has finished — through an
+     * [OrderObjectsDecision]. That is not a proliferate prompt: keep the offered order and don't
+     * count it.
      */
     private fun resolveAll(game: TestGame, vararg picks: List<EntityId>): Pair<List<ExecutionResult>, Int> {
         val results = mutableListOf<ExecutionResult>()
         var prompts = 0
         var guard = 0
         while ((game.state.stack.isNotEmpty() || game.hasPendingDecision()) && guard++ < 30) {
-            if (game.hasPendingDecision()) {
+            val order = game.getPendingDecision() as? OrderObjectsDecision
+            if (order != null) {
+                results += game.submitObjectOrdering(order.objects)
+            } else if (game.hasPendingDecision()) {
                 results += game.selectCards(picks.getOrElse(prompts) { picks.lastOrNull() ?: emptyList() })
                 prompts++
             } else {

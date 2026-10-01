@@ -96,9 +96,15 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
         evidence.successfulChoices shouldBe 3_522
         evidence.committedStep shouldBe 3_522
         evidence.failure shouldBe null
+        // Since upstream-sync-05 every tap for mana goes through one seam that also reports the land
+        // tap and the mana ability's activation, so each land paid with adds two events.
         eventNames shouldBe listOf(
             "TappedEvent",
+            "LandTappedForManaEvent",
+            "AbilityActivatedEvent",
             "TappedEvent",
+            "LandTappedForManaEvent",
+            "AbilityActivatedEvent",
             "ManaSpentEvent",
             "TappedEvent",
             "PermanentsSacrificedEvent",
@@ -107,7 +113,7 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
         )
 
         val sacrificeOrdinal = eventNames.indexOf("PermanentsSacrificedEvent")
-        sacrificeOrdinal shouldBe 4
+        sacrificeOrdinal shouldBe 8
         evidence.sacrifice.playerId.value.isNotBlank() shouldBe true
         evidence.beforeState.turnOrder.contains(evidence.sacrifice.playerId) shouldBe true
         evidence.sacrifice.permanentIds.isNotEmpty() shouldBe true
@@ -171,8 +177,32 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
                 reason = null,
             ),
             SacrificeProjectionFact(
+                rawEventType = "LandTappedForManaEvent",
+                family = PerspectiveEventFamily.LAND_TAPPED_FOR_MANA,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            SacrificeProjectionFact(
+                rawEventType = "AbilityActivatedEvent",
+                family = PerspectiveEventFamily.ABILITY_ACTIVATED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            SacrificeProjectionFact(
                 rawEventType = "TappedEvent",
                 family = PerspectiveEventFamily.TAPPED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            SacrificeProjectionFact(
+                rawEventType = "LandTappedForManaEvent",
+                family = PerspectiveEventFamily.LAND_TAPPED_FOR_MANA,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            SacrificeProjectionFact(
+                rawEventType = "AbilityActivatedEvent",
+                family = PerspectiveEventFamily.ABILITY_ACTIVATED,
                 disposition = PerspectiveEventDisposition.EMITTED,
                 reason = null,
             ),
@@ -583,6 +613,8 @@ private fun runLockedStep3522(): Step3522SacrificeEvidence {
         startingPlayerIndex = 0,
         format = Format.Commander(),
         seed = 0L,
+        // The pinned trajectory predates upstream-sync-05's shuffled deck ids.
+        shuffledDeckIds = false,
     )
     val environment = GameEnvironment.create(
         cardRegistry = registry,

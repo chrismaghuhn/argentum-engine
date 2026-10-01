@@ -80,6 +80,13 @@ class RuntimeGrantedManaAbilityAutoTapTest : FunSpec({
         return ManaSolver(registry, PredicateEvaluator(registry))
     }
 
+    /**
+     * The kind and amount one tap yields. The merged solver also records each production's
+     * provenance — the producing source's subtypes and the exact mana ability used (the fork's
+     * mana-provenance seam); the tests below assert that provenance only where it is the point.
+     */
+    fun ManaProduction?.kindAndAmount(): ManaProduction? = this?.copy(sourceSubtypes = null, manaAbility = null)
+
     test("the granted ability joins the land's mana source with its own per-kind amount") {
         val (driver, playerId, granted) = board(withPlainForest = false)
 
@@ -99,7 +106,9 @@ class RuntimeGrantedManaAbilityAutoTapTest : FunSpec({
 
         solution.shouldNotBeNull()
         solution.sources.map { it.entityId } shouldBe listOf(granted)
-        solution.manaProduced[granted] shouldBe ManaProduction(colorless = 2)
+        solution.manaProduced[granted].kindAndAmount() shouldBe ManaProduction(colorless = 2)
+        // The {C}{C} is the granted ability's: one tap activates exactly that ability.
+        solution.manaProduced[granted]?.manaAbility shouldBe twoColorless
     }
 
     test("one tap never makes {G}{G}") {
@@ -116,8 +125,9 @@ class RuntimeGrantedManaAbilityAutoTapTest : FunSpec({
         val solution = solver().solve(driver.state, playerId, ManaCost.parse("{2}{G}"))
         solution.shouldNotBeNull()
         solution.sources.map { it.entityId } shouldContainExactlyInAnyOrder listOf(granted, plain!!)
-        solution.manaProduced[plain] shouldBe ManaProduction(color = Color.GREEN, amount = 1)
-        solution.manaProduced[granted] shouldBe ManaProduction(colorless = 2)
+        solution.manaProduced[plain].kindAndAmount() shouldBe ManaProduction(color = Color.GREEN, amount = 1)
+        solution.manaProduced[granted].kindAndAmount() shouldBe ManaProduction(colorless = 2)
+        solution.manaProduced[granted]?.manaAbility shouldBe twoColorless
 
         solver().solve(driver.state, playerId, ManaCost.parse("{1}{G}{G}")).shouldBeNull()
     }

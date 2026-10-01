@@ -15,8 +15,10 @@ import io.kotest.matchers.shouldBe
  * A damage recipient that the damage removed from the battlefield is matched against its frozen
  * last-known information ([PredicateEvaluator.matchesRecipient] → `matchesSnapshot`). The combat
  * status the snapshot freezes — attacking, blocking — answers state predicates, so a blocker the
- * damage killed is still "a blocking creature" (CR 603.10, Kusari-Gama). Every other state
- * predicate stays *unknown*: it never matches, and negating it doesn't make it match either.
+ * damage killed is still "a blocking creature" (CR 603.10, Kusari-Gama). (This engine's snapshot
+ * also freezes tapped / face-down status, counters and attachments, so those are answered too.)
+ * Every other state predicate — e.g. transformed — stays *unknown*: it never matches, and
+ * negating it doesn't make it match either.
  */
 class SnapshotCombatStatusMatchTest : FunSpec({
 
@@ -77,21 +79,26 @@ class SnapshotCombatStatusMatchTest : FunSpec({
 
     test("a state predicate the snapshot doesn't freeze stays unknown, negated or not") {
         val (driver, dead) = setup()
-        driver.recipientMatches(dead, GameObjectFilter.Creature.tapped(), snapshotOf(dead, wasBlocking = true)) shouldBe false
-        val untappedByNegation = GameObjectFilter.Creature.withStatePredicate(StatePredicate.Not(StatePredicate.IsTapped))
-        driver.recipientMatches(dead, untappedByNegation, snapshotOf(dead, wasBlocking = true)) shouldBe false
+        // Transformed status is not frozen. (Tapped status is — EntitySnapshot.wasTapped — so it
+        // can't serve as the unknown example here.)
+        val transformed = GameObjectFilter.Creature.withStatePredicate(StatePredicate.IsTransformed)
+        driver.recipientMatches(dead, transformed, snapshotOf(dead, wasBlocking = true)) shouldBe false
+        val notTransformedByNegation = GameObjectFilter.Creature.withStatePredicate(StatePredicate.Not(StatePredicate.IsTransformed))
+        driver.recipientMatches(dead, notTransformedByNegation, snapshotOf(dead, wasBlocking = true)) shouldBe false
     }
 
     test("an unknown operand keeps an And unknown, while an Or with a known true matches") {
         val (driver, dead) = setup()
         val snapshot = snapshotOf(dead, wasBlocking = true)
-        val blockingAndTapped = GameObjectFilter.Creature.withStatePredicate(
-            StatePredicate.And(listOf(StatePredicate.IsBlocking, StatePredicate.IsTapped))
+        // The unknown operand is transformed status (tapped status is frozen in this engine, so an
+        // IsTapped operand would be a known false rather than an unknown).
+        val blockingAndTransformed = GameObjectFilter.Creature.withStatePredicate(
+            StatePredicate.And(listOf(StatePredicate.IsBlocking, StatePredicate.IsTransformed))
         )
-        val blockingOrTapped = GameObjectFilter.Creature.withStatePredicate(
-            StatePredicate.Or(listOf(StatePredicate.IsBlocking, StatePredicate.IsTapped))
+        val blockingOrTransformed = GameObjectFilter.Creature.withStatePredicate(
+            StatePredicate.Or(listOf(StatePredicate.IsBlocking, StatePredicate.IsTransformed))
         )
-        driver.recipientMatches(dead, blockingAndTapped, snapshot) shouldBe false
-        driver.recipientMatches(dead, blockingOrTapped, snapshot) shouldBe true
+        driver.recipientMatches(dead, blockingAndTransformed, snapshot) shouldBe false
+        driver.recipientMatches(dead, blockingOrTransformed, snapshot) shouldBe true
     }
 })

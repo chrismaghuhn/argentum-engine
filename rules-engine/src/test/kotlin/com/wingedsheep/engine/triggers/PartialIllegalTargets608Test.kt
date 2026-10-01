@@ -1327,6 +1327,7 @@ class PartialIllegalTargets608Test : FunSpec({
 
     test("referenced triggering-player targets do not accept an entity-only fallback") {
         val driver = driver()
+        val triggeringPermanent = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
         val requirement = TargetObject(
             filter = TargetFilter(
                 baseFilter = GameObjectFilter(
@@ -1337,19 +1338,36 @@ class PartialIllegalTargets608Test : FunSpec({
             ),
         )
 
+        // A triggering object that is not a player does not name "that player": with no explicit
+        // triggering player the reference is unknown, so the pending domain fails closed.
         shouldThrow<UnsupportedPathFailure> {
             driver.services.targetFinder.findLegalTargets(
                 state = driver.state,
                 requirement = requirement,
                 controllerId = driver.player1,
-                triggeringEntityId = driver.player2,
+                triggeringEntityId = triggeringPermanent,
                 pipelineContext = PredicateContext(
                     controllerId = driver.player1,
-                    triggeringEntityId = driver.player2,
+                    triggeringEntityId = triggeringPermanent,
                 ),
                 requireAuthoritativeContext = true,
             )
         }
+
+        // A triggering entity that is itself a player IS that player (the damaged player a
+        // self-bound damage trigger carries, Balefire Dragon): the evaluator resolves "that player"
+        // from it, so the domain is known rather than unsupported.
+        driver.services.targetFinder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            triggeringEntityId = driver.player2,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                triggeringEntityId = driver.player2,
+            ),
+            requireAuthoritativeContext = true,
+        ).toSet() shouldBe setOf(triggeringPermanent)
     }
 
     test("pending target finder resolves TargetController from permanent and card context") {

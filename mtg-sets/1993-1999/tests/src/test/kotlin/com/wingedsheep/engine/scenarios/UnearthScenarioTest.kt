@@ -49,7 +49,7 @@ class UnearthScenarioTest : ScenarioTestBase() {
                 .build()
 
             val overLimitCast = overLimit.castSpellTargetingGraveyardCard(1, "Unearth", 1, "Air Elemental")
-            overLimitCast.error shouldBe "Target does not match filter: you own creature with mana value 3 or less in a graveyard"
+            overLimitCast.error shouldBe "Target does not match filter: creature card with mana value 3 or less in your graveyard"
             overLimit.isInGraveyard(1, "Air Elemental") shouldBe true
 
             val opponentTarget = precombatMain()
@@ -59,7 +59,7 @@ class UnearthScenarioTest : ScenarioTestBase() {
                 .build()
 
             val opponentCast = opponentTarget.castSpellTargetingGraveyardCard(1, "Unearth", 2, "Grizzly Bears")
-            opponentCast.error shouldBe "Target does not match filter: you own creature with mana value 3 or less in a graveyard"
+            opponentCast.error shouldBe "Target does not match filter: creature card with mana value 3 or less in your graveyard"
             opponentTarget.isInGraveyard(2, "Grizzly Bears") shouldBe true
         }
 

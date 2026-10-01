@@ -17,6 +17,7 @@ import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.EntityId
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 
 /** Public Gym fields must read the engine semantic authority for the object kind in question. */
@@ -90,7 +91,11 @@ class ObservationProjectedStateTest : ScenarioTestBase() {
             }
         }
 
-        test("haste suppresses effective summoning sickness in the observation") {
+        // Upstream's contract folds haste into summoningSick (`false` for a hasty creature). The
+        // merged Gym deliberately keeps the fork's meaning, which the P1 models were trained on: the
+        // flag is the engine's summoning-sickness marker on a creature, and haste is reported
+        // separately in `keywords` (see the EntityFeatures.summoningSick KDoc).
+        test("haste is reported as a keyword and does not clear summoningSick in the observation") {
             val game = scenario()
                 .withPlayers()
                 .withCardOnBattlefield(
@@ -101,10 +106,13 @@ class ObservationProjectedStateTest : ScenarioTestBase() {
                 .build()
             val creature = permanentNamed(game.state, "Test Hasty Prospector")
 
-            // The engine marker is what makes this a real suppression rather than an absent flag.
+            // The engine marker is present and the creature has haste — both facts reach the agent.
             game.state.getEntity(creature)!!.has<SummoningSicknessComponent>() shouldBe true
             game.state.projectedState.hasKeyword(creature, Keyword.HASTE) shouldBe true
-            entity(observe(game.state, game.player1Id), creature).summoningSick shouldBe false
+            entity(observe(game.state, game.player1Id), creature).let {
+                it.summoningSick shouldBe true
+                it.keywords shouldContain Keyword.HASTE.name
+            }
         }
 
         test("a creature without haste still reports the restriction") {
@@ -127,8 +135,9 @@ class ObservationProjectedStateTest : ScenarioTestBase() {
             val state = game.state.updateEntity(morph) { it.with(FaceDownComponent) }
 
             entity(observe(state, game.player1Id), morph).let {
-                // CR 708.2a — a 2/2 creature with no name, no subtypes and no mana cost.
-                it.name shouldBe "Face-down creature"
+                // CR 708.2a — a 2/2 creature with no name, no subtypes and no mana cost. The merged
+                // Gym keeps the fork's placeholder name for it (upstream: "Face-down creature").
+                it.name shouldBe "Face-down permanent"
                 it.cardDefinitionId shouldBe null
                 it.oracleText shouldBe ""
                 it.manaCost shouldBe ""
@@ -216,7 +225,8 @@ class ObservationProjectedStateTest : ScenarioTestBase() {
                 .copy(stack = listOf(spell))
 
             observe(state, game.player1Id).stack.single().let {
-                it.name shouldBe "Face-down creature"
+                // The fork's placeholder for a face-down spell (upstream: "Face-down creature").
+                it.name shouldBe "Face-down spell"
                 it.oracleText shouldBe ""
             }
             observe(state, game.player2Id).stack.single().name shouldBe "Hill Giant"

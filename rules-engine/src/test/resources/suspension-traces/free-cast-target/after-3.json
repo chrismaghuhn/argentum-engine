@@ -111,7 +111,8 @@
                     "entityId": "card-1002",
                     "controllerId": "player-2",
                     "typeLine": "Artifact",
-                    "cardDefinitionId": "Sol Ring"
+                    "cardDefinitionId": "Sol Ring",
+                    "name": "Sol Ring"
                 }
             },
             "com.wingedsheep.engine.state.components.battlefield.GraveyardEntryTurnComponent": {

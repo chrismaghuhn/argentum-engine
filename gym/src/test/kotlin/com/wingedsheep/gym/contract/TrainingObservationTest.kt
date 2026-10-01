@@ -194,11 +194,19 @@ class TrainingObservationTest : FunSpec({
         }
     }
 
+    // Upstream's version of the next two tests peeked at the opponent's HAND. The merged Gym keeps
+    // the fork's visibility encoding: an individually revealed LIBRARY card is emitted inside its
+    // still-hidden zone, while a revealed hand card stays out of the hand view (it is addressable
+    // only through action domains — pinned by ObservationPrivacyTest "an explicitly revealed
+    // hidden-zone object may be addressed without identity in the domain"). So the known-subset
+    // representation is exercised on the library, and the hand half asserts the masked contract.
     test("a card revealed to this perspective is visible inside its still-hidden zone") {
         val env = newEnv()
         val me = env.playerIds[0]
         val opponent = env.playerIds[1]
+        val opponentLibrary = env.state.getZone(ZoneKey(opponent, Zone.LIBRARY))
         val opponentHand = env.state.getZone(ZoneKey(opponent, Zone.HAND))
+        opponentLibrary.size shouldBeGreaterThan 1
         opponentHand.size shouldBeGreaterThan 1
 
         fun observe(state: GameState) =
@@ -210,24 +218,30 @@ class TrainingObservationTest : FunSpec({
                 env.state.getEntity(cardId)!!.with(RevealedToComponent.to(me))
             )
 
-        fun opponentHandView(obs: TrainingObservation) =
-            obs.zones.first { it.ownerId == opponent && it.zoneType == Zone.HAND }
+        fun opponentZoneView(obs: TrainingObservation, zone: Zone) =
+            obs.zones.first { it.ownerId == opponent && it.zoneType == zone }
 
-        opponentHandView(observe(env.state)).cards.shouldBeEmpty()
+        opponentZoneView(observe(env.state), Zone.LIBRARY).cards.shouldBeEmpty()
 
-        val revealed = opponentHandView(observe(revealing(opponentHand[0])))
-        // Peeking at one card does not unhide the zone: the rest of the hand is still unknown,
+        // Not the top card, so no top-of-library rule is involved — only the individual reveal.
+        val revealed = opponentZoneView(observe(revealing(opponentLibrary[1])), Zone.LIBRARY)
+        // Seeing one card does not unhide the zone: the rest of the library is still unknown,
         // so `size` stays the true count while `cards` holds only what this player has seen.
         revealed.hidden.shouldBeTrue()
-        revealed.size shouldBe opponentHand.size
-        revealed.cards.map { it.entityId } shouldBe listOf(opponentHand[0])
+        revealed.size shouldBe opponentLibrary.size
+        revealed.cards.map { it.entityId } shouldBe listOf(opponentLibrary[1])
+
+        val peekedHand = opponentZoneView(observe(revealing(opponentHand[0])), Zone.HAND)
+        peekedHand.hidden.shouldBeTrue()
+        peekedHand.size shouldBe opponentHand.size
+        peekedHand.cards.shouldBeEmpty()
     }
 
     test("stateDigest distinguishes which card is known inside a hidden zone") {
         val env = newEnv()
         val me = env.playerIds[0]
         val opponent = env.playerIds[1]
-        val opponentHand = env.state.getZone(ZoneKey(opponent, Zone.HAND))
+        val opponentLibrary = env.state.getZone(ZoneKey(opponent, Zone.LIBRARY))
 
         fun digestRevealing(cardId: EntityId): String =
             ObservationBuilder(env.cardRegistry).build(
@@ -242,8 +256,8 @@ class TrainingObservationTest : FunSpec({
         val nothingKnown = ObservationBuilder(env.cardRegistry).build(env.state, me, env.legalActions())
             .observation.stateDigest
 
-        digestRevealing(opponentHand[0]) shouldNotBe nothingKnown
-        digestRevealing(opponentHand[0]) shouldNotBe digestRevealing(opponentHand[1])
+        digestRevealing(opponentLibrary[0]) shouldNotBe nothingKnown
+        digestRevealing(opponentLibrary[0]) shouldNotBe digestRevealing(opponentLibrary[1])
     }
 
     test("a spell on the stack reports its chosen targets, and they reach the digest") {

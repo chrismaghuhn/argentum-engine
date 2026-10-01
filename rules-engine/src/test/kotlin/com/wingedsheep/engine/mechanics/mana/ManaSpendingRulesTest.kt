@@ -215,9 +215,16 @@ class ManaSpendingRulesTest : ScenarioTestBase() {
             val original = ManaPool(white = 1, manaBySource = mapOf(com.wingedsheep.sdk.model.EntityId("land") to 1),
                 spendingColors = spending)
             val paid = original.pay(cost("{R}"))!!
-            val consumed = paid.consumeProvenance(1)
+            paid.white shouldBe 0
+            // Merged pool contract: an ordinary spend that empties the pool also clears its
+            // provenance, so a payment consumes provenance from the pre-spend pool and applies the
+            // result to the paid balance (CastPaymentProcessor; ManaPool.withNormalizedProvenanceAfterSpend).
+            // The white unit that paid {R} still carries — and gives up — the land's provenance.
+            val unrestrictedSpent = original.unrestrictedTotal - paid.unrestrictedTotal
+            unrestrictedSpent shouldBe 1
+            val consumed = original.consumeProvenance(unrestrictedSpent)
             consumed.second.sourceIds shouldBe setOf(com.wingedsheep.sdk.model.EntityId("land"))
-            consumed.first.manaBySource shouldBe emptyMap()
+            paid.withProvenanceFrom(consumed.first).manaBySource shouldBe emptyMap()
         }
         cardRegistry.register(card("Test Empty Artifact") { manaCost = "{0}"; typeLine = "Artifact" })
         cardRegistry.register(card("Test Copy Artifact") {

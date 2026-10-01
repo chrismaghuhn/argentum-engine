@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
@@ -37,12 +38,23 @@ class EzuriStalkerOfSpheresScenarioTest : ScenarioTestBase() {
     private fun counters(game: TestGame, id: EntityId, type: CounterType): Int =
         game.state.getEntity(id)?.get<CountersComponent>()?.getCount(type) ?: 0
 
-    /** Resolve everything, answering each proliferate prompt by choosing [pick]. Returns prompt count. */
+    /**
+     * Resolve everything, answering each proliferate prompt by choosing [pick]. Returns prompt count.
+     *
+     * Two proliferates in one resolution fire two "whenever you proliferate" triggers together, and
+     * the engine asks you to order them (CR 603.3b, an [OrderObjectsDecision]). That is answered
+     * with the offered order and is not a proliferate prompt.
+     */
     private fun drain(game: TestGame, pick: EntityId): Int {
         var prompts = 0
         var guard = 0
         while ((game.state.stack.isNotEmpty() || game.hasPendingDecision()) && guard++ < 30) {
-            if (game.hasPendingDecision()) { game.selectCards(listOf(pick)); prompts++ } else game.resolveStack()
+            val ordering = game.getPendingDecision() as? OrderObjectsDecision
+            when {
+                ordering != null -> game.submitObjectOrdering(ordering.objects).error shouldBe null
+                game.hasPendingDecision() -> { game.selectCards(listOf(pick)); prompts++ }
+                else -> game.resolveStack()
+            }
         }
         return prompts
     }

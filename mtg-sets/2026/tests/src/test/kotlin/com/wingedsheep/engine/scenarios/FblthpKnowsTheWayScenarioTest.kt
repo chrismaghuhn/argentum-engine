@@ -72,7 +72,16 @@ class FblthpKnowsTheWayScenarioTest : ScenarioTestBase() {
             game.resolveStack()
             game.hasPendingDecision() shouldBe true
 
-            game.selectCards(game.findCardsInLibrary(1, "Plains")).error shouldBe null
+            // The engine checks a selection against the search's one-per-name restriction and
+            // refuses an illegal one outright (it does not trim it to one Plains); the search stays
+            // open for a legal choice.
+            val bothPlains = game.findCardsInLibrary(1, "Plains")
+            bothPlains.size shouldBe 2
+            withClue("two Plains do not have different names, so the pair is refused") {
+                game.selectCards(bothPlains).error shouldNotBe null
+                game.hasPendingDecision() shouldBe true
+            }
+            game.selectCards(listOf(bothPlains.first())).error shouldBe null
             game.resolveStack()
 
             game.findCardsInHand(1, "Plains").size shouldBe 1

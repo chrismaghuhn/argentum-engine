@@ -210,7 +210,10 @@ class RoutingIdentityTest : ScenarioTestBase() {
             bandIds.forEach { it.shouldNotBeNull() }
             bandIds[0] shouldNotBe bandIds[1]
             coursers.map { declared.state.getEntity(it)!!.get<AttackingComponent>()!!.bandId } shouldBe bandIds
-            declared.state.nextRoutingId shouldBe initial.nextRoutingId + 2
+            // Band handles are this engine's canonical combat-local ordinals, not routing ids: the
+            // two bands are combat-band-0 and -1, and declaring them spends no routing handle.
+            bandIds.toSet() shouldBe setOf("combat-band-0", "combat-band-1")
+            declared.state.nextRoutingId shouldBe initial.nextRoutingId
             declared.state.rng shouldBe initial.rng
             declared.state.nextEntityId shouldBe initial.nextEntityId
         }

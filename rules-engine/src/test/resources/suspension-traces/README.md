@@ -60,3 +60,13 @@ and the targeting prompt is derived from the requirement. The only edits were th
 binding name `"target"` → `"t0"` (requirement `id` and the `BoundVariable` reading it) and the
 recorded prompt `"target"` → `"target artifact or enchantment"` (Naturalize's derived wording).
 No action or event payload changed, and no gameplay was rerun.
+
+Representation-refreshed on 2026-10-01 for the fork merge (upstream-sync-05). The merged engine
+requires `TargetRequirementInfo.minTargets`/`maxTargets` (target cardinality is always
+published), so the `free-cast-target/state.json` question records `"minTargets": 1,
+"maxTargets": 1` — the values the parent capture in `legacy-suspensions` holds — instead of
+omitting them as defaults. The merged engine also records a departing permanent's name in its
+last-known snapshot, so Sol Ring's `LastKnownPermanentComponent` in `free-cast-target/after-3.json`
+carries `"name": "Sol Ring"`. The fork's object-identity stamps, known-information ledger and
+exact floating-mana provenance are left out of the comparison by `SuspensionTraceTest` (like
+control history) rather than written into these files. No action or event payload changed.

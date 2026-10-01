@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -71,11 +72,24 @@ class ExaltedKeywordScenarioTest : FunSpec({
     fun GameTestDriver.creature(name: String, player: EntityId = activePlayer!!): EntityId =
         putCreatureOnBattlefield(player, name).also { removeSummoningSickness(it) }
 
+    /**
+     * The engine lets a controller order every group of its simultaneous triggers (CR 603.3b),
+     * identical instances included, so several exalted triggers wait on an [OrderObjectsDecision]
+     * before they reach the stack. Keep the offered order; nothing here depends on it.
+     */
+    fun GameTestDriver.answerTriggerOrdering() {
+        while (true) {
+            val order = state.pendingDecision as? OrderObjectsDecision ?: return
+            submitObjectOrdering(order.playerId, order.objects).error shouldBe null
+        }
+    }
+
     /** Declares [attackers] and returns how many triggers went on the stack. */
     fun GameTestDriver.attackWith(attackers: List<EntityId>): Int {
         val me = activePlayer!!
         passPriorityUntil(Step.DECLARE_ATTACKERS)
         declareAttackers(me, attackers, getOpponent(me)).error shouldBe null
+        answerTriggerOrdering()
         return state.stack.size
     }
 

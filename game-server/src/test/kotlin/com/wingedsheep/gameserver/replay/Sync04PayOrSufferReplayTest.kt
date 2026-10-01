@@ -17,6 +17,7 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.CreatureStats
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
@@ -56,6 +57,7 @@ class Sync04PayOrSufferReplayTest : ScenarioTestBase() {
                     cost = Costs.pay.SacrificeAnother(GameObjectFilter.Artifact),
                     suffer = Effects.GainLife(1),
                 ),
+                id = AbilityId("Sync04PayOrSufferReplayTest-ability-1"),
             ),
         ),
     )

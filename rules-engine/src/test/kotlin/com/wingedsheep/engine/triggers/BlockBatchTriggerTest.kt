@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.ActionProcessor
 import com.wingedsheep.engine.core.DeclareBlockers
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.GameInitializer
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
@@ -78,7 +79,13 @@ class BlockBatchTriggerTest : FunSpec({
         return driver
     }
 
-    /** Attack with [attackers] and declare [blocks] (blocker → attacker) for the defender. */
+    /**
+     * Attack with [attackers] and declare [blocks] (blocker → attacker) for the defender.
+     *
+     * The engine lets a controller order every group of its simultaneous triggers (CR 603.3b), so
+     * several triggers under one controller wait on an [OrderObjectsDecision] before they reach the
+     * stack; keep the offered order so the stack size counts every trigger that fired.
+     */
     fun attackAndBlock(driver: GameTestDriver, attackers: List<EntityId>, blocks: Map<EntityId, EntityId>) {
         val active = driver.activePlayer!!
         val defender = driver.getOpponent(active)
@@ -87,6 +94,10 @@ class BlockBatchTriggerTest : FunSpec({
         driver.declareAttackers(active, attackers, defender)
         driver.bothPass()
         driver.declareBlockers(defender, blocks.mapValues { listOf(it.value) })
+        while (true) {
+            val order = driver.state.pendingDecision as? OrderObjectsDecision ?: break
+            driver.submitObjectOrdering(order.playerId, order.objects).error shouldBe null
+        }
     }
 
     test("two blockers fire the batch form once, the singular form once per blocker") {

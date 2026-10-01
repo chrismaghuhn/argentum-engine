@@ -567,11 +567,14 @@ class TriggerOrderingTest : FunSpec({
                 )
             )
         )
+        // A referenced-player expression whose display text is the same "target player controls"
+        // as the targeted-player predicate. (The referenced-player description follows its
+        // reference, so a positional ContextTarget(0) would now read "target controls".)
         val referencedPlayerFilter = TargetObject(
             filter = TargetFilter(
                 GameObjectFilter(
                     controllerPredicate = ControllerPredicate.ControlledByReferencedPlayer(
-                        EffectTarget.ContextTarget(0)
+                        EffectTarget.PlayerRef(Player.TargetPlayer)
                     )
                 )
             )

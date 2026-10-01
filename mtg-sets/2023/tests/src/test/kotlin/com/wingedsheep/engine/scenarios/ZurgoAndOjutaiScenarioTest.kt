@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.ReorderLibraryDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.YesNoDecision
@@ -55,6 +56,10 @@ class ZurgoAndOjutaiScenarioTest : ScenarioTestBase() {
      * Resolves every Zurgo trigger on the stack: keeps the first card looked at, and answers the
      * "return one of those Dragons" choice with [returnDragon] (or declines). Returns how many
      * look-at-top choices were made — one per resolved trigger.
+     *
+     * Two of your triggers from the same combat damage step (two Zurgo triggers, or Zurgo's and the
+     * defeated Siege's) first ask you to order them (CR 603.3b, an [OrderObjectsDecision]); that is
+     * answered with the offered order.
      */
     private fun TestGame.resolveTriggers(returnDragon: String? = null): Int {
         var looks = 0
@@ -62,6 +67,7 @@ class ZurgoAndOjutaiScenarioTest : ScenarioTestBase() {
         while (guard++ < 40) {
             val decision = state.pendingDecision
             when {
+                decision is OrderObjectsDecision -> submitObjectOrdering(decision.objects).error shouldBe null
                 decision is SelectCardsDecision && decision.prompt.contains("Dragons") -> {
                     returnOptions = decision.options.mapNotNull { state.getEntity(it)?.get<CardComponent>()?.name }
                     val pick = returnDragon?.let { name ->

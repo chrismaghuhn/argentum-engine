@@ -207,26 +207,9 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
         }
     }
 
-    test("publishes an AttackMode-accepted Battle when its controller is left but protector is not") {
-        val fixture = attackModeBattleFixture(controllerIndex = 1, protectorIndex = 2)
-        val attacker = fixture.attackerIds.single()
-        val battle = fixture.defenderIds.single()
-        val declaration = DeclareAttackers(
-            playerId = fixture.player,
-            attackers = mapOf(attacker to battle),
-        )
-
-        fixture.manager.validateDeclarationBeforeTax(fixture.state, declaration) shouldBe null
-        // The legacy validAttackTargets hint remains AttackMode-filtered; the certificate must not
-        // reuse it because the current Rules validator evaluates this Battle by its controller.
-        CombatDefenders
-            .getAttackDeclarationCandidateDefenders(fixture.state, fixture.player)
-            .contains(battle) shouldBe false
-        fixture.certificate().attackerToDefenders.getValue(attacker) shouldContain battle
-        assertEquivalent(fixture)
-    }
-
-    test("keeps AttackMode Battle controller and protector semantics distinct") {
+    test("publishes an AttackMode-accepted Battle when its protector is left but controller is not") {
+        // CR 803.1a: under attack left you may attack "a battle that player protects" — the
+        // battle is defended by its protector, not its controller (CR 310.9d).
         val fixture = attackModeBattleFixture(controllerIndex = 2, protectorIndex = 1)
         val attacker = fixture.attackerIds.single()
         val battle = fixture.defenderIds.single()
@@ -235,7 +218,32 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
             attackers = mapOf(attacker to battle),
         )
 
+        fixture.manager.validateDeclarationBeforeTax(fixture.state, declaration) shouldBe null
+        // The legacy validAttackTargets hint is AttackMode-filtered by the same protector reading,
+        // so it agrees with the Rules validator here; the certificate is still built from the
+        // Rules validator, never from the hint.
+        CombatDefenders
+            .getAttackDeclarationCandidateDefenders(fixture.state, fixture.player)
+            .contains(battle) shouldBe true
+        fixture.certificate().attackerToDefenders.getValue(attacker) shouldContain battle
+        assertEquivalent(fixture)
+    }
+
+    test("keeps AttackMode Battle controller and protector semantics distinct") {
+        // The mirror: the battle's controller is on the left but its protector is not, so attack
+        // left does not reach it.
+        val fixture = attackModeBattleFixture(controllerIndex = 1, protectorIndex = 2)
+        val attacker = fixture.attackerIds.single()
+        val battle = fixture.defenderIds.single()
+        val declaration = DeclareAttackers(
+            playerId = fixture.player,
+            attackers = mapOf(attacker to battle),
+        )
+
         (fixture.manager.validateDeclarationBeforeTax(fixture.state, declaration) == null) shouldBe false
+        CombatDefenders
+            .getAttackDeclarationCandidateDefenders(fixture.state, fixture.player)
+            .contains(battle) shouldBe false
         fixture.certificate().attackerToDefenders.getValue(attacker).contains(battle) shouldBe false
         assertEquivalent(fixture)
     }
@@ -246,13 +254,22 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
         val player = fixture.defenderIds[0]
         val planeswalker = fixture.defenderIds[1]
         val battle = fixture.defenderIds[2]
+        val farPlayer = fixture.defenderIds[3]
 
         fixture.manager.getAttackDeclarationCandidateAttackers(fixture.state, fixture.player) shouldContain attacker
-        fixture.manager.isRestrictedFromAllDefenders(fixture.state, attacker, fixture.player) shouldBe true
+        // No single defender rule bars every defender (the Moat bars only the left player, attack
+        // left only the far seat), and the all-defenders helper also counts the battle an opponent
+        // protects — so the attacker is not "restricted from all defenders", yet the battle is the
+        // only thing it may attack.
+        fixture.manager.isRestrictedFromAllDefenders(fixture.state, attacker, fixture.player) shouldBe false
 
         val playerDeclaration = DeclareAttackers(
             playerId = fixture.player,
             attackers = mapOf(attacker to player),
+        )
+        val farPlayerDeclaration = DeclareAttackers(
+            playerId = fixture.player,
+            attackers = mapOf(attacker to farPlayer),
         )
         val planeswalkerDeclaration = DeclareAttackers(
             playerId = fixture.player,
@@ -264,10 +281,11 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
         )
 
         (fixture.manager.validateDeclarationBeforeTax(fixture.state, playerDeclaration) == null) shouldBe false
+        (fixture.manager.validateDeclarationBeforeTax(fixture.state, farPlayerDeclaration) == null) shouldBe false
         (fixture.manager.validateDeclarationBeforeTax(fixture.state, planeswalkerDeclaration) == null) shouldBe false
         fixture.manager.validateDeclarationBeforeTax(fixture.state, battleDeclaration) shouldBe null
 
-        fixture.certificate().attackerToDefenders.getValue(attacker) shouldContain battle
+        fixture.certificate().attackerToDefenders.getValue(attacker) shouldBe listOf(battle)
         assertEquivalent(fixture)
     }
 
@@ -583,19 +601,29 @@ private fun attackModeBattleFixture(controllerIndex: Int, protectorIndex: Int): 
     )
 }
 
+/**
+ * Three seats under attack left. The left opponent's Moat bars attacks on that player — "can't
+ * attack you" bars the player only, never a planeswalker or battle — and attack left bars the far
+ * opponent and the planeswalker that opponent controls (CR 803.1a). The Siege the attacker controls
+ * is protected by the left opponent, so it is the attacker's one legal defender.
+ */
 private fun battleOnlyDefenderFixture(): Fixture {
     val (driver, players) = newDriver(
+        playerCount = 3,
         extraCards = listOf(attackDomainWalker, attackDomainSiege, attackDomainMoat),
     )
     val active = players[0]
-    val opponent = players[1]
+    val leftOpponent = players[1]
+    val farOpponent = players[2]
     val attacker = driver.putCreatureOnBattlefield(active, "Grizzly Bears")
-    val planeswalker = driver.putPermanentOnBattlefield(opponent, attackDomainWalker.name)
-    driver.putPermanentOnBattlefield(opponent, attackDomainMoat.name)
+    val planeswalker = driver.putPermanentOnBattlefield(farOpponent, attackDomainWalker.name)
+    driver.putPermanentOnBattlefield(leftOpponent, attackDomainMoat.name)
     val battle = driver.putPermanentOnBattlefield(active, attackDomainSiege.name)
-    driver.replaceState(driver.state.updateEntity(battle) {
-        it.with(ProtectorComponent(opponent))
-    })
+    driver.replaceState(
+        driver.state.updateEntity(battle) {
+            it.with(ProtectorComponent(leftOpponent))
+        }.copy(attackMode = AttackMode.LEFT),
+    )
     driver.removeSummoningSickness(attacker)
 
     return fixture(
@@ -603,7 +631,7 @@ private fun battleOnlyDefenderFixture(): Fixture {
         driver = driver,
         players = players,
         attackerIds = listOf(attacker),
-        defenderIds = listOf(opponent, planeswalker, battle),
+        defenderIds = listOf(leftOpponent, planeswalker, battle, farOpponent),
     )
 }
 

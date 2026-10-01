@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.support.GameTestDriver
@@ -45,6 +46,12 @@ class LightningCoilsScenarioTest : FunSpec({
         tokenCount(driver, controller) shouldBe 6
 
         driver.passPriorityUntil(Step.END)
+        // One "exile it" delayed trigger per token, all yours and all at once: the engine asks you
+        // to order them (CR 603.3b) before they go on the stack. Keep the offered order.
+        while (true) {
+            val order = driver.state.pendingDecision as? OrderObjectsDecision ?: break
+            driver.submitObjectOrdering(order.playerId, order.objects).error shouldBe null
+        }
         while (driver.stackSize > 0) driver.bothPass()
 
         tokenCount(driver, controller) shouldBe 0

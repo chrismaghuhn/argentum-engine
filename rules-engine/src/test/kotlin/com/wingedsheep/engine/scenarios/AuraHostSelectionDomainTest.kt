@@ -16,6 +16,7 @@ import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
+import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -934,9 +935,13 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         }
 
         test("uses effective copy colors when deriving an Aura token host domain") {
+            // The copied Aura must sit legally attached (it is green, so not on the pro-green
+            // creature): an unattached Aura is put into the graveyard by the state-based check as
+            // the caster receives priority, and the copy spell would then lose its target.
             val game = scenario()
                 .withPlayers("Player", "Opponent")
-                .withCardOnBattlefield(1, "Test Aura for Creatures")
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardAttachedTo(1, "Test Aura for Creatures", "Grizzly Bears")
                 .withCardOnBattlefield(1, "Test Green-Protected Creature")
                 .withCardInHand(1, "Aura Copy Characteristics Probe")
                 .withActivePlayer(1)
@@ -971,6 +976,15 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
             val auraId = game.state.getBattlefield(game.player1Id).single { entityId ->
                 game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Players"
             }
+            // The copied Aura must enchant something legally (here the opponent), or the
+            // state-based check bins it as the caster receives priority and the copy spell loses
+            // its target.
+            game.state = game.state
+                .updateEntity(auraId) { it.with(AttachedToComponent(game.player2Id)) }
+                .updateEntity(game.player2Id) { container ->
+                    val existing = container.get<AttachmentsComponent>()?.attachedIds ?: emptyList()
+                    container.with(AttachmentsComponent(existing + auraId))
+                }
 
             game.castSpell(1, "Aura Copy Characteristics Probe", auraId).error shouldBe null
             game.resolveStack()
@@ -987,10 +1001,13 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         }
 
         test("does not offer a host when an Aura copy is also a creature") {
+            // The copied Aura enchants the Bears; left unattached it would be put into the
+            // graveyard as the caster receives priority, and the copy spell would never reach the
+            // creature-Aura host check this test is about.
             val game = scenario()
                 .withPlayers("Player", "Opponent")
-                .withCardOnBattlefield(1, "Test Aura for Creatures")
                 .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardAttachedTo(1, "Test Aura for Creatures", "Grizzly Bears")
                 .withCardInHand(1, "Creature Aura Copy Probe")
                 .withActivePlayer(1)
                 .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
@@ -1011,10 +1028,12 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         }
 
         test("rejects a stale Aura token host response without consuming the continuation") {
+            // The copied Aura enchants the Bears: an unattached Aura would be put into the
+            // graveyard by the state-based check as the caster receives priority.
             val game = scenario()
                 .withPlayers("Player", "Opponent")
-                .withCardOnBattlefield(1, "Test Aura for Creatures")
                 .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardAttachedTo(1, "Test Aura for Creatures", "Grizzly Bears")
                 .withCardInHand(1, "Aura Copy Characteristics Probe")
                 .withActivePlayer(1)
                 .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)

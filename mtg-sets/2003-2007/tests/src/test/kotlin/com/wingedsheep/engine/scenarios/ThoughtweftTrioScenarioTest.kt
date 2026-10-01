@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.CombatResolutionDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.mechanics.layers.StateProjector
 import com.wingedsheep.engine.support.ScenarioTestBase
@@ -83,6 +84,10 @@ class ThoughtweftTrioScenarioTest : ScenarioTestBase() {
                     .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
                     .build()
 
+                val trio = game.findPermanent("Thoughtweft Trio")!!
+                val bears = game.findPermanent("Grizzly Bears")!!
+                val lions = game.findPermanent("Savannah Lions")!!
+
                 game.advanceToPhase(Phase.COMBAT, Step.DECLARE_ATTACKERS)
                 game.declareAttackers(mapOf("Grizzly Bears" to 1, "Savannah Lions" to 1))
                     .error shouldBe null
@@ -91,6 +96,16 @@ class ThoughtweftTrioScenarioTest : ScenarioTestBase() {
                     mapOf("Thoughtweft Trio" to listOf("Grizzly Bears", "Savannah Lions"))
                 ).error shouldBe null
                 game.resolveStack()
+                game.passUntilPhase(Phase.COMBAT, Step.FIRST_STRIKE_COMBAT_DAMAGE)
+
+                // A creature blocking two attackers divides its combat damage between them as its
+                // controller chooses (CR 510.1d). The engine seeds no lethal-first split, so Alice
+                // makes the split: 2 to the 2/2 Bears, 3 to the 2/1 Lions.
+                withClue("the Trio's controller divides its first-strike damage") {
+                    (game.getPendingDecision() as? CombatResolutionDecision)?.playerId shouldBe game.player1Id
+                }
+                game.submitCombatDamage(mapOf((trio to bears) to 2, (trio to lions) to 3))
+                    .error shouldBe null
                 game.passUntilPhase(Phase.COMBAT, Step.END_COMBAT)
 
                 withClue("a 5/5 first striker splitting 5 damage kills a 2/2 and a 2/1") {

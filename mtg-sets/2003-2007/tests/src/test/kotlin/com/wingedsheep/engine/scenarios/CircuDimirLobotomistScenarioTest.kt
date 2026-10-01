@@ -6,6 +6,7 @@ import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.mtg.sets.definitions.rav.cards.CircuDimirLobotomist
 import com.wingedsheep.mtg.sets.definitions.rav.cards.DimirCutpurse
 import com.wingedsheep.sdk.core.Color
@@ -179,6 +180,13 @@ class CircuDimirLobotomistScenarioTest : FunSpec({
         var guard = 0
         while (guard++ < 20) {
             val decision = d.pendingDecision
+            // Both triggers are yours and trigger together, so the engine asks you to order them
+            // (CR 603.3b) before they go on the stack. Keep the offered order: each trigger still
+            // asks for its own target, which is what this test pins.
+            if (decision is OrderObjectsDecision) {
+                d.submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+                continue
+            }
             if (decision is ChooseTargetsDecision) {
                 d.submitTargetSelection(decision.playerId, listOf(victims.removeAt(0)))
                 continue

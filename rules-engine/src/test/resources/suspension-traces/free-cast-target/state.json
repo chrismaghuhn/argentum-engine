@@ -160,7 +160,9 @@
                 "targetRequirements": [
                     {
                         "index": 0,
-                        "description": "target artifact or enchantment"
+                        "description": "target artifact or enchantment",
+                        "minTargets": 1,
+                        "maxTargets": 1
                     }
                 ],
                 "legalTargets": {

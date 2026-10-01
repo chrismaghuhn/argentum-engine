@@ -147,7 +147,13 @@ class VariableSacrificeAdditionalCostTest : FunSpec({
         stackSpell.sacrificedPermanents.map { it.name } shouldBe
             listOf("Grizzly Bears", "Grizzly Bears")
         stackSpell.sacrificedPermanents.map { it.wasToken } shouldBe listOf(false, true)
-        driver.state.getZone(ZoneKey(player, Zone.GRAVEYARD)).toSet() shouldBe setOf(normal, token)
+        // Both left the battlefield. The sacrificed token then ceased to exist as a state-based
+        // action before the caster received priority again (the merged settle boundary checks
+        // state-based actions whenever a player would receive priority), so only the nontoken card
+        // remains in the graveyard; the LKI above still records both.
+        (token in driver.state.getBattlefield()) shouldBe false
+        driver.state.getEntity(token) shouldBe null
+        driver.state.getZone(ZoneKey(player, Zone.GRAVEYARD)).toSet() shouldBe setOf(normal)
 
         // The immutable state fork retains the exact publication used by a replay/copy consumer.
         val fork = driver.state.copy()

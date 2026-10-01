@@ -2,6 +2,7 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
@@ -82,6 +83,12 @@ class ConsignToMemoryScenarioTest : ScenarioTestBase() {
                 game.castSpell(1, "Grizzly Bears").error shouldBe null
                 game.passPriority()
                 game.passPriority()
+                // Both Soul Warden triggers are yours and fire together, so the engine asks you to
+                // order them (CR 603.3b) before they go on the stack. Keep the offered order.
+                while (true) {
+                    val order = game.getPendingDecision() as? OrderObjectsDecision ?: break
+                    game.submitObjectOrdering(order.objects).error shouldBe null
+                }
                 val triggers = game.state.stack.filter {
                     game.state.getEntity(it)?.has<TriggeredAbilityOnStackComponent>() == true
                 }

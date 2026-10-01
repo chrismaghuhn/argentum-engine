@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.DeclareAttackers
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
@@ -65,13 +66,19 @@ class AllWillBeOneScenarioTest : ScenarioTestBase() {
      * Drain the stack; every trigger target prompt is aimed at player 2's face. Proliferate's own
      * choice ([proliferateChoice]) is answered with the given recipients. Returns how many trigger
      * target prompts there were.
+     *
+     * Several of your triggers firing together first ask you to order them (CR 603.3b, an
+     * [OrderObjectsDecision]); that is answered with the offered order and is not a target prompt.
      */
     private fun drain(game: TestGame, proliferateChoice: List<EntityId>? = null): Int {
         var prompts = 0
         var guard = 0
         var proliferated = false
         while ((game.state.stack.isNotEmpty() || game.hasPendingDecision()) && guard++ < 40) {
-            if (game.hasPendingDecision()) {
+            val ordering = game.getPendingDecision() as? OrderObjectsDecision
+            if (ordering != null) {
+                game.submitObjectOrdering(ordering.objects).error shouldBe null
+            } else if (game.hasPendingDecision()) {
                 if (proliferateChoice != null && !proliferated) {
                     game.selectCards(proliferateChoice)
                     proliferated = true

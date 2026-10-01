@@ -53,3 +53,10 @@ Edited on 2026-09-28 when mana provenance gained a producing-source card-type ax
 `RestrictedManaEntry.source`). The new keys were inserted with their defaults in the
 `encodeDefaults = true` captures; the one tagged pool — Birds of Paradise's floating mana in
 `suspended-mana-window/after-1.json` — carries `{"CREATURE": 1}`, as the engine now records.
+
+Edited on 2026-10-01 for the fork merge (upstream-sync-05). The merged engine records a departing
+permanent's name in its last-known snapshot, so Sol Ring's `LastKnownPermanentComponent` in
+`free-cast-target/after-3.json` has `"name": "Sol Ring"` instead of `null`. The fork's
+object-identity stamps, known-information ledger and exact floating-mana provenance postdate these
+captures: `LegacySuspensionMigrationTest` asserts that they load as their defaults and leaves them
+out of the replay comparison rather than writing them into the files. No other byte changed.

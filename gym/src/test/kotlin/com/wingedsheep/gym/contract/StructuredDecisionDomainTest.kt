@@ -549,10 +549,15 @@ class StructuredDecisionDomainTest : FunSpec({
                 CardPredicate.IsLand,
             )
         )
+        // Upstream made SelectTargetEffect single-target by construction (its executor offers one
+        // slot and rejects a requirement asking for more — upstream 71ff23b76c), so the real
+        // producer is fed an "up to one" requirement: min 0 / max 1 keeps the two bounds distinct.
+        // The aggregate flags below are no-ops for a single target, but the shared atom must still
+        // carry every one of them from the producer to the TargetsDomain.
         val resolvedRequirement = TargetOther(
             baseRequirement = TargetObject(
-                count = 2,
-                minCount = 1,
+                count = 1,
+                minCount = 0,
                 filter = TargetFilter(
                     baseFilter = GameObjectFilter(cardPredicates = listOf(xAwareTarget)),
                     zone = Zone.GRAVEYARD,
@@ -584,8 +589,8 @@ class StructuredDecisionDomainTest : FunSpec({
         val requirement = domain.requirements.single()
 
         domain.version shouldBe TARGETS_DOMAIN_VERSION
-        requirement.minTargets shouldBe 1
-        requirement.maxTargets shouldBe 2
+        requirement.minTargets shouldBe 0
+        requirement.maxTargets shouldBe 1
         requirement.targetZone shouldBe "Graveyard"
         requirement.mustDifferFromEarlier shouldBe true
         requirement.sameController shouldBe true

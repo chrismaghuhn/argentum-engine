@@ -59,6 +59,21 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
         }
     }
 
+    /**
+     * [pinWithGeneratedAbility] whose activated ability carries the generated wire form
+     * `ability_<n>` that [AbilityIdAliasTable] aliases. The card builder no longer produces that
+     * form: it mints the deterministic `"<card name>:<n>"` id, which is a stable, semantic id and
+     * is deliberately kept raw. Tests about generated handles therefore name the generated form
+     * explicitly instead of reading the builder's id.
+     */
+    private fun pinWithGeneratedAbilityId(generatedId: String) = pinWithGeneratedAbility.copy(
+        script = pinWithGeneratedAbility.script.copy(
+            activatedAbilities = pinWithGeneratedAbility.script.activatedAbilities.map {
+                it.copy(id = AbilityId(generatedId))
+            },
+        ),
+    )
+
     private fun setup(
         seed: Long = 7L,
         startingPlayerIndex: Int? = 0,
@@ -355,7 +370,7 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
         }
 
         test("generated ability aliases reserve stable IDs") {
-            val generatedPinId = pinWithGeneratedAbility.script.activatedAbilities.single().id.value
+            val generatedPinId = "ability_101"
 
             fun replayWith(generatedId: String): CompactReplay {
                 fun action(abilityId: String) = ActivateAbility(
@@ -363,13 +378,7 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
                     sourceId = EntityId("source"),
                     abilityId = AbilityId(abilityId),
                 )
-                val pin = pinWithGeneratedAbility.copy(
-                    script = pinWithGeneratedAbility.script.copy(
-                        activatedAbilities = pinWithGeneratedAbility.script.activatedAbilities.map {
-                            it.copy(id = AbilityId(generatedId))
-                        },
-                    ),
-                )
+                val pin = pinWithGeneratedAbilityId(generatedId)
                 return replay(
                     actions = listOf(action("A0"), action(generatedId)),
                     pinnedCards = listOf(CardExporter.exportToCompactJson(pin)),
@@ -383,8 +392,9 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
         }
 
         test("generated ability handles anchored by multiple pinned definitions fail closed") {
-            val generatedId = pinWithGeneratedAbility.script.activatedAbilities.single().id.value
-            val otherPin = pinWithGeneratedAbility.copy(name = "Replay Identity Other Generated Pin")
+            val generatedId = "ability_101"
+            val generatedPin = pinWithGeneratedAbilityId(generatedId)
+            val otherPin = generatedPin.copy(name = "Replay Identity Other Generated Pin")
             val action = ActivateAbility(
                 playerId = playerOne,
                 sourceId = EntityId("source"),
@@ -396,7 +406,7 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
                     replay(
                         actions = listOf(action),
                         pinnedCards = listOf(
-                            CardExporter.exportToCompactJson(pinWithGeneratedAbility),
+                            CardExporter.exportToCompactJson(generatedPin),
                             CardExporter.exportToCompactJson(otherPin),
                         ),
                     ),
@@ -405,20 +415,15 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
         }
 
         test("generated ability references shared by pinned actions and yields are normalized together") {
-            val generatedPinId = pinWithGeneratedAbility.script.activatedAbilities.single().id.value
-            val equivalentPin = pinWithGeneratedAbility.copy(
-                script = pinWithGeneratedAbility.script.copy(
-                    activatedAbilities = pinWithGeneratedAbility.script.activatedAbilities.map {
-                        it.copy(id = AbilityId("ability_909"))
-                    },
-                ),
-            )
+            val generatedPinId = "ability_101"
+            val generatedPin = pinWithGeneratedAbilityId(generatedPinId)
+            val equivalentPin = pinWithGeneratedAbilityId("ability_909")
             val firstYield = ReplayYieldEntry(
                 afterActionCount = 0,
                 playerId = playerOne.value,
                 op = ReplayYieldOp.SET,
                 identity = AbilityIdentity(
-                    pinWithGeneratedAbility.name,
+                    generatedPin.name,
                     AbilityId(generatedPinId),
                 ),
                 kind = YieldKind.ALWAYS_ANSWER_YES,
@@ -436,7 +441,7 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
                     ),
                 ),
                 yields = listOf(firstYield),
-                pinnedCards = listOf(CardExporter.exportToCompactJson(pinWithGeneratedAbility)),
+                pinnedCards = listOf(CardExporter.exportToCompactJson(generatedPin)),
             )
             val second = replay(
                 actions = listOf(

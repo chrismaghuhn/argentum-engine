@@ -36,8 +36,16 @@ class JevDecisionsTest : FunSpec({
         AssignDamageDecision("d", player, "Damage", context, a, 3, listOf(b), null, mapOf(b to 2), mapOf(b to 3), false, false),
         SelectManaSourcesDecision("d", player, "Mana", context,
             listOf(ManaSourceOption(a, "Mountain", setOf(Color.RED), false)), "{R}", listOf(a)),
-        CombatResolutionDecision("d", player, "Combat damage", context, false, emptyList(), emptyList(), emptyList(),
-            listOf(DamageEdge("edge", a, b, DamageEdgeDirection.ATTACKER_TO_BLOCKER, 3, 3, 2, true, false, player))),
+        // The modern damage-assignment validator checks every edge against the board's nodes, so
+        // the attacker and the blocker it is blocked by are part of the decision.
+        CombatResolutionDecision("d", player, "Combat damage", context, false,
+            attackers = listOf(ResolutionAttacker(a, "Attacker", 3, 3, hasTrample = false, hasDeathtouch = false,
+                hasFirstStrike = false, hasDoubleStrike = false, dealsDamageThisStep = true, bandId = null,
+                attackedDefenderId = EntityId("defender"), blockedByIds = listOf(b), markedDamage = 0)),
+            blockers = listOf(ResolutionBlocker(b, "Blocker", 2, 2, hasDeathtouch = false, hasFirstStrike = false,
+                hasDoubleStrike = false, dealsDamageThisStep = true, blockedAttackerIds = listOf(a), markedDamage = 0)),
+            defenders = emptyList(),
+            edges = listOf(DamageEdge("edge", a, b, DamageEdgeDirection.ATTACKER_TO_BLOCKER, 3, 3, 2, true, false, player))),
     )
     decisions.forEach { decision ->
         test("Jev assembles ${decision::class.simpleName} with valid routing and selection shape") {

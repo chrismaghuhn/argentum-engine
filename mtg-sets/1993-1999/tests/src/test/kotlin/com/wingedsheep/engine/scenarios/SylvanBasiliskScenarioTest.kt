@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Step
@@ -25,6 +26,18 @@ class SylvanBasiliskScenarioTest : FunSpec({
         driver.registerCards(TestCards.all)
         driver.initMirrorMatch(deck = Deck.of("Forest" to 40), startingLife = 20)
         return driver
+    }
+
+    /**
+     * The engine lets a controller order every group of its simultaneous triggers (CR 603.3b),
+     * identical instances included, so one trigger per blocker waits on an [OrderObjectsDecision]
+     * before reaching the stack. Keep the offered order; nothing here depends on it.
+     */
+    fun GameTestDriver.answerTriggerOrdering() {
+        while (true) {
+            val order = state.pendingDecision as? OrderObjectsDecision ?: return
+            submitObjectOrdering(order.playerId, order.objects).error shouldBe null
+        }
     }
 
     test("a single blocker is destroyed before combat damage") {
@@ -63,6 +76,7 @@ class SylvanBasiliskScenarioTest : FunSpec({
         driver.declareAttackers(attacker, listOf(basilisk), defender)
         driver.bothPass()
         driver.declareBlockers(defender, mapOf(bears to listOf(basilisk), giant to listOf(basilisk)))
+        driver.answerTriggerOrdering()
 
         driver.stackSize shouldBe 2
         driver.bothPass()

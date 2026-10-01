@@ -42,7 +42,13 @@ class CreateBatchTest : FunSpec({
     test("createBatch creates independent envs in request order") {
         val svc = MultiEnvService(registry(), workerPool = EnvWorkerPool(parallelism = 2))
 
-        val created = svc.createBatch(listOf(config(), config().copy(perspectivePlayerIndex = 1)))
+        // The merged Gym keeps the fork's routing: during play an observation is taken from the
+        // acting seat, and perspectivePlayerIndex only names the seat used once no one acts
+        // (EnvConfig KDoc). Bob therefore also starts the second game, so its opening observation
+        // is his and the two results stay distinguishable by request.
+        val created = svc.createBatch(
+            listOf(config(), config().copy(startingPlayerIndex = 1, perspectivePlayerIndex = 1))
+        )
 
         created shouldHaveSize 2
         created.map { (it.observation.observation as TrainingObservation).perspectivePlayerId } shouldBe

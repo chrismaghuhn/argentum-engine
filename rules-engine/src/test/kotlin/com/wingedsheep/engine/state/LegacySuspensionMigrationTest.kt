@@ -5,6 +5,8 @@ import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.PendingDecision
 import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.engineSerializersModule
+import com.wingedsheep.engine.state.components.player.KnownInformationLedgerComponentV1
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.support.ScenarioTestBase
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
@@ -16,6 +18,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -37,6 +40,9 @@ class LegacySuspensionMigrationTest : ScenarioTestBase() {
                 var state = json.decodeFromString<GameState>(original.toString())
                 state.zoneReturns shouldBe emptyList()
                 state.playerActionPermissions shouldBe emptyList()
+                // The fork's CR 400.7 identity stamps postdate the capture too; the reader invents none.
+                state.objectIdentityStamps shouldBe DEFAULT_STATE.objectIdentityStamps
+                state.nextObjectIdentityStamp shouldBe DEFAULT_STATE.nextObjectIdentityStamp
                 state.nextRoutingId shouldBe original.getValue("nextRoutingId").jsonPrimitive.content.toLong()
                 state.pendingDecision shouldBe json.decodeFromString<PendingDecision>(original.getValue("pendingDecision").toString())
 
@@ -46,8 +52,9 @@ class LegacySuspensionMigrationTest : ScenarioTestBase() {
                 // captures. Compare the saved fields after checking that the new return
                 // bookkeeping starts empty.
                 val encoded = encodeState(state)
-                withoutPostCaptureCardDefaults(JsonObject(encoded - "continuationStack" - POST_CAPTURE_FIELDS)) shouldBe
-                    JsonObject(original - "continuationStack" - "pendingDecision")
+                withoutForkPostCaptureDefaults(withoutPostCaptureCardDefaults(
+                    JsonObject(encoded - "continuationStack" - POST_CAPTURE_FIELDS - FORK_POST_CAPTURE_FIELDS)
+                )) shouldBe JsonObject(original - "continuationStack" - "pendingDecision")
                 assertCurrentRoundTrip(state)
 
                 val actions = json.decodeFromString<List<GameAction>>(fixtureText(fixture, "actions.json"))
@@ -63,8 +70,8 @@ class LegacySuspensionMigrationTest : ScenarioTestBase() {
                     result.error shouldBe null
                     state = result.state
                     val expected = json.decodeFromString<GameState>(fixtureText(fixture, "after-${index + 1}.json"))
-                    normalizeRouting(encodeState(state), root = true) shouldBe
-                        normalizeRouting(encodeState(expected), root = true)
+                    normalizeRouting(withoutForkBookkeeping(encodeState(state)), root = true) shouldBe
+                        normalizeRouting(withoutForkBookkeeping(encodeState(expected)), root = true)
                     assertCurrentRoundTrip(state)
                 }
             }
@@ -95,8 +102,8 @@ class LegacySuspensionMigrationTest : ScenarioTestBase() {
             val action = json.decodeFromString<List<GameAction>>(fixtureText(fixture, "actions.json")).single()
             val result = actionProcessor.process(state, action).result
             result.error shouldBe null
-            result.state.copy(controlAtTurnStart = null) shouldBe
-                json.decodeFromString<GameState>(fixtureText(fixture, "after-1.json"))
+            result.state.copy(controlAtTurnStart = null).withoutForkBookkeeping() shouldBe
+                json.decodeFromString<GameState>(fixtureText(fixture, "after-1.json")).withoutForkBookkeeping()
             result.events shouldBe json.decodeFromString<List<GameEvent>>(fixtureText(fixture, "events-1.json"))
             result.state.pendingDecision shouldBe null
             result.state.continuationStack shouldBe emptyList()
@@ -138,7 +145,15 @@ class LegacySuspensionMigrationTest : ScenarioTestBase() {
             reopen.getValue("type") shouldBe JsonPrimitive(CORE + "ReopenManaPaymentDecisionContinuation")
             val saved = reopen.getValue("suspension").jsonObject
             val original = fixtureStack("suspended-mana-window")
-            saved.getValue("question") shouldBe JsonObject(
+            // The fork added an exact `manaAbilityId` to each offered source after this capture. It
+            // decodes to its default (null); with that one field set aside the question is the
+            // captured one, byte for byte.
+            val savedQuestion = saved.getValue("question").jsonObject
+            val savedSources = savedQuestion.getValue("availableSources").jsonArray
+            savedSources.forEach { source -> source.jsonObject.getValue("manaAbilityId") shouldBe JsonNull }
+            JsonObject(savedQuestion + ("availableSources" to JsonArray(savedSources.map { source ->
+                JsonObject(source.jsonObject - "manaAbilityId")
+            }))) shouldBe JsonObject(
                 original[1].jsonObject.getValue("decision").jsonObject + ("type" to JsonPrimitive("SelectManaSourcesDecision"))
             )
             // Every field the legacy frame carried survives untouched. Fields added since the
@@ -309,6 +324,68 @@ class LegacySuspensionMigrationTest : ScenarioTestBase() {
         else -> value
     }
 
+    /**
+     * The fork's exact floating-mana provenance (source/color buckets, completeness, disclosure)
+     * postdates the capture; an old pool must decode to those fields' defaults.
+     */
+    private fun withoutForkPostCaptureDefaults(value: JsonElement): JsonElement = when (value) {
+        is JsonObject -> {
+            val fields = if (value["type"] == JsonPrimitive(MANA_POOL_COMPONENT)) {
+                for (field in FORK_MANA_PROVENANCE_FIELDS) {
+                    value.getValue(field) shouldBe defaultPoolJson.getValue(field)
+                }
+                value - FORK_MANA_PROVENANCE_FIELDS
+            } else value
+            JsonObject(fields.mapValues { withoutForkPostCaptureDefaults(it.value) })
+        }
+        is JsonArray -> JsonArray(value.map(::withoutForkPostCaptureDefaults))
+        else -> value
+    }
+
+    private val defaultPoolJson: JsonObject by lazy {
+        json.parseToJsonElement(json.encodeToString(ManaPoolComponent.serializer(), ManaPoolComponent())).jsonObject
+    }
+
+    /**
+     * The fork's bookkeeping beside the captured gameplay — CR 400.7 object-identity stamps, the
+     * per-player known-information ledger, and the exact source/color floating-mana provenance —
+     * postdates these captures just like control history, and is verified by its own suites
+     * (KnownInformationLedgerTest, the mana-provenance tests, the identity-stamp tests). The replay
+     * comparison leaves it out on both sides; every captured field is still compared.
+     */
+    private fun withoutForkBookkeeping(encoded: JsonObject): JsonObject {
+        val entities = encoded["entities"]?.jsonObject
+        val trimmed = encoded - FORK_POST_CAPTURE_FIELDS
+        return JsonObject(
+            if (entities == null) trimmed
+            else trimmed + ("entities" to JsonObject(entities.mapValues { (_, components) ->
+                JsonObject(components.jsonObject.filterKeys { it != LEDGER_COMPONENT }.mapValues { (key, component) ->
+                    if (key == MANA_POOL_COMPONENT) JsonObject(component.jsonObject - FORK_MANA_PROVENANCE_FIELDS)
+                    else component
+                })
+            }))
+        )
+    }
+
+    /** [withoutForkBookkeeping] for the data-class comparison of the cycling capture. */
+    private fun GameState.withoutForkBookkeeping(): GameState = copy(
+        entities = entities.mapValues { (_, container) ->
+            val withoutLedger = container.without<KnownInformationLedgerComponentV1>()
+            val pool = withoutLedger.get<ManaPoolComponent>()
+            if (pool == null) withoutLedger
+            else withoutLedger.with(
+                pool.copy(
+                    manaBySourceAndColor = DEFAULT_POOL.manaBySourceAndColor,
+                    manaByFloatingBucket = DEFAULT_POOL.manaByFloatingBucket,
+                    manaProvenanceCompleteness = DEFAULT_POOL.manaProvenanceCompleteness,
+                    manaProvenanceKnownTo = DEFAULT_POOL.manaProvenanceKnownTo,
+                )
+            )
+        },
+        objectIdentityStamps = DEFAULT_STATE.objectIdentityStamps,
+        nextObjectIdentityStamp = DEFAULT_STATE.nextObjectIdentityStamp,
+    )
+
     /** [actual] narrowed to the keys [shape] has, at every depth — additions are ignored. */
     private fun restrictTo(actual: JsonElement, shape: JsonElement): JsonElement = when {
         actual is JsonObject && shape is JsonObject ->
@@ -334,6 +411,17 @@ class LegacySuspensionMigrationTest : ScenarioTestBase() {
             "objectIdentities", "nextObjectGeneration", "zoneReturns", "pendingTriggers", "controlAtTurnStart",
             "playersDealtNoncombatDamageThisTurn", "playersDealtNoncombatDamageLastTurn",
             "pendingReplacementRiders", "playersDealtCombatDamageSinceTheirLastTurn",
+        )
+
+        private val DEFAULT_STATE = GameState()
+        private val DEFAULT_POOL = ManaPoolComponent()
+
+        /** The fork's CR 400.7 identity stamps, also introduced after these captures. */
+        private val FORK_POST_CAPTURE_FIELDS = setOf("objectIdentityStamps", "nextObjectIdentityStamp")
+        private val LEDGER_COMPONENT: String = KnownInformationLedgerComponentV1::class.java.name
+        private val MANA_POOL_COMPONENT: String = ManaPoolComponent::class.java.name
+        private val FORK_MANA_PROVENANCE_FIELDS = setOf(
+            "manaBySourceAndColor", "manaByFloatingBucket", "manaProvenanceCompleteness", "manaProvenanceKnownTo",
         )
     }
 }

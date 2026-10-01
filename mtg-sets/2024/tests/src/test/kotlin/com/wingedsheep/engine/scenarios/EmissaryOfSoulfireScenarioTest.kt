@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.GameTestDriver
@@ -66,6 +67,12 @@ class EmissaryOfSoulfireScenarioTest : FunSpec({
 
         d.passPriorityUntil(Step.DECLARE_ATTACKERS)
         d.declareAttackers(d.player1, listOf(bears), d.player2).error shouldBe null
+        // The two exalted instances trigger together, and the engine lets you order every group of
+        // your simultaneous triggers (CR 603.3b), identical ones included. Keep the offered order.
+        while (true) {
+            val order = d.state.pendingDecision as? OrderObjectsDecision ?: break
+            d.submitObjectOrdering(order.playerId, order.objects).error shouldBe null
+        }
         withClue("one exalted trigger per counter") { d.state.stack.size shouldBe 2 }
         while (d.state.stack.isNotEmpty()) d.bothPass()
 

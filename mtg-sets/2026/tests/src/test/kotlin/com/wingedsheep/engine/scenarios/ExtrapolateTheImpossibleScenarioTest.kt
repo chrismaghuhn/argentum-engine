@@ -7,6 +7,7 @@ import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 
 /**
@@ -96,11 +97,18 @@ class ExtrapolateTheImpossibleScenarioTest : ScenarioTestBase() {
                 reveal.shouldBeInstanceOf<SelectCardsDecision>()
                 val bears = reveal.cardInfo!!.entries.filter { it.value.name == "Grizzly Bears" }.map { it.key }
                 bears.size shouldBe 2
-                // A client that ignored the name restriction: the server keeps only one Bears.
-                game.selectCards(bears)
+                // A client that ignored the name restriction. The engine checks the response against
+                // the decision's one-per-name restriction and refuses it outright; it does not trim
+                // the pair down to one Bears.
+                withClue("Two copies of one card are not two cards with different names") {
+                    game.selectCards(bears).error shouldNotBe null
+                }
 
-                withClue("Only one card could be revealed — no opponent choice, nothing to hand") {
-                    game.hasPendingDecision() shouldBe false
+                withClue("Nothing was revealed — no opponent choice, nothing to hand") {
+                    val stillPending = game.getPendingDecision()
+                    stillPending.shouldBeInstanceOf<SelectCardsDecision>()
+                    stillPending.id shouldBe reveal.id
+                    stillPending.playerId shouldBe game.player1Id
                     game.isInHand(1, "Grizzly Bears") shouldBe false
                     game.sideboardSize(1) shouldBe 3
                 }

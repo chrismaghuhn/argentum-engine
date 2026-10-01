@@ -1,7 +1,6 @@
 package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.state.ComponentContainer
-import com.wingedsheep.engine.state.FACE_DOWN_DISPLAY_NAME
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -95,27 +94,48 @@ class ObservationVisibilityTest : ScenarioTestBase() {
         // The representation this whole change exists for: a zone stays hidden while carrying the
         // one identity the perspective legitimately knows. The unknown slot is not emitted at all,
         // so nothing in the schema says *where* among the unknowns the known card sits.
+        //
+        // The merged Gym keeps the fork's visibility encoding (CardVisibility in ObservationBuilder):
+        // an individually revealed LIBRARY card is emitted inside its still-hidden zone, but an
+        // individually revealed HAND card is not — the hand stays identity-free and the card is
+        // only addressable through action domains (pinned by ObservationPrivacyTest "an explicitly
+        // revealed hidden-zone object may be addressed without identity in the domain"). Upstream
+        // emitted the revealed hand card too; that would change what the P1 models observe.
         test("a hidden zone carries its known subset while still reporting its full size") {
             val base = scenario()
                 .withPlayers()
                 .withCardInHand(2, "Mountain")
                 .withCardInHand(2, "Hill Giant")
+                .withCardInLibrary(2, "Forest")
+                .withCardInLibrary(2, "Hill Giant")
                 .build()
             val bystander = EntityId.of("player-3")
             val withBystander = addBystander(base.state, bystander)
-            val known = withBystander.getHand(base.player2Id).first { id ->
+            val knownInHand = withBystander.getHand(base.player2Id).first { id ->
                 withBystander.getEntity(id)?.get<CardComponent>()?.name == "Mountain"
             }
-            val state = withBystander.updateEntity(known) {
-                it.with(RevealedToComponent.to(base.player1Id))
+            val knownInLibrary = withBystander.getLibrary(base.player2Id).first { id ->
+                withBystander.getEntity(id)?.get<CardComponent>()?.name == "Forest"
             }
+            val state = withBystander
+                .updateEntity(knownInHand) { it.with(RevealedToComponent.to(base.player1Id)) }
+                .updateEntity(knownInLibrary) { it.with(RevealedToComponent.to(base.player1Id)) }
 
-            zone(observe(state, base.player1Id), base.player2Id, Zone.HAND).let {
+            val entitled = observe(state, base.player1Id)
+            zone(entitled, base.player2Id, Zone.LIBRARY).let {
                 it.hidden shouldBe true
                 it.size shouldBe 2
-                it.cards.map { card -> card.entityId } shouldContainExactly listOf(known)
+                it.cards.map { card -> card.entityId } shouldContainExactly listOf(knownInLibrary)
+                it.cards.single().name shouldBe "Forest"
             }
-            zone(observe(state, bystander), base.player2Id, Zone.HAND).cards shouldBe emptyList()
+            zone(entitled, base.player2Id, Zone.HAND).let {
+                it.hidden shouldBe true
+                it.size shouldBe 2
+                it.cards shouldBe emptyList()
+            }
+            val unrelated = observe(state, bystander)
+            zone(unrelated, base.player2Id, Zone.LIBRARY).cards shouldBe emptyList()
+            zone(unrelated, base.player2Id, Zone.HAND).cards shouldBe emptyList()
         }
 
         test("a known top card is the library's only entry, public or private") {
@@ -199,7 +219,9 @@ class ObservationVisibilityTest : ScenarioTestBase() {
             val opponentView = observe(hiddenState, game.player1Id)
             zone(opponentView, game.player2Id, Zone.BATTLEFIELD).cards.single().let {
                 it.entityId shouldBe permanent
-                it.name shouldBe FACE_DOWN_DISPLAY_NAME
+                // The merged Gym keeps the fork's placeholder names ("Face-down permanent" /
+                // "Face-down spell"), not the engine's display name "Face-down creature".
+                it.name shouldBe "Face-down permanent"
                 it.cardDefinitionId shouldBe null
                 it.oracleText shouldBe ""
                 withClue("the public face-down characteristics survive — it is a 2/2 creature") {
@@ -209,7 +231,7 @@ class ObservationVisibilityTest : ScenarioTestBase() {
                 }
             }
             opponentView.stack.single().let {
-                it.name shouldBe FACE_DOWN_DISPLAY_NAME
+                it.name shouldBe "Face-down spell"
                 it.oracleText shouldBe ""
             }
 

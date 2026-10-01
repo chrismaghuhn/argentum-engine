@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
@@ -86,8 +87,11 @@ class MeathookMassacreIIScenarioTest : FunSpec({
 
         // Resolve the spell + ETB trigger, answering each player's "sacrifice 1" selection and
         // declining the follow-on "may pay 3 life" prompts from the death of each sacrificed token.
+        // Both tokens die during the one resolution, so Meathook's two dies triggers (both yours)
+        // go on the stack together and you order them first (CR 603.3b) — keep the offered order.
         repeat(30) {
             when (val dec = d.pendingDecision) {
+                is OrderObjectsDecision -> d.submitObjectOrdering(dec.playerId, dec.objects)
                 is SelectCardsDecision -> d.submitCardSelection(dec.playerId, dec.options.take(dec.minSelections))
                 is YesNoDecision -> d.submitYesNo(dec.playerId, false)
                 null -> d.bothPass()

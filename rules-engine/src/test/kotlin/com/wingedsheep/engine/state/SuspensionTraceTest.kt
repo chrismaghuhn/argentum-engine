@@ -4,6 +4,8 @@ import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.engineSerializersModule
+import com.wingedsheep.engine.state.components.player.KnownInformationLedgerComponentV1
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.support.ScenarioTestBase
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.encodeToString
@@ -53,8 +55,8 @@ class SuspensionTraceTest : ScenarioTestBase() {
                     result.error shouldBe null
                     state = result.state
                     val expected = json.decodeFromString<GameState>(fixtureText(fixture, "after-${index + 1}.json"))
-                    normalizeRouting(encodeState(state), root = true) shouldBe
-                        normalizeRouting(encodeState(expected), root = true)
+                    normalizeRouting(withoutForkBookkeeping(encodeState(state)), root = true) shouldBe
+                        normalizeRouting(withoutForkBookkeeping(encodeState(expected)), root = true)
                     assertCurrentRoundTrip(state)
                 }
             }
@@ -75,8 +77,8 @@ class SuspensionTraceTest : ScenarioTestBase() {
             val action = json.decodeFromString<List<GameAction>>(fixtureText(fixture, "actions.json")).single()
             val result = actionProcessor.process(state, action).result
             result.error shouldBe null
-            result.state.copy(controlAtTurnStart = null) shouldBe
-                json.decodeFromString<GameState>(fixtureText(fixture, "after-1.json"))
+            result.state.copy(controlAtTurnStart = null).withoutForkBookkeeping() shouldBe
+                json.decodeFromString<GameState>(fixtureText(fixture, "after-1.json")).withoutForkBookkeeping()
             result.events shouldBe json.decodeFromString<List<GameEvent>>(fixtureText(fixture, "events-1.json"))
             result.state.pendingDecision shouldBe null
             result.state.continuationStack shouldBe emptyList()
@@ -119,8 +121,59 @@ class SuspensionTraceTest : ScenarioTestBase() {
         else -> value
     }
 
+    /**
+     * The fork's bookkeeping beside the captured gameplay — CR 400.7 object-identity stamps, the
+     * per-player known-information ledger, and the exact source/color floating-mana provenance —
+     * postdates these traces just like control history above, and is verified by its own suites
+     * (KnownInformationLedgerTest, the mana-provenance tests, the identity-stamp tests). It is left
+     * out on both sides; every captured field is still compared.
+     */
+    private fun withoutForkBookkeeping(encoded: JsonObject): JsonObject {
+        val entities = encoded["entities"]?.jsonObject
+        val trimmed = encoded - FORK_STATE_FIELDS
+        return JsonObject(
+            if (entities == null) trimmed
+            else trimmed + ("entities" to JsonObject(entities.mapValues { (_, components) ->
+                JsonObject(components.jsonObject.filterKeys { it != LEDGER_COMPONENT }.mapValues { (key, component) ->
+                    if (key == MANA_POOL_COMPONENT) JsonObject(component.jsonObject - FORK_MANA_PROVENANCE_FIELDS)
+                    else component
+                })
+            }))
+        )
+    }
+
+    /** [withoutForkBookkeeping] for the data-class comparison of the cycling capture. */
+    private fun GameState.withoutForkBookkeeping(): GameState = copy(
+        entities = entities.mapValues { (_, container) ->
+            val withoutLedger = container.without<KnownInformationLedgerComponentV1>()
+            val pool = withoutLedger.get<ManaPoolComponent>()
+            if (pool == null) withoutLedger
+            else withoutLedger.with(
+                pool.copy(
+                    manaBySourceAndColor = DEFAULT_POOL.manaBySourceAndColor,
+                    manaByFloatingBucket = DEFAULT_POOL.manaByFloatingBucket,
+                    manaProvenanceCompleteness = DEFAULT_POOL.manaProvenanceCompleteness,
+                    manaProvenanceKnownTo = DEFAULT_POOL.manaProvenanceKnownTo,
+                )
+            )
+        },
+        objectIdentityStamps = DEFAULT_STATE.objectIdentityStamps,
+        nextObjectIdentityStamp = DEFAULT_STATE.nextObjectIdentityStamp,
+    )
+
     private fun encodeState(state: GameState): JsonObject = json.parseToJsonElement(json.encodeToString(state)).jsonObject
     private fun fixtureObject(fixture: String, name: String): JsonObject = json.parseToJsonElement(fixtureText(fixture, name)).jsonObject
     private fun fixtureText(fixture: String, name: String): String =
         checkNotNull(javaClass.getResource("/suspension-traces/$fixture/$name")) { "Missing captured fixture $fixture/$name" }.readText()
+
+    companion object {
+        private val DEFAULT_STATE = GameState()
+        private val DEFAULT_POOL = ManaPoolComponent()
+        private val FORK_STATE_FIELDS = setOf("objectIdentityStamps", "nextObjectIdentityStamp")
+        private val LEDGER_COMPONENT: String = KnownInformationLedgerComponentV1::class.java.name
+        private val MANA_POOL_COMPONENT: String = ManaPoolComponent::class.java.name
+        private val FORK_MANA_PROVENANCE_FIELDS = setOf(
+            "manaBySourceAndColor", "manaByFloatingBucket", "manaProvenanceCompleteness", "manaProvenanceKnownTo",
+        )
+    }
 }
