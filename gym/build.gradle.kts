@@ -238,6 +238,7 @@ tasks.withType<Test>().configureEach {
         "phase1.ppo",
         "phase1.league",
         "phase1.policyProcesses",
+        "phase1.gameTimeoutSeconds",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }

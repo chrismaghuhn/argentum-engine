@@ -37,7 +37,7 @@ private const val PPO_BASE_SEED = 600_000_000L
  * starting player by game number, so the learner plays both decks from both positions.
  *
  * `-Dphase1.ppo=true -Dphase1.checkpoint=DIR -Dphase1.league=... -Dphase1.games=N -Dphase1.firstGame=G
- *  -Dphase1.workers=W -Dphase1.policyProcesses=P -Dphase1.outputDir=DIR`
+ *  -Dphase1.workers=W -Dphase1.policyProcesses=P -Dphase1.gameTimeoutSeconds=1200 -Dphase1.outputDir=DIR`
  */
 class Phase1PpoCollectTest : FunSpec({
     test("collects PPO rollouts of a sampling learner against a league")
@@ -104,11 +104,18 @@ class Phase1PpoCollectTest : FunSpec({
 
             val decisions = AtomicInteger()
             val failed = AtomicInteger()
+            val timedOut = AtomicInteger()
+            // A model can steer the engine AI into positions where one of its searches runs for an
+            // hour; such a game is abandoned after this long so it cannot hold up the whole batch.
+            val gameTimeoutMillis = (System.getProperty("phase1.gameTimeoutSeconds")?.toLong() ?: 1_200L) * 1_000L
+            val gameStarted = java.util.concurrent.ConcurrentHashMap<Int, Long>()
             val started = System.nanoTime()
-            val pool = Executors.newFixedThreadPool(workers)
+            // Daemon threads: an abandoned game must not keep the test JVM alive.
+            val pool = Executors.newFixedThreadPool(workers) { task -> Thread(task).apply { isDaemon = true } }
             val summaries = try {
                 (firstGame until firstGame + games).map { game ->
-                    pool.submit(Callable {
+                    game to pool.submit(Callable {
+                        gameStarted[game] = System.currentTimeMillis()
                         val config = Phase1SelfPlayCollector.gameConfig(game, PPO_BASE_SEED, resolver, decks)
                         // SplittableRandom mixes its seed; java.util.Random's first draw for consecutive
                         // seeds is nearly identical and put every game against the same opponent.
@@ -189,12 +196,29 @@ class Phase1PpoCollectTest : FunSpec({
                         println("  $line")
                         result
                     })
-                }.mapNotNull { it.get() }
+                }.mapNotNull { (game, future) ->
+                    var summary: Phase1Tournament.GameResult? = null
+                    while (true) {
+                        try {
+                            summary = future.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                            break
+                        } catch (_: java.util.concurrent.TimeoutException) {
+                            val since = gameStarted[game] ?: continue
+                            if (System.currentTimeMillis() - since > gameTimeoutMillis) {
+                                future.cancel(true)
+                                timedOut.incrementAndGet()
+                                println("  game=$game abandoned after ${gameTimeoutMillis / 1000}s")
+                                break
+                            }
+                        }
+                    }
+                    summary
+                }
             } finally {
                 pool.shutdown()
                 policyWorkers.values.forEach { it.close() }
             }
-            val footer = "# games=${summaries.size}/$games failed=${failed.get()} decisions=${decisions.get()} " +
+            val footer = "# games=${summaries.size}/$games failed=${failed.get()} timedOut=${timedOut.get()} decisions=${decisions.get()} " +
                 "learnerWinsSeatA=${summaries.count { it.winner == "A" }} unfinished=${summaries.count { !it.terminal }} " +
                 "wallSeconds=${"%.1f".format((System.nanoTime() - started) / 1e9)}"
             println(footer)
