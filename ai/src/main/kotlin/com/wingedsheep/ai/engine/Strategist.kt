@@ -107,6 +107,11 @@ class Strategist(
      */
     private val holdExpiringGrantsForCombat: Boolean = false,
     /**
+     * [AiProfile.attachmentMovesPerTurn]: count [MAX_ATTACHMENT_MOVES_PER_STEP] per turn instead of
+     * per step. See [attachmentMovesThisStep].
+     */
+    private val attachmentMovesPerTurn: Boolean = false,
+    /**
      * The profile's `EvaluationWeights.boardPresence`. Only [HoldPolicy] reads it, to quote a
      * patience discount in the same units the leaf score prices board value in.
      */
@@ -155,8 +160,13 @@ class Strategist(
      * above passing — so the AI moved Equipment around for an entire main phase. A move and one
      * correction of it is all a step ever needs; a candidate that would move an attachment a
      * [MAX_ATTACHMENT_MOVES_PER_STEP]+1th time is dropped.
+     *
+     * With [attachmentMovesPerTurn] the window is the whole turn rather than one step. Equip at
+     * instant speed (Leonin Shikari) reopens a per-step budget in every step of both players'
+     * turns, so with Puresteel Paladin each Equipment still moved about six times a turn and a
+     * replayed P1 rollout turn took up to 78 s of engine decisions.
      */
-    private var attachmentStep: Pair<Int, Step>? = null
+    private var attachmentStep: Pair<Int, Step?>? = null
     private val attachmentMovesThisStep = mutableMapOf<EntityId, Int>()
 
     fun chooseAction(
@@ -198,7 +208,7 @@ class Strategist(
 
         val budget = budgetPolicy.budgetFor(state, playerId, affordable)
         val here = StateProgress.digest(evaluationState)
-        val step = state.turnNumber to state.step
+        val step = state.turnNumber to state.step.takeUnless { attachmentMovesPerTurn }
         if (step != attachmentStep) {
             attachmentStep = step
             attachmentMovesThisStep.clear()

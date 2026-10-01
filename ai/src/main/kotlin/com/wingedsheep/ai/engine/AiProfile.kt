@@ -341,6 +341,15 @@ data class AiProfile(
      */
     val holdExpiringGrantsForCombat: Boolean = false,
     /**
+     * Cap the Strategist's own attachment moves (2 per Aura or Equipment) per **turn** instead of
+     * per step. Per step, instant-speed equip (Leonin Shikari) plus free equip (Puresteel Paladin)
+     * let every Equipment move twice in every step of both turns: each move costs a full decision,
+     * and those decisions made P1 rollout games against the engine AI take many minutes. A move and
+     * one change of mind per turn still covers equipping in the main phase and re-equipping as a
+     * combat trick after blocks.
+     */
+    val attachmentMovesPerTurn: Boolean = false,
+    /**
      * The two `BoardPresence.creatureValue` corrections [PRODUCTION_RACECLOCK]'s KDoc named as the
      * reason its arena win came with a puzzle trade — the damaged-creature discount and the flat
      * multiplier on "can't attack". Both are off by default; see
@@ -1134,10 +1143,19 @@ data class AiProfile(
          * If a later arena run comes back below parity, revert the one call site
          * ([com.wingedsheep.ai.engine.EngineAiPlayerController]) rather than the flag: it is off for
          * every other profile, so backing the promotion out costs nothing and loses no measurement.
+         *
+         * It also carries [attachmentMovesPerTurn]. Measured on the Akiri vs Chevill Commander
+         * matchup (P1 `Phase1Tournament`, engine vs engine, 100 deals each; BLB sealed has no free
+         * instant-speed equip for it to fire on): against the per-step cap it won **45/100, CI
+         * [35%, 55%]** — no measurable strength change — while the slowest deal dropped from 720 s
+         * to 266 s, the slowest game overall went from 720 s to 373 s (and a 1288 s game in the
+         * mixed match was the per-step side's), and mean game time stayed put (−3.8 s paired by
+         * deal). The puzzle suite is identical, 94/98 with the same failing set.
          */
         val PRODUCTION_CANDIDATE_EXPIRING = PRODUCTION_CANDIDATE_COUNTERPATIENCE.copy(
             id = "production-candidate-expiring",
             holdExpiringGrantsForCombat = true,
+            attachmentMovesPerTurn = true,
         )
 
         /**
