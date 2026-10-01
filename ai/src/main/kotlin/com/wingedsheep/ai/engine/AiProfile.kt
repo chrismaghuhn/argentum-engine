@@ -341,6 +341,15 @@ data class AiProfile(
      */
     val holdExpiringGrantsForCombat: Boolean = false,
     /**
+     * Cap the Strategist's own attachment moves (2 per Aura or Equipment) per **turn** instead of
+     * per step. Per step, instant-speed equip (Leonin Shikari) plus free equip (Puresteel Paladin)
+     * let every Equipment move twice in every step of both turns: each move costs a full decision,
+     * and those decisions made P1 rollout games against the engine AI take many minutes. A move and
+     * one change of mind per turn still covers equipping in the main phase and re-equipping as a
+     * combat trick after blocks.
+     */
+    val attachmentMovesPerTurn: Boolean = false,
+    /**
      * The two `BoardPresence.creatureValue` corrections [PRODUCTION_RACECLOCK]'s KDoc named as the
      * reason its arena win came with a puzzle trade — the damaged-creature discount and the flat
      * multiplier on "can't attack". Both are off by default; see
@@ -1138,6 +1147,17 @@ data class AiProfile(
         val PRODUCTION_CANDIDATE_EXPIRING = PRODUCTION_CANDIDATE_COUNTERPATIENCE.copy(
             id = "production-candidate-expiring",
             holdExpiringGrantsForCombat = true,
+        )
+
+        /**
+         * [PRODUCTION_CANDIDATE_EXPIRING] plus [attachmentMovesPerTurn]: the A/B agent for capping
+         * the Strategist's attachment moves per turn rather than per step. Measured on the Akiri vs
+         * Chevill Commander matchup (`Phase1Tournament`, engine vs engine), where Puresteel Paladin
+         * and Leonin Shikari live; BLB sealed has no free instant-speed equip for it to fire on.
+         */
+        val PRODUCTION_CANDIDATE_EQUIPTURN = PRODUCTION_CANDIDATE_EXPIRING.copy(
+            id = "production-candidate-equipturn",
+            attachmentMovesPerTurn = true,
         )
 
         /**
