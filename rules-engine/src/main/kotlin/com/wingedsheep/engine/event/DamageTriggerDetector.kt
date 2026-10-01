@@ -282,9 +282,11 @@ class DamageTriggerDetector(
 
     /**
      * Resolve the ability set from the object's event-time identity. A stamped snapshot selects
-     * snapshot-only intrinsic abilities even when the id is now gone or names a replacement; a
-     * snapshot without a definition may use the live entity only when its incarnation is proven
-     * unchanged. This keeps damage trigger discovery from silently switching to a newer object.
+     * the abilities it captured — intrinsic ones from its definition plus the grants frozen into
+     * [EntitySnapshot.grantedTriggeredAbilities] — even when the id is now gone or names a
+     * replacement; a snapshot without a definition may use the live entity only when its
+     * incarnation is proven unchanged. This keeps damage trigger discovery from silently switching
+     * to a newer object.
      */
     private fun abilitiesAtDamageTime(
         state: GameState,
@@ -295,8 +297,10 @@ class DamageTriggerDetector(
         if (snapshot.stampedFor(entityId) == null) return emptyList()
         // A live stamped object still has dynamic abilities granted by the current projected state
         // (for example The Ring's abilities on its current Ring-bearer). Use the normal resolver
-        // only for that proven incarnation. A departed/replaced object uses snapshot-only
-        // intrinsic abilities and can never switch to the newer same-id object's abilities.
+        // only for that proven incarnation. A departed/replaced object uses only what its
+        // damage-time snapshot captured (a creature that died to this damage still had its
+        // "until end of turn" grants when the trigger condition was met) and can never switch to
+        // the newer same-id object's abilities.
         if (!state.isCapturedBattlefieldObjectLive(entityId, snapshot)) {
             if (snapshot.cardDefinitionId != null) {
                 return abilityResolver.getTriggeredAbilitiesFromSnapshot(entityId, snapshot)

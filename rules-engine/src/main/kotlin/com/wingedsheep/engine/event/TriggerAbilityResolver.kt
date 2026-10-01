@@ -4,7 +4,6 @@ import com.wingedsheep.engine.state.components.identity.TextChanges
 import com.wingedsheep.engine.state.components.identity.TextReplacementComponent
 import com.wingedsheep.engine.mechanics.SoulbondPairing
 import com.wingedsheep.engine.mechanics.battle.Battles
-import com.wingedsheep.engine.mechanics.durations.GrantDurationGate
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
@@ -49,14 +48,15 @@ class TriggerAbilityResolver(
 ) {
     private val conditionEvaluator = predicateEvaluator.conditions
     /**
-     * Resolve intrinsic triggered abilities from an event-time permanent snapshot.
+     * Resolve the triggered abilities an object had at an event from its event-time snapshot.
      *
      * Damage events can outlive both the source and recipient, and an engine entity id can be
      * reused by a later battlefield object. In that situation the live entity is not an ability
-     * witness: only the definition captured in [snapshot] identifies which intrinsic abilities
-     * existed when the event happened. Snapshot-only resolution intentionally omits state-backed
-     * grants (and class/Room state) that cannot be reconstructed from the captured vocabulary;
-     * returning a newer object's grants would be less safe than failing closed.
+     * witness: only what [snapshot] captured identifies which abilities existed when the event
+     * happened — the intrinsic ones of its captured definition, plus the grants frozen into
+     * [EntitySnapshot.grantedTriggeredAbilities] when the damage was dealt. Anything the snapshot
+     * did not capture (lord-style grants from other permanents, class/Room state) is omitted;
+     * returning a newer object's abilities would be less safe than failing closed.
      */
     fun getTriggeredAbilitiesFromSnapshot(
         entityId: EntityId,
@@ -66,12 +66,14 @@ class TriggerAbilityResolver(
             return emptyList()
         }
         val cardDefinitionId = snapshot.cardDefinitionId ?: return emptyList()
-        val registryAbilities = abilityRegistry.getTriggeredAbilities(entityId, cardDefinitionId)
-        if (registryAbilities.isNotEmpty()) return registryAbilities
-        return cardRegistry.getCard(cardDefinitionId)
-            ?.script
-            ?.effectiveTriggeredAbilities(null)
-            ?: emptyList()
+        val intrinsic = abilityRegistry.getTriggeredAbilities(entityId, cardDefinitionId).ifEmpty {
+            cardRegistry.getCard(cardDefinitionId)
+                ?.script
+                ?.effectiveTriggeredAbilities(null)
+                ?: emptyList()
+        }
+        val granted = snapshot.grantedTriggeredAbilities
+        return if (granted.isEmpty()) intrinsic else intrinsic + granted
     }
 
     /**
@@ -106,15 +108,7 @@ class TriggerAbilityResolver(
         // Mannequin's sacrifice rider lasts only while the mannequin counter is there, and the
         // counter can leave between two state-based-action passes. The one-way latch that stops a
         // re-added counter resurrecting the grant lives in EndedDurationExpiryCheck.
-        val grantedAbilities = buildList {
-            for (grant in state.grantedTriggeredAbilities) {
-                if (grant.entityId == entityId &&
-                    GrantDurationGate.holds(state, grant.entityId, grant.sourceId, grant.duration)
-                ) {
-                    add(grant.ability)
-                }
-            }
-        }
+        val grantedAbilities = state.activeGrantedTriggeredAbilities(entityId)
 
         // Merge in triggered abilities granted by static abilities on other permanents
         // (e.g., Hunter Sliver granting provoke to all Slivers)
@@ -343,15 +337,7 @@ class TriggerAbilityResolver(
         }
 
         // Same per-read "for as long as …" gate as the other lookup path above.
-        val grantedAbilities = buildList {
-            for (grant in state.grantedTriggeredAbilities) {
-                if (grant.entityId == entityId &&
-                    GrantDurationGate.holds(state, grant.entityId, grant.sourceId, grant.duration)
-                ) {
-                    add(grant.ability)
-                }
-            }
-        }
+        val grantedAbilities = state.activeGrantedTriggeredAbilities(entityId)
 
         val staticGrantedAbilities = if (grantProviders.isNotEmpty()) {
             getStaticGrantedFromProviders(entityId, state, grantProviders)

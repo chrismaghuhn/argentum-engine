@@ -17,6 +17,7 @@ import com.wingedsheep.engine.core.LoyaltyChangedEvent
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
+import com.wingedsheep.engine.event.activeGrantedTriggeredAbilities
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.sdk.scripting.Duration
 import com.wingedsheep.engine.handlers.PredicateContext
@@ -195,6 +196,25 @@ object DamageUtils {
             wasAttacking = container.has<AttackingComponent>(),
             wasBlocking = container.has<BlockingComponent>(),
         )
+    }
+
+    /**
+     * The snapshot a [DamageDealtEvent] carries for its source or recipient role:
+     * [captureDamageEntitySnapshot] plus the triggered abilities the object has from effect grants
+     * ("gains '<triggered ability>' until end of turn", [GameState.grantedTriggeredAbilities]),
+     * frozen into [EntitySnapshot.grantedTriggeredAbilities].
+     *
+     * A damage trigger is checked against the object as it is immediately after the damage
+     * (CR 603.10), but combat damage reaches trigger detection only after its state-based actions,
+     * and a resolving effect can move the object before the resolution ends — either way the
+     * object may be gone by then. Its grants stay on [GameState] under the old entity id, which
+     * cannot tell the departed object from a newer one, so the departed-object path
+     * ([com.wingedsheep.engine.event.DamageTriggerDetector]) reads them from here instead.
+     */
+    fun captureDamageRoleSnapshot(state: GameState, entityId: EntityId?): EntitySnapshot? {
+        val snapshot = captureDamageEntitySnapshot(state, entityId) ?: return null
+        val granted = state.activeGrantedTriggeredAbilities(snapshot.entityId)
+        return if (granted.isEmpty()) snapshot else snapshot.copy(grantedTriggeredAbilities = granted)
     }
 
     /**
@@ -685,8 +705,8 @@ object DamageUtils {
                 sourceAttachmentIds = attachmentIdsOf(state, sourceId),
                 recipientKind = recipientKind,
                 recipientKinds = recipientKinds,
-                damageSourceLastKnownSnapshot = captureDamageEntitySnapshot(state, sourceId),
-                damageRecipientLastKnownSnapshot = captureDamageEntitySnapshot(state, targetId),
+                damageSourceLastKnownSnapshot = captureDamageRoleSnapshot(state, sourceId),
+                damageRecipientLastKnownSnapshot = captureDamageRoleSnapshot(state, targetId),
             )
         )
 

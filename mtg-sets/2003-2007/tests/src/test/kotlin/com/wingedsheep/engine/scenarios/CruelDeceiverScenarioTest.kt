@@ -48,11 +48,38 @@ class CruelDeceiverScenarioTest : FunSpec({
     }
 
     test("revealing a land grants the destroy trigger; a damaged blocker is destroyed") {
-        // The blocker is a 0/3: the Deceiver's 2 damage is not lethal to it, so only the granted
-        // trigger can destroy it, and it deals no damage back. The Deceiver therefore stays on the
-        // battlefield while its trigger is detected. The engine fails closed on a damage source
-        // that has already left the battlefield: it reads that source's abilities from its
-        // damage-time snapshot, which holds the printed abilities but not until-end-of-turn grants.
+        // The Deceiver and the 3/3 Courser deal their combat damage simultaneously, and the
+        // Deceiver only dies to the state-based action afterwards. Its damage trigger is checked
+        // against it as it was right after the damage — still on the battlefield, still holding
+        // the until-end-of-turn grant — so the trigger fires although the Deceiver is already in
+        // the graveyard when the trigger is put on the stack.
+        val d = driver()
+        val top = d.putCardOnTopOfLibrary(d.player1, "Swamp")
+        val deceiver = d.putCreatureOnBattlefield(d.player1, "Cruel Deceiver")
+        d.removeSummoningSickness(deceiver)
+        val courser = d.putCreatureOnBattlefield(d.player2, "Centaur Courser")
+        d.giveMana(d.player1, Color.BLACK, 2)
+
+        d.submit(ActivateAbility(d.player1, deceiver, revealAbility)).outcome shouldBe Outcome.Done
+        d.bothPass()
+        withClue("the revealed card is not moved") {
+            d.state.getZone(ZoneKey(d.player1, Zone.LIBRARY)).first() shouldBe top
+        }
+
+        d.attackIntoBlocker(deceiver, courser)
+
+        withClue("the 3/3 Courser took only 2 damage but the granted trigger destroyed it") {
+            d.graveyard(d.player2).contains(courser) shouldBe true
+        }
+        withClue("the 2/1 Deceiver died to the Courser's 3 damage") {
+            d.graveyard(d.player1).contains(deceiver) shouldBe true
+        }
+    }
+
+    test("revealing a land grants the destroy trigger; a Deceiver that survives destroys the blocker too") {
+        // The 0/3 Wall of Wood takes 2 non-lethal damage and deals none back, so the Deceiver is
+        // still on the battlefield when its granted trigger is detected — only the trigger can have
+        // destroyed the Wall.
         val d = driver()
         val top = d.putCardOnTopOfLibrary(d.player1, "Swamp")
         val deceiver = d.putCreatureOnBattlefield(d.player1, "Cruel Deceiver")
@@ -62,9 +89,7 @@ class CruelDeceiverScenarioTest : FunSpec({
 
         d.submit(ActivateAbility(d.player1, deceiver, revealAbility)).outcome shouldBe Outcome.Done
         d.bothPass()
-        withClue("the revealed card is not moved") {
-            d.state.getZone(ZoneKey(d.player1, Zone.LIBRARY)).first() shouldBe top
-        }
+        d.state.getZone(ZoneKey(d.player1, Zone.LIBRARY)).first() shouldBe top
 
         d.attackIntoBlocker(deceiver, wall)
 

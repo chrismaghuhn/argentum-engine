@@ -247,6 +247,22 @@ data class EntitySnapshot(
      * [com.wingedsheep.engine.event.ConditionalSelfGrants].
      */
     val conditionalSelfGrantIds: List<com.wingedsheep.sdk.scripting.AbilityId> = emptyList(),
+    /**
+     * Triggered abilities the object had at capture time from outside its own card definition: an
+     * effect's "<object> gains '<triggered ability>' until end of turn" (Cruel Deceiver, Commando
+     * Raid). Frozen onto a damage event's source and recipient snapshots by
+     * [com.wingedsheep.engine.handlers.effects.DamageUtils.captureDamageRoleSnapshot].
+     *
+     * A damage trigger is checked against the objects as they exist immediately after the damage
+     * event (CR 603.10), and state-based actions only run when a player would next receive
+     * priority (CR 704.3) — so a creature that dies to that same damage still had its granted
+     * abilities when the trigger condition was met. By detection time it is gone and its entity id
+     * may already name a newer object, whose grants must never stand in; the departed-object path
+     * reads these instead. Not encoded while empty, so snapshots without grants serialize as before.
+     */
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val grantedTriggeredAbilities: List<com.wingedsheep.sdk.scripting.TriggeredAbility> = emptyList(),
 ) : EntityView {
     companion object {
         /**
