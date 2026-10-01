@@ -39,14 +39,13 @@ class AttachEquipmentExecutor : EffectExecutor<AttachEquipmentEffect> {
         // host makes it become unattached from the old one first (CR 701.3d), so this goes through
         // the shared chokepoint and reports a PermanentUnattachedEvent — that is how Stitcher's
         // Graft's "sacrifice that permanent" fires when you equip it away. Re-affirming the same
-        // host is not an unattach, so it emits nothing.
+        // host is not an unattach, so it emits nothing — and changes nothing (CR 701.3b), not even
+        // where the Equipment sits in the host's list of attachments.
         val currentAttachment = newState.getEntity(equipmentId)?.get<AttachedToComponent>()
         if (currentAttachment != null && currentAttachment.targetId != targetId) {
             val (detachedState, events) = ZoneMovementUtils.unattachEmittingEvent(newState, equipmentId)
             newState = detachedState
             unattachEvents += events
-        } else if (currentAttachment != null) {
-            newState = ZoneMovementUtils.cleanupReverseAttachmentLink(newState, equipmentId)
         }
 
         // Attach to new creature
@@ -55,9 +54,8 @@ class AttachEquipmentExecutor : EffectExecutor<AttachEquipmentEffect> {
         }
 
         newState = newState.updateEntity(targetId) { container ->
-            val existing = container.get<AttachmentsComponent>()
-            val updatedIds = (existing?.attachedIds ?: emptyList()) + equipmentId
-            container.with(AttachmentsComponent(updatedIds))
+            val existing = container.get<AttachmentsComponent>()?.attachedIds.orEmpty()
+            if (equipmentId in existing) container else container.with(AttachmentsComponent(existing + equipmentId))
         }
 
         // CR 603.2e — emit a "becomes attached" event only when the equipment moved onto a *new*

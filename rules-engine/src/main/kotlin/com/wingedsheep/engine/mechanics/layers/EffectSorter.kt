@@ -37,11 +37,19 @@ internal class EffectSorter {
     ): List<ContinuousEffect> {
         if (effects.size <= 1) return effects
 
+        // Only an effect that changes types or removes all abilities can be depended on (see
+        // [dependsOn]). Without one the dependency graph is empty, and the topological sort below
+        // reduces to exactly this stable timestamp sort — at O(n log n) instead of the pairwise
+        // check plus an O(n² log n) selection loop, which a board of equipped tokens (dozens of
+        // P/T and keyword grants in one layer) made the single hottest thing in engine AI rollouts.
+        val dependencySources = effects.filter(::canBeDependedOn)
+        if (dependencySources.isEmpty()) return effects.sortedBy { it.timestamp }
+
         val dependencies = mutableMapOf<ContinuousEffect, Set<ContinuousEffect>>()
 
         for (effectA in effects) {
             val dependsOn = mutableSetOf<ContinuousEffect>()
-            for (effectB in effects) {
+            for (effectB in dependencySources) {
                 if (effectA === effectB) continue
                 if (dependsOn(effectA, effectB, state)) {
                     dependsOn.add(effectB)
@@ -83,14 +91,7 @@ internal class EffectSorter {
         // types can change what other effects apply to or what they accomplish.
         // This covers Blood Moon + Urborg: SetBasicLandTypes on Urborg changes what
         // Urborg's AddSubtype effect does (it ceases to exist once Urborg is a Mountain).
-        if (effectB.modification is Modification.AddType ||
-            effectB.modification is Modification.RemoveType ||
-            effectB.modification is Modification.SetBasicLandTypes ||
-            effectB.modification is Modification.SetBasicLandTypesFromChosen ||
-            effectB.modification is Modification.SetCardTypes ||
-            effectB.modification is Modification.SetAllSubtypes ||
-            effectB.modification is Modification.SetCreatureSubtypes ||
-            effectB.modification is Modification.AddSubtype) {
+        if (changesTypes(effectB)) {
             return effectA.affectedEntities.any { it in effectB.affectedEntities }
         }
         // GrantKeyword depends on RemoveAllAbilities — apply removal first, then re-add specific keywords
@@ -99,4 +100,18 @@ internal class EffectSorter {
         }
         return false
     }
+
+    /** Whether any effect can depend on [effect] — the precondition of every branch of [dependsOn]. */
+    private fun canBeDependedOn(effect: ContinuousEffect): Boolean =
+        changesTypes(effect) || effect.modification is Modification.RemoveAllAbilities
+
+    private fun changesTypes(effect: ContinuousEffect): Boolean =
+        effect.modification is Modification.AddType ||
+            effect.modification is Modification.RemoveType ||
+            effect.modification is Modification.SetBasicLandTypes ||
+            effect.modification is Modification.SetBasicLandTypesFromChosen ||
+            effect.modification is Modification.SetCardTypes ||
+            effect.modification is Modification.SetAllSubtypes ||
+            effect.modification is Modification.SetCreatureSubtypes ||
+            effect.modification is Modification.AddSubtype
 }
