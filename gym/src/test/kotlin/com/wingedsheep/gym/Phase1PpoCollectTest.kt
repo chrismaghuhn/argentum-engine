@@ -11,7 +11,7 @@ import kotlinx.serialization.json.put
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
-import java.util.Random
+import java.util.SplittableRandom
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -110,8 +110,9 @@ class Phase1PpoCollectTest : FunSpec({
                 (firstGame until firstGame + games).map { game ->
                     pool.submit(Callable {
                         val config = Phase1SelfPlayCollector.gameConfig(game, PPO_BASE_SEED, resolver, decks)
-                        val rng = Random(PPO_BASE_SEED * 31 + game)
-                        var roll = rng.nextDouble() * totalWeight
+                        // SplittableRandom mixes its seed; java.util.Random's first draw for consecutive
+                        // seeds is nearly identical and put every game against the same opponent.
+                        var roll = SplittableRandom(PPO_BASE_SEED * 31 + game).nextDouble() * totalWeight
                         val opponent = (league.firstOrNull { (_, weight) -> roll -= weight; roll < 0 } ?: league.last()).first
                         val ids = config.players.map { checkNotNull(it.playerId) }
                         val learnerIds: Set<EntityId> = if (opponent == null) ids.toSet() else setOf(ids[0])
