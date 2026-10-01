@@ -129,6 +129,7 @@ class RolloutCandidateEvaluator(
                         seedFor(rootSeed, determinization, rollout),
                         horizon,
                         baseline,
+                        budget.deadlineNanos,
                     )
                     samples[index].add(value)
                     spent++

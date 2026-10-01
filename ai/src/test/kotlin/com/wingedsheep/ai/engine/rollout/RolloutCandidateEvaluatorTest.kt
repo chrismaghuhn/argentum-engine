@@ -37,6 +37,7 @@ class RolloutCandidateEvaluatorTest : ScenarioTestBase() {
     /** Records every playout it is asked for, and returns a value fixed per candidate state. */
     private class RecordingPlayouts(private val valueOf: (GameState) -> Double) : Playouts {
         val calls = mutableListOf<Pair<GameState, Long>>()
+        val deadlines = mutableListOf<Long>()
 
         override fun run(
             start: GameState,
@@ -44,8 +45,10 @@ class RolloutCandidateEvaluatorTest : ScenarioTestBase() {
             seed: Long,
             horizonPlayerTurns: Int,
             baseline: Double,
+            deadlineNanos: Long,
         ): Double {
             calls += start to seed
+            deadlines += deadlineNanos
             return valueOf(start)
         }
 
@@ -86,7 +89,7 @@ class RolloutCandidateEvaluatorTest : ScenarioTestBase() {
             // The stub's value depends only on the seed it is handed, so any nondeterminism in the
             // result can only have come from the evaluator's own seeding or allocation. A stub that
             // returned a constant would pass this test even if the grid were built from a clock.
-            val seedDriven = Playouts { _, _, seed, _, _ -> ((seed ushr 40) and 0xFF) / 255.0 }
+            val seedDriven = Playouts { _, _, seed, _, _, _ -> ((seed ushr 40) and 0xFF) / 255.0 }
             val first = RolloutCandidateEvaluator(seedDriven, zeroEvaluator())
                 .scoreAll(root, states, playerId, budget(BudgetTier.NORMAL, 32))
             val second = RolloutCandidateEvaluator(seedDriven, zeroEvaluator())
@@ -167,6 +170,20 @@ class RolloutCandidateEvaluatorTest : ScenarioTestBase() {
             states.forEach { stub.countFor(it) shouldBeGreaterThan 0 }
         }
 
+        test("every playout is handed the decision's deadline, so one playout cannot outlive it") {
+            val states = candidateStates(4)
+            val playerId = states.first().turnOrder.first()
+            val stub = RecordingPlayouts { WinProbability.DRAW }
+            val timed = DecisionBudget(
+                BudgetTier.NORMAL,
+                SearchAllowances.LEGACY.copy(rolloutPlayouts = 16),
+                millis = 60_000,
+            )
+            RolloutCandidateEvaluator(stub, zeroEvaluator()).scoreAll(states.first(), states, playerId, timed)
+            stub.deadlines.isEmpty() shouldBe false
+            stub.deadlines.distinct() shouldContainExactly listOf(timed.deadlineNanos)
+        }
+
         test("routine and trivial windows get the static evaluator, not playouts") {
             val states = candidateStates(3)
             val playerId = states.first().turnOrder.first()
@@ -183,7 +200,7 @@ class RolloutCandidateEvaluatorTest : ScenarioTestBase() {
             val states = candidateStates(2)
             val playerId = states.first().turnOrder.first()
             val horizons = mutableListOf<Int>()
-            val recorder = Playouts { _, _, _, horizon, _ -> horizons += horizon; 0.5 }
+            val recorder = Playouts { _, _, _, horizon, _, _ -> horizons += horizon; 0.5 }
 
             RolloutCandidateEvaluator(recorder, zeroEvaluator())
                 .scoreAll(states.first(), states, playerId, budget(BudgetTier.NORMAL, 4))
