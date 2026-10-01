@@ -59,7 +59,10 @@ internal object Phase1Tournament {
 
     data class Showcase(val directory: Path, val gameId: String, val engineVersion: String)
 
-    /** One model-seat choice among >= 2 candidates, reported before the model's action executes. */
+    /**
+     * One model-seat choice among >= 2 candidates, reported before the model's action executes;
+     * [executed] turns true once the engine has applied the model's choice (false = fallback).
+     */
     class ModelDecision(
         val environment: GameEnvironment,
         val actor: EntityId,
@@ -69,7 +72,10 @@ internal object Phase1Tournament {
         val candidates: List<com.wingedsheep.gym.contract.LegalActionView>,
         val sample: kotlinx.serialization.json.JsonObject,
         val modelIndex: Int?,
-    )
+        val reply: PolicyReply? = null,
+    ) {
+        var executed: Boolean = false
+    }
 
     /** Observes model decisions without influencing them (DAgger labels them with the teacher). */
     fun interface ModelDecisionObserver {
@@ -145,37 +151,79 @@ internal object Phase1Tournament {
         }
     }
 
-    /** One `python -m argentum_ml.p1.serve` process; calls are serialized, inference is milliseconds. */
-    class PolicyWorker(checkpoint: Path, python: Path, mlRoot: Path) : AutoCloseable {
-        private val process: Process = ProcessBuilder(
-            python.toString(), "-m", "argentum_ml.p1.serve", "--checkpoint", checkpoint.toString(),
-        ).directory(mlRoot.toFile()).redirectError(ProcessBuilder.Redirect.INHERIT).start()
-        private val input: BufferedWriter = process.outputStream.bufferedWriter(Charsets.UTF_8)
-        private val output: BufferedReader = process.inputStream.bufferedReader(Charsets.UTF_8)
+    /** A worker's answer: the candidate index, its log-probability under the policy, and the value estimate. */
+    data class PolicyReply(val index: Int, val logprob: Double, val value: Double)
+
+    /**
+     * `python -m argentum_ml.p1.serve` processes for one checkpoint. Each process answers one request
+     * at a time; with [processes] > 1 concurrent games borrow whichever process is free, so model
+     * inference stops being the bottleneck of a many-game run. With [sample] the processes draw from
+     * the policy instead of taking the argmax (PPO rollouts); each request carries a seed so a draw
+     * does not depend on which process served it. The processes import `argentum_ml` from this
+     * checkout's `ml/src`, not from wherever the venv's editable install points.
+     */
+    class PolicyWorker(
+        checkpoint: Path,
+        python: Path,
+        mlRoot: Path,
+        processes: Int = 1,
+        sample: Boolean = false,
+    ) : AutoCloseable {
+        private class Endpoint(val process: Process) {
+            val input: BufferedWriter = process.outputStream.bufferedWriter(Charsets.UTF_8)
+            val output: BufferedReader = process.inputStream.bufferedReader(Charsets.UTF_8)
+        }
+
+        private val endpoints: List<Endpoint> = (0 until processes.coerceAtLeast(1)).map {
+            val command = mutableListOf(python.toString(), "-m", "argentum_ml.p1.serve", "--checkpoint", checkpoint.toString())
+            if (sample) command += "--sample"
+            val builder = ProcessBuilder(command).directory(mlRoot.toFile()).redirectError(ProcessBuilder.Redirect.INHERIT)
+            builder.environment()["PYTHONPATH"] = mlRoot.resolve("src").toString()
+            Endpoint(builder.start())
+        }
+        private val free = java.util.concurrent.LinkedBlockingQueue(endpoints)
 
         init {
-            val ready = output.readLine() ?: error("P1 policy worker for $checkpoint exited before ready")
-            check(Json.parseToJsonElement(ready).jsonObject.containsKey("ready")) { "Unexpected worker hello: $ready" }
+            for (endpoint in endpoints) {
+                val ready = endpoint.output.readLine() ?: error("P1 policy worker for $checkpoint exited before ready")
+                check(Json.parseToJsonElement(ready).jsonObject.containsKey("ready")) { "Unexpected worker hello: $ready" }
+            }
         }
 
         /** Returns the chosen candidate index, or null when the worker reports an error. */
-        @Synchronized
-        fun choose(sample: kotlinx.serialization.json.JsonObject, allowed: List<Boolean>): Int? {
-            input.write(
-                buildJsonObject {
-                    put("sample", sample)
-                    put("allowed", kotlinx.serialization.json.JsonArray(allowed.map { kotlinx.serialization.json.JsonPrimitive(it) }))
-                }.toString(),
-            )
-            input.write("\n")
-            input.flush()
-            val reply = Json.parseToJsonElement(output.readLine() ?: return null).jsonObject
-            return reply["chosen"]?.jsonPrimitive?.int
+        fun choose(sample: kotlinx.serialization.json.JsonObject, allowed: List<Boolean>): Int? =
+            decide(sample, allowed, seed = null)?.index
+
+        /** The full reply, or null when the worker reports an error. */
+        fun decide(sample: kotlinx.serialization.json.JsonObject, allowed: List<Boolean>, seed: Long?): PolicyReply? {
+            val endpoint = free.take()
+            try {
+                endpoint.input.write(
+                    buildJsonObject {
+                        put("sample", sample)
+                        put("allowed", kotlinx.serialization.json.JsonArray(allowed.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                        if (seed != null) put("seed", kotlinx.serialization.json.JsonPrimitive(seed))
+                    }.toString(),
+                )
+                endpoint.input.write("\n")
+                endpoint.input.flush()
+                val reply = Json.parseToJsonElement(endpoint.output.readLine() ?: return null).jsonObject
+                val index = reply["chosen"]?.jsonPrimitive?.int ?: return null
+                return PolicyReply(
+                    index = index,
+                    logprob = reply["logprob"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: Double.NaN,
+                    value = reply["value"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: 0.0,
+                )
+            } finally {
+                free.put(endpoint)
+            }
         }
 
         override fun close() {
-            runCatching { input.close() }
-            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) process.destroyForcibly()
+            for (endpoint in endpoints) {
+                runCatching { endpoint.input.close() }
+                if (!endpoint.process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) endpoint.process.destroyForcibly()
+            }
         }
     }
 
@@ -285,10 +333,15 @@ internal object Phase1Tournament {
             val sample = Phase1SelfPlayCollector.observationSample(game, environment.stepCount, names, observation, candidates)
             // The teacher never picks an unaffordable candidate and the sample carries no affordability
             // feature, so the seat restricts the model to candidates it can currently pay for.
-            val index = workers.getValue(spec.checkpoint).choose(sample, candidates.map { it.affordable })
-            observer?.onModelDecision(
-                ModelDecision(environment, actor, state, legal, built.registry, candidates, sample, index),
+            val seatIndex = ids.indexOf(actor)
+            val reply = workers.getValue(spec.checkpoint).decide(
+                sample,
+                candidates.map { it.affordable },
+                seed = (game.toLong() * 1_000_003L + environment.stepCount) * 2 + seatIndex,
             )
+            val index = reply?.index
+            val modelDecision = ModelDecision(environment, actor, state, legal, built.registry, candidates, sample, index, reply)
+            observer?.onModelDecision(modelDecision)
             val template = index?.let { i ->
                 candidates.getOrNull(i)?.let { view ->
                     built.registry.legalActions.firstOrNull { it.first == view.actionId }?.second
@@ -298,6 +351,7 @@ internal object Phase1Tournament {
             val completed: GameAction? = template?.let { ai.chooseFrom(state, listOf(it)).action }
             val ok = completed != null && runCatching { environment.step(completed) }.isSuccess
             if (ok) {
+                modelDecision.executed = true
                 usage.getValue(actor).played(state, checkNotNull(completed))
             } else {
                 modelFallbacks++

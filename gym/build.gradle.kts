@@ -125,6 +125,17 @@ tasks.register<Test>("phase1DaggerCollectTest") {
     testLogging { showStandardStreams = true }
 }
 
+tasks.register<Test>("phase1PpoCollectTest") {
+    description = "Opt-in P1 PPO rollouts: a sampling checkpoint plays a league (-Dphase1.ppo=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1PpoCollectTest*")
+    maxHeapSize = System.getProperty("phase1.heap") ?: "12g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
 tasks.register<Test>("engineAiDeterminismTraceTest") {
     description = "Opt-in: seeded engine AI self-play trace for behavior parity (-Dperf.trace=true)."
     group = "verification"
@@ -224,6 +235,9 @@ tasks.withType<Test>().configureEach {
         "phase1.opponent",
         "phase1.labelRate",
         "phase1.teacherPlayouts",
+        "phase1.ppo",
+        "phase1.league",
+        "phase1.policyProcesses",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }
