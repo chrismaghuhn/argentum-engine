@@ -40,10 +40,7 @@ class Phase1SelfPlayCollectTest : FunSpec({
             Files.createDirectories(outputDirectory)
             val registry = A9TrustedGenerationHarness.actorRegistry()
             val resolver = DeckResolver(registry)
-            val decks = mapOf(
-                "Akiri" to Phase1SelfPlayCollector.lockedDeck(repositoryRoot, "akiri-v0.1.txt"),
-                "Chevill" to Phase1SelfPlayCollector.lockedDeck(repositoryRoot, "chevill-v0.1.txt"),
-            )
+            val matchups = Phase1SelfPlayCollector.Matchups(repositoryRoot, resolver)
             val sourceCommit = runCatching {
                 ProcessBuilder("git", "rev-parse", "HEAD").directory(repositoryRoot.toFile())
                     .start().inputStream.bufferedReader().readText().trim()
@@ -59,7 +56,7 @@ class Phase1SelfPlayCollectTest : FunSpec({
                     put("games", games)
                     put("baseSeed", baseSeed)
                     put("maxSteps", maxSteps)
-                    put("decks", "akiri-v0.1.txt,chevill-v0.1.txt")
+                    put("decks", matchups.description)
                 }.toString() + "\n",
             )
 
@@ -70,7 +67,7 @@ class Phase1SelfPlayCollectTest : FunSpec({
                     pool.submit(Callable {
                         Phase1SelfPlayCollector.playAndRecord(
                             game = game,
-                            config = Phase1SelfPlayCollector.gameConfig(game, baseSeed, resolver, decks),
+                            config = matchups.config(game, baseSeed),
                             registry = registry,
                             profile = profile,
                             maxSteps = maxSteps,

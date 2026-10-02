@@ -79,10 +79,7 @@ class Phase1PpoCollectTest : FunSpec({
             val policyWorkers = opponentWorkers + (checkpoint to learnerWorker)
 
             val resolver = DeckResolver(Phase1Tournament.Registries.card)
-            val decks = mapOf(
-                "Akiri" to Phase1SelfPlayCollector.lockedDeck(repositoryRoot, "akiri-v0.1.txt"),
-                "Chevill" to Phase1SelfPlayCollector.lockedDeck(repositoryRoot, "chevill-v0.1.txt"),
-            )
+            val matchups = Phase1SelfPlayCollector.Matchups(repositoryRoot, resolver)
             val sourceCommit = runCatching {
                 ProcessBuilder("git", "rev-parse", "HEAD").directory(repositoryRoot.toFile())
                     .start().inputStream.bufferedReader().readText().trim()
@@ -94,6 +91,7 @@ class Phase1PpoCollectTest : FunSpec({
                     put("source", "ppo")
                     put("sourceCommit", sourceCommit)
                     put("checkpoint", learner.label)
+                    put("decks", matchups.description)
                     put("league", JsonArray(league.map { (opponent, weight) -> JsonPrimitive("${label(opponent)}@$weight") }))
                     put("firstGame", firstGame)
                     put("games", games)
@@ -116,7 +114,7 @@ class Phase1PpoCollectTest : FunSpec({
                 (firstGame until firstGame + games).map { game ->
                     game to pool.submit(Callable {
                         gameStarted[game] = System.currentTimeMillis()
-                        val config = Phase1SelfPlayCollector.gameConfig(game, PPO_BASE_SEED, resolver, decks)
+                        val config = matchups.config(game, PPO_BASE_SEED)
                         // SplittableRandom mixes its seed; java.util.Random's first draw for consecutive
                         // seeds is nearly identical and put every game against the same opponent.
                         var roll = SplittableRandom(PPO_BASE_SEED * 31 + game).nextDouble() * totalWeight
@@ -181,6 +179,7 @@ class Phase1PpoCollectTest : FunSpec({
                             put("learner", learner.label)
                             put("opponent", label(opponent))
                             put("learnerDeck", config.players[0].name)
+                            put("opponentDeck", config.players[1].name)
                             put("aStarts", result.aStarts)
                             put("terminal", result.terminal)
                             put("winner", result.winner)

@@ -21,6 +21,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.nio.file.Files
 import java.nio.file.Path
@@ -73,6 +76,64 @@ internal object Phase1SelfPlayCollector {
         "production" -> AiProfile.PRODUCTION
         "current" -> AiProfile.CURRENT
         else -> error("Unsupported Phase 1 AI profile '$id'")
+    }
+
+    /**
+     * The matchups a run plays: the locked Akiri vs Chevill Commander pair by default, or a pool of
+     * 60-card decks from `-Dphase1.decks=<file.json>` (`{"Deck name": {"Card": count, ...}, ...}`)
+     * played as 1v1 Standard-format games with 20 life. Pool games draw one pairing of two different
+     * decks per two consecutive games from a seeded RNG and swap seats between them, and the starting
+     * seat alternates per pairing, so every deck plays both seats and both starting positions.
+     */
+    class Matchups(
+        repositoryRoot: Path,
+        private val resolver: DeckResolver,
+        poolFile: String? = System.getProperty("phase1.decks"),
+    ) {
+        private val pool: Map<String, Map<String, Int>>? = poolFile?.let { file ->
+            kotlinx.serialization.json.Json.parseToJsonElement(Files.readString(Path.of(file))).jsonObject
+                .mapValues { (_, cards) -> cards.jsonObject.mapValues { (_, count) -> count.jsonPrimitive.int } }
+                .also { decks -> check(decks.size >= 2) { "deck pool $file needs at least two decks" } }
+        }
+        private val names: List<String> = pool?.keys?.sorted().orEmpty()
+        private val locked: Map<String, List<String>>? = if (pool == null) {
+            mapOf(
+                "Akiri" to lockedDeck(repositoryRoot, "akiri-v0.1.txt"),
+                "Chevill" to lockedDeck(repositoryRoot, "chevill-v0.1.txt"),
+            )
+        } else {
+            null
+        }
+        private val resolved = java.util.concurrent.ConcurrentHashMap<String, com.wingedsheep.sdk.model.Deck>()
+
+        /** For manifests: the deck files or the pool's deck names. */
+        val description: String = poolFile?.let { "$it: ${names.joinToString(", ")}" } ?: "akiri-v0.1.txt,chevill-v0.1.txt"
+
+        fun config(game: Int, baseSeed: Long): GameConfig {
+            if (pool == null) return gameConfig(game, baseSeed, resolver, checkNotNull(locked))
+            val rng = java.util.SplittableRandom(baseSeed * 7919 + game / 2)
+            val first = rng.nextInt(names.size)
+            val second = (first + 1 + rng.nextInt(names.size - 1)) % names.size
+            val (seat0, seat1) = if (game % 2 == 0) names[first] to names[second] else names[second] to names[first]
+            val players = listOf(seat0, seat1).mapIndexed { index, name ->
+                PlayerConfig(
+                    name = name,
+                    deck = resolved.getOrPut(name) { resolver.resolve(DeckSpec.Explicit(pool.getValue(name))) },
+                    startingLife = 20,
+                    playerId = EntityId("p1-game-$game-seat-$index"),
+                )
+            }
+            return GameConfig(
+                players = players,
+                startingHandSize = 7,
+                skipMulligans = true,
+                useHandSmoother = false,
+                startingPlayerIndex = (game / 2) % 2,
+                format = Format.Standard,
+                attackMode = AttackMode.MULTIPLE,
+                seed = baseSeed + game,
+            )
+        }
     }
 
     /** Seat order alternates every game and the starting player every two, so all four orientations recur. */

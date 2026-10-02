@@ -64,10 +64,7 @@ class Phase1DaggerCollectTest : FunSpec({
             val base = AiProfile.PRODUCTION_CANDIDATE_EXPIRING
             val teacherProfile = base.copy(budgetPolicy = WorkBoundedBudgetPolicy(RolloutBudgetPolicy(teacherPlayouts)))
             val resolver = DeckResolver(Phase1Tournament.Registries.card)
-            val decks = mapOf(
-                "Akiri" to Phase1SelfPlayCollector.lockedDeck(repositoryRoot, "akiri-v0.1.txt"),
-                "Chevill" to Phase1SelfPlayCollector.lockedDeck(repositoryRoot, "chevill-v0.1.txt"),
-            )
+            val matchups = Phase1SelfPlayCollector.Matchups(repositoryRoot, resolver)
             val checkpoints = listOf(seatA, seatB).filterIsInstance<Phase1Tournament.SeatSpec.Model>()
                 .map { it.checkpoint }.distinct()
             val policyWorkers = checkpoints.associateWith {
@@ -102,7 +99,7 @@ class Phase1DaggerCollectTest : FunSpec({
             val summaries = try {
                 (firstGame until firstGame + games).map { game ->
                     pool.submit(Callable {
-                        val config = Phase1SelfPlayCollector.gameConfig(game, DAGGER_BASE_SEED, resolver, decks)
+                        val config = matchups.config(game, DAGGER_BASE_SEED)
                         val rng = Random(DAGGER_BASE_SEED * 31 + game)
                         val teachers = HashMap<EntityId, AIPlayer>()
                         val samples = mutableListOf<JsonObject>()

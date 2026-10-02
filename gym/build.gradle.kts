@@ -251,6 +251,7 @@ tasks.withType<Test>().configureEach {
         "phase1.policyProcesses",
         "phase1.gameTimeoutSeconds",
         "phase1.cardTable",
+        "phase1.decks",
         "phase1.cardTableOut",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }

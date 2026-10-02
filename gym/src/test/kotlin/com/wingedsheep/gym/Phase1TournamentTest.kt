@@ -46,10 +46,7 @@ class Phase1TournamentTest : FunSpec({
                     .start().inputStream.bufferedReader().readText().trim()
             }.getOrDefault("unknown")
             val resolver = DeckResolver(Phase1Tournament.Registries.card)
-            val decks = mapOf(
-                "Akiri" to Phase1SelfPlayCollector.lockedDeck(repositoryRoot, "akiri-v0.1.txt"),
-                "Chevill" to Phase1SelfPlayCollector.lockedDeck(repositoryRoot, "chevill-v0.1.txt"),
-            )
+            val matchups = Phase1SelfPlayCollector.Matchups(repositoryRoot, resolver)
             val checkpoints = listOf(seatA, seatB).filterIsInstance<Phase1Tournament.SeatSpec.Model>()
                 .map { it.checkpoint }.distinct()
             val policyWorkers = checkpoints.associateWith {
@@ -60,7 +57,7 @@ class Phase1TournamentTest : FunSpec({
             try {
                 val finished = (firstGame until firstGame + games).map { game ->
                     pool.submit(Callable {
-                        val config = Phase1SelfPlayCollector.gameConfig(game, TOURNAMENT_BASE_SEED, resolver, decks)
+                        val config = matchups.config(game, TOURNAMENT_BASE_SEED)
                         // An engine failure inside one game (a model can reach positions the engine AI
                         // never does) is recorded with its seed for reproduction instead of aborting the
                         // whole match; error lines are excluded from ratings.
@@ -87,6 +84,7 @@ class Phase1TournamentTest : FunSpec({
                                 put("seatA", seatA.label)
                                 put("seatB", seatB.label)
                                 put("deckA", config.players[0].name)
+                                put("deckB", config.players[1].name)
                                 put("aStarts", config.startingPlayerIndex == 0)
                                 put("terminal", false)
                                 put("winner", "-")
@@ -111,6 +109,7 @@ class Phase1TournamentTest : FunSpec({
                             put("seatA", result.seatA)
                             put("seatB", result.seatB)
                             put("deckA", result.deckA)
+                            put("deckB", config.players[1].name)
                             put("aStarts", result.aStarts)
                             put("terminal", result.terminal)
                             put("winner", result.winner)
