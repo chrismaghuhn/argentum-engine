@@ -100,6 +100,29 @@ class CardFeaturesV2Test(unittest.TestCase):
         self.assertTrue(torch.allclose(s1, s2, atol=1e-6))
         self.assertTrue(torch.allclose(val1, val2, atol=1e-6))
 
+    def test_unseen_card_keeps_its_text_but_not_a_learned_name(self):
+        table = {**TABLE, "Shock": {"oracleText": "~ deals 2 damage to any target.", "manaCost": "{R}", "subtypes": []}}
+        vocab = Vocab.build([_sample()])
+        trained = sorted(vocab.maps["name"])
+        cards = CardFeatures.build(table, sorted(set(trained) | set(table)), "test", trained)
+        cards.extend_vocab(vocab)
+        self.assertNotIn("Shock", trained)
+        shock = vocab.id("name", "Shock")
+        self.assertGreater(shock, 1)  # has its own id, not "unknown"
+        self.assertNotIn("shock", cards.text_vocab)  # text vocabulary only from trained cards
+        model = P1Model(vocab, P1ModelConfig(**TINY, text=True, mana_cost=True), cards).eval()
+        self.assertFalse(model.name_seen[shock].item())
+        self.assertTrue(model.name_seen[vocab.id("name", "Grizzly Bears")].item())
+        self.assertGreater(int((model.name_text[shock] > 0).sum()), 3)  # "deals", "damage", "to any target" are known words
+
+        def scores_with(name):
+            sample = _sample()
+            sample["cards"][2]["name"] = name
+            return model(collate([encode(sample, vocab)]))[0]
+
+        # An unseen card plays from its text: same name embedding as "unknown", different output.
+        self.assertFalse(torch.allclose(scores_with("Shock"), scores_with("Totally Unknown Card")))
+
     def test_v2_checkpoint_round_trip_and_v1_still_loads(self):
         with tempfile.TemporaryDirectory() as tmp:
             v2 = P1Model(self.vocab, P1ModelConfig(**TINY, text=True, mana_cost=True, name_dropout=0.2), self.cards).eval()

@@ -84,13 +84,22 @@ class CardFeatures:
     text_vocab: dict[str, int] = field(default_factory=dict)
     subtype_vocab: dict[str, int] = field(default_factory=dict)
     source_commit: str = ""
+    # Names that occurred in the training data. Only these get a learned name embedding; every
+    # other card the table knows (e.g. the held-out decks) is "unknown" by name but keeps its text.
+    trained_names: list[str] = field(default_factory=list)
 
     @classmethod
-    def build(cls, card_table: dict[str, dict], names: list[str], source_commit: str = "") -> "CardFeatures":
-        """Keep only the names the model's vocabulary knows; build vocabularies from their text."""
+    def build(cls, card_table: dict[str, dict], names: list[str], source_commit: str = "",
+              trained_names: list[str] | None = None) -> "CardFeatures":
+        """Card facts for every name in `names`; text and subtype vocabularies come from the
+        trained names only, so a word that never appeared in training reads as unknown."""
+        trained = sorted(trained_names if trained_names is not None else names)
         cards = {name: card_table[name] for name in names if name in card_table}
-        features = cls(cards=cards, source_commit=source_commit)
-        for name, card in sorted(cards.items()):
+        features = cls(cards=cards, source_commit=source_commit, trained_names=trained)
+        for name in trained:
+            card = cards.get(name)
+            if card is None:
+                continue
             for term in text_terms(card.get("oracleText", ""), name):
                 features.text_vocab.setdefault(term, len(features.text_vocab) + 2)
             for subtype in card.get("subtypes", []):
@@ -122,11 +131,18 @@ class CardFeatures:
 
     def to_json(self) -> dict:
         return {"schema": CARD_FEATURES_SCHEMA, "sourceCommit": self.source_commit, "cards": self.cards,
-                "textVocab": self.text_vocab, "subtypeVocab": self.subtype_vocab}
+                "textVocab": self.text_vocab, "subtypeVocab": self.subtype_vocab, "trainedNames": self.trained_names}
 
     @classmethod
     def from_json(cls, payload: dict) -> "CardFeatures":
         if payload.get("schema") != CARD_FEATURES_SCHEMA:
             raise ValueError("unexpected card features schema")
         return cls(cards=payload["cards"], text_vocab=dict(payload["textVocab"]),
-                   subtype_vocab=dict(payload["subtypeVocab"]), source_commit=payload.get("sourceCommit", ""))
+                   subtype_vocab=dict(payload["subtypeVocab"]), source_commit=payload.get("sourceCommit", ""),
+                   trained_names=list(payload.get("trainedNames", payload["cards"].keys())))
+
+    def extend_vocab(self, vocab) -> None:
+        """Give every card in the table a name id (appended after the trained ones), so its text
+        can be looked up even when the card never occurred in training."""
+        for name in sorted(self.cards):
+            vocab.add("name", name)

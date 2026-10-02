@@ -148,15 +148,27 @@ def main(argv=None):
         if not args.card_table:
             raise SystemExit("--text/--subtypes/--mana-cost need --card-table")
         table_payload = json.loads(args.card_table.read_text(encoding="utf-8"))
+        table = cardtext.read_card_table(args.card_table)
+        trained_names = sorted(vocab.maps["name"])
         card_features = cardtext.CardFeatures.build(
-            cardtext.read_card_table(args.card_table), sorted(vocab.maps["name"]), table_payload.get("sourceCommit", ""),
+            table, sorted(set(trained_names) | set(table)), table_payload.get("sourceCommit", ""), trained_names,
         )
+        card_features.extend_vocab(vocab)  # appends ids, so already-encoded samples keep theirs
         print(f"card features: {len(card_features.cards)}/{len(vocab.maps['name'])} names with text, "
               f"{card_features.text_size()} text terms, {card_features.subtype_size()} subtypes")
     model = P1Model(vocab, config, card_features)
     if args.warm_start:
         source, _ = p1_model.load_checkpoint(args.warm_start)
-        missing, unexpected = model.load_state_dict(source.state_dict(), strict=False)
+        state = source.state_dict()
+        own = model.state_dict()
+        for key, tensor in list(state.items()):
+            # The name vocabulary grew (whole card table); copy the trained rows, keep the rest.
+            if key in own and own[key].shape != tensor.shape and own[key].dim() == tensor.dim() \
+                    and own[key].shape[1:] == tensor.shape[1:] and own[key].shape[0] > tensor.shape[0]:
+                grown = own[key].clone()
+                grown[: tensor.shape[0]] = tensor
+                state[key] = grown
+        missing, unexpected = model.load_state_dict(state, strict=False)
         if unexpected:
             raise SystemExit(f"warm start: unexpected tensors {unexpected}")
         _zero_card_feature_layers(model)

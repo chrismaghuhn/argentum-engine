@@ -77,6 +77,16 @@ class P1Model(nn.Module):
             self.register_buffer("name_text", torch.tensor(text, dtype=torch.long))
             self.register_buffer("name_subtypes", torch.tensor(subtypes, dtype=torch.long))
             self.register_buffer("name_cost", torch.tensor(cost, dtype=torch.float32))
+            seen = torch.zeros(vocab.size("name"), dtype=torch.bool)
+            seen[: features.UNK + 1] = True
+            for name in card_features.trained_names:
+                index = vocab.maps["name"].get(name)
+                if index is not None:
+                    seen[index] = True
+            for name, index in vocab.maps["name"].items():  # names without a table entry (tokens) come from training data
+                if name not in card_features.cards:
+                    seen[index] = True
+            self.register_buffer("name_seen", seen)
         if config.text:
             self.text = nn.EmbeddingBag(card_features.text_size(), d, mode="mean", padding_idx=0)
         if config.subtypes:
@@ -111,9 +121,12 @@ class P1Model(nn.Module):
         bag = lambda module, ids: module(ids.reshape(b * t, -1)).reshape(b, t, -1)  # noqa: E731
         names = batch["token_name"]
         shown = names
+        if hasattr(self, "name_seen"):
+            # Cards that never occurred in training have no learned name; they play from text alone.
+            shown = torch.where(self.name_seen[names], names, torch.full_like(names, UNK))
         if self.training and self.config.name_dropout > 0:
             hide = (torch.rand(names.shape, device=names.device) < self.config.name_dropout) & (names > UNK)
-            shown = names.masked_fill(hide, UNK)
+            shown = shown.masked_fill(hide, UNK)
         tokens = (
             self.name(shown)
             + self.zone(batch["token_zone"])
