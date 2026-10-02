@@ -112,6 +112,13 @@ class Vocab:
     @classmethod
     def build(cls, samples: Iterable[dict]) -> "Vocab":
         vocab = cls()
+        vocab.extend(samples)
+        return vocab
+
+    def extend(self, samples: Iterable[dict]) -> None:
+        """Append every value the samples use and the vocabulary lacks; existing ids never change,
+        so a model trained on this vocabulary can keep training on new data (fine-tuning)."""
+        vocab = self
         for sample in samples:
             vocab.add("phase", sample["phase"])
             vocab.add("step", sample["step"])
@@ -131,7 +138,6 @@ class Vocab:
             for candidate in sample["candidates"]:
                 vocab.add("kind", candidate["kind"])
         vocab.add("zone", "STACK")
-        return vocab
 
 
 @dataclass
@@ -284,10 +290,11 @@ def encode(sample: dict, vocab: Vocab) -> EncodedSample:
 
 
 def load_split(
-    directory: Path | list[Path], vocab: Vocab | None = None,
+    directory: Path | list[Path], vocab: Vocab | None = None, extend: bool = False,
 ) -> tuple[Vocab, list[EncodedSample], list[EncodedSample]]:
     """Read every game of one or more data directories (e.g. engine-AI games plus DAgger rounds),
-    build the vocabulary from training games only, and encode both splits."""
+    build the vocabulary from training games only (or, with `extend`, append what the given
+    vocabulary lacks), and encode both splits."""
     directories = directory if isinstance(directory, list) else [directory]
     files = [f for d in directories for f in iter_game_files(d)]
     if not files:
@@ -297,5 +304,7 @@ def load_split(
     for path in files:
         target = raw_val if is_validation_game(game_index(path)) else raw_train
         target.extend(read_samples(path))
+    if vocab is not None and extend:
+        vocab.extend(raw_train)
     vocab = vocab or Vocab.build(raw_train)
     return vocab, [encode(s, vocab) for s in raw_train], [encode(s, vocab) for s in raw_val]

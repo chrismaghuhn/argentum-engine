@@ -123,6 +123,16 @@ class CardFeaturesV2Test(unittest.TestCase):
         # An unseen card plays from its text: same name embedding as "unknown", different output.
         self.assertFalse(torch.allclose(scores_with("Shock"), scores_with("Totally Unknown Card")))
 
+    def test_fine_tuning_keeps_word_ids_and_appends_new_ones(self):
+        base = CardFeatures.build(TABLE, sorted(TABLE), "old", ["Grizzly Bears", "Vulshok Morningstar"])
+        table = {**TABLE, "Shock": {"oracleText": "~ deals 2 damage to any target.", "manaCost": "{R}", "subtypes": []}}
+        grown = CardFeatures.build(table, sorted(table), "new", ["Shock"], base)
+        for term, index in base.text_vocab.items():
+            self.assertEqual(grown.text_vocab[term], index)
+        self.assertIn("deals", grown.text_vocab)
+        self.assertGreater(grown.text_vocab["deals"], max(base.text_vocab.values()))
+        self.assertEqual(set(grown.trained_names), {"Grizzly Bears", "Vulshok Morningstar", "Shock"})
+
     def test_v2_checkpoint_round_trip_and_v1_still_loads(self):
         with tempfile.TemporaryDirectory() as tmp:
             v2 = P1Model(self.vocab, P1ModelConfig(**TINY, text=True, mana_cost=True, name_dropout=0.2), self.cards).eval()

@@ -90,12 +90,15 @@ class CardFeatures:
 
     @classmethod
     def build(cls, card_table: dict[str, dict], names: list[str], source_commit: str = "",
-              trained_names: list[str] | None = None) -> "CardFeatures":
+              trained_names: list[str] | None = None, base: "CardFeatures | None" = None) -> "CardFeatures":
         """Card facts for every name in `names`; text and subtype vocabularies come from the
-        trained names only, so a word that never appeared in training reads as unknown."""
-        trained = sorted(trained_names if trained_names is not None else names)
+        trained names only, so a word that never appeared in training reads as unknown. With `base`
+        (fine-tuning) its vocabularies are kept id for id and only new words are appended."""
+        trained = sorted(set(trained_names if trained_names is not None else names) | set(base.trained_names if base else []))
         cards = {name: card_table[name] for name in names if name in card_table}
-        features = cls(cards=cards, source_commit=source_commit, trained_names=trained)
+        features = cls(cards=cards, source_commit=source_commit, trained_names=trained,
+                       text_vocab=dict(base.text_vocab) if base else {},
+                       subtype_vocab=dict(base.subtype_vocab) if base else {})
         for name in trained:
             card = cards.get(name)
             if card is None:

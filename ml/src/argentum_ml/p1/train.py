@@ -134,7 +134,7 @@ def main(argv=None):
     warm_vocab = None
     if args.warm_start:
         warm_vocab = features.Vocab.from_json(json.loads((args.warm_start / "vocab.json").read_text(encoding="utf-8")))
-    vocab, train, val = features.load_split(args.data, warm_vocab)
+    vocab, train, val = features.load_split(args.data, warm_vocab, extend=warm_vocab is not None)
     train = [pretensorize(s) for s in train]
     val = [pretensorize(s) for s in val]
     games = sum(len(features.iter_game_files(d)) for d in args.data)
@@ -149,9 +149,17 @@ def main(argv=None):
             raise SystemExit("--text/--subtypes/--mana-cost need --card-table")
         table_payload = json.loads(args.card_table.read_text(encoding="utf-8"))
         table = cardtext.read_card_table(args.card_table)
-        trained_names = sorted(vocab.maps["name"])
+        # Names that actually occur in the training samples (a fine-tuning vocabulary also holds
+        # every card-table name, which must not count as trained).
+        used = set(torch.cat([s["token_name"] for s in train]).unique().tolist())
+        trained_names = sorted(name for name, index in vocab.maps["name"].items() if index in used)
+        base = None
+        if args.warm_start and (args.warm_start / p1_model.CARD_FEATURES_FILE).exists():
+            base = cardtext.CardFeatures.from_json(
+                json.loads((args.warm_start / p1_model.CARD_FEATURES_FILE).read_text(encoding="utf-8")))
         card_features = cardtext.CardFeatures.build(
-            table, sorted(set(trained_names) | set(table)), table_payload.get("sourceCommit", ""), trained_names,
+            table, sorted(set(trained_names) | set(table) | set(vocab.maps["name"])), table_payload.get("sourceCommit", ""),
+            trained_names, base,
         )
         card_features.extend_vocab(vocab)  # appends ids, so already-encoded samples keep theirs
         print(f"card features: {len(card_features.cards)}/{len(vocab.maps['name'])} names with text, "
@@ -159,7 +167,10 @@ def main(argv=None):
     model = P1Model(vocab, config, card_features)
     if args.warm_start:
         source, _ = p1_model.load_checkpoint(args.warm_start)
-        state = source.state_dict()
+        # The per-name lookup rows (text, subtypes, cost, seen) are rebuilt from the new card table
+        # and training data; everything learned is copied.
+        state = {k: v for k, v in source.state_dict().items()
+                 if k not in ("name_text", "name_subtypes", "name_cost", "name_seen")}
         own = model.state_dict()
         for key, tensor in list(state.items()):
             # The name vocabulary grew (whole card table); copy the trained rows, keep the rest.
@@ -171,7 +182,8 @@ def main(argv=None):
         missing, unexpected = model.load_state_dict(state, strict=False)
         if unexpected:
             raise SystemExit(f"warm start: unexpected tensors {unexpected}")
-        _zero_card_feature_layers(model)
+        if not source.config.uses_card_features:
+            _zero_card_feature_layers(model)  # v1 -> v2: new layers start silent
         print(f"warm start from {args.warm_start.name}: {len(missing)} new tensors")
     model = model.to(device)
     parameters = sum(p.numel() for p in model.parameters())
