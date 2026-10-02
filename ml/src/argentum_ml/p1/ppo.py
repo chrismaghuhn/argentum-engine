@@ -198,11 +198,11 @@ def attach_reference_logprobs(reference: P1Model, steps: list[dict], device, bat
             step["ref_logprobs"] = row[: step["allowed"].shape[0]].clone()
 
 
-def next_ppo_dir(runs: Path) -> Path:
+def next_ppo_dir(runs: Path, prefix: str = "p1-ppo") -> Path:
     runs.mkdir(parents=True, exist_ok=True)
-    existing = sorted(p for p in runs.glob("p1-ppo-*") if p.is_dir())
-    number = int(existing[-1].name.removeprefix("p1-ppo-")) + 1 if existing else 1
-    return runs / f"p1-ppo-{number:04d}"
+    existing = sorted(p for p in runs.glob(f"{prefix}-*") if p.is_dir() and p.name.removeprefix(f"{prefix}-").isdigit())
+    number = int(existing[-1].name.removeprefix(f"{prefix}-")) + 1 if existing else 1
+    return runs / f"{prefix}-{number:04d}"
 
 
 def rollout_summary(directories: list[Path], rows: list[dict]) -> dict:
@@ -250,6 +250,7 @@ def main(argv=None):
     parser.add_argument("--target-kl", type=float, default=0.03)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--note", default="")
+    parser.add_argument("--prefix", default="p1-ppo", help="checkpoint directory prefix, e.g. p1-std-ppo")
     args = parser.parse_args(argv)
 
     torch.manual_seed(args.seed)
@@ -311,7 +312,7 @@ def main(argv=None):
         if stopped_early:
             break
 
-    out = next_ppo_dir(args.runs)
+    out = next_ppo_dir(args.runs, args.prefix)
     out.mkdir(parents=True)
     p1_model.save_checkpoint(model, vocab, out)
     manifests = sorted(m for d in args.data for m in d.glob("manifest-*.json"))

@@ -50,7 +50,10 @@ class Phase1TournamentTest : FunSpec({
             val checkpoints = listOf(seatA, seatB).filterIsInstance<Phase1Tournament.SeatSpec.Model>()
                 .map { it.checkpoint }.distinct()
             val policyWorkers = checkpoints.associateWith {
-                Phase1Tournament.PolicyWorker(it, python, repositoryRoot.resolve("ml"))
+                Phase1Tournament.PolicyWorker(
+                    it, python, repositoryRoot.resolve("ml"),
+                    processes = System.getProperty("phase1.policyProcesses")?.toInt() ?: 1,
+                )
             }
             Files.createDirectories(results.parent)
             val pool = Executors.newFixedThreadPool(workers)
