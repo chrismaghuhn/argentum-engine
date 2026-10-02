@@ -56,10 +56,17 @@ class Phase1TournamentTest : FunSpec({
                 )
             }
             Files.createDirectories(results.parent)
-            val pool = Executors.newFixedThreadPool(workers)
+            // Per-game limit (default 10 min; 0 disables): an abandoned game is left out of the results
+            // and counted, so one runaway engine-AI search cannot hold a whole match.
+            val gameTimeoutMillis = (System.getProperty("phase1.gameTimeoutSeconds")?.toLong() ?: 600L) * 1_000L
+            val gameStarted = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+            var timedOut = 0
+            // Daemon threads: an abandoned game must not keep the test JVM alive.
+            val pool = Executors.newFixedThreadPool(workers) { task -> Thread(task).apply { isDaemon = true } }
             try {
                 val finished = (firstGame until firstGame + games).map { game ->
-                    pool.submit(Callable {
+                    game to pool.submit(Callable {
+                        gameStarted[game] = System.currentTimeMillis()
                         val config = matchups.config(game, TOURNAMENT_BASE_SEED)
                         // An engine failure inside one game (a model can reach positions the engine AI
                         // never does) is recorded with its seed for reproduction instead of aborting the
@@ -145,13 +152,31 @@ class Phase1TournamentTest : FunSpec({
                         println("  $line")
                         result
                     })
-                }.mapNotNull { it.get() }
+                }.mapNotNull { (game, future) ->
+                    if (gameTimeoutMillis <= 0) return@mapNotNull future.get()
+                    var result: Phase1Tournament.GameResult? = null
+                    while (true) {
+                        try {
+                            result = future.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                            break
+                        } catch (_: java.util.concurrent.TimeoutException) {
+                            val since = gameStarted[game] ?: continue
+                            if (System.currentTimeMillis() - since > gameTimeoutMillis) {
+                                future.cancel(true)
+                                timedOut++
+                                println("  game=$game abandoned after ${gameTimeoutMillis / 1000}s")
+                                break
+                            }
+                        }
+                    }
+                    result
+                }
                 val aWins = finished.count { it.winner == "A" }
                 val bWins = finished.count { it.winner == "B" }
                 println(
                     "# ${seatA.label} vs ${seatB.label}: games=${finished.size} A=$aWins B=$bWins " +
                         "unfinished=${finished.count { !it.terminal }} fallbacks=${finished.sumOf { it.modelFallbacks }}" +
-                        "/${finished.sumOf { it.modelChoices }} loopBreaks=${finished.sumOf { it.loopBreaks }}",
+                        "/${finished.sumOf { it.modelChoices }} loopBreaks=${finished.sumOf { it.loopBreaks }} timedOut=$timedOut",
                 )
             } finally {
                 pool.shutdown()
