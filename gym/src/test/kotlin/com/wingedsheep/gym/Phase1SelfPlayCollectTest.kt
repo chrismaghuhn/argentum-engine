@@ -60,11 +60,18 @@ class Phase1SelfPlayCollectTest : FunSpec({
                 }.toString() + "\n",
             )
 
+            // A rare engine-AI game runs for 20+ minutes and would hold a whole batch of workers idle;
+            // it is abandoned after this long (no file is written for it).
+            val gameTimeoutMillis = (System.getProperty("phase1.gameTimeoutSeconds")?.toLong() ?: 0L) * 1_000L
+            val gameStarted = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+            var timedOut = 0
             val started = System.nanoTime()
-            val pool = Executors.newFixedThreadPool(workers)
+            // Daemon threads: an abandoned game must not keep the test JVM alive.
+            val pool = Executors.newFixedThreadPool(workers) { task -> Thread(task).apply { isDaemon = true } }
             val summaries = try {
                 (firstGame until firstGame + games).map { game ->
-                    pool.submit(Callable {
+                    game to pool.submit(Callable {
+                        gameStarted[game] = System.currentTimeMillis()
                         Phase1SelfPlayCollector.playAndRecord(
                             game = game,
                             config = matchups.config(game, baseSeed),
@@ -80,7 +87,25 @@ class Phase1SelfPlayCollectTest : FunSpec({
                             )
                         }
                     })
-                }.map { it.get() }
+                }.mapNotNull { (game, future) ->
+                    if (gameTimeoutMillis <= 0) return@mapNotNull future.get()
+                    var summary: Phase1SelfPlayCollector.GameSummary? = null
+                    while (true) {
+                        try {
+                            summary = future.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                            break
+                        } catch (_: java.util.concurrent.TimeoutException) {
+                            val since = gameStarted[game] ?: continue
+                            if (System.currentTimeMillis() - since > gameTimeoutMillis) {
+                                future.cancel(true)
+                                timedOut++
+                                println("  game=$game abandoned after ${gameTimeoutMillis / 1000}s")
+                                break
+                            }
+                        }
+                    }
+                    summary
+                }
             } finally {
                 pool.shutdown()
             }
@@ -93,7 +118,7 @@ class Phase1SelfPlayCollectTest : FunSpec({
                     it.samples, it.unmatchedChoices, "%.2f".format(it.seconds),
                 ).joinToString("\t")
             }
-            val footer = "# games=$games terminal=${summaries.count { it.terminal }} " +
+            val footer = "# games=$games finished=${summaries.size} timedOut=$timedOut terminal=${summaries.count { it.terminal }} " +
                 "akiriWins=${summaries.count { it.winner == "Akiri" }} chevillWins=${summaries.count { it.winner == "Chevill" }} " +
                 "samples=${summaries.sumOf { it.samples }} unmatched=${summaries.sumOf { it.unmatchedChoices }} " +
                 "workers=$workers wallSeconds=${"%.1f".format(wallSeconds)}"
