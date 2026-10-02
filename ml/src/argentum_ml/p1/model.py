@@ -43,10 +43,12 @@ class P1ModelConfig:
     subtypes: bool = False
     mana_cost: bool = False
     name_dropout: float = 0.0
+    # Frozen pretrained sentence embedding of each card's rules text (0 = off); see embed_cards.py.
+    text_embedding_dim: int = 0
 
     @property
     def uses_card_features(self) -> bool:
-        return self.text or self.subtypes or self.mana_cost
+        return self.text or self.subtypes or self.mana_cost or self.text_embedding_dim > 0
 
     def to_json(self) -> dict:
         if not self.uses_card_features and self.name_dropout == 0.0:
@@ -65,7 +67,8 @@ class P1ModelConfig:
 
 
 class P1Model(nn.Module):
-    def __init__(self, vocab: Vocab, config: P1ModelConfig = P1ModelConfig(), card_features: CardFeatures | None = None):
+    def __init__(self, vocab: Vocab, config: P1ModelConfig = P1ModelConfig(), card_features: CardFeatures | None = None,
+                 text_embeddings: dict[str, "torch.Tensor"] | None = None):
         super().__init__()
         d = config.d_model
         self.config = config
@@ -94,6 +97,16 @@ class P1Model(nn.Module):
         if config.mana_cost:
             self.card_cost = nn.Linear(len(cardtext.COST_FEATURES), d)
             self.candidate_cost = nn.Linear(len(cardtext.COST_FEATURES), d)
+        if config.text_embedding_dim > 0:
+            # Rows by name id; filled from the precomputed vectors when training, from the checkpoint
+            # (state dict) when loading.
+            rows = torch.zeros(vocab.size("name"), config.text_embedding_dim)
+            for name, index in vocab.maps["name"].items():
+                vector = (text_embeddings or {}).get(name)
+                if vector is not None and 0 <= index < rows.shape[0]:
+                    rows[index] = vector
+            self.register_buffer("name_textemb", rows)
+            self.text_embedding = nn.Linear(config.text_embedding_dim, d)
         self.name = nn.Embedding(vocab.size("name"), d, padding_idx=0)
         self.zone = nn.Embedding(vocab.size("zone"), d, padding_idx=0)
         self.side = nn.Embedding(3, d)
@@ -143,6 +156,8 @@ class P1Model(nn.Module):
             tokens = tokens + bag(self.subtype, self.name_subtypes[names])
         if self.config.mana_cost:
             tokens = tokens + self.card_cost(self.name_cost[names])
+        if self.config.text_embedding_dim > 0:
+            tokens = tokens + self.text_embedding(self.name_textemb[names])
         global_token = (
             self.global_numeric(batch["global_numeric"]) + self.phase(batch["phase"]) + self.step(batch["step"])
         ).unsqueeze(1)
@@ -183,12 +198,13 @@ _CANDIDATE_FIELDS = ("candidate_kind", "candidate_source", "candidate_targets", 
 _PAD_VALUES = {"token_side": 2, "candidate_source": -1, "candidate_targets": -1}
 
 
-def pretensorize(sample: EncodedSample) -> dict[str, torch.Tensor]:
-    """Convert one encoded sample to tensors once, so training batches only pad and stack."""
+def pretensorize(sample: EncodedSample, compact: bool = False) -> dict[str, torch.Tensor]:
+    """Convert one encoded sample to tensors once, so training batches only pad and stack.
+    `compact` stores ids as int32 (collate_tensors widens them), roughly halving memory for large runs."""
     out: dict[str, torch.Tensor] = {}
     for name in _TOKEN_FIELDS + _CANDIDATE_FIELDS:
         values = getattr(sample, name)
-        dtype = torch.float32 if name.endswith(("numeric", "cost")) else torch.long
+        dtype = torch.float32 if name.endswith(("numeric", "cost")) else (torch.int32 if compact else torch.long)
         if name == "candidate_cost" and not values:
             values = [[0.0] * len(cardtext.COST_FEATURES) for _ in sample.candidate_kind]
         out[name] = torch.tensor(values, dtype=dtype)
@@ -218,6 +234,8 @@ def collate_tensors(samples: list[dict[str, torch.Tensor]], device: torch.device
     out: dict[str, torch.Tensor] = {}
     for name in _TOKEN_FIELDS + _CANDIDATE_FIELDS:
         out[name] = pad_sequence([s[name] for s in samples], batch_first=True, padding_value=_PAD_VALUES.get(name, 0))
+        if out[name].dtype == torch.int32:
+            out[name] = out[name].long()
     counts = torch.stack([s["token_count"] for s in samples])
     out["token_pad"] = torch.arange(out["token_name"].shape[1]).unsqueeze(0) >= counts.unsqueeze(1)
     candidate_counts = torch.tensor([s["candidate_kind"].shape[0] for s in samples])

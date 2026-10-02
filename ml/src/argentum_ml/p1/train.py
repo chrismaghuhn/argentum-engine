@@ -124,6 +124,7 @@ def main(argv=None):
     parser.add_argument("--mana-cost", action="store_true", help="v2: parsed printed-cost features (cards and candidates)")
     parser.add_argument("--name-dropout", type=float, default=0.0, help="v2: hide card names with this probability in training")
     parser.add_argument("--warm-start", type=Path, help="start from this v1 checkpoint (vocabulary + weights)")
+    parser.add_argument("--text-embeddings", type=Path, help="v2: frozen card-text embeddings (.npz from embed_cards)")
     args = parser.parse_args(argv)
 
     torch.manual_seed(args.seed)
@@ -134,15 +135,16 @@ def main(argv=None):
     warm_vocab = None
     if args.warm_start:
         warm_vocab = features.Vocab.from_json(json.loads((args.warm_start / "vocab.json").read_text(encoding="utf-8")))
-    vocab, train, val = features.load_split(args.data, warm_vocab, extend=warm_vocab is not None)
-    train = [pretensorize(s) for s in train]
-    val = [pretensorize(s) for s in val]
+    vocab, train, val = features.load_split(args.data, warm_vocab, extend=warm_vocab is not None,
+                                            transform=lambda s: pretensorize(s, compact=True))
     games = sum(len(features.iter_game_files(d)) for d in args.data)
     print(f"data: {games} games, {len(train)} train / {len(val)} val samples, "
           f"{vocab.size('name')} card names, device={device}")
     pass_kind = vocab.id("kind", "PassPriority")
 
-    config = P1ModelConfig(text=args.text, subtypes=args.subtypes, mana_cost=args.mana_cost, name_dropout=args.name_dropout)
+    text_embeddings = cardtext.read_text_embeddings(args.text_embeddings) if args.text_embeddings else None
+    config = P1ModelConfig(text=args.text, subtypes=args.subtypes, mana_cost=args.mana_cost, name_dropout=args.name_dropout,
+                           text_embedding_dim=len(next(iter(text_embeddings.values()))) if text_embeddings else 0)
     card_features = None
     if config.uses_card_features:
         if not args.card_table:
@@ -164,13 +166,13 @@ def main(argv=None):
         card_features.extend_vocab(vocab)  # appends ids, so already-encoded samples keep theirs
         print(f"card features: {len(card_features.cards)}/{len(vocab.maps['name'])} names with text, "
               f"{card_features.text_size()} text terms, {card_features.subtype_size()} subtypes")
-    model = P1Model(vocab, config, card_features)
+    model = P1Model(vocab, config, card_features, text_embeddings)
     if args.warm_start:
         source, _ = p1_model.load_checkpoint(args.warm_start)
         # The per-name lookup rows (text, subtypes, cost, seen) are rebuilt from the new card table
         # and training data; everything learned is copied.
         state = {k: v for k, v in source.state_dict().items()
-                 if k not in ("name_text", "name_subtypes", "name_cost", "name_seen")}
+                 if k not in ("name_text", "name_subtypes", "name_cost", "name_seen", "name_textemb")}
         own = model.state_dict()
         for key, tensor in list(state.items()):
             # The name vocabulary grew (whole card table); copy the trained rows, keep the rest.
@@ -246,6 +248,7 @@ def main(argv=None):
             "device": str(device), "seconds": round(time.time() - started, 1),
             "architecture": config.to_json()["architecture"],
             "cardFeatures": {"text": args.text, "subtypes": args.subtypes, "manaCost": args.mana_cost,
+                             "textEmbeddings": str(args.text_embeddings) if args.text_embeddings else None,
                              "nameDropout": args.name_dropout,
                              "cardTable": str(args.card_table) if args.card_table else None,
                              "cardTableCommit": card_features.source_commit if card_features else None},

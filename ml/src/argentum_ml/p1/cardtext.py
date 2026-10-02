@@ -69,6 +69,16 @@ def text_terms(text: str, name: str = "") -> list[str]:
     return words + [f"{a} {b}" for a, b in zip(words, words[1:])]
 
 
+def read_text_embeddings(path: Path) -> dict[str, "list"]:
+    """name -> vector from embed_cards.py output (.npz with `names` and `vectors`)."""
+    import numpy as np
+    import torch
+
+    data = np.load(path)
+    vectors = torch.from_numpy(data["vectors"].astype("float32"))
+    return {str(name): vectors[i] for i, name in enumerate(data["names"])}
+
+
 def read_card_table(path: Path) -> dict[str, dict]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if payload.get("schema") != CARD_TABLE_SCHEMA:

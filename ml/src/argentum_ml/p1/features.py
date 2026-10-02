@@ -290,21 +290,30 @@ def encode(sample: dict, vocab: Vocab) -> EncodedSample:
 
 
 def load_split(
-    directory: Path | list[Path], vocab: Vocab | None = None, extend: bool = False,
-) -> tuple[Vocab, list[EncodedSample], list[EncodedSample]]:
+    directory: Path | list[Path], vocab: Vocab | None = None, extend: bool = False, transform=None,
+) -> tuple[Vocab, list, list]:
     """Read every game of one or more data directories (e.g. engine-AI games plus DAgger rounds),
     build the vocabulary from training games only (or, with `extend`, append what the given
-    vocabulary lacks), and encode both splits."""
+    vocabulary lacks), and encode both splits.
+
+    Streams in two passes (vocabulary, then encoding) so raw JSON samples are never all held in
+    memory; `transform` (e.g. model.pretensorize) is applied to each encoded sample right away."""
     directories = directory if isinstance(directory, list) else [directory]
     files = [f for d in directories for f in iter_game_files(d)]
     if not files:
         raise FileNotFoundError(f"no game-*.jsonl.gz files in {directories}")
-    raw_train: list[dict] = []
-    raw_val: list[dict] = []
-    for path in files:
-        target = raw_val if is_validation_game(game_index(path)) else raw_train
-        target.extend(read_samples(path))
-    if vocab is not None and extend:
-        vocab.extend(raw_train)
-    vocab = vocab or Vocab.build(raw_train)
-    return vocab, [encode(s, vocab) for s in raw_train], [encode(s, vocab) for s in raw_val]
+    train_files = [f for f in files if not is_validation_game(game_index(f))]
+    val_files = [f for f in files if is_validation_game(game_index(f))]
+
+    def stream(paths):
+        for path in paths:
+            yield from read_samples(path)
+
+    if vocab is None:
+        vocab = Vocab.build(stream(train_files))
+    elif extend:
+        vocab.extend(stream(train_files))
+    convert = transform or (lambda encoded: encoded)
+    train = [convert(encode(s, vocab)) for s in stream(train_files)]
+    val = [convert(encode(s, vocab)) for s in stream(val_files)]
+    return vocab, train, val
