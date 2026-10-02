@@ -28,6 +28,18 @@ from . import cardtext, features
 from . import model as p1_model
 from .model import P1Model, P1ModelConfig, collate_tensors, pretensorize
 
+_WORKER_VOCAB = None  # set before forking the shard-loading pool; inherited by the workers
+
+
+def _load_game_file(path: Path) -> list[dict]:
+    """Pool worker: encode + pretensorize one game file, shipped back as numpy (cheap to pickle)."""
+    return [{k: v.numpy() for k, v in pretensorize(features.encode(x, _WORKER_VOCAB), compact=True).items()}
+            for x in features.read_samples(path)]
+
+
+def _from_numpy(rows: list[list[dict]]) -> list[dict]:
+    return [{k: torch.from_numpy(v) for k, v in sample.items()} for file_rows in rows for sample in file_rows]
+
 CHECKPOINT_SCHEMA = "argentum-p1-checkpoint@v1"
 
 
@@ -128,6 +140,8 @@ def main(argv=None):
     parser.add_argument("--stream-shards", type=int, default=0,
                         help="load training games in this many shards per epoch instead of all at once (low RAM)")
     parser.add_argument("--val-games", type=int, default=0, help="cap the number of validation games (0 = all)")
+    parser.add_argument("--load-workers", type=int, default=0,
+                        help="with --stream-shards: encode shards in this many processes and prefetch the next shard")
     args = parser.parse_args(argv)
 
     torch.manual_seed(args.seed)
@@ -234,16 +248,33 @@ def main(argv=None):
     # bfloat16 autocast only where the GPU supports it natively (not on V100/T4); else plain fp32.
     use_bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported(including_emulation=False)
 
+    pool = None
+    if args.stream_shards and args.load_workers:
+        import multiprocessing
+
+        global _WORKER_VOCAB
+        _WORKER_VOCAB = vocab
+        pool = multiprocessing.get_context("fork").Pool(args.load_workers)
+
     def epoch_chunks():
         if train is not None:
             yield from _batches(train, args.batch_size, True, rng)
             return
         order = list(train_files)
         rng.shuffle(order)
-        for k in range(args.stream_shards):
-            shard = order[k::args.stream_shards]
-            samples = [pretensorize(features.encode(x, vocab), compact=True)
-                       for path in shard for x in features.read_samples(path)]
+        shards = [order[k::args.stream_shards] for k in range(args.stream_shards)]
+        if pool is None:
+            for shard in shards:
+                samples = [pretensorize(features.encode(x, vocab), compact=True)
+                           for path in shard for x in features.read_samples(path)]
+                yield from _batches(samples, args.batch_size, True, rng)
+                del samples
+            return
+        pending = pool.map_async(_load_game_file, shards[0], chunksize=4)
+        for k in range(len(shards)):
+            samples = _from_numpy(pending.get())
+            # Encode the next shard in the workers while the GPU trains on this one.
+            pending = pool.map_async(_load_game_file, shards[k + 1], chunksize=4) if k + 1 < len(shards) else None
             yield from _batches(samples, args.batch_size, True, rng)
             del samples
 
