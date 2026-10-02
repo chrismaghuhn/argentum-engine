@@ -100,7 +100,7 @@ def build_steps(rows: list[dict], vocab: features.Vocab, gamma: float, lam: floa
             prepared = dict(row)
             prepared["chosen"] = int(row["played"])
             prepared.setdefault("outcome", 0)
-            tensors = pretensorize(features.encode(prepared, vocab))
+            tensors = pretensorize(features.encode(prepared, vocab), compact=True)
             tensors["allowed"] = torch.tensor(allowed_mask(row), dtype=torch.bool)
             tensors["old_logprob"] = torch.tensor(float(row["logprob"]))
             tensors["old_value"] = torch.tensor(float(row["value"]))
@@ -259,10 +259,23 @@ def main(argv=None):
     started = time.time()
 
     model, vocab = load_model(args.checkpoint, device)
-    rows = read_rollout_rows(args.data)
+    # One game file at a time: trajectories never span files, so raw rows of one file are enough
+    # to compute GAE; only the compact tensors and a light per-row summary are kept.
+    steps: list[dict] = []
+    rows: list[dict] = []
+    for directory in args.data:
+        for path in features.iter_game_files(directory):
+            file_rows = []
+            for row in features.read_samples(path):
+                if row.get("source") != PPO_SOURCE:
+                    raise ValueError(f"{path}: not a PPO rollout row (source={row.get('source')!r})")
+                row["_file"] = str(path)
+                file_rows.append(row)
+            steps.extend(build_steps(file_rows, vocab, args.gamma, args.lam))
+            rows.extend({"_file": r["_file"], "seat": r["seat"], "opponent": r.get("opponent", "?"), "outcome": r["outcome"]}
+                        for r in file_rows)
     if not rows:
         raise SystemExit(f"no rollout decisions in {args.data}")
-    steps = build_steps(rows, vocab, args.gamma, args.lam)
     advantages = torch.stack([s["advantage"] for s in steps])
     mean, std = advantages.mean(), advantages.std().clamp(min=1e-6)
     for s in steps:

@@ -125,6 +125,9 @@ def main(argv=None):
     parser.add_argument("--name-dropout", type=float, default=0.0, help="v2: hide card names with this probability in training")
     parser.add_argument("--warm-start", type=Path, help="start from this v1 checkpoint (vocabulary + weights)")
     parser.add_argument("--text-embeddings", type=Path, help="v2: frozen card-text embeddings (.npz from embed_cards)")
+    parser.add_argument("--stream-shards", type=int, default=0,
+                        help="load training games in this many shards per epoch instead of all at once (low RAM)")
+    parser.add_argument("--val-games", type=int, default=0, help="cap the number of validation games (0 = all)")
     args = parser.parse_args(argv)
 
     torch.manual_seed(args.seed)
@@ -135,11 +138,42 @@ def main(argv=None):
     warm_vocab = None
     if args.warm_start:
         warm_vocab = features.Vocab.from_json(json.loads((args.warm_start / "vocab.json").read_text(encoding="utf-8")))
-    vocab, train, val = features.load_split(args.data, warm_vocab, extend=warm_vocab is not None,
-                                            transform=lambda s: pretensorize(s, compact=True))
     games = sum(len(features.iter_game_files(d)) for d in args.data)
-    print(f"data: {games} games, {len(train)} train / {len(val)} val samples, "
-          f"{vocab.size('name')} card names, device={device}")
+    seen_names: set[str] = set()
+    train_files: list[Path] = []
+    if args.stream_shards:
+        # Low-memory mode: one streaming pass builds/extends the vocabulary and counts samples; each
+        # epoch then loads the training games shard by shard (see epoch_chunks below).
+        files = [f for d in args.data for f in features.iter_game_files(d)]
+        train_files = [f for f in files if not features.is_validation_game(features.game_index(f))]
+        val_files = [f for f in files if features.is_validation_game(features.game_index(f))]
+        if args.val_games:
+            val_files = val_files[: args.val_games]
+        counter = [0]
+
+        def recording(paths):
+            for path in paths:
+                for sample in features.read_samples(path):
+                    counter[0] += 1
+                    seen_names.update(card["name"] for card in sample["cards"])
+                    seen_names.update(item["name"] for item in sample["stack"])
+                    yield sample
+
+        if warm_vocab is not None:
+            vocab = warm_vocab
+            vocab.extend(recording(train_files))
+        else:
+            vocab = features.Vocab.build(recording(train_files))
+        n_train = counter[0]
+        train = None
+        val = [pretensorize(features.encode(x, vocab), compact=True)
+               for path in val_files for x in features.read_samples(path)]
+    else:
+        vocab, train, val = features.load_split(args.data, warm_vocab, extend=warm_vocab is not None,
+                                                transform=lambda s: pretensorize(s, compact=True))
+        n_train = len(train)
+    print(f"data: {games} games, {n_train} train / {len(val)} val samples, "
+          f"{vocab.size('name')} card names, device={device}" + (f", {args.stream_shards} shards" if args.stream_shards else ""))
     pass_kind = vocab.id("kind", "PassPriority")
 
     text_embeddings = cardtext.read_text_embeddings(args.text_embeddings) if args.text_embeddings else None
@@ -153,8 +187,11 @@ def main(argv=None):
         table = cardtext.read_card_table(args.card_table)
         # Names that actually occur in the training samples (a fine-tuning vocabulary also holds
         # every card-table name, which must not count as trained).
-        used = set(torch.cat([s["token_name"] for s in train]).unique().tolist())
-        trained_names = sorted(name for name, index in vocab.maps["name"].items() if index in used)
+        if train is not None:
+            used = set(torch.cat([s["token_name"] for s in train]).unique().tolist())
+            trained_names = sorted(name for name, index in vocab.maps["name"].items() if index in used)
+        else:
+            trained_names = sorted(seen_names)
         base = None
         if args.warm_start and (args.warm_start / p1_model.CARD_FEATURES_FILE).exists():
             base = cardtext.CardFeatures.from_json(
@@ -190,18 +227,34 @@ def main(argv=None):
     model = model.to(device)
     parameters = sum(p.numel() for p in model.parameters())
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
-    steps_per_epoch = math.ceil(len(train) / args.batch_size)
+    steps_per_epoch = math.ceil(n_train / args.batch_size) + (args.stream_shards or 0)
     total_steps = steps_per_epoch * args.epochs
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, total_steps=total_steps)
+
+    # bfloat16 autocast only where the GPU supports it natively (not on V100/T4); else plain fp32.
+    use_bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported(including_emulation=False)
+
+    def epoch_chunks():
+        if train is not None:
+            yield from _batches(train, args.batch_size, True, rng)
+            return
+        order = list(train_files)
+        rng.shuffle(order)
+        for k in range(args.stream_shards):
+            shard = order[k::args.stream_shards]
+            samples = [pretensorize(features.encode(x, vocab), compact=True)
+                       for path in shard for x in features.read_samples(path)]
+            yield from _batches(samples, args.batch_size, True, rng)
+            del samples
 
     history = []
     best_state, best_epoch, best_loss = None, 0, float("inf")
     for epoch in range(1, args.epochs + 1):
         model.train()
         seen, running = 0, 0.0
-        for chunk in _batches(train, args.batch_size, True, rng):
+        for chunk in epoch_chunks():
             batch = collate_tensors(chunk, device)
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
                 loss, _, _, _, _ = _losses(model, batch, args.value_weight)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -238,7 +291,7 @@ def main(argv=None):
         "data": {
             "directories": [str(d) for d in args.data],
             "games": games,
-            "trainSamples": len(train),
+            "trainSamples": n_train,
             "valSamples": len(val),
             "manifests": [json.loads(p.read_text(encoding="utf-8")) for p in manifests],
         },
