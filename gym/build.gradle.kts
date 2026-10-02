@@ -136,6 +136,17 @@ tasks.register<Test>("phase1CardTableExportTest") {
     testLogging { showStandardStreams = true }
 }
 
+tasks.register<Test>("phase1SealedPoolExportTest") {
+    description = "Opt-in: export a sealed deck pool for P1 (-Dphase1.sealed=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1SealedPoolExportTest*")
+    maxHeapSize = "4g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
 tasks.register<Test>("phase1PpoCollectTest") {
     description = "Opt-in P1 PPO rollouts: a sampling checkpoint plays a league (-Dphase1.ppo=true)."
     group = "verification"
@@ -252,6 +263,10 @@ tasks.withType<Test>().configureEach {
         "phase1.gameTimeoutSeconds",
         "phase1.cardTable",
         "phase1.decks",
+        "phase1.sealed",
+        "phase1.sealedSet",
+        "phase1.sealedDecks",
+        "phase1.sealedOut",
         "phase1.cardTableOut",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }

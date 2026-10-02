@@ -65,6 +65,7 @@ class Phase1SelfPlayCollectTest : FunSpec({
             val gameTimeoutMillis = (System.getProperty("phase1.gameTimeoutSeconds")?.toLong() ?: 0L) * 1_000L
             val gameStarted = java.util.concurrent.ConcurrentHashMap<Int, Long>()
             var timedOut = 0
+            var failed = 0
             val started = System.nanoTime()
             // Daemon threads: an abandoned game must not keep the test JVM alive.
             val pool = Executors.newFixedThreadPool(workers) { task -> Thread(task).apply { isDaemon = true } }
@@ -88,11 +89,17 @@ class Phase1SelfPlayCollectTest : FunSpec({
                         }
                     })
                 }.mapNotNull { (game, future) ->
-                    if (gameTimeoutMillis <= 0) return@mapNotNull future.get()
                     var summary: Phase1SelfPlayCollector.GameSummary? = null
                     while (true) {
                         try {
-                            summary = future.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                            summary = if (gameTimeoutMillis <= 0) future.get() else future.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                            break
+                        } catch (failure: java.util.concurrent.ExecutionException) {
+                            // An engine failure inside one game (a rare card interaction) is logged with its
+                            // game number for reproduction and skipped instead of aborting the whole batch.
+                            failed++
+                            val cause = failure.cause
+                            println("  game=$game failed: ${cause?.let { it::class.simpleName }}: ${cause?.message?.take(300)}")
                             break
                         } catch (_: java.util.concurrent.TimeoutException) {
                             val since = gameStarted[game] ?: continue
@@ -118,7 +125,7 @@ class Phase1SelfPlayCollectTest : FunSpec({
                     it.samples, it.unmatchedChoices, "%.2f".format(it.seconds),
                 ).joinToString("\t")
             }
-            val footer = "# games=$games finished=${summaries.size} timedOut=$timedOut terminal=${summaries.count { it.terminal }} " +
+            val footer = "# games=$games finished=${summaries.size} timedOut=$timedOut failed=$failed terminal=${summaries.count { it.terminal }} " +
                 "akiriWins=${summaries.count { it.winner == "Akiri" }} chevillWins=${summaries.count { it.winner == "Chevill" }} " +
                 "samples=${summaries.sumOf { it.samples }} unmatched=${summaries.sumOf { it.unmatchedChoices }} " +
                 "workers=$workers wallSeconds=${"%.1f".format(wallSeconds)}"
