@@ -80,6 +80,84 @@ tasks.register<Test>("kaggleActor07BenchmarkTest") {
     testLogging { showStandardStreams = true }
 }
 
+tasks.register<Test>("phase1SelfPlayMeasureTest") {
+    description = "Opt-in: engine AI vs engine AI on the locked Commander matchup (-Dphase1.measure=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1EngineAiCommanderSelfPlayMeasurementTest*")
+    maxHeapSize = "4g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
+tasks.register<Test>("phase1SelfPlayCollectTest") {
+    description = "Opt-in Phase 1 teacher data: engine AI self-play samples (-Dphase1.collect=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1SelfPlayCollectTest*")
+    // Each worker holds one Commander game; size -Dphase1.workers against this heap.
+    maxHeapSize = System.getProperty("phase1.heap") ?: "12g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
+tasks.register<Test>("phase1TournamentTest") {
+    description = "Opt-in Phase 1 match between engine AI and/or model checkpoints (-Dphase1.tournament=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1TournamentTest*")
+    maxHeapSize = System.getProperty("phase1.heap") ?: "12g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
+tasks.register<Test>("phase1DaggerCollectTest") {
+    description = "Opt-in P1 DAgger round: engine-AI teacher labels model-reached positions (-Dphase1.dagger=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1DaggerCollectTest*")
+    maxHeapSize = System.getProperty("phase1.heap") ?: "12g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
+tasks.register<Test>("phase1CardTableExportTest") {
+    description = "Opt-in: export the P1 card table (rules text, mana cost, subtypes) (-Dphase1.cardTable=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1CardTableExportTest*")
+    maxHeapSize = "4g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
+tasks.register<Test>("phase1SealedPoolExportTest") {
+    description = "Opt-in: export a sealed deck pool for P1 (-Dphase1.sealed=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1SealedPoolExportTest*")
+    maxHeapSize = "4g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
+tasks.register<Test>("phase1PpoCollectTest") {
+    description = "Opt-in P1 PPO rollouts: a sampling checkpoint plays a league (-Dphase1.ppo=true)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/Phase1PpoCollectTest*")
+    maxHeapSize = System.getProperty("phase1.heap") ?: "12g"
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
 tasks.register<Test>("engineAiDeterminismTraceTest") {
     description = "Opt-in: seeded engine AI self-play trace for behavior parity (-Dperf.trace=true)."
     group = "verification"
@@ -156,6 +234,40 @@ tasks.withType<Test>().configureEach {
         "ka07.benchmark",
         "ka07.episodes",
         "ka07.outputFile",
+        "phase1.measure",
+        "phase1.games",
+        "phase1.maxSteps",
+        "phase1.profile",
+        "phase1.outputFile",
+        "phase1.traceFrom",
+        "phase1.collect",
+        "phase1.firstGame",
+        "phase1.workers",
+        "phase1.baseSeed",
+        "phase1.outputDir",
+        "phase1.tournament",
+        "phase1.seatA",
+        "phase1.seatB",
+        "phase1.results",
+        "phase1.python",
+        "phase1.showcase",
+        "phase1.showcaseDir",
+        "phase1.dagger",
+        "phase1.checkpoint",
+        "phase1.opponent",
+        "phase1.labelRate",
+        "phase1.teacherPlayouts",
+        "phase1.ppo",
+        "phase1.league",
+        "phase1.policyProcesses",
+        "phase1.gameTimeoutSeconds",
+        "phase1.cardTable",
+        "phase1.decks",
+        "phase1.sealed",
+        "phase1.sealedSet",
+        "phase1.sealedDecks",
+        "phase1.sealedOut",
+        "phase1.cardTableOut",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }
